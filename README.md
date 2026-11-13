@@ -1,5 +1,7 @@
 # bite
 
+<img src="brand/bite/icon.png" width="128" height="128" alt="bite: a sandworm made of bytecode tape, mouth open">
+
 This is our take on code mode: a lightweight, pure interpreter for a JavaScript-like language built around calling
 tools. It supports familiar JavaScript syntax with a few key differences and limitations. See the
 [interpreter support checklist](./interpreter-support.md) for more details.
