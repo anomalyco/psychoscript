@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "@anomalyco/sigil",
+      "name": "@anomalyco/bite",
       "dependencies": {
         "acorn": "8.15.0",
         "effect": "4.1.0",

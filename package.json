@@ -1,13 +1,13 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "name": "@anomalyco/sigil",
+  "name": "@anomalyco/bite",
   "version": "0.1.0",
   "description": "A confined JavaScript runtime for programs that call schema-described tools",
   "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/anomalyco/sigil.git"
+    "url": "git+https://github.com/anomalyco/bite.git"
   },
   "publishConfig": {
     "access": "public"
