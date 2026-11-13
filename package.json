@@ -1,14 +1,13 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "name": "@opencode/codemode",
-  "version": "2.3.0",
-  "description": "Effect-native confined code execution over schema-described tools",
+  "name": "@anomalyco/sigil",
+  "version": "0.1.0",
+  "description": "A confined JavaScript runtime for programs that call schema-described tools",
   "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/anomalyco/opencode.git",
-    "directory": "packages/codemode"
+    "url": "git+https://github.com/anomalyco/sigil.git"
   },
   "publishConfig": {
     "access": "public"
@@ -22,18 +21,17 @@
   "scripts": {
     "build": "bun run script/build.ts",
     "pack": "bun run script/pack.ts",
-    "typecheck": "bun check --no-script",
-    "typecheck:tsc": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
     "test": "bun test",
     "test:roundtrip": "CODEMODE_ROUNDTRIP=1 bun test"
   },
   "dependencies": {
     "acorn": "8.15.0",
-    "effect": "catalog:"
+    "effect": "4.1.0"
   },
   "devDependencies": {
-    "@tsconfig/bun": "catalog:",
-    "@types/bun": "catalog:",
-    "@typescript/native": "catalog:"
+    "@tsconfig/bun": "1.0.9",
+    "@types/bun": "1.4.3",
+    "@typescript/native": "npm:typescript@7.1.0-beta"
   }
 }
