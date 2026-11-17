@@ -29,7 +29,7 @@ Unsupported syntax returns an `UnsupportedSyntax` diagnostic with a source locat
 ## Quick Start
 
 ```ts
-import { CodeMode, Namespace, Tool } from "@anomalyco/bite"
+import { CodeMode, Namespace, Tool } from "psychoscript"
 import { Effect, Schema } from "effect"
 
 const lookupOrder = Tool.make({

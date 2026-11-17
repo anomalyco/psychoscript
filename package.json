@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "name": "@anomalyco/bite",
+  "name": "psychoscript",
   "version": "0.1.0",
   "description": "A confined JavaScript runtime for programs that call schema-described tools",
   "type": "module",
@@ -21,6 +21,7 @@
   "scripts": {
     "build": "bun run script/build.ts",
     "pack": "bun run script/pack.ts",
+    "check": "bun run typecheck && bun test && bun run pack",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "test:roundtrip": "CODEMODE_ROUNDTRIP=1 bun test"
