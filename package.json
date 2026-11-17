@@ -7,7 +7,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/anomalyco/bite.git"
+    "url": "git+https://github.com/anomalyco/psychoscript.git"
   },
   "publishConfig": {
     "access": "public"
