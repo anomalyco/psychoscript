@@ -12,8 +12,9 @@ name: Release
 #   and creates the GitHub release.
 #
 # There is no npm token: the trusted publisher on psychoscript matches this
-# file name, anomalyco/psychoscript and the release environment. npm adds
-# provenance on its own once the repository is public.
+# file name, anomalyco/psychoscript and the release environment. Provenance
+# comes from the publish job's OIDC token, so publishing a prebuilt tarball
+# keeps it.
 #
 # The version comes from the newest v<X.Y.Z> tag (or package.json before the
 # first tag), is set in the build workspace only and is never committed. The
@@ -129,7 +130,7 @@ jobs:
     environment: release
     permissions:
       contents: write # the tag and the GitHub release
-      id-token: write # npm trusted publishing
+      id-token: write # npm trusted publishing and provenance
       actions: read # download this build's artifact by its immutable id
     env:
       GH_TOKEN: ${{ github.token }}
@@ -203,6 +204,8 @@ jobs:
           flags=(--access public --tag latest)
           if [ "$DRY_RUN" = 'true' ]; then
             flags+=(--dry-run)
+          else
+            flags+=(--provenance)
           fi
           npm publish "$RUNNER_TEMP/package/package.tgz" "${flags[@]}"
       # Only after a successful publish: the tag names the build's commit.
