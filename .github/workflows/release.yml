@@ -7,8 +7,8 @@ name: Release
 #   tarball and uploads it as an artifact.
 # - publish runs in the release environment (allowed only from dev) with
 #   contents: write and id-token: write. It never checks out the repository or
-#   runs a script from it: it downloads the tarball, checks its manifest as
-#   data, publishes it with the job's OIDC token, then tags the build's commit
+#   runs a script from it: it downloads the tarball, checks the artifact
+#   against the build's digest and its manifest as data, publishes it with the job's OIDC token, then tags the build's commit
 #   and creates the GitHub release.
 #
 # There is no npm token: the trusted publisher on psychoscript matches this
@@ -56,6 +56,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       sha: ${{ steps.version.outputs.sha }}
       artifact: ${{ steps.package.outputs.artifact-id }}
+      digest: ${{ steps.package.outputs.artifact-digest }}
     steps:
       - name: Require dev
         env:
@@ -146,9 +147,12 @@ jobs:
       - name: Download the package
         env:
           ARTIFACT_ID: ${{ needs.build.outputs.artifact }}
+          DIGEST: ${{ needs.build.outputs.digest }}
         run: |
           [[ $ARTIFACT_ID =~ ^[0-9]+$ ]]
+          [[ $DIGEST =~ ^[0-9a-f]{64}$ ]]
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > "$RUNNER_TEMP/artifact.zip"
+          echo "$DIGEST  $RUNNER_TEMP/artifact.zip" | sha256sum --check --strict
           python3 - <<'PY'
           import os, pathlib, stat, zipfile
 
