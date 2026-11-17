@@ -111,11 +111,13 @@ jobs:
       - run: bun test
       # Builds, packs into .pack/ and imports the tarball under Node and Bun.
       - run: bun run pack
+      # upload-artifact skips hidden directories such as .pack.
+      - run: mkdir "$RUNNER_TEMP/dist" && cp .pack/*.tgz "$RUNNER_TEMP/dist/"
       - id: package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: package
-          path: .pack/*.tgz
+          path: ${{ runner.temp }}/dist/*.tgz
           if-no-files-found: error
 
   publish:
