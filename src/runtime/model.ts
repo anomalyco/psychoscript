@@ -93,7 +93,7 @@ export const uriError = failure("URIError")
 
 // Orient the program's author rather than enumerate JavaScript; interpreter-support.md is the full matrix.
 export const supportedSyntaxMessage =
-  "This is a restricted JavaScript-like language. Supported: plain and async functions, data literals, destructuring, standard control flow, await and Promise, and built-ins such as Array, Object, Math, JSON, Date, RegExp, Map, Set, and URL. Unsupported: classes, BigInt, and custom Symbols. Use plain functions and data objects instead."
+  "This is a restricted JavaScript-like language. Supported: plain and async functions, data literals, destructuring, standard control flow, await and Promise, and built-ins such as Array, Object, Math, JSON, Date, RegExp, Map, Set, and URL. Unsupported: private class members, BigInt, and custom Symbols."
 
 // Acorn lines are 1-based and its columns are 0-based. Diagnostics use 1-based columns of the submitted source.
 export const sourceLocation = (node: AstNode): { readonly line: number; readonly column: number } => ({
