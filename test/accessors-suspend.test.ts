@@ -5,7 +5,7 @@ import { Effect, Fiber } from "effect"
 import { Host, Runtime, toBytes } from "../src/index.js"
 import { parking } from "../src/runtime/driver.js"
 import { savedFrames as frames } from "../src/snapshot.js"
-import { runProgram } from "./run-program.js"
+import { runProgram } from "./run.js"
 
 // Suspending and resuming a run at every point a program getter or setter can run or be pending. Each language-level
 // case runs once straight through, and once saved to bytes and restored into a fresh runtime at every slice; the

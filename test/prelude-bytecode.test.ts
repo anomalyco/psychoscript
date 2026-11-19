@@ -3,8 +3,8 @@ import { compileBuiltins } from "../script/prelude.js"
 import saved from "../src/prelude/bytecode.json" with { type: "json" }
 import { compiledPrelude } from "../src/prelude/prelude.js"
 import { hashOf } from "../src/code.js"
-import { getInternalPrelude } from "../src/internal-prelude.js"
-import { moduleUrl, runProgram } from "./run-program.js"
+import { getInternalPrelude } from "../src/prelude/internal.js"
+import { moduleUrl, runProgram } from "./run.js"
 
 // The built-in sources are compiled ahead of time (script/prelude.ts); a process loads that bytecode instead.
 
@@ -25,7 +25,7 @@ describe("precompiled built-ins", () => {
     }
     // A fresh process runs a program that calls into the prelude, and its source is still unparsed.
     const script = `
-      import { runProgram } from ${moduleUrl("run-program.js")}
+      import { runProgram } from ${moduleUrl("run.js")}
       import { compiledPrelude } from ${moduleUrl("../src/prelude/prelude.js")}
       const result = runProgram("return [3, 1, 2].map((x) => x * 2).sort((a, b) => a - b)")
       console.log(JSON.stringify([result.ok && result.value, typeof compiledPrelude().codes[0].sourceObj.tree]))`

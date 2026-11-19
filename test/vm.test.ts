@@ -3,7 +3,7 @@ import { disassembleSource } from "../script/disasm.js"
 import { hashOf } from "../src/code.js"
 import { compileSource } from "../src/compiler/compile.js"
 import { verifyAll } from "./verify-bytecode.js"
-import { parseVmSource, runProgram } from "./run-program.js"
+import { parseVmSource, runProgram } from "./run.js"
 
 const val = (code: string) => {
   const parsed = parseVmSource(code)

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { runProgram } from "./run-program.js"
+import { runProgram } from "./run.js"
 
 // The property descriptor API: Object.defineProperty(ies), getOwnPropertyDescriptor(s), getOwnPropertyNames, and
 // Object.create's second argument, over plain objects, arrays, functions and built-ins.

@@ -198,6 +198,7 @@ describe("host errors escaping built-ins", () => {
 })
 
 describe("call depth", () => {
+  // Round-trip mode saves and restores the whole VM every slice, which is slow at 10,000 frames deep.
   test("runaway recursion fails fast with a catchable RangeError", async () => {
     const started = Date.now()
     expect(
@@ -206,8 +207,8 @@ describe("call depth", () => {
         try { f(0) } catch (e) { return [e.name, e instanceof RangeError, e.message] }
       `),
     ).toEqual(["RangeError", true, "Maximum call stack size exceeded"])
-    expect(Date.now() - started).toBeLessThan(2000)
-  })
+    if (process.env.PSYCHOSCRIPT_ROUNDTRIP !== "1") expect(Date.now() - started).toBeLessThan(2000)
+  }, 15000)
 
   test("uncaught overflow reports the call that overflowed", async () => {
     const failure = await error(`const f = (n) => f(n + 1); return f(0)`)
@@ -215,12 +216,13 @@ describe("call depth", () => {
     expect(failure.message).toBe("RangeError: Maximum call stack size exceeded (line 1, col 18)")
   })
 
+  // Round-trip mode saves and restores the whole VM every slice, which is slow at 10,000 frames deep.
   test("the limit is 10000 nested calls", async () => {
     expect(await value(`let depth = 0; const f = () => { depth++; f() }; try { f() } catch { return depth }`)).toBe(
       10000,
     )
     expect(await value(`const f = (n) => (n === 0 ? 0 : 1 + f(n - 1)); return f(9000)`)).toBe(9000)
-  })
+  }, 15000)
 
   // Round-trip mode saves and restores the whole VM every slice, which is slow at 10,000 frames deep.
   test("recursion through a built-in callback counts", async () => {

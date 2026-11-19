@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { Effect, Fiber } from "effect"
 import { Host, Runtime, toBytes } from "../src/index.js"
-import { getInternalPrelude } from "../src/internal-prelude.js"
+import { getInternalPrelude } from "../src/prelude/internal.js"
 import { compiledPrelude } from "../src/prelude/prelude.js"
 import type { Snapshot } from "../src/snapshot/snapshot.js"
 

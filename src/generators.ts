@@ -15,7 +15,7 @@ import { requireIteratorMethod, requireIteratorObject } from "./runtime/operatio
 import { capability } from "./runtime/promises.js"
 import { abrupt, type Completion, type GeneratorRequest, Interruption, normal, Resume } from "./runtime/signals.js"
 import type { Reaction, Resolving } from "./scheduler.js"
-import { internalCode, VmIntrinsic } from "./internal-prelude.js"
+import { internalCode, VmIntrinsic } from "./prelude/internal.js"
 import { CodeFlags, Op } from "./opcodes.js"
 import { CustomIter, type Frame, Mode, REDO, REDO_ENTERED, type Vm } from "./vm.js"
 

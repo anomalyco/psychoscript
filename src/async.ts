@@ -24,7 +24,7 @@ import { adoptThenable, capability, finishCombination, react } from "./runtime/p
 import { describeValue, typeofValue } from "./runtime/references.js"
 import { abrupt, type Completion, Interruption, Invoke, MAX_CALL_DEPTH, normal } from "./runtime/signals.js"
 import { type Combination, type Job, type Reaction, Resolving } from "./scheduler.js"
-import { internalCode, VmIntrinsic } from "./internal-prelude.js"
+import { internalCode, VmIntrinsic } from "./prelude/internal.js"
 import { CodeFlags } from "./opcodes.js"
 import { type Frame, type FrameMode, Mode, type Vm } from "./vm.js"
 

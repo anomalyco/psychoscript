@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { createBuiltins } from "../src/runtime/intrinsics.js"
 import { PendingThrow } from "../src/runtime/model.js"
 import { accessorRule, defineAccessorHalf, get, Native, Obj, peek } from "../src/runtime/objects.js"
-import { runProgram } from "./run-program.js"
+import { runProgram } from "./run.js"
 
 // Program-defined getters and setters: object literals, every read and write form, the built-ins that copy or
 // enumerate objects, the iterator and promise protocols, and display, which never calls them.

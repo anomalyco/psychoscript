@@ -6,7 +6,7 @@ import { Interpreter } from "../src/runtime/interpreter.js"
 import { type Snapshot, SnapshotError } from "../src/snapshot/snapshot.js"
 import { hashOf } from "../src/code.js"
 import { compileSource } from "../src/compiler/compile.js"
-import { moduleUrl, parseVmSource, runProgram } from "./run-program.js"
+import { moduleUrl, parseVmSource, runProgram } from "./run.js"
 import { buildId } from "../src/snapshot.js"
 
 // The VM's snapshots: a run saved and restored into a fresh runtime anywhere it slices goes on as if it never stopped.
@@ -281,7 +281,7 @@ describe("determinism", () => {
     const script = `
       import { hashOf } from ${moduleUrl("../src/code.js")}
       import { compileSource } from ${moduleUrl("../src/compiler/compile.js")}
-      import { parseVmSource } from ${moduleUrl("run-program.js")}
+      import { parseVmSource } from ${moduleUrl("run.js")}
       import { buildId } from ${moduleUrl("../src/snapshot.js")}
       import { createBuiltins } from ${moduleUrl("../src/runtime/intrinsics.js")}
       import { Interpreter } from ${moduleUrl("../src/runtime/interpreter.js")}
