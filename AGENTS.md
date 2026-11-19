@@ -10,4 +10,7 @@
   `bun test test/test262.test.ts`. Update `skipped.txt` with `bun run script/test262-report.ts --write`.
 - Keep `interpreter-support.md` and `README.md` in step with behavior changes.
 - VM code works on `Value`, not `unknown`. No `effect` imports in the VM, compiler, prelude, snapshot or stdlib.
+- `rust/` is a Rust implementation held to exact parity with this package (see `rust/README.md` for its commands): after
+  a language change, run `bun conformance/generate.ts`, `host.ts`, `boundary.ts` and `streaming.ts` from `rust/` and
+  commit the regenerated recordings with the Rust change that makes `cargo test --workspace` pass.
 - PRs go into `dev` and are squash-merged. Changes to `.github/` need Dax.

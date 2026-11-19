@@ -31,3 +31,61 @@ jobs:
           bun-version: 1.4.4
       - run: bun install --frozen-lockfile
       - run: bun run check
+
+  rust:
+    name: Rust
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version: 24.16.0
+          package-manager-cache: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+      # The generators and the test262 runner load the TypeScript reference from the repository root.
+      - run: bun install --frozen-lockfile
+        working-directory: .
+      # The toolchain and its components come from rust/rust-toolchain.toml.
+      - run: rustup toolchain install --no-self-update
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: rust -> target
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      # Includes bench/tests/conformance.rs, which checks every conformance case against the reference's outcome.
+      - run: cargo test --locked --workspace
+      # Saves and restores every run at each host stop and loop slice; outcomes must not change.
+      - run: cargo test --locked -p psychoscript-bench --test conformance
+        env:
+          PSYCHOSCRIPT_ROUNDTRIP: "1"
+      # A change to the reference fails here until the Rust side is updated and the recordings regenerated.
+      - name: Check the recordings match the reference
+        run: |
+          bun conformance/generate.ts
+          bun conformance/host.ts
+          bun conformance/boundary.ts
+          bun conformance/streaming.ts
+          git diff --exit-code -- conformance
+          test -z "$(git status --porcelain -- conformance)"
+      - name: Read the pinned test262 revision
+        id: test262
+        run: |
+          revision=$(jq -r .revision ../test/test262/manifest.json)
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+          echo "checkout=$HOME/.cache/test262-$revision" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ steps.test262.outputs.checkout }}
+          key: test262-${{ steps.test262.outputs.revision }}
+      # Parity both ways, against test262/rust-skipped.txt and test262/reference-gaps.txt.
+      - run: bash test262/run.sh
+        env:
+          TEST262_CHECKOUT: ${{ steps.test262.outputs.checkout }}

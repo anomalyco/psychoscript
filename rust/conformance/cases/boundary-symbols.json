@@ -1,0 +1,115 @@
+{
+  "bindings": {},
+  "ok": true,
+  "value": [
+    "Symbol(psychoscript.iterator)",
+    "Symbol(psychoscript.async-iterator)",
+    "Symbol(psychoscript.iterator),Symbol(psychoscript.async-iterator)",
+    "1Symbol(psychoscript.iterator)2",
+    "Symbol(psychoscript.iterator)",
+    [
+      "TypeError",
+      "Cannot convert a symbol to a string"
+    ],
+    [
+      "TypeError",
+      "Cannot convert a symbol to a number"
+    ],
+    [
+      "TypeError",
+      "Cannot convert a symbol to a number"
+    ],
+    [
+      "TypeError",
+      "Cannot convert a symbol to a number"
+    ],
+    [
+      "TypeError",
+      "Cannot convert a symbol to a number"
+    ],
+    [
+      "TypeError",
+      "Cannot convert a symbol to a number"
+    ],
+    null,
+    null,
+    [
+      "TypeError",
+      "Cannot convert a symbol to a number"
+    ],
+    [
+      "TypeError",
+      "Cannot convert a symbol to a number"
+    ],
+    "Symbol(psychoscript.iterator)",
+    "Symbol(psychoscript.iterator)",
+    [
+      "abca"
+    ],
+    "Symbol(psychoscript.iterator)bca",
+    "abSymbol(psychoscript.iterator)",
+    "SYMBOL(PSYCHOSCRIPT.ITERATOR)",
+    -1,
+    [
+      "TypeError",
+      "Cannot access a property on a non-object value."
+    ],
+    [
+      "TypeError",
+      "Cannot access a property on a non-object value."
+    ],
+    [
+      "TypeError",
+      "Cannot access a property on a non-object value."
+    ],
+    [
+      "TypeError",
+      "Cannot access a property on a non-object value."
+    ],
+    [
+      "TypeError",
+      "Cannot access a property on a non-object value."
+    ],
+    [
+      "TypeError",
+      "The 'in' operator requires a data object on the right-hand side."
+    ],
+    "[object Object]",
+    "{}",
+    "{\"s\":{},\"n\":[{}]}",
+    "[\n {}\n]",
+    1,
+    [],
+    {},
+    [
+      "TypeError",
+      "Cannot read properties of undefined (reading 'Symbol(psychoscript.iterator)')."
+    ],
+    [
+      "TypeError",
+      "Cannot read properties of null (reading 'Symbol(psychoscript.iterator)')."
+    ],
+    [
+      "TypeError",
+      "new URLSearchParams(...) expects a query string, data object, iterable pairs, or URLSearchParams."
+    ],
+    [
+      "TypeError",
+      "Object(symbol) wrapper objects are not supported; use the primitive value directly."
+    ],
+    [
+      "TypeError",
+      "Object.getPrototypeOf cannot convert a symbol to an object."
+    ],
+    true,
+    true,
+    {},
+    [
+      {}
+    ]
+  ],
+  "logs": [
+    "Symbol(psychoscript.iterator) [Symbol(psychoscript.async-iterator)] {\"k\":Symbol(psychoscript.iterator)}"
+  ],
+  "metadata": null
+}
