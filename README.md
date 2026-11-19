@@ -213,7 +213,7 @@ The interpreter is tested against [test262](https://github.com/tc39/test262) at 
 `test/test262/manifest.json`). The files aren't committed and CI doesn't run them yet: sync a local checkout (see
 [`test/test262/README.md`](test/test262/README.md)) and run `bun test test/test262.test.ts`. The sync leaves out
 features that are out of scope by design (prototype mutation, `Proxy`, `eval`, sloppy mode and others). Of the
-22,253 files it keeps, 19,408 pass and 2,845 are skipped as known gaps (`test/test262/skipped.txt`), with no failures.
+22,253 files it keeps, 19,521 pass and 2,732 are skipped as known gaps (`test/test262/skipped.txt`), with no failures.
 
 ## Development
 
