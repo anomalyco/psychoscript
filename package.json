@@ -24,6 +24,8 @@
   },
   "scripts": {
     "build": "bun run script/build.ts",
+    "pack": "bun run script/pack.ts",
+    "check": "bun run typecheck && bun test && bun run pack",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "test:roundtrip": "PSYCHOSCRIPT_ROUNDTRIP=1 bun test",
