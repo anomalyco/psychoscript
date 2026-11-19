@@ -14,7 +14,7 @@ import { compiledPrelude } from "./prelude/prelude.js"
 import { Cell, CodeFlags, EMPTY_CELLS, HOLE, Op } from "./opcodes.js"
 import { CustomIter, Frame, Mode, Vm, VmInternalFn } from "./vm.js"
 
-// Snapshots of the bytecode VM (plan §6): the generic graph codec, plus records for the VM's own classes.
+// Snapshots of the bytecode VM: the generic graph codec, plus records for the VM's own classes.
 //
 // - **Code is never saved.** A function's code is `["x", ["code", source, index]]`; restore recompiles every saved
 //   source eagerly and refuses one whose bytecode hash differs from the saved one, so a pc always means the same

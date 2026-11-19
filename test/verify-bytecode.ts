@@ -2,7 +2,7 @@ import type { Code } from "../src/code.js"
 import { CheckBaseKind, CondKind, ImportKind, Op, OpNames } from "../src/opcodes.js"
 
 /**
- * Stack-depth verifier (C5): runs abstract interpretation over packed bytecode independent of `CodeBuilder`,
+ * Stack-depth verifier: runs abstract interpretation over packed bytecode independent of `CodeBuilder`,
  * proving a single static operand depth at every reachable pc, `0 <= depth <= maxStack`, valid handler and
  * `END_FINALLY` entry depths, T&S successor depths, and valid local/upvalue slot bounds.
  */

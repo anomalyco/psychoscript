@@ -51,6 +51,7 @@ export type Translate = {
 /** A runtime's host globals for one run: `Host.fn`, `Host.durableFn`, `Host.namespace`, and plain values of them. */
 export type Globals = Readonly<Record<string, unknown>>
 
+/** How `Runtime.make` sets up a runtime: its host globals, module aliases, limits, and argument translation. */
 export type Options<G extends Globals = Globals> = {
   /**
    * The globals a program reaches, made for each run when it starts and again when it resumes, so they can keep the
@@ -59,7 +60,9 @@ export type Options<G extends Globals = Globals> = {
   readonly globals?: ((run: Run) => G) | undefined
   /** Module names that load a global, beyond its own name: `{ bun: "Bun" }` makes `import "bun"` load `Bun`. */
   readonly modules?: Readonly<Record<string, string>> | undefined
+  /** Budgets every run gets; none by default. */
   readonly limits?: Limits | undefined
+  /** How host calls receive program functions and promises inside arguments; both fail the call by default. */
   readonly translate?: Translate | undefined
 }
 
@@ -96,6 +99,7 @@ export type Runtime<R = never> = {
  * interrupting `run()` interrupts them. A program runs once: running it again is a defect.
  */
 export type Program<R = never, E = never> = {
+  /** Runs the program until it ends (a `Result`) or is suspended (a `Suspended` with its state). */
   readonly run: () => Effect.Effect<Outcome, E, R>
   /**
    * Saves the run's state and stops it, at once, from another fiber: `run()` then returns the same `Suspended`, and so
@@ -117,7 +121,10 @@ type ServicesOf<T, Depth extends ReadonlyArray<unknown>> = Depth["length"] exten
       ? ServicesOf<T[keyof T], [...Depth, unknown]>
       : never
 
-/** Creates a runtime whose programs reach `globals`. */
+/**
+ * Creates a runtime whose programs reach the host globals `options.globals` makes for each run. Throws a `RangeError`
+ * for invalid limits.
+ */
 export const make = <const G extends Globals = {}>(options: Options<G> = {}): Runtime<Services<G>> => {
   type R = Services<G>
   const setup: Setup<R> = {
@@ -141,7 +148,7 @@ export const make = <const G extends Globals = {}>(options: Options<G> = {}): Ru
   }
 }
 
-export const validateLimit = (name: string, value: number | undefined, minimum: number): number | undefined => {
+const validateLimit = (name: string, value: number | undefined, minimum: number): number | undefined => {
   if (value !== undefined && (!Number.isSafeInteger(value) || value < minimum)) {
     throw new RangeError(`${name} must be a safe integer greater than or equal to ${minimum}.`)
   }
