@@ -9,7 +9,7 @@ import { type Completion, Prefetch } from "./runtime/signals.js"
 import { HostCall, type HostPolicy, Resolving } from "./scheduler.js"
 import { type FrameMode, Mode } from "./vm.js"
 
-// The VM's side of host work (plan §4.10): calls to host functions, the host calls they queue, and the blocking call
+// The VM's side of host work: calls to host functions, the host calls they queue, and the blocking call
 // a job may wait on.
 
 /** What host calls need from the promise scheduler. */
@@ -47,7 +47,7 @@ export type HostVm = {
 
 /** Where a host function is, and how its calls are named and saved. */
 export type HostTarget = {
-  /** How the program names it in errors: `fetch`, `fs.readFile`, `api.issues.list`. */
+  /** How the program names it in errors: for example `sleep` or `store.get`. */
   readonly label: string
   /** Where it is among the run's host globals, so a resumed run can find it again; none inside a result. */
   readonly path: ReadonlyArray<string> | undefined

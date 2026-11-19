@@ -120,27 +120,27 @@ describe("Host.fn", () => {
 })
 
 describe("Host.namespace and Host.fail", () => {
-  const api = Host.namespace({
-    keys: (path) => (path.length === 0 ? ["issues"] : ["list"]),
+  const store = Host.namespace({
+    keys: (path) => (path.length === 0 ? ["users"] : ["get"]),
     resolve: (path) =>
-      path.join(".") === "issues.list"
+      path.join(".") === "users.get"
         ? Host.fn(() => Effect.succeed(["#1"]), { type: "async" })
-        : Host.missing(`No api.${path.join(".")}`, ["Try api.issues.list."], "NotFound"),
+        : Host.missing(`No store.${path.join(".")}`, ["Try store.users.get."], "NotFound"),
   })
   const runtime = Runtime.make({
-    globals: () => ({ api, refuse: Host.fn(() => Effect.fail(Host.fail("Refused", "Not today", ["Ask again."]))) }),
+    globals: () => ({ store, refuse: Host.fn(() => Effect.fail(Host.fail("Refused", "Not today", ["Ask again."]))) }),
   })
 
   test("a namespace is a lazy, path-addressed object of functions", async () => {
     expect(
-      await value(runtime, `return [await api.issues.list(), Object.keys(api), Object.keys(api.issues), typeof api.x]`),
-    ).toEqual([["#1"], ["issues"], ["list"], "function"])
+      await value(runtime, `return [await store.users.get(), Object.keys(store), Object.keys(store.users), typeof store.x]`),
+    ).toEqual([["#1"], ["users"], ["get"], "function"])
   })
 
   test("a missing function and a host failure keep their kind and suggestions", async () => {
-    expect(await run(runtime, `return api.issues.nope()`)).toMatchObject({
+    expect(await run(runtime, `return store.users.nope()`)).toMatchObject({
       ok: false,
-      error: { kind: "NotFound", message: "No api.issues.nope", suggestions: ["Try api.issues.list."] },
+      error: { kind: "NotFound", message: "No store.users.nope", suggestions: ["Try store.users.get."] },
     })
     expect(await run(runtime, `refuse()`)).toMatchObject({
       ok: false,
