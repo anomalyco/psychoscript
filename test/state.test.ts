@@ -12,7 +12,7 @@ import { GeneratorObj, type Native, nativeRule, Obj, PromiseObj, type Value } fr
 import { normal } from "../src/runtime/signals.js"
 import { Code } from "../src/code.js"
 import { AsyncFromSyncIterator } from "../src/generators.js"
-import { VmIntrinsic } from "../src/internal-prelude.js"
+import { VmIntrinsic } from "../src/prelude/internal.js"
 import { Cell, CodeFlags } from "../src/opcodes.js"
 import type { Stop } from "../src/scheduler.js"
 import { CustomIter, Frame, Mode, Vm } from "../src/vm.js"

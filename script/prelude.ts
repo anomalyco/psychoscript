@@ -9,7 +9,7 @@ import { Source } from "../src/runtime/source.js"
 import { saveCodes } from "../src/prelude/bytecode.js"
 import { code } from "../src/prelude/source.js"
 import { compileSource } from "../src/compiler/compile.js"
-import { INTERNAL_SOURCE } from "../src/internal-prelude.js"
+import { INTERNAL_SOURCE } from "../src/prelude/internal.js"
 
 export const compileBuiltins = () =>
   Object.fromEntries(

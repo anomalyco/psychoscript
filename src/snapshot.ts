@@ -9,7 +9,7 @@ import { AsyncFromSyncCloseTarget, FinallyTarget, VmScheduler } from "./async.js
 import { Code, hashOf } from "./code.js"
 import { COMPILER_VERSION, compileSource } from "./compiler/compile.js"
 import { HostCalls } from "./host.js"
-import { getInternalPrelude } from "./internal-prelude.js"
+import { getInternalPrelude } from "./prelude/internal.js"
 import { compiledPrelude } from "./prelude/prelude.js"
 import { Cell, CodeFlags, EMPTY_CELLS, HOLE, Op } from "./opcodes.js"
 import { CustomIter, Frame, Mode, Vm, VmInternalFn } from "./vm.js"

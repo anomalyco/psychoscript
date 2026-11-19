@@ -1,8 +1,8 @@
-import { fromJson, type Json } from "./data.js"
-import { conversions } from "./runtime/callback.js"
-import type { Builtins } from "./runtime/intrinsics.js"
-import { checkStringLength, MAX_VALUE_DEPTH } from "./runtime/limits.js"
-import { invalidData, rangeError, typeError } from "./runtime/model.js"
+import { fromJson, type Json } from "../data.js"
+import { conversions } from "../runtime/callback.js"
+import type { Builtins } from "../runtime/intrinsics.js"
+import { checkStringLength, MAX_VALUE_DEPTH } from "../runtime/limits.js"
+import { invalidData, rangeError, typeError } from "../runtime/model.js"
 import {
   Arr,
   Builtin,
@@ -26,15 +26,15 @@ import {
   SetObj,
   URLSearchParamsObj,
   type Value,
-} from "./runtime/objects.js"
-import { applyBinaryOperator, hasInstance, operatorConversion, propertyKey } from "./runtime/operations.js"
-import { isOpaque, typeofValue } from "./runtime/references.js"
-import { Convert, normal, Prefetch } from "./runtime/signals.js"
-import type { Resolving } from "./scheduler.js"
-import type { Code } from "./code.js"
-import { builtinCodes } from "./prelude/bytecode.js"
-import { UnaryOp } from "./opcodes.js"
-import { type Vm, VmInternalFn } from "./vm.js"
+} from "../runtime/objects.js"
+import { applyBinaryOperator, hasInstance, operatorConversion, propertyKey } from "../runtime/operations.js"
+import { isOpaque, typeofValue } from "../runtime/references.js"
+import { Convert, normal, Prefetch } from "../runtime/signals.js"
+import type { Resolving } from "../scheduler.js"
+import type { Code } from "../code.js"
+import { builtinCodes } from "../prelude/bytecode.js"
+import { UnaryOp } from "../opcodes.js"
+import { type Vm, VmInternalFn } from "../vm.js"
 
 /**
  * Lightweight internal callable for VM-only `$` intrinsics. Does not extend `Obj` or `Native`,

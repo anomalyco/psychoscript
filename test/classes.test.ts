@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { compileSource } from "../src/compiler/compile.js"
 import { verifyAll } from "./verify-bytecode.js"
-import { parseVmSource, runProgram } from "./run-program.js"
+import { parseVmSource, runProgram } from "./run.js"
 
 const run = (code: string) => {
   const parsed = parseVmSource(code)

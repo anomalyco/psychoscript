@@ -115,7 +115,7 @@ import {
   registerVmIntrinsics,
   tryFastBoundaryOrJson,
   VmIntrinsic,
-} from "./internal-prelude.js"
+} from "./prelude/internal.js"
 import {
   BinOpSymbols,
   Cell,
@@ -2954,9 +2954,9 @@ export class Vm {
         if (syncMethod === REDO) return REDO_ENTERED
         if (syncMethod !== undefined && syncMethod !== null) {
           const callable = requireIteratorMethod(syncMethod, "Iterator method", site)
-          const openCode = internalCode("$vmOpenSyncForAsync")
+          const openSyncCode = internalCode("$vmOpenSyncForAsync")
           frame.regs[sp - 1] = undefined
-          frame.regs[sp] = new VmInternalFn(openCode, [v, callable])
+          frame.regs[sp] = new VmInternalFn(openSyncCode, [v, callable])
           frame.sp = sp + 1
           return pc + 1
         }
