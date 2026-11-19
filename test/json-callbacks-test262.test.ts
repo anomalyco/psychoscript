@@ -16,9 +16,9 @@
  * - test/built-ins/JSON/stringify/replacer-function-result-undefined.js
  * - test/built-ins/JSON/stringify/replacer-function-result.js
  *
- * Function-context assertions are omitted because CodeMode functions intentionally
- * have no `this`. Number/String wrapper cases are omitted because CodeMode does not
- * support primitive wrapper objects. Proxy and Symbol cases are outside CodeMode.
+ * Function-context assertions are omitted because psychoscript functions intentionally
+ * have no `this`. Number/String wrapper cases are omitted because psychoscript does not
+ * support primitive wrapper objects. Proxy and Symbol cases are outside psychoscript.
  *
  * Copyright (C) 2012 Ecma International. All rights reserved.
  * Copyright (C) 2016 the V8 project authors. All rights reserved.
@@ -27,11 +27,10 @@
  * Test262 portions are governed by the BSD license in LICENSE.test262.
  */
 import { describe, expect, test } from "bun:test"
-import { Effect } from "effect"
-import { CodeMode } from "../src/index.js"
+import { execute } from "./run.js"
 
 const value = async (code: string) => {
-  const result = await Effect.runPromise(CodeMode.execute({ code, tools: {} }))
+  const result = await execute(code)
   if (!result.ok) throw new Error(`expected success, got ${result.error.kind}: ${result.error.message}`)
   return result.value
 }
@@ -209,7 +208,7 @@ describe("Test262 JSON.stringify replacer adaptations", () => {
   })
 })
 
-describe("CodeMode JSON callback boundaries", () => {
+describe("psychoscript JSON callback boundaries", () => {
   test("revivers and replacers see the holder as this", async () => {
     expect(
       await value(`

@@ -1,19 +1,13 @@
 import { describe, expect, test } from "bun:test"
-import { Effect, Schema } from "effect"
-import { CodeMode, Tool } from "../src/index.js"
+import { Effect } from "effect"
+import { Host, Runtime } from "../src/index.js"
 
 // `new` is supported syntax; only the callee decides whether construction succeeds. A callee without
 // construction support is a TypeError naming it, like JS, rather than an unsupported-syntax diagnostic
 // that would suggest `new` itself is unavailable.
-const tools = {
-  echo: Tool.make({
-    description: "Echo",
-    input: Schema.Struct({}),
-    output: Schema.Struct({}),
-    execute: () => Effect.succeed({}),
-  }),
-}
-const run = (code: string) => Effect.runPromise(CodeMode.execute({ code, tools }))
+const echo = Host.fn(() => Effect.succeed({}))
+const host = Host.namespace({ keys: () => ["echo"], resolve: () => echo })
+const run = (code: string) => Effect.runPromise(Runtime.make({ globals: () => ({ host }) }).execute(code))
 const value = async (code: string) => {
   const result = await run(code)
   if (!result.ok) throw new Error(`expected success, got ${result.error.kind}: ${result.error.message}`)
@@ -41,7 +35,7 @@ describe("new on a non-constructible callee", () => {
   })
 
   test("non-callable values are not constructors", async () => {
-    expect((await error(`return new tools.echo()`)).message).toStartWith("TypeError: tools.echo is not a constructor.")
+    expect((await error(`return new host.echo()`)).message).toStartWith("TypeError: host.echo is not a constructor.")
     expect((await error(`return new (1)()`)).message).toStartWith("TypeError: The called value is not a constructor.")
     expect((await error(`const Date = 5; return new Date()`)).message).toStartWith(
       "TypeError: Date is not a constructor.",
@@ -51,10 +45,10 @@ describe("new on a non-constructible callee", () => {
   test("user-defined functions explain the documented gap", async () => {
     const failure = await error(`function Point(x) { return { x } }; return new Point(1)`)
     expect(failure.message).toStartWith(
-      "TypeError: Point cannot be constructed: user-defined constructors and classes are not supported. Call it as a function that returns a plain object instead.",
+      "TypeError: Point is not a constructor: only classes can be constructed with new. Use a class, or call it as a function that returns an object.",
     )
     expect((await error(`const make = () => ({}); return new make()`)).message).toStartWith(
-      "TypeError: make cannot be constructed",
+      "TypeError: make is not a constructor",
     )
   })
 
@@ -71,12 +65,10 @@ describe("new on a non-constructible callee", () => {
     expect((await error(`return new Function("return 1")`)).message).not.toContain("not a constructor")
   })
 
-  test("classes remain unsupported syntax", async () => {
-    const failure = await error(`class A {}; return new A()`)
-    expect(failure.kind).toBe("UnsupportedSyntax")
+  test("extending a built-in other than errors is refused", async () => {
+    const failure = await error(`class A extends Object {}; return new A()`)
     expect(failure.message).toStartWith(
-      "SyntaxError: Syntax 'ClassDeclaration' is not supported. This is a restricted JavaScript-like language. Supported: ",
+      "TypeError: Extending the built-in Object is not supported. Only classes and Error types can be extended.",
     )
-    expect(failure.message).toContain("Unsupported: classes, getters/setters, BigInt, and custom Symbols.")
   })
 })

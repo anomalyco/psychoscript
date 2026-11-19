@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
-import { CodeMode, Extension } from "../src/index.js"
+import { Host, Runtime } from "../src/index.js"
 
-const value = async (code: string, extensions: ReadonlyArray<Extension.Extension> = []) => {
-  const result = await Effect.runPromise(CodeMode.make({ extensions }).execute(code))
+const value = async (code: string, globals: Runtime.Globals = {}) => {
+  const result = await Effect.runPromise(Runtime.make({ globals: () => globals }).execute(code))
   if (!result.ok) throw new Error(`expected success, got ${result.error.kind}: ${result.error.message}`)
   return result.value
 }
@@ -52,19 +52,16 @@ describe("Buffer", () => {
     ).toEqual(['{"type":"Buffer","data":[104,105]}', ["TypeError", "ERR_UNKNOWN_ENCODING"]])
   })
 
-  test("crosses extensions as a Buffer in both directions", async () => {
+  test("crosses host functions as a Buffer in both directions", async () => {
     const seen: Array<boolean> = []
-    const bytes = Extension.make({
-      name: "bytes",
-      globals: {
-        read: () => Buffer.from("from host"),
-        write: (value: unknown) => void seen.push(Buffer.isBuffer(value)),
-      },
-    })
+    const bytes = {
+      read: Host.fn(() => Buffer.from("from host")),
+      write: Host.fn(([value]) => void seen.push(Buffer.isBuffer(value))),
+    }
     expect(
       await value(`const b = read()
         write(Buffer.from("x"))
-        return [Buffer.isBuffer(b), b.toString()]`, [bytes]),
+        return [Buffer.isBuffer(b), b.toString()]`, bytes),
     ).toEqual([true, "from host"])
     expect(seen).toEqual([true])
   })

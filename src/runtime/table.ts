@@ -1,7 +1,7 @@
 import type { Value } from "./objects.js"
 
 /** The key of a deleted entry. */
-export const deleted: unique symbol = Symbol("codemode.deleted")
+export const deleted: unique symbol = Symbol("psychoscript.deleted")
 
 /** A position in a table's entries, kept by the table so compaction can move it. */
 export type TableCursor = { index: number; done: boolean }

@@ -1,7 +1,7 @@
 /*
  * Portions adapted from Test262 at revision 250f204f23a9249ff204be2baec29600faae7b75.
  * Every test names its upstream source; test.failing cases are executable conformance
- * targets for intended Promise behavior that CodeMode does not implement yet.
+ * targets for intended Promise behavior that psychoscript does not implement yet.
  *
  * Copyright 2014 Cubane Canada, Inc. All rights reserved.
  * Copyright 2015 Microsoft Corporation. All rights reserved.
@@ -14,9 +14,9 @@
  */
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
-import { CodeMode } from "../src/index.js"
+import { Runtime } from "../src/index.js"
 
-const execute = (code: string) => Effect.runPromise(CodeMode.execute({ code, tools: {}, limits: { timeoutMs: 1_000 } }))
+const execute = (code: string) => Effect.runPromise(Runtime.make({ limits: { timeoutMs: 1_000 } }).execute(code))
 
 const value = async (code: string) => {
   const result = await execute(code)
@@ -212,7 +212,7 @@ describe("Test262 Promise statics", () => {
     ])
   })
 
-  test("Promise.resolve adopts values and preserves CodeMode-promise identity", async () => {
+  test("Promise.resolve adopts values and preserves program-promise identity", async () => {
     // Sources:
     // test/built-ins/Promise/resolve/S25.4.4.5_A2.1_T1.js
     // test/built-ins/Promise/resolve/resolve-non-obj.js
@@ -249,7 +249,7 @@ describe("Test262 Promise statics", () => {
     // Sources:
     // test/built-ins/Promise/all/invoke-resolve-on-promises-every-iteration-of-promise.js
     // test/built-ins/Promise/all/invoke-resolve-on-values-every-iteration-of-promise.js
-    // (adapted: CodeMode has no observable Promise.resolve hook, so per-iteration
+    // (adapted: psychoscript has no observable Promise.resolve hook, so per-iteration
     //  handling of a repeated member is asserted through the resolved slots)
     expect(
       await value(`
@@ -289,7 +289,7 @@ describe("Test262 Promise statics", () => {
     // test/built-ins/Promise/all/reject-immed.js
     // test/built-ins/Promise/allSettled/reject-immed.js
     // test/built-ins/Promise/race/reject-immed.js
-    // (adapted: immediately-rejecting thenables become CodeMode promises that settled,
+    // (adapted: immediately-rejecting thenables become psychoscript promises that settled,
     //  and were even observed, before the combinator call)
     expect(
       await value(`
@@ -352,15 +352,15 @@ describe("Test262 Promise statics", () => {
         const loser = (async () => { throw "lost" })()
         return await Promise.race([Promise.resolve("won"), loser])
       `),
-    ).toEqual({ ok: true, value: "won", toolCalls: [] })
+    ).toEqual({ ok: true, value: "won", metadata: null })
   })
 
-  test("Promise.race([]) returns a promise whose CodeMode failure is catchable", async () => {
+  test("Promise.race([]) returns a promise whose psychoscript failure is catchable", async () => {
     // Sources:
     // test/built-ins/Promise/race/S25.4.4.3_A2.1_T1.js
     // test/built-ins/Promise/race/S25.4.4.3_A5.1_T1.js
-    // (adapted: upstream requires Promise.race([]) to never settle; CodeMode intentionally
-    //  rejects with a catchable diagnostic instead of hanging, so this asserts CodeMode
+    // (adapted: upstream requires Promise.race([]) to never settle; psychoscript intentionally
+    //  rejects with a catchable diagnostic instead of hanging, so this asserts psychoscript
     //  divergence rather than the spec never-settles behavior)
     expect(
       await value(`
@@ -375,10 +375,10 @@ describe("Test262 Promise statics", () => {
     ).toEqual([true, true])
   })
 
-  test("Promise.resolve passes the same CodeMode promise through nested chains", async () => {
+  test("Promise.resolve passes the same psychoscript promise through nested chains", async () => {
     // Source: test/built-ins/Promise/resolve/S25.4.4.5_A2.2_T1.js
     // (adapted: no executor construction, and identity is observed with Array includes
-    //  because promises are not comparable data values in CodeMode)
+    //  because promises are not comparable data values in psychoscript)
     expect(
       await value(`
         const promise = Promise.resolve({ id: 1 })
@@ -814,7 +814,7 @@ describe("Test262 expected Promise conformance", () => {
     // test/built-ins/Promise/prototype/then/S25.4.5.3_A5.1_T1.js
     // test/built-ins/Promise/prototype/then/S25.4.5.3_A5.2_T1.js
     // (adapted: only non-callable handlers are probed; callables that are not plain
-    //  functions, such as tool references, intentionally throw in CodeMode)
+    //  functions, such as host references, intentionally throw in psychoscript)
     expect(
       await value(`
         const observe = async (promise) => {
@@ -1296,7 +1296,7 @@ describe("Test262 AggregateError", () => {
 
   test("coerces a non-string message to a string", async () => {
     // Source: test/built-ins/AggregateError/message-method-prop-cast.js (value coercion only; the
-    // upstream object-with-toString case is omitted because CodeMode has no user toString dispatch)
+    // upstream object-with-toString case is omitted because psychoscript has no user toString dispatch)
     expect(
       await value(`
         return [

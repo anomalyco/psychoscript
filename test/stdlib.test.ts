@@ -6,7 +6,7 @@
  * - test/built-ins/Date/prototype/toUTCString/invalid-date.js
  * - test/built-ins/RegExp/prototype/exec/S15.10.6.2_A4_T8.js
  *
- * CodeMode does not support Symbol.toPrimitive, so the Date-constructor cases exercise the same primitive-result
+ * psychoscript does not support Symbol.toPrimitive, so the Date-constructor cases exercise the same primitive-result
  * handling through supported own valueOf and toString functions.
  *
  * Copyright (C) 2016 the V8 project authors. All rights reserved.
@@ -15,15 +15,16 @@
  * Test262 portions are governed by the BSD license in LICENSE.test262.
  */
 import { describe, expect, test } from "bun:test"
-import { Effect, Schema } from "effect"
-import { CodeMode, Tool } from "../src/index.js"
+import { Effect } from "effect"
+import { Host, Runtime } from "../src/index.js"
+import { emptyNamespace } from "./run.js"
 
 // Standard-library value types: Date, RegExp, Map, Set. Programs use them as ordinary JS;
-// intra-CodeMode checkpoints (Object.* helpers, spread, coercion inputs) preserve the live
+// in-program checkpoints (Object.* helpers, spread, coercion inputs) preserve the live
 // values. JSON.stringify keeps Date -> ISO string (invalid -> null), URL -> href, and
 // RegExp/Map/Set/URLSearchParams -> {}. The host boundary matches that except URLSearchParams,
 // which cross as their query string, and Set, which crosses as an array.
-const run = (code: string) => Effect.runPromise(CodeMode.execute({ code, tools: {} }))
+const run = (code: string) => Effect.runPromise(Runtime.make({ globals: () => ({ host: emptyNamespace }) }).execute(code))
 const value = async (code: string) => {
   const result = await run(code)
   if (!result.ok) throw new Error(`expected success, got ${result.error.kind}: ${result.error.message}`)
@@ -153,7 +154,7 @@ describe("Date", () => {
     ).toEqual([2024, 2, 5, 6, 7, 8, 9])
   })
 
-  test("invalid dates yield NaN times, guardable in-CodeMode", async () => {
+  test("invalid dates yield NaN times, guardable in-program", async () => {
     expect(await value(`return Number.isNaN(new Date("garbage").getTime())`)).toBe(true)
     expect(await value(`return new Date("garbage").toJSON()`)).toBeNull()
   })
@@ -420,25 +421,15 @@ describe("RegExp", () => {
   })
 
   test("promise-returning string replacers are coerced synchronously", async () => {
-    const decorate = Tool.make({
-      description: "Decorate a string",
-      input: Schema.String,
-      output: Schema.String,
-      execute: (input) => Effect.succeed(`[${input}]`),
-    })
+    const decorate = Host.fn(([input]) => Effect.succeed(`[${input}]`), { type: "async" })
+    const runtime = Runtime.make({ globals: () => ({ host: { decorate } }) })
     const result = await Effect.runPromise(
-      CodeMode.execute({
-        tools: { host: { decorate } },
-        code: `return "a1b22".replace(/\\d+/g, async (match) => await tools.host.decorate(match))`,
-      }),
+      runtime.execute(`return "a1b22".replace(/\\d+/g, async (match) => await host.decorate(match))`),
     )
     expect(result.ok && result.value).toBe("a[object Promise]b[object Promise]")
 
     const missingAwait = await Effect.runPromise(
-      CodeMode.execute({
-        tools: { host: { decorate } },
-        code: `return "a1".replace(/\\d/, (match) => tools.host.decorate(match))`,
-      }),
+      runtime.execute(`return "a1".replace(/\\d/, (match) => host.decorate(match))`),
     )
     expect(missingAwait.ok && missingAwait.value).toBe("a[object Promise]")
   })
@@ -1070,6 +1061,14 @@ describe("Uint8Array", () => {
     expect((await error(`Uint8Array.from(/x/)`)).message).toContain("received a RegExp")
   })
 
+  test("BYTES_PER_ELEMENT is a read-only 1 on Uint8Array, Buffer and their instances", async () => {
+    expect(
+      await value(`const d = Object.getOwnPropertyDescriptor(Uint8Array, "BYTES_PER_ELEMENT")
+        return [Uint8Array.BYTES_PER_ELEMENT, new Uint8Array(1).BYTES_PER_ELEMENT, Buffer.BYTES_PER_ELEMENT,
+          Buffer.alloc(1).BYTES_PER_ELEMENT, 4 * Uint8Array.BYTES_PER_ELEMENT, d.writable, d.enumerable, Object.keys(Uint8Array)]`),
+    ).toEqual([1, 1, 1, 1, 4, false, false, []])
+  })
+
   test("index reads and writes clamp to a byte and ignore out-of-range writes, like JS", async () => {
     expect(
       await value(`
@@ -1168,7 +1167,7 @@ describe("Uint8Array", () => {
     ])
   })
 
-  test("cannot cross the tool boundary; the error says how to encode it", async () => {
+  test("cannot cross the host boundary; the error says how to encode it", async () => {
     expect((await error(`return new Uint8Array(1)`)).message).toContain("pass text instead")
     expect((await error(`return { deep: [new Uint8Array(1)] }`)).message).toContain("bytes.toBase64()")
     expect(await value(`return new Uint8Array([7, 8]).toBase64()`)).toBe("Bwg=")
@@ -1659,7 +1658,7 @@ describe("stdlib integration", () => {
     const shadowed = await error(`const Date = 5; return new Date()`)
     expect(shadowed.message).toStartWith("TypeError: Date is not a constructor.")
     const fn = await error(`const f = () => 1; return new f()`)
-    expect(fn.message).toStartWith("TypeError: f cannot be constructed")
+    expect(fn.message).toStartWith("TypeError: f is not a constructor: only classes")
   })
 
   test("Object.is uses SameValue semantics", async () => {
@@ -1857,7 +1856,7 @@ describe("stdlib integration", () => {
     expect(await value(`return typeof Map`)).toBe("function")
     expect(await value(`return typeof ((x) => x)`)).toBe("function")
     expect(await value(`return typeof Math`)).toBe("object")
-    expect(await value(`return typeof tools`)).toBe("object")
+    expect(await value(`return typeof host`)).toBe("object")
   })
 
   test("negation works on any value", async () => {
@@ -1865,11 +1864,11 @@ describe("stdlib integration", () => {
     expect(await value(`const fn = () => 1; return !fn`)).toBe(false)
   })
 
-  test("object spread of CodeMode values is a no-op, like JS", async () => {
+  test("object spread of psychoscript values is a no-op, like JS", async () => {
     expect(await value(`return { ...new Map([["a", 1]]), kept: true }`)).toEqual({ kept: true })
   })
 
-  test("dates inside Map values survive in-CodeMode reads", async () => {
+  test("dates inside Map values survive in-program reads", async () => {
     expect(
       await value(`
       const m = new Map([["start", new Date(1000)]])
@@ -1911,7 +1910,7 @@ describe("stdlib integration", () => {
   })
 })
 
-describe("CodeMode values at intra-CodeMode checkpoints", () => {
+describe("psychoscript values at in-program checkpoints", () => {
   test("Object.values/entries keep Dates usable", async () => {
     expect(await value(`return Object.values({ d: new Date(0) })[0].getTime()`)).toBe(0)
     expect(await value(`const [key, d] = Object.entries({ d: new Date(0) })[0]; return key + ":" + d.getTime()`)).toBe(
@@ -1962,7 +1961,7 @@ describe("CodeMode values at intra-CodeMode checkpoints", () => {
     )
   })
 
-  test("object and array spread keep CodeMode values usable", async () => {
+  test("object and array spread keep psychoscript values usable", async () => {
     expect(
       await value(`
       const src = { m: new Map([["a", 1]]) }
@@ -1974,7 +1973,7 @@ describe("CodeMode values at intra-CodeMode checkpoints", () => {
     expect(await value(`const list = [new Date(1000)]; const copy = [...list]; return copy[0].getTime()`)).toBe(1000)
   })
 
-  test("Array.from over arrays keeps nested CodeMode values usable", async () => {
+  test("Array.from over arrays keeps nested psychoscript values usable", async () => {
     expect(await value(`return Array.from([new Date(5)])[0].getTime()`)).toBe(5)
   })
 
@@ -2029,7 +2028,7 @@ describe("CodeMode values at intra-CodeMode checkpoints", () => {
     expect(await value(`return Object.values({ r: /ab+/ })[0].test("abb")`)).toBe(true)
   })
 
-  test("Object.* helpers see CodeMode values as empty objects, never internals", async () => {
+  test("Object.* helpers see psychoscript values as empty objects, never internals", async () => {
     expect(await value(`return Object.keys(new Map([["a", 1]]))`)).toEqual([])
     expect(await value(`return Object.values(new Date(0))`)).toEqual([])
     expect(await value(`return Object.entries(new Set([1]))`)).toEqual([])
@@ -2037,31 +2036,12 @@ describe("CodeMode values at intra-CodeMode checkpoints", () => {
     expect(await value(`return Object.hasOwn(new Date(0), "time")`)).toBe(false)
   })
 
-  test("the host boundary still serializes JSON forms: results, JSON.stringify, and tool arguments", async () => {
+  test("the host boundary still serializes JSON forms: results and JSON.stringify", async () => {
     expect(await value(`return { d: new Date(0), m: new Map([["a", 1]]) }`)).toEqual({
       d: "1970-01-01T00:00:00.000Z",
       m: {},
     })
     expect(await value(`return JSON.stringify({ d: new Date(0) })`)).toBe('{"d":"1970-01-01T00:00:00.000Z"}')
-
-    const observed: Array<unknown> = []
-    const capture = Tool.make({
-      description: "Capture the exact input the host receives",
-      input: { type: "object" },
-      execute: (input) =>
-        Effect.sync(() => {
-          observed.push(input)
-          return "ok"
-        }),
-    })
-    const result = await Effect.runPromise(
-      CodeMode.execute({
-        tools: { host: { capture } },
-        code: `return await tools.host.capture({ when: new Date(0), tags: new Map([["a", 1]]) })`,
-      }),
-    )
-    expect(result.ok).toBe(true)
-    expect(observed).toStrictEqual([{ when: "1970-01-01T00:00:00.000Z", tags: {} }])
   })
 })
 

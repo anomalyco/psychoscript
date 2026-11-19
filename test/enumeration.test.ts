@@ -1,28 +1,22 @@
 import { describe, expect, test } from "bun:test"
-import { Effect, Schema } from "effect"
-import { CodeMode, Tool } from "../src/index.js"
+import { Effect } from "effect"
+import { Host, Runtime } from "../src/index.js"
 
-// Key enumeration: Object.keys and for...in share one surface over plain objects, arrays
-// (index strings), and tool references (namespace/tool names from the supplied tools), so a
-// model can discover what it may call instead of guessing names from the instructions. The
-// motivating transcript: `Object.keys(tools)` failed with the generic plain-objects-only
-// message and `for (const key in tools)` was unsupported syntax, forcing blind guesses.
+// Key enumeration: Object.keys and for...in share one surface over plain objects, arrays (index strings), and host
+// namespaces (the names `keys` lists at each path).
 
-const echo = (description: string) =>
-  Tool.make({
-    description,
-    input: Schema.Struct({ value: Schema.String }),
-    output: Schema.String,
-    execute: ({ value }) => Effect.succeed(value),
-  })
-
-const tools = {
-  github: { list_issues: echo("List issues"), get_issue: echo("Get one issue") },
-  memory: { search: echo("Search memory") },
-  playwright: { navigate: echo("Navigate somewhere") },
+const catalog: Record<string, ReadonlyArray<string>> = {
+  github: ["list_issues", "get_issue"],
+  memory: ["search"],
+  playwright: ["navigate"],
 }
+const echo = Host.fn(([input]) => Effect.succeed((input as { value: string }).value), { type: "async" })
+const host = Host.namespace({
+  keys: (path) => (path.length === 0 ? Object.keys(catalog) : path.length === 1 ? (catalog[path[0]!] ?? []) : []),
+  resolve: () => echo,
+})
 
-const run = (code: string) => Effect.runPromise(CodeMode.execute({ tools, code }))
+const run = (code: string) => Effect.runPromise(Runtime.make({ globals: () => ({ host }) }).execute(code))
 const value = async (code: string) => {
   const result = await run(code)
   if (!result.ok) throw new Error(`expected success, got ${result.error.kind}: ${result.error.message}`)
@@ -33,47 +27,6 @@ const error = async (code: string) => {
   if (result.ok) throw new Error(`expected failure, got value ${JSON.stringify(result.value)}`)
   return result.error
 }
-
-describe("Object.keys over tool references", () => {
-  test("enumerates top-level namespaces (the transcript program)", async () => {
-    expect(
-      await value(`
-      const namespaces = Object.keys(tools)
-      return { namespaces, count: namespaces.length }
-    `),
-    ).toEqual({ namespaces: ["github", "memory", "playwright"], count: 3 })
-  })
-
-  test("enumerates tool names at a nested namespace", async () => {
-    expect(await value(`return Object.keys(tools.github)`)).toEqual(["list_issues", "get_issue"])
-  })
-
-  test("a callable tool is a leaf and enumerates as []", async () => {
-    expect(await value(`return Object.keys(tools.github.list_issues)`)).toEqual([])
-  })
-
-  test("search is a global built-in function", async () => {
-    expect(await value(`return typeof search`)).toBe("function")
-  })
-
-  test("an unknown namespace is an UnknownTool error", async () => {
-    const failure = await error(`return Object.keys(tools.nonexistent)`)
-    expect(failure.kind).toBe("UnknownTool")
-    expect(failure.message).toContain("Unknown tool namespace 'nonexistent'")
-  })
-
-  test("Object.values/entries on a tool reference explain the working idioms", async () => {
-    for (const method of ["values", "entries"] as const) {
-      const failure = await error(`return Object.${method}(tools)`)
-      expect(failure.kind).toBe("InvalidDataValue")
-      expect(failure.message).toContain(
-        `Object.${method}(...) cannot read tool references: they are not plain data. Use Object.keys(tools) for names, or search({ query }) for signatures.`,
-      )
-    }
-    const nested = await error(`return Object.entries(tools.github)`)
-    expect(nested.message).toContain("Use Object.keys(tools) for names")
-  })
-})
 
 describe("Object.keys over arrays", () => {
   test("returns index strings, like JS", async () => {
@@ -93,7 +46,7 @@ describe("Object.keys over arrays", () => {
       "TypeError",
       "Object.values(...) cannot convert null to an object.",
     ])
-    expect((await error(`return Object.keys(tools.github.list_issues({ value: "x" }))`)).message).toContain(
+    expect((await error(`return Object.keys(host.github.list_issues({ value: "x" }))`)).message).toContain(
       "received an un-awaited Promise",
     )
     expect(await value(`const { a, size } = new Map(); return [a, size]`)).toEqual([null, 0])
@@ -147,12 +100,12 @@ describe("for...in", () => {
     ).toBe("only")
   })
 
-  test("enumerates namespaces and tools from the supplied tools", async () => {
+  test("enumerates the names a host namespace lists", async () => {
     expect(
       await value(`
       const names = []
-      for (const ns in tools) {
-        for (const name in tools[ns]) names.push(ns + "." + name)
+      for (const ns in host) {
+        for (const name in host[ns]) names.push(ns + "." + name)
       }
       return names
     `),
@@ -172,7 +125,7 @@ describe("for...in", () => {
         return out
       `),
     ).toEqual(["0", "1"])
-    expect((await error(`for (const key in tools.github.list_issues({ value: "x" })) {}`)).message).toContain(
+    expect((await error(`for (const key in host.github.list_issues({ value: "x" })) {}`)).message).toContain(
       "un-awaited Promise",
     )
   })

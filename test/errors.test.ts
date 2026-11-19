@@ -1,9 +1,8 @@
 import { describe, expect, test } from "bun:test"
-import { Effect } from "effect"
-import { CodeMode } from "../src/index.js"
+import { execute, search } from "./run.js"
 
 // One failure is one program error object, and rethrowing it keeps the diagnostic it started with.
-const run = (code: string) => Effect.runPromise(CodeMode.execute({ code, tools: {} }))
+const run = (code: string) => execute(code, undefined, { globals: () => ({ search }) })
 const value = async (code: string) => {
   const result = await run(code)
   if (!result.ok) throw new Error(`expected success, got ${result.error.kind}: ${result.error.message}`)
@@ -146,7 +145,7 @@ describe("source locations", () => {
 
   test("names a missing method on a call instead of the previous line", async () => {
     const failure = await error(`// Try search with different namespaces
-for (const ns of ["github", "tools.github", "tools", ""]) {
+for (const ns of ["github", "a.github", "a", ""]) {
   const s = await search({query: "star", namespace: ns, limit: 100}).filter((item) => item.path);
   return s
 }`)
@@ -223,10 +222,11 @@ describe("call depth", () => {
     expect(await value(`const f = (n) => (n === 0 ? 0 : 1 + f(n - 1)); return f(9000)`)).toBe(9000)
   })
 
+  // Round-trip mode saves and restores the whole VM every slice, which is slow at 10,000 frames deep.
   test("recursion through a built-in callback counts", async () => {
     const failure = await error(`const f = (n) => [n].map((x) => f(x + 1)); return f(0)`)
     expect(failure.message).toStartWith("RangeError: Maximum call stack size exceeded")
-  })
+  }, 15000)
 
   test("an await resets the depth, so long async chains are fine", async () => {
     expect(
@@ -237,8 +237,9 @@ describe("call depth", () => {
     ).toBe("done")
   })
 
+  // Round-trip mode saves and restores the whole VM every slice, which is slow at 10,000 frames deep.
   test("an async function that recurses before its first await overflows like JS", async () => {
     const failure = await error(`const f = async (n) => f(n + 1); return await f(0)`)
     expect(failure.message).toStartWith("RangeError: Maximum call stack size exceeded")
-  })
+  }, 15000)
 })

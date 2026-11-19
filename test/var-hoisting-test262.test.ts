@@ -20,11 +20,10 @@
  * A11, `scope-*-none.js`, `scope-param-elem-*.js`) have no analogue here and are not ported.
  */
 import { describe, expect, test } from "bun:test"
-import { Effect } from "effect"
-import { CodeMode } from "../src/index.js"
+import { execute } from "./run.js"
 
 const value = async (code: string) => {
-  const result = await Effect.runPromise(CodeMode.execute({ code, tools: {} }))
+  const result = await execute(code)
   if (!result.ok) throw new Error(`expected success, got ${result.error.kind}: ${result.error.message}`)
   return result.value
 }

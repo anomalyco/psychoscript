@@ -7,20 +7,19 @@
  *
  * Copyright © web-platform-tests contributors. Governed by the 3-Clause BSD license in LICENSE.wpt.
  *
- * `assert_throws_dom("InvalidCharacterError", …)` becomes a check for a TypeError: CodeMode has no DOMException.
+ * `assert_throws_dom("InvalidCharacterError", …)` becomes a check for a TypeError: psychoscript has no DOMException.
  * `checkIteratorProperties` (prototype chain and property descriptors) and the custom iterator on a Headers
  * instance are left out.
  */
 import { describe, expect, test } from "bun:test"
-import { Effect } from "effect"
-import { CodeMode } from "../src/index.js"
+import { execute } from "./run.js"
 
 const base64Cases = (await Bun.file(new URL("./fixtures/wpt-base64.json", import.meta.url)).json()) as Array<
   [string, Array<number> | null]
 >
 
 const value = async (code: string) => {
-  const result = await Effect.runPromise(CodeMode.execute({ code, tools: {} }))
+  const result = await execute(code)
   if (!result.ok) throw new Error(`expected success, got ${result.error.kind}: ${result.error.message}`)
   return result.value
 }

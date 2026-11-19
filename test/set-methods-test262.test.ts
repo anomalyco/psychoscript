@@ -67,14 +67,13 @@
  * Copyright (C) 2023 Kevin Gibbons, Anthony Frehner. All rights reserved.
  * Test262 portions are governed by the BSD license in LICENSE.test262.
  * Set-like `keys` methods return arrays instead of iterator objects because
- * CodeMode materializes supported iterators and does not support generators.
+ * psychoscript materializes supported iterators and does not support generators.
  */
 import { describe, expect, test } from "bun:test"
-import { Effect } from "effect"
-import { CodeMode } from "../src/index.js"
+import { execute } from "./run.js"
 
 const value = async (code: string) => {
-  const result = await Effect.runPromise(CodeMode.execute({ code, tools: {} }))
+  const result = await execute(code)
   if (!result.ok) throw new Error(`expected success, got ${result.error.kind}: ${result.error.message}`)
   return result.value
 }
@@ -448,7 +447,7 @@ describe("Set-like validation Test262 parity", () => {
     ).toEqual(["TypeError", "TypeError", "TypeError", "TypeError", "TypeError", "TypeError", "TypeError"])
   })
 
-  test("requires Set-like keys to return CodeMode's materialized iterator representation", async () => {
+  test("requires Set-like keys to return psychoscript's materialized iterator representation", async () => {
     expect(
       await value(`
         const set = new Set([1])

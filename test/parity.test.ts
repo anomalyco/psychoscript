@@ -1,15 +1,13 @@
 import { describe, expect, test } from "bun:test"
-import { Effect } from "effect"
-import { CodeMode } from "../src/index.js"
+import { emptyNamespace, execute, search } from "./run.js"
 
-// Runs a CodeMode program with no host tools and returns the CodeMode.Result. These tests pin the
-// JS-parity behaviors for the "99% of ordinary defensive JavaScript just works" goal: cases where
-// a strict interpreter would throw but idiomatic JS yields undefined / succeeds.
+// These tests pin the JS-parity behaviors for the "99% of ordinary defensive JavaScript just works" goal: cases where
+// a strict interpreter would throw but idiomatic JS yields undefined / succeeds. `host` is an opaque host namespace.
 //
-// Note on the result boundary: this package normalizes a bare `undefined` result to `null` when
-// it crosses out of CodeMode (results are JSON data), so tests asserting an in-CodeMode
-// `undefined` read check `=== undefined` inside the program and `null` at the boundary.
-const run = (code: string) => Effect.runPromise(CodeMode.execute({ code, tools: {} }))
+// Note on the result boundary: a bare `undefined` result is normalized to `null` when it crosses out of the program
+// (results are JSON data), so tests asserting an in-program `undefined` read check `=== undefined` inside the
+// program and `null` at the boundary.
+const run = (code: string) => execute(code, undefined, { globals: () => ({ host: emptyNamespace, search }) })
 const value = async (code: string) => {
   const result = await run(code)
   if (!result.ok) throw new Error(`expected success, got ${result.error.kind}: ${result.error.message}`)
@@ -62,7 +60,7 @@ describe("H3: array property access reads as undefined (not a throw)", () => {
     expect(await value(`return [1,2,3]?.foo ?? "fb"`)).toBe("fb")
   })
 
-  test("unknown property reads stay undefined for methods CodeMode does not implement", async () => {
+  test("unknown property reads stay undefined for methods psychoscript does not implement", async () => {
     expect(await value(`return [1,2,3].unknownMethod === undefined`)).toBe(true)
   })
 
@@ -141,7 +139,7 @@ describe("H4: typeof on an undeclared identifier is 'undefined'", () => {
   })
 })
 
-describe("CodeMode lexical scope integration", () => {
+describe("psychoscript lexical scope integration", () => {
   test("keeps self, cross, and destructuring defaults in the TDZ", async () => {
     expect(
       await value(`
@@ -204,7 +202,7 @@ describe("unary void", () => {
   })
 
   test("discards opaque values", async () => {
-    expect(await value(`return void tools === undefined`)).toBe(true)
+    expect(await value(`return void host === undefined`)).toBe(true)
   })
 })
 
@@ -276,7 +274,7 @@ describe("property deletion", () => {
   })
 
   test("rejects deletion from opaque runtime references", async () => {
-    expect((await error(`return delete tools.example`)).kind).toBe("InvalidDataValue")
+    expect((await error(`return delete host.example`)).kind).toBe("InvalidDataValue")
   })
 
   test("prototype-named keys delete like any own data key", async () => {
@@ -296,7 +294,7 @@ describe("H1: NaN/Infinity flow as intermediates and normalize to null at the bo
     expect(await value(`const a = []; return a.length ? a.reduce((s,x)=>s+x,0)/a.length : 0`)).toBe(0)
   })
 
-  test("a non-finite value becomes null when it leaves CodeMode", async () => {
+  test("a non-finite value becomes null when it leaves psychoscript", async () => {
     expect(await value(`return 5/0`)).toBeNull()
     expect(await value(`return 0/0`)).toBeNull()
     expect(await value(`return Math.max()`)).toBeNull()
@@ -304,12 +302,12 @@ describe("H1: NaN/Infinity flow as intermediates and normalize to null at the bo
     expect(await value(`return { a: Number("x"), b: 2, c: [1/0] }`)).toEqual({ a: null, b: 2, c: [null] })
   })
 
-  test("NaN and Infinity are usable identifiers and inspectable in-CodeMode", async () => {
+  test("NaN and Infinity are usable identifiers and inspectable in-program", async () => {
     expect(await value(`return Number.isNaN(NaN)`)).toBe(true)
     expect(await value(`return Infinity > 1e9`)).toBe(true)
     expect(await value(`return Number.isFinite(1/0)`)).toBe(false)
     expect(await value(`return [3,1,2].reduce((a,b)=>Math.max(a,b), -Infinity)`)).toBe(3)
-    // JSON.stringify inside CodeMode matches JS: non-finite serializes to null
+    // JSON.stringify inside psychoscript matches JS: non-finite serializes to null
     expect(await value(`return JSON.stringify({ x: Number("z") })`)).toBe('{"x":null}')
   })
 
@@ -418,8 +416,8 @@ describe("Error values and instanceof", () => {
       "TypeError",
       true,
     ])
-    expect(await value(`try { tools + 1 } catch (e) { return e.name }`)).toBe("TypeError")
-    expect(await value(`try { class A {} } catch (e) { return [e.name, e instanceof SyntaxError] }`)).toEqual([
+    expect(await value(`try { host + 1 } catch (e) { return e.name }`)).toBe("TypeError")
+    expect(await value(`try { class A { #x } } catch (e) { return [e.name, e instanceof SyntaxError] }`)).toEqual([
       "SyntaxError",
       true,
     ])
@@ -490,7 +488,7 @@ describe("Error values and instanceof", () => {
   })
 })
 
-describe("CodeMode-specific array behavior", () => {
+describe("psychoscript-specific array behavior", () => {
   test("sort with a comparator mutates and returns the receiver", async () => {
     expect(
       await value(`
@@ -535,7 +533,7 @@ describe("CodeMode-specific array behavior", () => {
   })
 })
 
-describe("CodeMode-specific string behavior", () => {
+describe("psychoscript-specific string behavior", () => {
   test("localeCompare orders strings for sorting", async () => {
     expect(await value(`return ["b","a","c"].sort((x, y) => x.localeCompare(y))`)).toEqual(["a", "b", "c"])
   })
@@ -559,12 +557,12 @@ describe("compound assignment matches its binary operator", () => {
     return a
   }
 
-  test("CodeMode Date += concatenates its string form, like d = d + 1", async () => {
+  test("psychoscript Date += concatenates its string form, like d = d + 1", async () => {
     const result = await pair(`let d = new Date(1000); d += 1; return d`, `let d = new Date(1000); d = d + 1; return d`)
     expect(result).toBe("1970-01-01T00:00:01.000Z1")
   })
 
-  test("CodeMode Date numeric compound ops use its time value", async () => {
+  test("psychoscript Date numeric compound ops use its time value", async () => {
     expect(
       await pair(`let d = new Date(1000); d -= 400; return d`, `let d = new Date(1000); d = d - 400; return d`),
     ).toBe(600)
@@ -937,7 +935,7 @@ describe("coercion parity: match() and search() with no argument", () => {
   })
 })
 
-describe("coercion parity: ++ and -- use CodeMode numeric coercion", () => {
+describe("coercion parity: ++ and -- use psychoscript numeric coercion", () => {
   test("numeric strings increment like native JS", async () => {
     expect(await value(`let x = "5"; x++; return x`)).toBe(6)
     expect(await value(`let x = "5"; return ++x`)).toBe(6)
@@ -1189,12 +1187,12 @@ describe("loose equality and operator gates on opaque references", () => {
     ).toEqual([true, true, true, true, true, true, true, false, false, false, false])
   })
 
-  test("functions and tool references compare by identity and are never equal to nullish", async () => {
+  test("functions and host references compare by identity and are never equal to nullish", async () => {
     expect(
       await value(`
         const fn = () => 1, other = () => 2
         return [fn == null, fn != null, fn == undefined, fn == fn, fn == other, [fn] == null, ({ f: fn }) == null,
-          [fn] == [fn], tools == null, tools == tools]
+          [fn] == [fn], host == null, host == host]
       `),
     ).toEqual([false, true, false, true, false, false, false, false, false, true])
   })
@@ -1395,12 +1393,10 @@ describe("Object.getPrototypeOf and Object.create", () => {
     ).toEqual([true, ["name"], false, 1, "hi x", true, null, ["name", "greet", "a"]])
   })
 
-  test("Object.create rejects non-object prototypes and property descriptors", async () => {
+  test("Object.create rejects non-object prototypes and defines properties from descriptors", async () => {
     expect((await error(`Object.create(1)`)).message).toContain("Object prototype may only be an Object or null")
     expect((await error(`Object.create()`)).message).toContain("Object prototype may only be an Object or null")
-    expect((await error(`Object.create(null, { a: { value: 1 } })`)).message).toContain(
-      "Object.create property descriptors are not supported",
-    )
+    expect(await value(`return Object.create(null, { a: { value: 1, enumerable: true } }).a`)).toBe(1)
     expect(await value(`return Object.keys(Object.create({}, undefined))`)).toEqual([])
   })
 })
@@ -1446,13 +1442,13 @@ describe("structuredClone", () => {
     ).toEqual([false, true, true, false, 2, null])
   })
 
-  test("functions, symbols, promises, wrappers, and tool references throw a DataCloneError TypeError", async () => {
+  test("functions, symbols, promises, wrappers, and host references throw a DataCloneError TypeError", async () => {
     for (const code of [
       `structuredClone(() => 1)`,
       `structuredClone({ deep: [Symbol.iterator] })`,
       `structuredClone(Promise.resolve(1))`,
       `structuredClone(new URL("http://x"))`,
-      `structuredClone(tools)`,
+      `structuredClone(host)`,
     ]) {
       const failure = await error(code)
       expect(failure.message).toMatch(/^TypeError: DataCloneError: .* could not be cloned\./)
@@ -1775,7 +1771,7 @@ describe("iteration callbacks receive thisArg", () => {
     expect(
       await value(`
         let seen
-        ;[1].forEach(function () { seen = this }, tools.nowhere)
+        ;[1].forEach(function () { seen = this }, host.nowhere)
         return typeof seen
       `),
     ).toBe("function")
@@ -1830,14 +1826,14 @@ describe("computed property keys convert through the object's own toString", () 
     expect(failure.message).toContain("Cannot read properties of null")
   })
 
-  test("opaque values keep their built-in key form and a tool reference toString is never called", async () => {
+  test("opaque values keep their built-in key form and a host reference toString is never called", async () => {
     expect(
       await value(`
         const o = { "[object Function]": 1, "[object Promise]": 2 }
         return [o[() => 1], o[Promise.resolve("k")]]
       `),
     ).toEqual([1, 2])
-    expect((await error(`({})[{ toString: tools.nowhere }] = 1`)).message).toContain(
+    expect((await error(`({})[{ toString: host.nowhere }] = 1`)).message).toContain(
       "Cannot convert object to primitive value",
     )
   })
@@ -1930,7 +1926,7 @@ describe("String and Number method arguments convert through ToPrimitive", () =>
     expect((await error(`(1).toFixed({ toString() { return {} }, valueOf() { return {} } })`)).message).toContain(
       "Cannot convert object to primitive value",
     )
-    expect((await error(`"abc".indexOf(tools.nowhere)`)).message).toContain("expects argument 1 to be a data value")
+    expect((await error(`"abc".indexOf(host.nowhere)`)).message).toContain("expects argument 1 to be a data value")
     expect((await error(`"abc".indexOf(Promise.resolve("b"))`)).message).toContain(
       "expects argument 1 to be a data value",
     )

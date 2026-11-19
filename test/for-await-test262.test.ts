@@ -13,10 +13,8 @@
  * Test262 portions are governed by the BSD license in LICENSE.test262.
  */
 import { describe, expect, test } from "bun:test"
-import { Effect } from "effect"
-import { CodeMode } from "../src/index.js"
+import { execute } from "./run.js"
 
-const execute = (code: string) => Effect.runPromise(CodeMode.execute({ code, tools: {} }))
 
 const value = async (code: string) => {
   const result = await execute(code)

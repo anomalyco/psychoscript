@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test"
-import { Cause, Deferred, Effect, Exit, Schema } from "effect"
-import { CodeMode, Tool, toolError } from "../src/index.js"
+import { Cause, Deferred, Effect, Exit } from "effect"
+import { Host, Runtime } from "../src/index.js"
 
-// Wave 5 acceptance suite: first-class promise values. Un-awaited tool calls start eagerly as
+// Wave 5 acceptance suite: first-class promise values. Un-awaited async host calls start eagerly as
 // host work, `await` settles them, Promise.all/allSettled/race/resolve/reject are
 // ordinary functions over arbitrary arrays mixing promises and plain values, and
 // .then/.catch/.finally chain reactions onto any promise.
@@ -18,111 +18,70 @@ type Trace = {
 const makeTrace = (): Trace => ({ starts: [], active: 0, maxActive: 0, completed: 0, interrupted: 0 })
 
 /**
- * Deterministic tool set: ordering and interruption are structural, never temporal.
+ * Deterministic host functions: ordering and interruption are structural, never temporal.
  *
  * - `echo` settles immediately with its id.
- * - `gated` blocks until `open` releases the same id. Tool fibers start eagerly at the
+ * - `gated` blocks until `open` releases the same id. Async host calls start eagerly at the
  *   call site, so several gated calls are provably live at once before any `open` runs.
  * - `pending` never settles; tests assert its interruption instead of racing a timer.
  *
  * Real clocks remain only in the wall-clock timeout tests (`timeoutMs`, `stubborn`
  * cleanup), where elapsed time is the behavior under test.
  */
-const echoTool = (trace: Trace) =>
-  Tool.make({
-    description: "Echo an id immediately",
-    input: Schema.Struct({ id: Schema.Number }),
-    output: Schema.Number,
-    execute: ({ id }) =>
+type Input = { readonly id: number; readonly cleanupMs: number }
+const asyncFn = (execute: (input: Input) => Effect.Effect<unknown, unknown>) =>
+  Host.fn(([input]) => execute(input as Input), { type: "async" })
+
+const counted = (trace: Trace, id: number) =>
+  Effect.sync(() => {
+    trace.starts.push(id)
+    trace.active += 1
+    trace.maxActive = Math.max(trace.maxActive, trace.active)
+  })
+
+const onInterrupted = (trace: Trace) =>
+  Effect.onInterrupt(() =>
+    Effect.sync(() => {
+      trace.active -= 1
+      trace.interrupted += 1
+    }),
+  )
+
+// Arguments cross as JSON would carry them: functions are left out and promises are awaited.
+const runtimeOf = (options: { trace?: Trace; limits?: Runtime.Limits } = {}) => {
+  const trace = options.trace ?? makeTrace()
+  const gates = new Map<number, Deferred.Deferred<void>>()
+  const gate = (id: number): Deferred.Deferred<void> => {
+    const existing = gates.get(id)
+    if (existing) return existing
+    const created = Deferred.makeUnsafe<void>()
+    gates.set(id, created)
+    return created
+  }
+  const fns: Record<string, Host.Fn> = {
+    echo: asyncFn(({ id }) =>
       Effect.sync(() => {
         trace.starts.push(id)
         trace.completed += 1
         return id
       }),
-  })
-
-const gatedTool = (trace: Trace, gate: (id: number) => Deferred.Deferred<void>) =>
-  Tool.make({
-    description: "Echo an id once its gate opens",
-    input: Schema.Struct({ id: Schema.Number }),
-    output: Schema.Number,
-    execute: ({ id }) =>
+    ),
+    gated: asyncFn(({ id }) =>
       Effect.gen(function* () {
-        trace.starts.push(id)
-        trace.active += 1
-        trace.maxActive = Math.max(trace.maxActive, trace.active)
+        yield* counted(trace, id)
         yield* Deferred.await(gate(id))
         trace.active -= 1
         trace.completed += 1
         return id
-      }).pipe(
-        Effect.onInterrupt(() =>
-          Effect.sync(() => {
-            trace.active -= 1
-            trace.interrupted += 1
-          }),
-        ),
-      ),
-  })
-
-const openTool = (gate: (id: number) => Deferred.Deferred<void>) =>
-  Tool.make({
-    description: "Open the gate for an id",
-    input: Schema.Struct({ id: Schema.Number }),
-    output: Schema.Boolean,
-    execute: ({ id }) => Deferred.succeed(gate(id), undefined),
-  })
-
-const pendingTool = (trace: Trace) =>
-  Tool.make({
-    description: "Never settle",
-    input: Schema.Struct({ id: Schema.Number }),
-    output: Schema.Number,
-    execute: ({ id }) =>
-      Effect.gen(function* () {
-        trace.starts.push(id)
-        trace.active += 1
-        trace.maxActive = Math.max(trace.maxActive, trace.active)
-        return yield* Effect.never
-      }).pipe(
-        Effect.onInterrupt(() =>
-          Effect.sync(() => {
-            trace.active -= 1
-            trace.interrupted += 1
-          }),
-        ),
-      ),
-  })
-
-const failingTool = Tool.make({
-  description: "Always refuse",
-  input: Schema.Struct({}),
-  output: Schema.String,
-  execute: () => Effect.fail(toolError("Lookup refused")),
-})
-
-const interruptedTool = Tool.make({
-  description: "Interrupt this call",
-  input: Schema.Struct({}),
-  output: Schema.String,
-  execute: () => Effect.interrupt,
-})
-
-const completedTool = (trace: Trace) =>
-  Tool.make({
-    description: "Return the number of completed calls",
-    input: Schema.Struct({}),
-    output: Schema.Number,
-    execute: () => Effect.succeed(trace.completed),
-  })
-
-/** Never settles, and holds interruption cleanup for `cleanupMs` so completion cleanup can outlast a timeout. */
-const stubbornTool = (trace: Trace) =>
-  Tool.make({
-    description: "Never settle; clean up slowly when interrupted",
-    input: Schema.Struct({ cleanupMs: Schema.Number }),
-    output: Schema.Number,
-    execute: ({ cleanupMs }) =>
+      }).pipe(onInterrupted(trace)),
+    ),
+    open: asyncFn(({ id }) => Deferred.succeed(gate(id), undefined)),
+    pending: asyncFn(({ id }) => Effect.andThen(counted(trace, id), Effect.never).pipe(onInterrupted(trace))),
+    fail: asyncFn(() => Effect.fail(Host.fail("HostFailure", "Lookup refused"))),
+    interrupt: asyncFn(() => Effect.interrupt),
+    completed: asyncFn(() => Effect.succeed(trace.completed)),
+    // Never settles, and holds interruption cleanup for `cleanupMs` so completion cleanup can outlast a timeout.
+    stubborn: asyncFn(({ cleanupMs }) =>
       Effect.never.pipe(
         Effect.onInterrupt(() =>
           Effect.andThen(
@@ -133,48 +92,29 @@ const stubbornTool = (trace: Trace) =>
           ),
         ),
       ),
-  })
-
-const run = (
-  code: string,
-  options: { trace?: Trace; limits?: CodeMode.ExecutionLimits } = {},
-): Promise<CodeMode.Result> => {
-  const trace = options.trace ?? makeTrace()
-  const gates = new Map<number, Deferred.Deferred<void>>()
-  const gate = (id: number): Deferred.Deferred<void> => {
-    const existing = gates.get(id)
-    if (existing) return existing
-    const created = Deferred.makeUnsafe<void>()
-    gates.set(id, created)
-    return created
+    ),
   }
-  return Effect.runPromise(
-    CodeMode.execute({
-      tools: {
-        host: {
-          echo: echoTool(trace),
-          gated: gatedTool(trace, gate),
-          open: openTool(gate),
-          pending: pendingTool(trace),
-          fail: failingTool,
-          interrupt: interruptedTool,
-          completed: completedTool(trace),
-          stubborn: stubbornTool(trace),
-        },
-      },
-      code,
-      ...(options.limits ? { limits: options.limits } : {}),
-    }),
-  )
+  const host = Host.namespace({
+    keys: () => Object.keys(fns),
+    resolve: (path) => fns[path.join(".")] ?? Host.missing(`No host.${path.join(".")}`),
+  })
+  return Runtime.make({
+    globals: () => ({ host }),
+    limits: options.limits,
+    translate: { functions: "drop", promises: "await" },
+  })
 }
 
-const value = async (code: string, options: { trace?: Trace; limits?: CodeMode.ExecutionLimits } = {}) => {
+const run = (code: string, options: { trace?: Trace; limits?: Runtime.Limits } = {}): Promise<Runtime.Result> =>
+  Effect.runPromise(runtimeOf(options).execute(code))
+
+const value = async (code: string, options: { trace?: Trace; limits?: Runtime.Limits } = {}) => {
   const result = await run(code, options)
   if (!result.ok) throw new Error(`expected success, got ${result.error.kind}: ${result.error.message}`)
   return result.value
 }
 
-const error = async (code: string, options: { trace?: Trace; limits?: CodeMode.ExecutionLimits } = {}) => {
+const error = async (code: string, options: { trace?: Trace; limits?: Runtime.Limits } = {}) => {
   const result = await run(code, options)
   if (result.ok) throw new Error(`expected failure, got value ${JSON.stringify(result.value)}`)
   return result.error
@@ -185,7 +125,7 @@ describe("first-class promise values", () => {
     expect(
       await value(`
         const load = async (id) => {
-          const result = await tools.host.echo({ id })
+          const result = await host.echo({ id })
           return [id, result]
         }
         const first = load(1)
@@ -217,14 +157,14 @@ describe("first-class promise values", () => {
     ).toBe("boom")
   })
 
-  test("an un-awaited tool call starts eagerly, in call order, before any await", async () => {
+  test("an un-awaited host call starts eagerly, in call order, before any await", async () => {
     const trace = makeTrace()
     const result = await value(
       `
-        const a = tools.host.gated({ id: 1 })
-        const b = tools.host.gated({ id: 2 })
-        await tools.host.open({ id: 1 })
-        await tools.host.open({ id: 2 })
+        const a = host.gated({ id: 1 })
+        const b = host.gated({ id: 2 })
+        await host.open({ id: 1 })
+        await host.open({ id: 2 })
         const rb = await b
         const ra = await a
         return [ra, rb]
@@ -238,16 +178,17 @@ describe("first-class promise values", () => {
   })
 
   test("awaiting the same promise twice settles once and never re-runs the call", async () => {
+    const trace = makeTrace()
     const result = await run(`
-      const p = tools.host.echo({ id: 7 })
+      const p = host.echo({ id: 7 })
       const x = await p
       const y = await p
       return [x, y]
-    `)
+    `, { trace })
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.value).toEqual([7, 7])
-    expect(result.toolCalls).toStrictEqual([{ name: "host.echo" }])
+    expect(trace.starts).toEqual([7])
   })
 
   test("await of a non-promise value passes it through unchanged", async () => {
@@ -257,8 +198,8 @@ describe("first-class promise values", () => {
     expect(await value(`return (await [1, 2]).length`)).toBe(2)
   })
 
-  test("returning an un-awaited tool call resolves it (async-function return semantics)", async () => {
-    expect(await value(`return tools.host.echo({ id: 9 })`)).toBe(9)
+  test("returning an un-awaited host call resolves it (async-function return semantics)", async () => {
+    expect(await value(`return host.echo({ id: 9 })`)).toBe(9)
   })
 
   test("typeof a promise is 'object', and console.log renders it sensibly", async () => {
@@ -275,7 +216,7 @@ describe("first-class promise values", () => {
 
   test("an awaited failure is catchable exactly like a synchronous throw", async () => {
     const result = await run(`
-      const p = tools.host.fail({})
+      const p = host.fail({})
       try {
         await p
         return "no"
@@ -293,7 +234,7 @@ describe("first-class promise values", () => {
     const trace = makeTrace()
     const result = await run(
       `
-        tools.host.pending({ id: 1 })
+        host.pending({ id: 1 })
         return "done"
       `,
       { trace },
@@ -308,16 +249,15 @@ describe("first-class promise values", () => {
 
   test("a never-awaited failing call preserves the result and reports the rejection", async () => {
     const result = await run(`
-      tools.host.fail({})
+      host.fail({})
       return "done"
     `)
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.value).toBe("done")
     expect(result.warnings).toStrictEqual([
-      { kind: "ToolFailure", message: "Unhandled rejection from an un-awaited promise: Lookup refused" },
+      { kind: "HostFailure", message: "Unhandled rejection from an un-awaited promise: Lookup refused" },
     ])
-    expect(Schema.decodeUnknownSync(CodeMode.Result)(JSON.parse(JSON.stringify(result)))).toStrictEqual(result)
   })
 
   test("a never-awaited failing async function is reported with a successful result", async () => {
@@ -372,8 +312,8 @@ describe("first-class promise values", () => {
     const result = await run(
       `
         const run = async () => {
-          await tools.host.pending({ id: 1 })
-          tools.host.fail({})
+          await host.pending({ id: 1 })
+          host.fail({})
         }
         run()
         return "done"
@@ -392,7 +332,7 @@ describe("first-class promise values", () => {
   test("reports every unhandled rejection in promise creation order", async () => {
     const result = await run(`
       Promise.reject(new Error("first"))
-      tools.host.fail({})
+      host.fail({})
       Promise.reject(new Error("third"))
       return "done"
     `)
@@ -400,7 +340,7 @@ describe("first-class promise values", () => {
     if (!result.ok) return
     expect(result.warnings).toStrictEqual([
       { kind: "ExecutionFailure", message: "Unhandled rejection from an un-awaited promise: Error: first" },
-      { kind: "ToolFailure", message: "Unhandled rejection from an un-awaited promise: Lookup refused" },
+      { kind: "HostFailure", message: "Unhandled rejection from an un-awaited promise: Lookup refused" },
       { kind: "ExecutionFailure", message: "Unhandled rejection from an un-awaited promise: Error: third" },
     ])
   })
@@ -424,8 +364,8 @@ describe("first-class promise values", () => {
 
   test("un-awaited interruptions settle without becoming rejections", async () => {
     const result = await run(`
-      tools.host.interrupt({})
-      Promise.all([tools.host.interrupt({})])
+      host.interrupt({})
+      Promise.all([host.interrupt({})])
       return "done"
     `)
     expect(result.ok).toBe(true)
@@ -438,7 +378,7 @@ describe("first-class promise values", () => {
     const trace = makeTrace()
     const result = await run(
       `
-        tools.host.pending({ id: 1 })
+        host.pending({ id: 1 })
         throw new Error("boom")
       `,
       { trace },
@@ -457,8 +397,8 @@ describe("first-class promise values", () => {
       await value(
         `
           const launch = async () => {
-            tools.host.pending({ id: 1 })
-            Promise.all([tools.host.pending({ id: 2 })])
+            host.pending({ id: 1 })
+            Promise.all([host.pending({ id: 2 })])
             return "returned"
           }
           return await launch()
@@ -475,15 +415,15 @@ describe("first-class promise values", () => {
 })
 
 describe("promises at data boundaries", () => {
-  test("an un-awaited promise inside a result or tool argument is awaited", async () => {
-    expect(await value(`return { result: tools.host.echo({ id: 1 }) }`)).toEqual({ result: 1 })
+  test("an un-awaited promise inside a result or a host argument is awaited", async () => {
+    expect(await value(`return { result: host.echo({ id: 1 }) }`)).toEqual({ result: 1 })
     expect(await value(`return Array.from([Promise.resolve(1)])`)).toEqual([1])
-    expect(await value(`return await tools.host.echo({ id: tools.host.echo({ id: 1 }) })`)).toBe(1)
+    expect(await value(`return await host.echo({ id: host.echo({ id: 1 }) })`)).toBe(1)
   })
 
   test("a rejected promise inside a result fails the program with its reason", async () => {
-    const diagnostic = await error(`return { result: tools.host.fail({}) }`)
-    expect(diagnostic.kind).toBe("ToolFailure")
+    const diagnostic = await error(`return { result: host.fail({}) }`)
+    expect(diagnostic.kind).toBe("HostFailure")
     expect(diagnostic.message).toContain("Lookup refused")
   })
 
@@ -497,7 +437,7 @@ describe("promises at data boundaries", () => {
     const trace = makeTrace()
     const result = await run(
       `
-        const pending = tools.host.pending({ id: 1 })
+        const pending = host.pending({ id: 1 })
         return { pending }
       `,
       { trace, limits: { timeoutMs: 100 } },
@@ -533,10 +473,10 @@ describe("Promise.all over arbitrary arrays", () => {
     expect(
       await value(
         `
-          const first = Promise.all([tools.host.gated({ id: 1 })])
-          const second = Promise.all([tools.host.gated({ id: 2 })])
-          await tools.host.open({ id: 1 })
-          await tools.host.open({ id: 2 })
+          const first = Promise.all([host.gated({ id: 1 })])
+          const second = Promise.all([host.gated({ id: 2 })])
+          await host.open({ id: 1 })
+          await host.open({ id: 2 })
           return [await first, await second]
         `,
         { trace },
@@ -549,7 +489,7 @@ describe("Promise.all over arbitrary arrays", () => {
   test("an aggregate created before a try block rejects at its later await", async () => {
     expect(
       await value(`
-        const aggregate = Promise.all([tools.host.fail({})])
+        const aggregate = Promise.all([host.fail({})])
         try {
           await aggregate
           return "no"
@@ -561,20 +501,21 @@ describe("Promise.all over arbitrary arrays", () => {
   })
 
   test("awaiting an aggregate repeatedly does not rerun its members", async () => {
+    const trace = makeTrace()
     const result = await run(`
-      const aggregate = Promise.all([tools.host.echo({ id: 7 })])
+      const aggregate = Promise.all([host.echo({ id: 7 })])
       return [await aggregate, await aggregate]
-    `)
+    `, { trace })
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.value).toEqual([[7], [7]])
-    expect(result.toolCalls).toStrictEqual([{ name: "host.echo" }])
+    expect(trace.starts).toEqual([7])
   })
 
   test("mixes promises and plain values, preserving order", async () => {
     expect(
       await value(`
-      return await Promise.all([tools.host.echo({ id: 1 }), "plain", tools.host.echo({ id: 2 }), 42])
+      return await Promise.all([host.echo({ id: 1 }), "plain", host.echo({ id: 2 }), 42])
     `),
     ).toEqual([1, "plain", 2, 42])
   })
@@ -583,22 +524,22 @@ describe("Promise.all over arbitrary arrays", () => {
     expect(
       await value(`
       const calls = []
-      calls.push(tools.host.echo({ id: 1 }))
+      calls.push(host.echo({ id: 1 }))
       calls.push(7)
-      const more = [tools.host.echo({ id: 2 })]
+      const more = [host.echo({ id: 2 })]
       const batch = [...calls, ...more, "x"]
       return await Promise.all(batch)
     `),
     ).toEqual([1, 7, 2, "x"])
   })
 
-  test("runs items.map tool calls in parallel", async () => {
+  test("runs items.map host calls in parallel", async () => {
     const trace = makeTrace()
     const result = await value(
       `
         const ids = [1, 2, 3, 4]
-        const calls = ids.map((id) => tools.host.gated({ id }))
-        for (const id of ids) await tools.host.open({ id })
+        const calls = ids.map((id) => host.gated({ id }))
+        for (const id of ids) await host.open({ id })
         return await Promise.all(calls)
       `,
       { trace },
@@ -614,8 +555,8 @@ describe("Promise.all over arbitrary arrays", () => {
     const result = await value(
       `
         const ids = [1, 2, 3, 4]
-        const calls = ids.map(async (id) => await tools.host.gated({ id }))
-        for (const id of ids) await tools.host.open({ id })
+        const calls = ids.map(async (id) => await host.gated({ id }))
+        for (const id of ids) await host.open({ id })
         return await Promise.all(calls)
       `,
       { trace },
@@ -624,14 +565,14 @@ describe("Promise.all over arbitrary arrays", () => {
     expect(trace.maxActive).toBeGreaterThan(1)
   })
 
-  test("does not cap live tool-call concurrency", async () => {
+  test("does not cap live host-call concurrency", async () => {
     const trace = makeTrace()
     const result = await value(
       `
         const ids = []
         for (let i = 0; i < 20; i += 1) ids.push(i)
-        const calls = ids.map((id) => tools.host.gated({ id }))
-        for (const id of ids) await tools.host.open({ id })
+        const calls = ids.map((id) => host.gated({ id }))
+        for (const id of ids) await host.open({ id })
         const results = await Promise.all(calls)
         return results.length
       `,
@@ -648,7 +589,7 @@ describe("Promise.all over arbitrary arrays", () => {
   test("rejects with the first failure, catchable in-program", async () => {
     const result = await run(`
       try {
-        await Promise.all([tools.host.echo({ id: 1 }), tools.host.fail({})])
+        await Promise.all([host.echo({ id: 1 }), host.fail({})])
         return "no"
       } catch (e) {
         return e.message
@@ -667,12 +608,12 @@ describe("Promise.all over arbitrary arrays", () => {
         `
           try {
             await Promise.all([
-              tools.host.pending({ id: 1 }),
-              tools.host.fail({}),
+              host.pending({ id: 1 }),
+              host.fail({}),
             ])
             return -1
           } catch {
-            return await tools.host.completed({})
+            return await host.completed({})
           }
         `,
         { trace },
@@ -689,12 +630,12 @@ describe("Promise.all over arbitrary arrays", () => {
     expect(
       await value(
         `
-          const slow = tools.host.gated({ id: 1 })
+          const slow = host.gated({ id: 1 })
           try {
-            await Promise.all([slow, tools.host.fail({})])
+            await Promise.all([slow, host.fail({})])
             return "no"
           } catch {}
-          await tools.host.open({ id: 1 })
+          await host.open({ id: 1 })
           return await slow
         `,
         { trace },
@@ -710,7 +651,7 @@ describe("Promise.all over arbitrary arrays", () => {
       await value(
         `
           const failLater = async () => {
-            await tools.host.pending({ id: 1 })
+            await host.pending({ id: 1 })
             throw new Error("later")
           }
           const aggregate = Promise.all([Promise.reject(new Error("first")), failLater()])
@@ -733,13 +674,6 @@ describe("Promise.all over arbitrary arrays", () => {
     expect(diagnostic.message).toContain("Promise.all expects a synchronous iterable, received a number")
   })
 
-  test("exceeding maxToolCalls inside Promise.all is a ToolCallLimitExceeded diagnostic", async () => {
-    const diagnostic = await error(
-      `return await Promise.all([tools.host.echo({ id: 1 }), tools.host.echo({ id: 2 }), tools.host.echo({ id: 3 })])`,
-      { limits: { maxToolCalls: 2 } },
-    )
-    expect(diagnostic.kind).toBe("ToolCallLimitExceeded")
-  })
 })
 
 describe("Promise.allSettled", () => {
@@ -747,8 +681,8 @@ describe("Promise.allSettled", () => {
     expect(
       await value(`
       const settled = await Promise.allSettled([
-        tools.host.echo({ id: 5 }),
-        tools.host.fail({}),
+        host.echo({ id: 5 }),
+        host.fail({}),
         "plain",
         Promise.reject(new Error("boom")),
       ])
@@ -764,7 +698,7 @@ describe("Promise.allSettled", () => {
 
   test("never rejects for program-level failures", async () => {
     const result = await run(`
-      const settled = await Promise.allSettled([tools.host.fail({}), tools.host.fail({})])
+      const settled = await Promise.allSettled([host.fail({}), host.fail({})])
       return settled.filter((s) => s.status === "rejected").length
     `)
     expect(result.ok).toBe(true)
@@ -779,8 +713,8 @@ describe("Promise.race", () => {
     const trace = makeTrace()
     const result = await value(
       `
-        const fast = tools.host.echo({ id: 1 })
-        const slow = tools.host.pending({ id: 2 })
+        const fast = host.echo({ id: 1 })
+        const slow = host.pending({ id: 2 })
         return await Promise.race([fast, slow])
       `,
       { trace },
@@ -794,10 +728,10 @@ describe("Promise.race", () => {
   test("a direct loser remains awaitable after the race settles", async () => {
     expect(
       await value(`
-      const fast = tools.host.echo({ id: 1 })
-      const slow = tools.host.gated({ id: 2 })
+      const fast = host.echo({ id: 1 })
+      const slow = host.gated({ id: 2 })
       const winner = await Promise.race([fast, slow])
-      await tools.host.open({ id: 2 })
+      await host.open({ id: 2 })
       return { winner, loser: await slow }
     `),
     ).toEqual({ winner: 1, loser: 2 })
@@ -809,8 +743,8 @@ describe("Promise.race", () => {
       await value(
         `
           const nested = Promise.all([
-            tools.host.pending({ id: 1 }),
-            tools.host.pending({ id: 2 }),
+            host.pending({ id: 1 }),
+            host.pending({ id: 2 }),
           ])
           return await Promise.race(["immediate", nested])
         `,
@@ -826,7 +760,7 @@ describe("Promise.race", () => {
     expect(
       await value(`
       try {
-        await Promise.race([tools.host.fail({}), tools.host.pending({ id: 1 })])
+        await Promise.race([host.fail({}), host.pending({ id: 1 })])
         return "no"
       } catch (e) {
         return e.message
@@ -837,7 +771,7 @@ describe("Promise.race", () => {
 
   test("a plain value wins over pending promises", async () => {
     const trace = makeTrace()
-    expect(await value(`return await Promise.race([tools.host.pending({ id: 1 }), "immediate"])`, { trace })).toBe(
+    expect(await value(`return await Promise.race([host.pending({ id: 1 }), "immediate"])`, { trace })).toBe(
       "immediate",
     )
     expect(trace.completed).toBe(0)
@@ -845,7 +779,7 @@ describe("Promise.race", () => {
   })
 
   test("a rejected race loser is observed by the aggregate", async () => {
-    const result = await run(`return await Promise.race(["winner", tools.host.fail({})])`)
+    const result = await run(`return await Promise.race(["winner", host.fail({})])`)
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.value).toBe("winner")
@@ -862,7 +796,7 @@ describe("Promise.resolve / Promise.reject", () => {
   test("resolve wraps plain values and passes promises through", async () => {
     expect(await value(`return await Promise.resolve(42)`)).toBe(42)
     expect(await value(`return await Promise.resolve(Promise.resolve("nested"))`)).toBe("nested")
-    expect(await value(`return await Promise.resolve(tools.host.echo({ id: 3 }))`)).toBe(3)
+    expect(await value(`return await Promise.resolve(host.echo({ id: 3 }))`)).toBe(3)
     expect(await value(`const promise = Promise.resolve(1); return [promise].includes(Promise.resolve(promise))`)).toBe(
       true,
     )
@@ -885,7 +819,7 @@ describe("Promise.resolve / Promise.reject", () => {
     expect(
       await value(`
         const rejected = Promise.reject(new Error("handled"))
-        await tools.host.echo({ id: 1 })
+        await host.echo({ id: 1 })
         try {
           await rejected
           return "no"
@@ -915,8 +849,8 @@ describe("timeout interruption of forked calls", () => {
     const trace = makeTrace()
     const result = await run(
       `
-        const a = tools.host.pending({ id: 1 })
-        const b = tools.host.pending({ id: 2 })
+        const a = host.pending({ id: 1 })
+        const b = host.pending({ id: 2 })
         return await a
       `,
       { trace, limits: { timeoutMs: 100 } },
@@ -933,7 +867,7 @@ describe("timeout interruption of forked calls", () => {
   test("the timeout also interrupts calls inside Promise.all", async () => {
     const trace = makeTrace()
     const result = await run(
-      `return await Promise.all([tools.host.pending({ id: 1 }), tools.host.pending({ id: 2 })])`,
+      `return await Promise.all([host.pending({ id: 1 }), host.pending({ id: 2 })])`,
       { trace, limits: { timeoutMs: 100 } },
     )
     expect(result.ok).toBe(false)
@@ -944,7 +878,7 @@ describe("timeout interruption of forked calls", () => {
 
   test("a non-settling race loser cannot hold the execution to the timeout", async () => {
     const trace = makeTrace()
-    const result = await run(`return await Promise.race(["winner", tools.host.pending({ id: 1 })])`, {
+    const result = await run(`return await Promise.race(["winner", host.pending({ id: 1 })])`, {
       trace,
       limits: { timeoutMs: 100 },
     })
@@ -962,7 +896,7 @@ describe("timeout interruption of forked calls", () => {
     const trace = makeTrace()
     const result = await run(
       `
-        tools.host.stubborn({ cleanupMs: 400 })
+        host.stubborn({ cleanupMs: 400 })
         return "done"
       `,
       { trace, limits: { timeoutMs: 100 } },
@@ -984,8 +918,8 @@ describe("timeout interruption of forked calls", () => {
   test("a timeout during completion cleanup reports the timeout warning before settled rejections", async () => {
     const result = await run(
       `
-        tools.host.fail({})
-        tools.host.stubborn({ cleanupMs: 400 })
+        host.fail({})
+        host.stubborn({ cleanupMs: 400 })
         return "done"
       `,
       { limits: { timeoutMs: 100 } },
@@ -999,18 +933,18 @@ describe("timeout interruption of forked calls", () => {
         message:
           "The program returned, but background work was still running at the 100ms timeout and was interrupted. Await all started promises.",
       },
-      { kind: "ToolFailure", message: "Unhandled rejection from an un-awaited promise: Lookup refused" },
+      { kind: "HostFailure", message: "Unhandled rejection from an un-awaited promise: Lookup refused" },
     ])
   })
 })
 
 describe("promise chaining", () => {
-  test("then transforms tool results and adopts returned promises across a chain", async () => {
+  test("then transforms host results and adopts returned promises across a chain", async () => {
     expect(
       await value(`
-        return await tools.host
+        return await host
           .echo({ id: 2 })
-          .then((id) => tools.host.echo({ id: id + 1 }))
+          .then((id) => host.echo({ id: id + 1 }))
           .then((id) => id * 10)
       `),
     ).toBe(30)
@@ -1030,12 +964,12 @@ describe("promise chaining", () => {
     ).toEqual(["sync", "h1", "h2"])
   })
 
-  test("catch recovers a tool failure and preserves fulfillment", async () => {
+  test("catch recovers a host failure and preserves fulfillment", async () => {
     expect(
       await value(`
         return [
-          await tools.host.fail({}).catch((error) => error.message),
-          await tools.host.echo({ id: 4 }).catch(() => "unused"),
+          await host.fail({}).catch((error) => error.message),
+          await host.echo({ id: 4 }).catch(() => "unused"),
         ]
       `),
     ).toEqual(["Lookup refused", 4])
@@ -1045,7 +979,7 @@ describe("promise chaining", () => {
     expect(
       await value(`
         const events = []
-        const result = await tools.host.echo({ id: 5 }).finally(() => events.push("cleanup"))
+        const result = await host.echo({ id: 5 }).finally(() => events.push("cleanup"))
         return [result, events]
       `),
     ).toEqual([5, ["cleanup"]])
@@ -1078,13 +1012,13 @@ describe("promise chaining", () => {
   })
 
   test("unsupported callable handlers fail loudly with a wrap hint", async () => {
-    const diagnostic = await error(`return await tools.host.echo({ id: 1 }).then(tools.host.completed)`)
+    const diagnostic = await error(`return await host.echo({ id: 1 }).then(host.completed)`)
     expect(diagnostic.message).toContain("Promise.prototype.then cannot use this callable as a handler")
     expect(diagnostic.message).toContain("wrap it in an arrow function")
   })
 
   test("chaining methods are opaque references until called", async () => {
-    expect(await value(`return typeof tools.host.echo({ id: 1 }).then`)).toBe("function")
+    expect(await value(`return typeof host.echo({ id: 1 }).then`)).toBe("function")
   })
 })
 
@@ -1109,7 +1043,7 @@ describe("combinator settlement timing", () => {
     // cannot beat it into rejection.
     expect(
       await value(`
-        const pending = tools.host.pending({ id: 9 })
+        const pending = host.pending({ id: 9 })
         const winner = await Promise.race([Promise.all([Promise.resolve(1)]), Promise.resolve(2)])
         try {
           const raced = await Promise.race([Promise.all([Promise.reject("x"), pending]), Promise.resolve("ok")])
@@ -1124,7 +1058,7 @@ describe("combinator settlement timing", () => {
 
 describe("unsupported promise surface", () => {
   test("other property reads on a promise hint at the missing await", async () => {
-    const diagnostic = await error(`return tools.host.echo({ id: 1 }).value`)
+    const diagnostic = await error(`return host.echo({ id: 1 }).value`)
     expect(diagnostic.kind).toBe("InvalidDataValue")
     expect(diagnostic.message).toContain("un-awaited Promise")
     expect(diagnostic.message).toContain("await it first")
@@ -1172,14 +1106,14 @@ describe("Promise.withResolvers", () => {
 })
 
 describe("Promise.any", () => {
-  test("first tool success wins; failing and losing calls are handled silently", async () => {
+  test("first host success wins; failing and losing calls are handled silently", async () => {
     const trace = makeTrace()
     const result = await run(
       `
         const winner = await Promise.any([
-          tools.host.fail({}),
-          tools.host.echo({ id: 1 }),
-          tools.host.pending({ id: 2 }),
+          host.fail({}),
+          host.echo({ id: 1 }),
+          host.pending({ id: 2 }),
         ])
         return winner
       `,
@@ -1188,7 +1122,7 @@ describe("Promise.any", () => {
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.value).toBe(1)
-    // The slow loser stays execution-owned and is interrupted at completion; the tool
+    // The slow loser stays execution-owned and is interrupted at completion; the host function
     // failure was observed by the aggregate, so no rejection warning survives.
     expect(result.warnings).toBeUndefined()
     expect(trace.interrupted).toBe(1)
@@ -1198,7 +1132,7 @@ describe("Promise.any", () => {
     expect(
       await value(`
         try {
-          await Promise.any([tools.host.fail({}), Promise.reject("plain")])
+          await Promise.any([host.fail({}), Promise.reject("plain")])
           return "fulfilled"
         } catch (error) {
           return [error.name, error.errors.map((reason) => reason.message ?? reason)]
@@ -1236,7 +1170,7 @@ describe("Promise.any", () => {
 })
 
 describe("promise construction", () => {
-  test("a deferred gate coordinates tool results across async functions", async () => {
+  test("a deferred gate coordinates host results across async functions", async () => {
     expect(
       await value(`
         let openGate
@@ -1245,7 +1179,7 @@ describe("promise construction", () => {
           const id = await gate
           return id * 2
         })()
-        openGate(await tools.host.echo({ id: 21 }))
+        openGate(await host.echo({ id: 21 }))
         return await worker
       `),
     ).toBe(42)
@@ -1255,7 +1189,7 @@ describe("promise construction", () => {
     expect(
       await value(`
         const bridged = new Promise((resolve, reject) => {
-          tools.host.echo({ id: 7 }).then(resolve, reject)
+          host.echo({ id: 7 }).then(resolve, reject)
         })
         return await bridged
       `),
@@ -1267,7 +1201,7 @@ describe("promise construction", () => {
       await value(`
         let settle
         const manual = new Promise((resolve) => { settle = resolve })
-        const race = Promise.race([manual, tools.host.pending({ id: 3 })])
+        const race = Promise.race([manual, host.pending({ id: 3 })])
         const all = Promise.all([manual, "plain"])
         const any = Promise.any([manual, new Promise(() => {})])
         settle("manual")
@@ -1297,7 +1231,7 @@ describe("promise construction", () => {
     expect(
       await value(`
         const result = new Promise(async (resolve) => {
-          const id = await tools.host.echo({ id: 5 })
+          const id = await host.echo({ id: 5 })
           resolve(id * 2)
         })
         return await result
@@ -1561,7 +1495,7 @@ describe("job order matches V8", () => {
 
 describe("a program that can never finish", () => {
   const stalled =
-    "Error: The program is waiting on a promise that can never settle: nothing else is running, so nothing can resolve it. Code Mode has no timers or sleep, so don't wait or poll inside a program."
+    "Error: The program is waiting on a promise that can never settle: nothing else is running, so nothing can resolve it. There are no timers or sleep, so don't wait or poll inside a program."
 
   // Each program stalls at the await on line `line`, column `column`; an outer await only waits on that one.
   test.each([
@@ -1612,22 +1546,22 @@ describe("a program that can never finish", () => {
     })
   })
 
-  test("is not stalled while a tool call that settles a hand-made promise is still running", async () => {
+  test("is not stalled while a host call that settles a hand-made promise is still running", async () => {
     expect(
       await value(`
         const { promise, resolve } = Promise.withResolvers()
-        tools.host.gated({ id: 1 }).then(resolve)
-        tools.host.open({ id: 1 })
+        host.gated({ id: 1 }).then(resolve)
+        host.open({ id: 1 })
         return await promise
       `),
     ).toBe(1)
   })
 
-  test("is not stalled while a tool call it waits on is still running", async () => {
+  test("is not stalled while a host call it waits on is still running", async () => {
     expect(
       await value(`
-        const call = tools.host.gated({ id: 1 })
-        await tools.host.open({ id: 1 })
+        const call = host.gated({ id: 1 })
+        await host.open({ id: 1 })
         return await call
       `),
     ).toBe(1)
@@ -1635,29 +1569,28 @@ describe("a program that can never finish", () => {
 })
 
 describe("host results", () => {
-  test("a tool result settles after the jobs already queued, like I/O", async () => {
+  test("a host result settles after the jobs already queued, like I/O", async () => {
     expect(
       await value(`
         const log = []
-        const call = tools.host.echo({ id: 1 }).then(() => log.push("tool"))
+        const call = host.echo({ id: 1 }).then(() => log.push("host"))
         Promise.resolve().then(() => log.push(1)).then(() => log.push(2)).then(() => log.push(3))
         await call
         return log
       `),
-    ).toEqual([1, 2, 3, "tool"])
+    ).toEqual([1, 2, 3, "host"])
   })
 
   test("an awaited interruption passes catch and finally and interrupts the program", async () => {
     const exit = await Effect.runPromiseExit(
-      CodeMode.execute({
-        tools: { host: { interrupt: interruptedTool } },
-        code: `
+      runtimeOf().execute(
+        `
           const inner = async () => {
-            try { await tools.host.interrupt({}) } catch { return "caught" } finally { return "finally" }
+            try { await host.interrupt({}) } catch { return "caught" } finally { return "finally" }
           }
           return await inner().catch(() => "handled")
         `,
-      }),
+      ),
     )
     expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true)
   })

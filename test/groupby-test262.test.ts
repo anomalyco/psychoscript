@@ -26,13 +26,11 @@
  * Copyright (c) 2023 Ecma International.  All rights reserved.
  * Test262 portions are governed by the BSD license in LICENSE.test262.
  * Invalid-iterable cases use a plain object, equivalent to the upstream object's absent
- * Symbol.iterator; CodeMode does not support symbol-keyed properties.
+ * Symbol.iterator; psychoscript does not support symbol-keyed properties.
  */
 import { describe, expect, test } from "bun:test"
-import { Effect } from "effect"
-import { CodeMode } from "../src/index.js"
+import { execute } from "./run.js"
 
-const execute = (code: string) => Effect.runPromise(CodeMode.execute({ code, tools: {} }))
 
 const value = async (code: string) => {
   const result = await execute(code)

@@ -1,10 +1,9 @@
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
-import { CodeMode } from "../src/index.js"
+import { Runtime } from "../src/index.js"
 import { createBuiltins } from "../src/runtime/intrinsics.js"
 import { Interpreter } from "../src/runtime/interpreter.js"
 import { type Snapshot, SnapshotError } from "../src/snapshot/snapshot.js"
-import { ToolRuntime } from "../src/tool-runtime.js"
 import { hashOf } from "../src/code.js"
 import { compileSource } from "../src/compiler/compile.js"
 import { moduleUrl, parseVmSource, runProgram } from "./run-program.js"
@@ -120,10 +119,9 @@ describe("round trips", () => {
   })
 })
 
-/** A runtime the way `execute.ts` makes one, with no tools. */
+/** A runtime the way `execute.ts` makes one, with no host globals. */
 const runtime = () =>
   new Interpreter<never>({
-    tools: ToolRuntime.make(ToolRuntime.prepare<never>({}), undefined, {}),
     builtins: createBuiltins(),
   }) as Interpreter<unknown>
 
@@ -179,7 +177,7 @@ const refusal = (snapshot: unknown) => {
 describe("snapshots", () => {
   test("hold code by source and function index, with the source's bytecode hash, and never bytecode", () => {
     const snapshot = sliced()
-    expect(snapshot.format).toBe(2)
+    expect(snapshot.format).toBe(3)
     const source = snapshot.header.sources[0]!
     expect(source.id).toBe("main")
     expect(source.bytecode).toBe(hashOf(compileSource(parse(source.code))))
@@ -214,7 +212,7 @@ describe("snapshots", () => {
 
   test("are refused by another build, or when a source compiles to other bytecode", () => {
     expect(refusal({ ...sliced(), header: { ...sliced().header, build: "0.0.0+0" } })).toContain(
-      "another Code Mode build",
+      "another psychoscript build",
     )
     const snapshot = sliced()
     const sources = [{ ...snapshot.header.sources[0]!, bytecode: "0000000000000000" }]
@@ -259,7 +257,7 @@ describe("snapshots", () => {
 
 describe("suspend", () => {
   test("a sync program suspended mid-loop resumes where it stopped, in a new runtime", async () => {
-    const runtime = CodeMode.make({ tools: {} })
+    const runtime = Runtime.make()
     const code = `
       const seen = []
       let n = 0
@@ -287,8 +285,7 @@ describe("determinism", () => {
       import { buildId } from ${moduleUrl("../src/snapshot.js")}
       import { createBuiltins } from ${moduleUrl("../src/runtime/intrinsics.js")}
       import { Interpreter } from ${moduleUrl("../src/runtime/interpreter.js")}
-      import { ToolRuntime } from ${moduleUrl("../src/tool-runtime.js")}
-      new Interpreter({ tools: ToolRuntime.make(ToolRuntime.prepare({}), undefined, {}), builtins: createBuiltins() })
+      new Interpreter({ builtins: createBuiltins() })
       const codes = ${JSON.stringify(codes)}
       console.log(JSON.stringify({ hashes: codes.map((code) => hashOf(compileSource(parseVmSource(code).source))), build: buildId() }))`
     const child = Bun.spawn(["bun", "-e", script], { stdout: "pipe", stderr: "inherit" })

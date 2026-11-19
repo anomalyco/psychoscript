@@ -9,15 +9,14 @@
  *
  * Only the instance-side assertions are ported. Test262 otherwise reaches `constructor` through
  * `X.prototype.constructor`, boxed primitives (`new Object(1)`), `Function`, `isPrototypeOf`, or
- * `.call`, none of which CodeMode exposes: values have no prototype chain, so `x.constructor`
+ * `.call`, none of which psychoscript exposes: values have no prototype chain, so `x.constructor`
  * resolves directly to the owning built-in.
  */
 import { describe, expect, test } from "bun:test"
-import { Effect } from "effect"
-import { CodeMode } from "../src/index.js"
+import { execute } from "./run.js"
 
 const value = async (code: string) => {
-  const result = await Effect.runPromise(CodeMode.execute({ code, tools: {} }))
+  const result = await execute(code)
   if (!result.ok) throw new Error(`expected success, got ${result.error.kind}: ${result.error.message}`)
   return result.value
 }

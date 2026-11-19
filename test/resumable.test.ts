@@ -4,19 +4,16 @@ import { parseProgram } from "../src/runtime/execute.js"
 import { Interpreter } from "../src/runtime/interpreter.js"
 import { createBuiltins } from "../src/runtime/intrinsics.js"
 import { getOwn, Native, nativeRule, Obj, remove, set } from "../src/runtime/objects.js"
-import { CodeMode } from "../src/index.js"
+import { execute } from "./run.js"
 import { decode, encode } from "../src/snapshot/codec.js"
 import { Lost, PendingThrow } from "../src/runtime/model.js"
 import { normalizeError } from "../src/runtime/errors.js"
-import { Effect } from "effect"
-import { ToolRuntime } from "../src/tool-runtime.js"
 import { nodeId, sourceOf } from "../src/runtime/source.js"
 
 // Groundwork for suspending and resuming a run: everything the state refers to has a stable name.
 
 const interpreter = () =>
   new Interpreter<never>({
-    tools: ToolRuntime.make(ToolRuntime.prepare<never>({}), undefined, {}),
     builtins: createBuiltins(),
   })
 
@@ -149,7 +146,7 @@ describe("natives only at intrinsic creation", () => {
   })
 
   const value = async (code: string) => {
-    const result = await Effect.runPromise(CodeMode.execute({ code, tools: {} }))
+    const result = await execute(code)
     if (!result.ok) throw new Error(result.error.message)
     return result.value
   }
@@ -272,7 +269,7 @@ describe("heap as data", () => {
   for (const [name, code] of Object.entries(programs)) {
     test(name, async () => {
       const expected: unknown = await new Function(`return (async () => {${code}})()`)()
-      const result = await Effect.runPromise(CodeMode.execute({ code, tools: {} }))
+      const result = await execute(code)
       if (!result.ok) throw new Error(result.error.message)
       expect(result.value).toEqual(JSON.parse(JSON.stringify(expected)))
     })
@@ -303,7 +300,7 @@ describe("prelude", () => {
     expect(names.all()).toContain("%PreludeHelpers%.$Call")
   })
   test("programs can't see the helpers or internal functions, and failures inside are located at the call", async () => {
-    const run = (code: string) => Effect.runPromise(CodeMode.execute({ code, tools: {} }))
+    const run = (code: string) => execute(code)
     expect(await run("return [typeof $Call, typeof $Throw, typeof fillCollection]")).toMatchObject({
       value: ["undefined", "undefined", "undefined"],
     })

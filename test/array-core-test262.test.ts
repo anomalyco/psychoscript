@@ -64,15 +64,14 @@
  * Copyright 2015 Microsoft Corporation. All rights reserved.
  * Copyright 2016 The V8 project authors. All rights reserved.
  * Test262 portions are governed by the BSD license in LICENSE.test262.
- * The toSpliced hole case omits the source test's inherited Array.prototype element because CodeMode does not expose
+ * The toSpliced hole case omits the source test's inherited Array.prototype element because psychoscript does not expose
  * prototype mutation; it retains the source test's hole-densification assertions.
  */
 import { describe, expect, test } from "bun:test"
-import { Effect } from "effect"
-import { CodeMode } from "../src/index.js"
+import { execute } from "./run.js"
 
 const value = async (code: string) => {
-  const result = await Effect.runPromise(CodeMode.execute({ code, tools: {} }))
+  const result = await execute(code)
   if (!result.ok) throw new Error(`expected success, got ${result.error.kind}: ${result.error.message}`)
   return result.value
 }

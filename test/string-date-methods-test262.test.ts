@@ -20,14 +20,13 @@
  * Test262 portions are governed by the BSD license in LICENSE.test262.
  *
  * The `typeof String.prototype.method` checks are replaced with `typeof "".method` because
- * CodeMode has no prototype objects.
+ * psychoscript has no prototype objects.
  */
 import { describe, expect, test } from "bun:test"
-import { Effect } from "effect"
-import { CodeMode } from "../src/index.js"
+import { execute } from "./run.js"
 
 const value = async (code: string) => {
-  const result = await Effect.runPromise(CodeMode.execute({ code, tools: {} }))
+  const result = await execute(code)
   if (!result.ok) throw new Error(`expected success, got ${result.error.kind}: ${result.error.message}`)
   return result.value
 }

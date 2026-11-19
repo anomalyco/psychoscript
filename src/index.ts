@@ -1,22 +1,16 @@
-export * as CodeMode from "./codemode.js"
-export * as Extension from "./extension.js"
-export * as Namespace from "./namespace.js"
-export * as Tool from "./tool.js"
-export * as OpenAPI from "./openapi/index.js"
-export {
-  fromBytes,
-  searchSignature,
-  SnapshotError,
-  SuspendError,
-  toBytes,
-  toolExpression,
-  type Outcome,
-  type Program,
-  type ProgramOptions,
-  type Runtime,
-  type Snapshot,
-  type SnapshotHeader,
-  type Suspended,
-  type SuspendOptions,
-} from "./codemode.js"
-export { ToolError, toolError } from "./tool-error.js"
+export * as Language from "./index.js"
+
+// The language layer: the compiler, VM, runtime, standard library, snapshots, and the Effect driver. It knows nothing
+// about tools; a host gives programs its functions through `Host` and runs them with `Runtime.make`.
+export { Host } from "./host-function.js"
+export { Runtime } from "./runtime.js"
+export { StreamingResponse } from "./streaming-response.js"
+export { fromBytes, SnapshotError, toBytes, type Snapshot, type SnapshotHeader } from "./snapshot/snapshot.js"
+export { SuspendError } from "./runtime/execute.js"
+export { globalNames } from "./runtime/globals.js"
+export type { Diagnostic, DiagnosticKind } from "./runtime/model.js"
+export type { Json } from "./data.js"
+export { parseProgram, type Run } from "./runtime/execute.js"
+export { formatLocation, HostFailure } from "./runtime/model.js"
+export { compareText } from "./runtime/operations.js"
+export { moduleName } from "./runtime/modules.js"

@@ -29,18 +29,17 @@
  * Copyright 2021 Jamie Kyle. All rights reserved.
  * Test262 portions are governed by the BSD license in LICENSE.test262.
  *
- * Boxed-primitive cases (`Object.assign("a")`, `Object.assign(1, …)`) are omitted: CodeMode has no
+ * Boxed-primitive cases (`Object.assign("a")`, `Object.assign(1, …)`) are omitted: psychoscript has no
  * wrapper objects, so a primitive target is a TypeError rather than a boxed result. `Override.js`
  * checks `Object.keys(result).length` instead of `Object.getOwnPropertyNames`. `target-Array.js`
  * omits its named-key (`-0`, `1.5`, `4294967295`), `length`, and Proxy assertions: arrays here hold
  * only indexed elements, so those keys are a TypeError (pinned below) rather than array properties.
  */
 import { describe, expect, test } from "bun:test"
-import { Effect } from "effect"
-import { CodeMode } from "../src/index.js"
+import { execute } from "./run.js"
 
 const value = async (code: string) => {
-  const result = await Effect.runPromise(CodeMode.execute({ code, tools: {} }))
+  const result = await execute(code)
   if (!result.ok) throw new Error(`expected success, got ${result.error.kind}: ${result.error.message}`)
   return result.value
 }

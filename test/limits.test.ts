@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test"
-import { Cause, Deferred, Effect, Exit, Fiber, Schema } from "effect"
-import { CodeMode, Tool } from "../src/index.js"
+import { Cause, Deferred, Effect, Exit, Fiber } from "effect"
+import { Host, Runtime } from "../src/index.js"
 import { MAX_ARRAY_LENGTH, MAX_PENDING_PROMISES, MAX_STRING_LENGTH } from "../src/runtime/limits.js"
 
-const runtime = CodeMode.make({ tools: {} })
+const runtime = Runtime.make()
 
 const value = async (code: string) => {
   const result = await Effect.runPromise(runtime.execute(code))
@@ -80,19 +80,10 @@ describe("the host stays in control", () => {
       Effect.gen(function* () {
         const started = yield* Deferred.make<void>()
         const job = yield* Effect.forkChild(
-          CodeMode.make({
-            tools: {
-              host: {
-                started: Tool.make({
-                  description: "Mark the loop as started",
-                  input: Schema.Struct({}),
-                  output: Schema.Boolean,
-                  execute: () => Deferred.succeed(started, undefined),
-                }),
-              },
-            },
+          Runtime.make({
+            globals: () => ({ host: { started: Host.fn(() => Deferred.succeed(started, undefined)) } }),
           }).execute(
-            `await tools.host.started({}); let t = 0; for (let i = 0; i < 30_000_000; i++) t += i % 3; return t`,
+            `await host.started({}); let t = 0; for (let i = 0; i < 30_000_000; i++) t += i % 3; return t`,
           ),
         )
         yield* Deferred.await(started)
@@ -117,7 +108,7 @@ describe("the host stays in control", () => {
       `const a = Array(10_000).fill(0); for (let i = 0; i < 20_000; i++) Promise.reject(a); return 1`,
     ],
   ])("%s still times out", async (_, code) => {
-    const result = await Effect.runPromise(CodeMode.make({ limits: { timeoutMs: 100 } }).execute(code))
+    const result = await Effect.runPromise(Runtime.make({ limits: { timeoutMs: 100 } }).execute(code))
     expect(result).toMatchObject({ ok: false, error: { kind: "TimeoutExceeded" } })
   })
 

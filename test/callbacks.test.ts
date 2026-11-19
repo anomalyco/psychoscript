@@ -1,12 +1,13 @@
 import { describe, expect, test } from "bun:test"
-import { Effect, Schema } from "effect"
-import { CodeMode, Tool } from "../src/index.js"
+import { Effect } from "effect"
+import { Host, Runtime } from "../src/index.js"
+import { execute } from "./run.js"
 
 // Callback acceptance is one gate shared by array methods, sort, string replacers,
 // Array.from mappers, Map/Set/URLSearchParams forEach, and promise reactions:
 // interpreter functions, coercion/URI builtins, resolver capabilities, and built-in
-// method references are callable; tools and other opaque callables get a wrap hint.
-const run = (code: string) => Effect.runPromise(CodeMode.execute({ code, tools: {} }))
+// method references are callable; host functions and other opaque callables get a wrap hint.
+const run = (code: string) => execute(code)
 const value = async (code: string) => {
   const result = await run(code)
   if (!result.ok) throw new Error(`expected success, got ${result.error.kind}: ${result.error.message}`)
@@ -23,15 +24,11 @@ const logsOf = async (code: string) => {
   return result.logs ?? []
 }
 
-const echo = Tool.make({
-  description: "Echo the input",
-  input: Schema.Struct({ id: Schema.Number }),
-  output: Schema.Number,
-  execute: (input: { id: number }) => Effect.succeed(input.id),
-})
-const withTool = (code: string) => Effect.runPromise(CodeMode.make({ tools: { host: { echo } } }).execute(code))
-const toolError = async (code: string) => {
-  const result = await withTool(code)
+const echo = Host.fn(([input]) => Effect.succeed((input as { id: number }).id))
+const host = Host.namespace({ keys: () => ["echo"], resolve: () => echo })
+const withHost = (code: string) => Effect.runPromise(Runtime.make({ globals: () => ({ host }) }).execute(code))
+const hostError = async (code: string) => {
+  const result = await withHost(code)
   if (result.ok) throw new Error(`expected failure, got value ${JSON.stringify(result.value)}`)
   return result.error
 }
@@ -231,7 +228,7 @@ describe("Array.from mapper", () => {
 })
 
 describe("thisArg is accepted and ignored, like JS arrows", () => {
-  // CodeMode functions have no `this`, so a thisArg can never change behavior —
+  // psychoscript functions have no `this`, so a thisArg can never change behavior —
   // exactly like passing one alongside an arrow function in real JS.
   test("iteration methods and Array.from ignore a thisArg", async () => {
     expect(await value(`return [1, 2].map((x) => x * 2, {})`)).toEqual([2, 4])
@@ -249,10 +246,10 @@ describe("thisArg is accepted and ignored, like JS arrows", () => {
 })
 
 describe("still-rejected callables get the wrap hint", () => {
-  test("tool references as callbacks suggest an arrow wrapper", async () => {
-    const diagnostic = await toolError(`return [1, 2].map(tools.host.echo)`)
+  test("host function references as callbacks suggest an arrow wrapper", async () => {
+    const diagnostic = await hostError(`return [1, 2].map(host.echo)`)
     expect(diagnostic.message).toContain("wrap it in an arrow function")
-    expect(await withTool(`return await Promise.all([1, 2].map((id) => tools.host.echo({ id })))`)).toMatchObject({
+    expect(await withHost(`return await Promise.all([1, 2].map((id) => host.echo({ id })))`)).toMatchObject({
       ok: true,
       value: [1, 2],
     })
@@ -263,7 +260,7 @@ describe("still-rejected callables get the wrap hint", () => {
   })
 
   test("string replacers reject opaque callables with the wrap hint, not a type error", async () => {
-    const diagnostic = await toolError(`return "abc".replace(/b/, tools.host.echo)`)
+    const diagnostic = await hostError(`return "abc".replace(/b/, host.echo)`)
     expect(diagnostic.message).toContain("wrap it in an arrow function")
     expect(diagnostic.message).not.toContain("argument 2")
   })
@@ -280,7 +277,7 @@ describe("still-rejected callables get the wrap hint", () => {
   })
 
   test("promise handlers reject opaque callables with the wrap hint", async () => {
-    const diagnostic = await toolError(`return await Promise.resolve(1).then(tools.host.echo)`)
+    const diagnostic = await hostError(`return await Promise.resolve(1).then(host.echo)`)
     expect(diagnostic.message).toContain("Promise.prototype.then cannot use this callable as a handler")
     expect(diagnostic.message).toContain("wrap it in an arrow function")
   })
@@ -289,10 +286,10 @@ describe("still-rejected callables get the wrap hint", () => {
     expect(
       await value(`return JSON.stringify({ a: -1 }, (key, item) => typeof item === "number" ? Math.abs(item) : item)`),
     ).toBe('{"a":1}')
-    expect((await toolError(`return JSON.stringify({ a: 1 }, tools.host.echo)`)).message).toContain(
+    expect((await hostError(`return JSON.stringify({ a: 1 }, host.echo)`)).message).toContain(
       "wrap it in an arrow function",
     )
-    expect((await toolError(`return JSON.parse('{"a":1}', tools.host.echo)`)).message).toContain(
+    expect((await hostError(`return JSON.parse('{"a":1}', host.echo)`)).message).toContain(
       "wrap it in an arrow function",
     )
   })
