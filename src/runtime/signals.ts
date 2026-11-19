@@ -29,8 +29,6 @@ export type PushKind =
   | "Promise executor"
   | "Promise.try"
   | "Promise combinator"
-  | "search"
-  | "extension call"
 
 /** Continue a suspended generator's frame with `request`: what `next`/`return`/`throw` return once it can run. */
 export class Resume {
@@ -53,6 +51,14 @@ export class Convert {
     /** Also apply ToNumber or ToString to each one before converting the next. */
     readonly coerce: boolean,
   ) {}
+}
+
+/**
+ * A built-in met program getters it cannot call (see `withReads`): the VM reads `reads` (receiver, key, receiver, key,
+ * …) in program code, then runs the built-in again from the start, and its reads of them get those values.
+ */
+export class Prefetch {
+  constructor(readonly reads: ReadonlyArray<Value>) {}
 }
 
 export type Hint = "number" | "string" | "default"

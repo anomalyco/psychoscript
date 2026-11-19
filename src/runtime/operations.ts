@@ -1,19 +1,24 @@
 import type { Expression, MemberExpression, NewExpression, Super } from "acorn"
-import { ToolReference } from "../tool-runtime.js"
 import { type AstNode, invalidData, typeError } from "./model.js"
 import { checkStringLength } from "./limits.js"
 import { locate } from "./errors.js"
 import { type Builtins, primitivePrototype } from "./intrinsics.js"
 import {
+  access,
   Arr,
   Builtin,
   Callable,
+  GetterCall,
+  isProgramAccessor,
+  lookup,
+  type Slot,
   type Cursor,
   Fn,
   get,
   has,
   hasOwn,
   hasPrototype,
+  HostNamespace,
   IteratorObj,
   keys,
   Obj,
@@ -24,12 +29,15 @@ import {
   coerceToString,
   type Value,
 } from "./objects.js"
-import { isOpaque, rejectCircularInsertion, typeofValue } from "./references.js"
+import { circularValue, describeValue, hasCircularReference, isOpaque, typeofValue } from "./references.js"
 import type { Interpreter } from "./interpreter.js"
 import { enumerableSource } from "../stdlib/object.js"
 
 // The synchronous semantics the VM's ops share: operators, property references, and the checks around them. Nothing
 // here runs program code.
+
+/** Orders two strings by UTF-16 code units, as `Array.prototype.sort` does by default. */
+export const compareText = (left: string, right: string) => (left < right ? -1 : left > right ? 1 : 0)
 
 /** The binary operators that convert object operands through ToPrimitive before acting on primitives. */
 const primitiveOperators = new Set([
@@ -88,19 +96,26 @@ export const notConstructible = (callee: Value, node: NewExpression) => {
   const name = calleeDescription(node.callee) ?? "The called value"
   const message =
     callee instanceof Fn
-      ? `${name} cannot be constructed: user-defined constructors and classes are not supported. Call it as a function that returns a plain object instead.`
+      ? `${name} is not a constructor: only classes can be constructed with new. Use a class, or call it as a function that returns an object.`
       : callee instanceof Builtin
         ? `new ${name}(...) is not supported; call ${name}(...) without new instead.`
         : `${name} is not a constructor.`
   return typeError(message, node)
 }
 
-// OrdinaryHasInstance: walk the left operand's chain looking for the constructor's `prototype`.
-export const instanceofValue = (lhs: Value, rhs: Value, node: AstNode): boolean => {
+// OrdinaryHasInstance: walk the left operand's chain looking for the constructor's `prototype`, unless that is a
+// program getter, which the VM runs first (`$vmInstanceof`).
+export const instanceofValue = (lhs: Value, rhs: Value, node: AstNode): boolean | GetterCall => {
   if (!(rhs instanceof Callable)) {
     throw typeError("The right-hand side of 'instanceof' is not callable.", node)
   }
-  const prototype = get(rhs, "prototype")
+  const prototype = accessProperty(rhs, "prototype", node)
+  if (prototype instanceof GetterCall) return prototype
+  return hasInstance(lhs, prototype, node)
+}
+
+/** The rest of OrdinaryHasInstance, once `prototype` is read. */
+export const hasInstance = (lhs: Value, prototype: Value, node: AstNode | undefined): boolean => {
   if (!(prototype instanceof Obj)) {
     throw typeError("The right-hand side of 'instanceof' has no 'prototype' object.", node)
   }
@@ -160,7 +175,7 @@ export const applyBinaryOperator = (operator: string, lhs: Value, rhs: Value, no
   }
 }
 
-// IsLooselyEqual: objects (including functions and tool references) compare by identity, and a nullish
+// IsLooselyEqual: objects (including functions and namespace paths) compare by identity, and a nullish
 // primitive never equals an object.
 const looselyEqual = (lhs: Value, rhs: Value, node: AstNode): boolean => {
   const lhsObject = lhs !== null && typeof lhs === "object"
@@ -183,7 +198,7 @@ export const operatorConversion = (
 ): { readonly kind: "key" } | { readonly kind: "primitive"; readonly hint: "default" | "number" } | undefined => {
   // `in` checks the right operand before ToPropertyKey on the left, so a bad right side wins over a bad key.
   if (operator === "in" && lhs instanceof Obj && !isOpaque(lhs) && rhs instanceof Obj) return { kind: "key" }
-  // IsLooselyEqual converts only an object facing a non-nullish primitive; two objects (including tool
+  // IsLooselyEqual converts only an object facing a non-nullish primitive; two objects (including namespace
   // references, which are not Obj) compare by identity.
   const equality = operator === "==" || operator === "!="
   const other = lhs instanceof Obj ? rhs : lhs
@@ -202,9 +217,16 @@ type MemberReference = {
   receiver: Value
 }
 
-// A thenable the program's implicit async body adopts before copy-out.
-export const isThenable = (value: Value): boolean =>
-  value instanceof PromiseObj || (value instanceof Obj && typeofValue(get(value, "then")) === "function")
+// A thenable the program's implicit async body adopts before copy-out. A program `then` getter counts: the adoption
+// reads it, in program code.
+export const isThenable = (value: Value): boolean => {
+  if (value instanceof PromiseObj) return true
+  if (!(value instanceof Obj)) return false
+  const slot = lookup(value, "then")
+  if (slot === undefined) return false
+  if (isProgramAccessor(slot)) return true
+  return typeofValue(get(value, "then")) === "function"
+}
 
 /** A built-in iterator over `value` that needs no program code to start: an iterator object, a string, a collection. */
 export const builtinCursor = (builtins: Builtins, value: Value): Cursor | undefined => {
@@ -226,7 +248,7 @@ export const requireIteratorMethod = (value: Value, context: string, node?: AstN
 // for...in over null/undefined iterates nothing, like JS. After the own keys come each prototype's enumerable
 // string keys, skipping any key a nearer level has, even as a non-enumerable property.
 export const forInKeys = <R>(ctx: Interpreter<R>, value: Value, node: AstNode): Array<string> => {
-  if (value instanceof ToolReference) return [...ctx.tools.keys(value.path)]
+  if (value instanceof HostNamespace) return [...ctx.namespaceKeys(value)]
   if (value === null || value === undefined) return []
   const source = enumerableSource(ctx, "for...in", value, node)
   const chain = [source]
@@ -256,12 +278,12 @@ export const resolveProperty = (
   key: PropertyKey,
   objectNode: AstNode,
   propertyNode: AstNode,
-): MemberReference | ToolReference | { value: Value } => {
-  if (objectValue instanceof ToolReference) {
+): MemberReference | HostNamespace | { value: Value } => {
+  if (objectValue instanceof HostNamespace) {
     if (typeof key !== "string") {
-      throw typeError("Tool paths must use string property names.", propertyNode)
+      throw typeError(`${objectValue.root} paths must use string property names.`, propertyNode)
     }
-    return new ToolReference([...objectValue.path, key])
+    return new HostNamespace(objectValue.root, [...objectValue.path, key])
   }
 
   if (objectValue instanceof Obj) return { target: objectValue, key, receiver: objectValue }
@@ -270,7 +292,7 @@ export const resolveProperty = (
   if (typeof objectValue === "string") {
     if (key === "length") return { value: objectValue.length }
     const index = typeof key === "symbol" ? undefined : parseArrayIndex(key)
-    if (index !== undefined) return { value: objectValue[index] }
+    if (index !== undefined && index < objectValue.length) return { value: objectValue[index] }
   }
   const proto = primitivePrototype(builtins, objectValue)
   if (proto !== undefined) return { target: proto, key, receiver: objectValue }
@@ -281,23 +303,28 @@ export const resolveProperty = (
   throw typeError("Cannot access a property on a non-object value.", objectNode)
 }
 
-// One destructured property, read the way a member expression would read it (primitives use their prototype).
-export const destructuredProperty = (builtins: Builtins, source: Value, key: PropertyKey, node: AstNode): Value => {
-  const reference = resolveProperty(builtins, source, key, node, node)
-  if (reference instanceof ToolReference) return reference
-  if ("value" in reference) return reference.value
-  return readProperty(reference.target, reference.key, node, reference.receiver)
-}
-
-export const readReference = (reference: MemberReference, node: MemberExpression): Value => {
-  // Reject unknown promise properties so a missing await cannot hide.
+/** Rejects reading a property a promise doesn't have, so a missing await cannot hide. */
+export const requirePromiseProperty = (reference: MemberReference, node: AstNode): void => {
   if (reference.target instanceof PromiseObj && !has(reference.target, reference.key)) {
     throw invalidData(
-      "This value is an un-awaited Promise; await it first - e.g. `const result = await tools.ns.tool(...)`.",
-      node.object,
+      "This value is an un-awaited Promise; await it first - e.g. `const result = await load(...)`.",
+      (node as Partial<MemberExpression>).object ?? node,
     )
   }
-  return readProperty(reference.target, reference.key, node, reference.receiver)
+}
+
+/** [[Get]] for the VM's ops, located at `node`: the value, or a program getter for the op to enter. */
+export const accessProperty = (
+  target: Obj,
+  key: PropertyKey,
+  node: AstNode | undefined,
+  receiver: Value = target,
+): Value | GetterCall => {
+  try {
+    return access(target, key, receiver)
+  } catch (error) {
+    throw locate(error, node)
+  }
 }
 
 // Accessors throw without a location; the member or pattern that read them supplies it.
@@ -316,10 +343,10 @@ export const readProperty = (
 
 /** The reference an assignment or update writes through: only a data field of an object. */
 export const writableReference = (
-  reference: MemberReference | ToolReference | { value: Value } | symbol,
+  reference: MemberReference | HostNamespace | { value: Value } | symbol,
   node: MemberExpression,
 ): MemberReference => {
-  if (typeof reference === "symbol" || reference instanceof ToolReference || "value" in reference) {
+  if (typeof reference === "symbol" || reference instanceof HostNamespace || "value" in reference) {
     throw typeError("Only data fields may be assigned.", node)
   }
   if (reference.receiver !== reference.target) {
@@ -331,19 +358,39 @@ export const writableReference = (
   return reference
 }
 
-export const assignToReference = (target: Obj, key: PropertyKey, next: Value, node: AstNode): void => {
-  const written = (() => {
-    try {
-      rejectCircularInsertion(
-        target,
-        next,
-        target instanceof Arr ? "Array assignment result" : "Object assignment result",
-      )
-      return set(target, key, next)
-    } catch (error) {
-      throw locate(error, node)
+/** Assigns `target[key] = next`: the program setter to call with `target` and `[next]`, if the write reaches one. */
+export const assignToReference = (
+  target: Obj,
+  key: PropertyKey,
+  next: Value,
+  node: AstNode | undefined,
+): Callable | undefined => {
+  let written: boolean | Callable
+  try {
+    // An accessor decides what a write stores (or refuses it), so only a data write can make a cycle. The cycle check
+    // goes first: the lookup is only needed in the rare case it fails.
+    if (next instanceof Obj && hasCircularReference(target, next) && !isAccessor(lookup(target, key))) {
+      throw circularValue(target instanceof Arr ? "Array assignment result" : "Object assignment result")
     }
-  })()
-  if (written) return
-  throw typeError(`Cannot assign to read only property '${String(key)}'.`, node)
+    written = set(target, key, next)
+  } catch (error) {
+    throw locate(error, node)
+  }
+  if (written === true) return undefined
+  if (written === false) throw failedAssignment(target, key, node)
+  return written
+}
+
+const isAccessor = (slot: Slot | undefined): boolean => slot !== undefined && !("value" in slot)
+
+/** Why `[[Set]]` refused: an accessor with only a getter, or a read-only property. */
+export const failedAssignment = (receiver: Value, key: PropertyKey, node: AstNode | undefined) => {
+  const slot = receiver instanceof Obj ? lookup(receiver, key) : undefined
+  if (slot !== undefined && !("value" in slot)) {
+    return typeError(
+      `Cannot set property '${String(key)}' of ${describeValue(receiver)} which has only a getter.`,
+      node,
+    )
+  }
+  return typeError(`Cannot assign to read only property '${String(key)}'.`, node)
 }

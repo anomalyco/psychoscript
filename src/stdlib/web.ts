@@ -1,4 +1,5 @@
 import { fn, methods } from "../runtime/native.js"
+import { withReads } from "../runtime/callback.js"
 import { typeError } from "../runtime/model.js"
 import {
   define,
@@ -12,6 +13,7 @@ import {
   Bytes,
   DateObj,
   ErrorObj,
+  HostNamespace,
   MapObj,
   Obj,
   RegExpObj,
@@ -24,10 +26,9 @@ import {
 import { createErrorValue, isErrorType } from "../runtime/intrinsics.js"
 import { describeValue } from "../runtime/references.js"
 import type { Interpreter } from "../runtime/interpreter.js"
-import { ToolReference } from "../tool-runtime.js"
 
 // WebIDL DOMString conversion: a missing argument is a TypeError, anything else stringifies. Invalid input is a
-// TypeError as well; browsers throw a DOMException named InvalidCharacterError, which CodeMode does not have.
+// TypeError as well; browsers throw a DOMException named InvalidCharacterError, which psychoscript does not have.
 export const base64Global = <R>(ctx: Interpreter<R>, name: "atob" | "btoa") =>
   fn(ctx.builtins, name, 1, (_, args) => {
     if (args.length === 0) throw typeError(`${name} requires 1 argument (a string)`)
@@ -39,7 +40,7 @@ export const base64Global = <R>(ctx: Interpreter<R>, name: "atob" | "btoa") =>
     }
   })
 
-// HTML structured clone over CodeMode's data kinds. Shared references survive through the memo; prototypes and
+// HTML structured clone over psychoscript's data kinds. Shared references survive through the memo; prototypes and
 // frozen state do not, as in JS. Without a DOMException, DataCloneError is a TypeError carrying that prefix.
 export const structuredCloneGlobal = <R>(ctx: Interpreter<R>) =>
   fn(ctx.builtins, "structuredClone", 1, (_, args) => {
@@ -47,7 +48,7 @@ export const structuredCloneGlobal = <R>(ctx: Interpreter<R>) =>
     const builtins = ctx.builtins
     const memo = new Map<Obj, Obj>()
     const clone = (value: Value): Value => {
-      if (typeof value === "symbol" || value instanceof ToolReference) {
+      if (typeof value === "symbol" || value instanceof HostNamespace) {
         throw typeError(`DataCloneError: ${describeValue(value)} could not be cloned.`)
       }
       if (!(value instanceof Obj)) return value
@@ -95,7 +96,10 @@ export const structuredCloneGlobal = <R>(ctx: Interpreter<R>) =>
       for (const [key, item] of entries(value)) define(copy, key, clone(item))
       return copy
     }
-    return clone(args[0])
+    return withReads(() => {
+      memo.clear()
+      return clone(args[0])
+    })
   })
 
 export const cryptoGlobal = <R>(ctx: Interpreter<R>) => {

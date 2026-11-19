@@ -1,6 +1,6 @@
-# CodeMode Interpreter Support
+# Psychoscript Interpreter Support
 
-This is the checkable support matrix for CodeMode's confined JavaScript interpreter. It tracks the language and
+This is the checkable support matrix for psychoscript's confined JavaScript interpreter. It tracks the language and
 standard-library surface that programs can use today, plus concrete gaps that may be implemented later.
 
 - `[x]` means the feature is implemented at the scope described here.
@@ -18,17 +18,19 @@ the ultimate source of truth. Upstream test262 files run verbatim from `test/tes
       TypeScript-only syntax is rejected rather than stripped before execution.
 - [x] Top-level `await` and `return` through the program's implicit async-function scope.
 - [x] Explicit `return`, final top-level expression as a REPL-style result, and `null` when no value is produced.
-- [x] The host boundary is `JSON.stringify` plus a short table. The program result and tool arguments cross as
+- [x] The result boundary is `JSON.stringify` plus a short table. The program result crosses as
       what `JSON.stringify` would serialize: `toJSON` is honored, functions and `undefined` properties vanish,
       `undefined` array elements and non-finite numbers become `null`, a cyclic value throws the same `TypeError`,
       and Map, RegExp, and generators serialize as `{}`. A bare `undefined` result is `null`.
       Tool results come back the way `JSON.parse(JSON.stringify(result))` would. The table, where a value cannot
       be JSON but what the program meant is clear: a promise is awaited (a rejection fails the program), a Set
-      crosses as an array, a URLSearchParams as its query string, an Error as `{ name, message, ...own enumerable }`, a
-      Uint8Array is rejected with a hint to encode as text, and own `__proto__` keys are dropped so merging tool
-      inputs or results cannot replace a prototype. In-program `JSON.stringify` keeps JS behavior except for the
-      Error form and a promise, which is a `TypeError` with an await hint rather than a silent `{}`.
-- [x] Live Date, RegExp, Map, Set, URL, URLSearchParams, Headers, and Uint8Array values inside CodeMode.
+      crosses as an array, a URLSearchParams as its query string, an Error as `{ name, message, ...own enumerable }`,
+      and own `__proto__` keys are dropped so merging results cannot replace a prototype. Tool arguments cross as
+      copies, like extension arguments, and the tool layer turns them into JSON with the same table (a Uint8Array is
+      rejected with a hint to encode as text); a program's own `toJSON` is not called there, and a promise or function
+      inside an argument fails the call. In-program `JSON.stringify` keeps JS behavior except for the Error form and a
+      promise, which is a `TypeError` with an await hint rather than a silent `{}`.
+- [x] Live Date, RegExp, Map, Set, URL, URLSearchParams, Headers, and Uint8Array values inside psychoscript.
 - [x] Tool calls through the host-provided `tools` tree only.
 - [x] Imports of globals by Node module name: `import x from "m"`, `import { a, b as c } from "m"`,
       `import * as m from "m"`, `import "m"`, `require("m")`, and `await import("m")`, with `node:fs` naming the
@@ -68,7 +70,21 @@ the ultimate source of truth. Upstream test262 files run verbatim from `test/tes
 - [ ] BigInt literals and in-interpreter BigInt arithmetic; BigInt remains invalid at JSON-like host boundaries.
 - [ ] Arbitrary Symbol primitive values and symbol-keyed properties. The confined `Symbol.iterator` and
       `Symbol.asyncIterator` keys are available only for the iterator protocols.
-- [ ] Getter and setter definitions in object literals.
+- [x] Getter and setter definitions in object literals (`get x() {}`, `set x(v) {}`, computed and symbol keys), named
+      `get x` / `set x`. Every read and write honours program accessors: member and computed reads, method calls,
+      destructuring, `=`, compound and logical assignment, `++`/`--`, inherited setters (with a primitive as `this`
+      through a wrapper prototype), and `instanceof`'s `prototype`. Spread, rest, `Object.assign`, `entries` and
+      `values` call getters in key order (and `assign` runs the target's setters); `JSON.stringify`, `structuredClone`
+      and the program's result call getters and leave setter-only properties out; the iterator protocol's `next`,
+      `done`, `value`, `return` and `[Symbol.iterator]` may be getters. `console.log` and `console.table` never call
+      them and show `[Getter]`, `[Setter]` or `[Getter/Setter]`; `Object.keys`, `for...in`, `in` and
+      `hasOwnProperty` never call them either. A suspended run resumes inside a getter or setter.
+- [ ] Getters and setters in classes (classes are unsupported), `__defineGetter__` and friends.
+- [ ] Built-ins that read program getters ahead (`Array.from` on an array-like, `apply`, `structuredClone`,
+      `String.raw`, `Buffer.from`, `TextDecoder` options, `Headers`/`URLSearchParams` records, `new Error`'s
+      `cause`, `defineProperties`, host arguments) call each getter once per receiver and key per call, in rounds:
+      a value reached twice in one call reuses the first read, and the order across rounds can differ from JS's
+      interleaving. `Array.from` on an iterable reads a `[Symbol.iterator]` getter twice.
 
 ## Bindings and destructuring
 
@@ -212,7 +228,7 @@ Math.floor)` is `"3"`). A detached method loses its receiver, as in JS: `values.
 - [x] Optional property access and optional calls.
 - [x] Function/tool calls and spread arguments.
 - [x] Sequence expressions (the comma operator).
-- [x] `await` for CodeMode promises and callable thenables; a plain value passes through unchanged, though every
+- [x] `await` for psychoscript promises and callable thenables; a plain value passes through unchanged, though every
       `await` still defers its continuation one reaction turn.
 - [x] `new` for Array, Object, Error types, Date, RegExp, Map, Set, URL, URLSearchParams, Headers, and Promise. `new`
       on any other value throws a catchable `TypeError` naming the callee: other built-in functions such as `Number`
@@ -265,9 +281,9 @@ Math.floor)` is `"3"`). A detached method loses its receiver, as in JS: `values.
       `o[{ toString() { return "id" } }] += 1` updates `o.id`. A nullish base throws before the key converts, as
       in JS. Opaque values (functions, promises, tool references) keep their built-in string form.
 
-## Promises and tools
+## Promises and host calls
 
-- [x] Tool calls start eagerly and return supervised, run-once CodeMode promises.
+- [x] Host calls start eagerly and return supervised, run-once psychoscript promises.
 - [x] Direct `await`, repeated awaits, and recursive thenable assimilation when a promise or thenable is returned from
       a function/program.
 - [x] `Promise.resolve` and `Promise.reject`.
@@ -308,8 +324,8 @@ reject }` object.
       thenable is adopted.
 - [x] Recursive assimilation of objects with an own callable `then` field across `Promise.resolve`, combinators,
       constructors, reactions, `finally`, `await`, and async returns. Thenable methods run deferred, receive
-      first-call-wins resolve/reject functions, and ignore throws after settlement. Inherited/accessor `then` fields
-      remain outside the supported object model.
+      first-call-wins resolve/reject functions, and ignore throws after settlement. Inherited and accessor `then`
+      fields are supported; an accessor `then` is read in a job of its own, one microtask after JS would read it.
 - [x] Dotted tool names are canonicalized into namespace paths; a path can be both callable and a namespace, and the
       last tool supplied for a canonical path wins.
 - [x] Tool path segments may be named `constructor`, `prototype`, or `__proto__` because paths use inert Map keys.
@@ -335,7 +351,7 @@ reject }` object.
       primitives and wrappers contribute nothing, and `null`/`undefined` throw. `Object.assign` accepts array
       targets for index keys only; a primitive target is a `TypeError` rather than a boxed object.
 - [x] `Object.keys` over arrays and tool references.
-- [x] Object identity is preserved by in-CodeMode Object helpers.
+- [x] Object identity is preserved by in-psychoscript Object helpers.
 - [x] Every value has a real prototype chain built fresh for each run: `Object.prototype`, `Array.prototype`,
       `String.prototype`, `Error.prototype` → `TypeError.prototype`, and so on hold the built-in methods as
       non-enumerable properties, and each constructor's `prototype` points at it (`[].constructor === Array`,
@@ -348,8 +364,14 @@ reject }` object.
 - [x] `Object.create(proto)` with an object or `null` prototype; any other prototype is a `TypeError`
       (`Object prototype may only be an Object or null`). Inherited reads, `in`, `hasOwnProperty`, own-only
       `Object.keys`, and `for...in` follow the chain as in JS. A second `properties`
-      argument other than `undefined` throws a `TypeError`: property descriptors are not supported (there is no
-      `Object.defineProperty` either).
+      argument defines properties from descriptors, as `Object.defineProperties` does.
+- [x] `Object.defineProperty`, `defineProperties`, `getOwnPropertyDescriptor(s)` and `getOwnPropertyNames`, with the
+      spec's validation (non-configurable and non-writable rules, `SameValue`, extensibility) and descriptor objects
+      read through getters and the prototype chain. Built-in accessors (`Map.prototype.size`, `URL.prototype.href`, …)
+      show as callable functions and can be redefined, one half at a time.
+- [ ] Array elements share one set of attributes, so `defineProperty` on an index takes only the array's own
+      attributes (new elements must say `writable`, `enumerable` and `configurable` true), never an accessor, and an
+      array's `length` can't be made read-only on its own (use `Object.freeze`).
 - [x] `Object.freeze`, `Object.seal`, and `Object.preventExtensions`, with `isFrozen`, `isSealed`, and `isExtensible`.
       Each returns its argument and passes primitives through (`Object.freeze(1) === 1`, `Object.isFrozen(1)`).
       Programs run as strict code, so violations throw `TypeError`: `Cannot assign to read only property 'a'`,
@@ -448,7 +470,7 @@ reject }` object.
       `tan`, `tanh`, `log`, `log2`, `log10`, `log1p`, `exp`, `expm1`, `f16round`, `fround`, `clz32`, and `imul`.
 - [x] Native zero-argument behavior for `Number()` and `String()`: they produce `0` and `""`, while
       `Number(undefined)` stays `NaN` and `String(undefined)` stays `"undefined"`.
-- [x] `++` and `--` use CodeMode numeric coercion (numeric strings increment, plain data objects become `NaN`, Dates
+- [x] `++` and `--` use psychoscript numeric coercion (numeric strings increment, plain data objects become `NaN`, Dates
       use their epoch time) and reject opaque runtime references as data errors.
 - [x] Unknown static members on global namespaces and on `Number`/`String`/the coercion functions read as `undefined`
       for feature detection. Calling any undefined value reports a native-style `TypeError` naming the callee, for
@@ -494,7 +516,7 @@ reject }` object.
 - [x] Native one-argument Date coercion for supported values, including booleans, null, arrays, and plain objects.
 - [x] Date setters, construction, and `Date.UTC` coerce object arguments through their own `valueOf`/`toString` in
       argument order and surface their throws; only the first seven components are converted.
-- [x] Native Date loose-equality and default primitive-coercion semantics, using CodeMode's deterministic ISO string
+- [x] Native Date loose-equality and default primitive-coercion semantics, using psychoscript's deterministic ISO string
       representation for the string primitive.
 - [x] Native `RangeError` branding for invalid `toISOString()` calls.
 
@@ -567,7 +589,8 @@ with a hint to encode as text first (`TextDecoder`, `toBase64`, `toHex`).
 
 - [x] `new Uint8Array(length | array | iterable | Uint8Array)`, `Uint8Array.from`, `Uint8Array.of`, `fromBase64`,
       and `fromHex`. Lengths are capped like arrays. The `Uint8Array.from` mapper and `thisArg` see the original
-      values, so `Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))` decodes base64.
+      values, so `Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))` decodes base64. `BYTES_PER_ELEMENT` is 1 on
+      the constructor, its instances, and `Buffer`.
 - [x] Index reads and writes with JS byte semantics: values wrap modulo 256, out-of-range writes are ignored, indexes
       cannot be deleted. `length` is a prototype accessor, so `Object.keys` lists only indexes.
 - [x] `at`, `slice`, `subarray` (a view on the same bytes), `set`, `fill`, `reverse`, `indexOf`, `lastIndexOf`,
@@ -623,9 +646,9 @@ method works on it, and its text conversions default to UTF-8.
 - [x] A host-provided streaming fetch response exposes `bodyUsed`, whole-body readers, a default stream reader and `for await` iteration. `arrayBuffer()` crosses as a `Uint8Array`.
 - [ ] `crypto.subtle` and non-UTF-8 `TextDecoder` encodings.
 
-## Extensions
+## Host functions
 
-Host functions a host opts in through `Extension.make({ name, globals })` and `CodeMode.make({ extensions })`.
+Host functions a host opts in through `Host.fn` and `Runtime.make`.
 Nothing is exposed unless a host provides it; extension calls are not tool calls.
 
 - [x] Each global is a function, callable but not constructible, run with `this` undefined. A global that shadows

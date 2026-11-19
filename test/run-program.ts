@@ -1,33 +1,42 @@
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 import type { Program } from "acorn"
-import type { DataValue, Diagnostic, Result } from "../src/codemode.js"
+import type { Json as DataValue } from "../src/data.js"
 import { normalizeError } from "../src/runtime/errors.js"
 import { parseProgram } from "../src/runtime/execute.js"
 import { createBuiltins } from "../src/runtime/intrinsics.js"
 import { Interpreter } from "../src/runtime/interpreter.js"
-import { PendingThrow } from "../src/runtime/model.js"
+import { type Diagnostic, PendingThrow } from "../src/runtime/model.js"
 import type { Value } from "../src/runtime/objects.js"
 import { Interruption } from "../src/runtime/signals.js"
 import type { Source } from "../src/runtime/source.js"
-import type { ToolRuntime } from "../src/tool-runtime.js"
-import type { Snapshot } from "../src/snapshot/snapshot.js"
+import { fromBytes, type Snapshot, toBytes } from "../src/snapshot/snapshot.js"
 
 /** A quoted `file:` URL for a module relative to `test`, to import from a script run with `bun -e` on any platform. */
-export const moduleUrl = (relative: string) =>
-  JSON.stringify(pathToFileURL(path.join(import.meta.dir, relative)).href)
+export const moduleUrl = (relative: string) => JSON.stringify(pathToFileURL(path.join(import.meta.dir, relative)).href)
 
-const emptyTools = {
-  calls: [],
-  keys: () => [],
-} as unknown as ToolRuntime<never>
+/** How a run ended, shaped like a psychoscript result with no tool calls. */
+export type Result =
+  | {
+      readonly ok: true
+      readonly value: DataValue
+      readonly warnings?: ReadonlyArray<Diagnostic>
+      readonly logs?: ReadonlyArray<string>
+      readonly toolCalls: ReadonlyArray<never>
+    }
+  | {
+      readonly ok: false
+      readonly error: Diagnostic
+      readonly logs?: ReadonlyArray<string>
+      readonly toolCalls: ReadonlyArray<never>
+    }
 
 export type RunOptions = {
   readonly globals?: (ctx: Interpreter<never>) => ReadonlyArray<readonly [string, Value]>
   readonly bindings?: (ctx: Interpreter<never>) => ReadonlyArray<readonly [string, Value]>
   readonly maxSlices?: number
   /**
-   * Round-trip mode: slice after every `every` fuel ticks, then save the state as JSON and continue in a fresh runtime
+   * Round-trip mode: slice after every `every` fuel ticks, then save the state to bytes and continue in a fresh runtime
    * restored from it, at most `max` times (default 200).
    */
   readonly roundTrip?: { readonly every: number; readonly max?: number }
@@ -61,7 +70,6 @@ export const runProgram = (code: string, options?: RunOptions): Result => {
   }
   const runtime = (bindings: RunOptions["bindings"]) =>
     new Interpreter<never>({
-      tools: emptyTools,
       builtins: createBuiltins(),
       logs: [],
       globals: options?.globals,
@@ -83,7 +91,7 @@ export const runProgram = (code: string, options?: RunOptions): Result => {
         options?.onTrip?.(snapshot)
         ctx = runtime(undefined)
         vm = ctx.vm
-        vm.restore(JSON.parse(JSON.stringify(snapshot)), {
+        vm.restore(fromBytes(toBytes(snapshot)), {
           parse: (code) => {
             const again = parseVmSource(code)
             if (!again.ok) throw new Error(again.error.message)
@@ -134,7 +142,7 @@ export const runProgram = (code: string, options?: RunOptions): Result => {
       error: normalizeError(
         new PendingThrow(
           "Error",
-          "The program is waiting on a promise that can never settle: nothing else is running, so nothing can resolve it. Code Mode has no timers or sleep, so don't wait or poll inside a program.",
+          "The program is waiting on a promise that can never settle: nothing else is running, so nothing can resolve it. There are no timers or sleep, so don't wait or poll inside a program.",
           stuckNode,
         ),
       ),

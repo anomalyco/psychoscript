@@ -1,7 +1,20 @@
 import type { Node } from "acorn"
 import type { ErrorType } from "./intrinsics.js"
-import type { DiagnosticKind } from "../codemode.js"
 import type { ErrorObj, Value } from "./objects.js"
+
+/**
+ * A diagnostic's category: one of the language's (`ParseError`, `UnsupportedSyntax`, `InvalidDataValue`,
+ * `TimeoutExceeded`, `ExecutionFailure`, `Truncated`), or one a host function gives with `Host.fail`.
+ */
+export type DiagnosticKind = string
+
+/** A program's failure or warning, as plain data. */
+export type Diagnostic = {
+  readonly kind: DiagnosticKind
+  readonly message: string
+  readonly location?: { readonly line: number; readonly column: number }
+  readonly suggestions?: ReadonlyArray<string>
+}
 
 /** Any parsed node; the compiler narrows on `type`, and diagnostics read `loc`. */
 export type AstNode = Node
@@ -11,8 +24,8 @@ export type Binding = { readonly value: Value }
 
 export type GeneratorRequestKind = "next" | "return" | "throw"
 
-export const AsyncIteratorSymbol: unique symbol = Symbol("codemode.async-iterator")
-export const IteratorSymbol: unique symbol = Symbol("codemode.iterator")
+export const AsyncIteratorSymbol: unique symbol = Symbol("psychoscript.async-iterator")
+export const IteratorSymbol: unique symbol = Symbol("psychoscript.iterator")
 
 export class Throw {
   constructor(readonly value: Value) {}
@@ -35,6 +48,20 @@ export class PendingThrow {
     readonly suggestions?: ReadonlyArray<string>,
   ) {
     if (node) this.node = node
+  }
+}
+
+/**
+ * A failure a host function raises with its own diagnostic `kind` and `suggestions` (see `Host.fail`). It reaches the
+ * program as an Error with its message, and a result as a diagnostic of its kind.
+ */
+export class HostFailure extends Error {
+  constructor(
+    readonly kind: DiagnosticKind,
+    message: string,
+    readonly suggestions: ReadonlyArray<string> = [],
+  ) {
+    super(message)
   }
 }
 
@@ -66,7 +93,7 @@ export const uriError = failure("URIError")
 
 // Orient the agent rather than enumerate JavaScript; interpreter-support.md is the full matrix.
 export const supportedSyntaxMessage =
-  "This is a restricted JavaScript-like language. Supported: plain and async functions, data literals, destructuring, standard control flow, await and Promise, and built-ins such as Array, Object, Math, JSON, Date, RegExp, Map, Set, and URL. Unsupported: classes, getters/setters, BigInt, and custom Symbols. Use plain functions and data objects instead."
+  "This is a restricted JavaScript-like language. Supported: plain and async functions, data literals, destructuring, standard control flow, await and Promise, and built-ins such as Array, Object, Math, JSON, Date, RegExp, Map, Set, and URL. Unsupported: classes, BigInt, and custom Symbols. Use plain functions and data objects instead."
 
 // Acorn lines are 1-based and its columns are 0-based. Diagnostics use 1-based columns of the submitted source.
 export const sourceLocation = (node: AstNode): { readonly line: number; readonly column: number } => ({

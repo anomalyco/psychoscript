@@ -4,7 +4,7 @@ import { builtinCodes } from "./bytecode.js"
 import { helpers } from "./helpers.js"
 import { code } from "./source.js"
 
-// The prelude: built-ins that call program code, written in Code Mode itself and compiled to bytecode ahead of time
+// The prelude: built-ins that call program code, written in psychoscript itself and compiled to bytecode ahead of time
 // (see bytecode.ts). Each runtime makes its top-level functions as `Fn`s; their free names are the intrinsic globals, the `$`
 // helpers, and the prelude's own functions (`GET_INTRINSIC`), so programs can't reach the helpers, and replacing a
 // global can't change what a built-in does. A function named `Array$prototype$map` is installed as

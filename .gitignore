@@ -1,4 +1,4 @@
 node_modules
 dist
 *.tgz
-.pack
+test/test262/*/
