@@ -75,7 +75,8 @@ the ultimate source of truth. Upstream test262 files run verbatim from `test/tes
       `done`, `value`, `return` and `[Symbol.iterator]` may be getters. `console.log` and `console.table` never call
       them and show `[Getter]`, `[Setter]` or `[Getter/Setter]`; `Object.keys`, `for...in`, `in` and
       `hasOwnProperty` never call them either. A suspended run resumes inside a getter or setter.
-- [ ] Getters and setters in classes (classes are unsupported), `__defineGetter__` and friends.
+- [x] Getters and setters in classes, instance and static, inherited through `extends` and reachable with `super`.
+- [ ] `__defineGetter__` and friends.
 - [ ] Built-ins that read program getters ahead (`Array.from` on an array-like, `apply`, `structuredClone`,
       `String.raw`, `Buffer.from`, `TextDecoder` options, `Headers`/`URLSearchParams` records, `new Error`'s
       `cause`, `defineProperties`, host arguments) call each getter once per receiver and key per call, in rounds:
@@ -179,8 +180,10 @@ Math.floor)` is `"3"`). A detached method loses its receiver, as in JS: `values.
 - [x] The optional `thisArg` of the Array, Uint8Array, and `Array.from` callback methods and of Map, Set,
       URLSearchParams, and Headers `forEach` is the callback's `this`: `[1, 2].forEach(function () { this.n++ }, c)`
       increments `c.n` twice. Arrows ignore it, as in JS; `reduce`/`reduceRight` take an initial value instead.
-- [ ] User-defined constructor calls.
-- [ ] Classes and private fields.
+- [x] Classes: declarations and expressions, constructors, instance and static methods, fields, getters and setters,
+      `extends` (including built-ins such as `Error`), `super` calls and property access, and `instanceof`.
+- [ ] Private members (`#x`) and static blocks: both are syntax errors with a hint.
+- [ ] `new` on plain functions: only classes (and host functions marked `constructible`) can be constructed.
 - [x] Functions are objects: they hold own properties (`fn.count = 1`), enumerate them, and expose read-only `name`
       and `length`. Names follow JavaScript's NamedEvaluation: declarations, named expressions, bindings,
       assignments, object literal keys, and destructuring or parameter defaults.
@@ -214,7 +217,7 @@ Math.floor)` is `"3"`). A detached method loses its receiver, as in JS: `values.
       yielded promises; mixed async request queues; sync and async `yield*` forwarding; malformed methods/results;
       and declaration, expression, and object-method forms with closure and parameter behavior. The adapted suite
       deliberately skips Test262 variants whose observation mechanism requires unsupported getter definitions,
-      proxies, prototype inspection or mutation, classes, or arbitrary symbols. It also skips tests
+      proxies, prototype inspection or mutation, or arbitrary symbols. It also skips tests
       asserting exact promise reaction-turn counts beyond the observable ordering guarantee documented below. These
       are interpreter-surface boundaries, not claims that the corresponding full Test262 families pass unchanged.
 
