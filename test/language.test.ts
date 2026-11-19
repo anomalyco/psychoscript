@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { Effect, Fiber } from "effect"
 import { Host, Runtime, toBytes } from "../src/index.js"
 
-// The language layer on its own: host functions, namespaces, failures, and per-run state, with no tools.
+// The language layer on its own: host functions, namespaces, failures, and per-run state, with nothing else.
 
 const run = <R>(runtime: Runtime.Runtime<R>, code: string) =>
   Effect.runPromise(runtime.execute(code) as Effect.Effect<Runtime.Result>)

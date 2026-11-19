@@ -15,20 +15,18 @@ import { fromBytes, type Snapshot, toBytes } from "../src/snapshot/snapshot.js"
 /** A quoted `file:` URL for a module relative to `test`, to import from a script run with `bun -e` on any platform. */
 export const moduleUrl = (relative: string) => JSON.stringify(pathToFileURL(path.join(import.meta.dir, relative)).href)
 
-/** How a run ended, shaped like a psychoscript result with no tool calls. */
+/** How a run ended, shaped like a runtime's result. */
 export type Result =
   | {
       readonly ok: true
       readonly value: DataValue
       readonly warnings?: ReadonlyArray<Diagnostic>
       readonly logs?: ReadonlyArray<string>
-      readonly toolCalls: ReadonlyArray<never>
     }
   | {
       readonly ok: false
       readonly error: Diagnostic
       readonly logs?: ReadonlyArray<string>
-      readonly toolCalls: ReadonlyArray<never>
     }
 
 export type RunOptions = {
@@ -62,11 +60,11 @@ export const parseVmSource = (
   }
 }
 
-/** Runs a program on the VM synchronously, with no Effect and no tools: the VM tests' runner. */
+/** Runs a program on the VM synchronously, with no Effect and no host globals: the VM tests' runner. */
 export const runProgram = (code: string, options?: RunOptions): Result => {
   const parsed = parseVmSource(code)
   if (!parsed.ok) {
-    return { ok: false, error: parsed.error, toolCalls: [] }
+    return { ok: false, error: parsed.error }
   }
   const runtime = (bindings: RunOptions["bindings"]) =>
     new Interpreter<never>({
@@ -109,7 +107,6 @@ export const runProgram = (code: string, options?: RunOptions): Result => {
           ok: false,
           error: { kind: "TimeoutExceeded", message: "Execution timed out." },
           ...(ctx.logs.length > 0 ? { logs: [...ctx.logs] } : {}),
-          toolCalls: [],
         }
       }
       continue
@@ -123,7 +120,6 @@ export const runProgram = (code: string, options?: RunOptions): Result => {
           ok: false,
           error: normalizeError(outcome.error),
           ...logsPart,
-          toolCalls: [],
         }
       }
       const result = (outcome.value as DataValue | undefined) ?? null
@@ -133,7 +129,6 @@ export const runProgram = (code: string, options?: RunOptions): Result => {
         value: result,
         ...(warnings.length > 0 ? { warnings } : {}),
         ...logsPart,
-        toolCalls: [],
       }
     }
     const stuckNode = stop.kind === "stuck" ? stop.node : undefined
@@ -147,7 +142,6 @@ export const runProgram = (code: string, options?: RunOptions): Result => {
         ),
       ),
       ...(ctx.logs.length > 0 ? { logs: [...ctx.logs] } : {}),
-      toolCalls: [],
     }
   }
 }

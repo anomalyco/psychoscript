@@ -194,7 +194,7 @@ describe("class instances crossing to the host", () => {
     class Base { a = 1; get proto() { return "left" } m() { return 1 } }
     class Item extends Base { constructor() { super(); this.b = 2; Object.defineProperty(this, "own", { get() { return 3 }, enumerable: true }); Object.defineProperty(this, "w", { set(v) {}, enumerable: true }) } }`
 
-  test("as tool arguments: own enumerable fields and own getters, no prototype methods or getters", async () => {
+  test("as host arguments: own enumerable fields and own getters, no prototype methods or getters", async () => {
     const { runtime, calls } = translating()
     await value(runtime, `${classes}; keep(new Item(), [new Base()])`)
     expect(calls).toEqual([[{ a: 1, b: 2, own: 3 }, [{ a: 1 }]]])

@@ -27,6 +27,7 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "test:roundtrip": "PSYCHOSCRIPT_ROUNDTRIP=1 bun test",
+    "bench": "bun run script/bench.ts",
     "prepublishOnly": "bun run build"
   },
   "dependencies": {

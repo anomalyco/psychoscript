@@ -196,7 +196,7 @@ describe("wide `a` operands and `execWide` coverage", () => {
     expect(parsed.ok).toBe(true)
     if (!parsed.ok) return
     const baseline = runProgram(src)
-    expect(baseline).toEqual({ ok: true, value: [150, 1, 25, true, "150-1"], toolCalls: [] })
+    expect(baseline).toEqual({ ok: true, value: [150, 1, 25, true, "150-1"] })
     const wideCodes = compileSource(parsed.source, { forceExtra: true, noCache: true })
     expect(verifyAll(wideCodes)).toEqual([])
 
@@ -576,7 +576,7 @@ describe("per-function wide jumps past 65,535 words and snapshot round-trips", (
     const expected = [expectedPad, 458]
 
     // First verify normal execution
-    expect(runProgram(src)).toEqual({ ok: true, value: expected, toolCalls: [] })
+    expect(runProgram(src)).toEqual({ ok: true, value: expected })
 
     // Now run through snapshot round-trip mode, slicing inside both the padding loop and the >70,000-pc tail loop
     let trips = 0
@@ -594,7 +594,7 @@ describe("per-function wide jumps past 65,535 words and snapshot round-trips", (
         expect(text.length).toBeGreaterThan(0)
       },
     })
-    expect(roundTripped).toEqual({ ok: true, value: expected, toolCalls: [] })
+    expect(roundTripped).toEqual({ ok: true, value: expected })
     expect(trips).toBeGreaterThan(2)
     expect(sawHighPc).toBe(true)
   }, 15_000)

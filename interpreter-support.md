@@ -22,26 +22,22 @@ the ultimate source of truth. Upstream test262 files run verbatim from `test/tes
       what `JSON.stringify` would serialize: `toJSON` is honored, functions and `undefined` properties vanish,
       `undefined` array elements and non-finite numbers become `null`, a cyclic value throws the same `TypeError`,
       and Map, RegExp, and generators serialize as `{}`. A bare `undefined` result is `null`.
-      Tool results come back the way `JSON.parse(JSON.stringify(result))` would. The table, where a value cannot
-      be JSON but what the program meant is clear: a promise is awaited (a rejection fails the program), a Set
-      crosses as an array, a URLSearchParams as its query string, an Error as `{ name, message, ...own enumerable }`,
-      and own `__proto__` keys are dropped so merging results cannot replace a prototype. Tool arguments cross as
-      copies, like extension arguments, and the tool layer turns them into JSON with the same table (a Uint8Array is
-      rejected with a hint to encode as text); a program's own `toJSON` is not called there, and a promise or function
-      inside an argument fails the call. In-program `JSON.stringify` keeps JS behavior except for the Error form and a
+      The table, where a value cannot be JSON but what the program meant is clear: a promise is awaited (a rejection
+      fails the program), a Set crosses as an array, a URLSearchParams as its query string, an Error as
+      `{ name, message, ...own enumerable }`, and own `__proto__` keys are dropped so merging results cannot replace a
+      prototype. A Uint8Array in the result is rejected with a hint to encode it as text. Host function arguments
+      cross as copies (see Host functions); a promise or function inside an argument fails the call unless the runtime's
+      `translate` option awaits promises or drops functions. In-program `JSON.stringify` keeps JS behavior except for the Error form and a
       promise, which is a `TypeError` with an await hint rather than a silent `{}`.
 - [x] Live Date, RegExp, Map, Set, URL, URLSearchParams, Headers, and Uint8Array values inside psychoscript.
-- [x] Tool calls through the host-provided `tools` tree only.
+- [x] Host access only through the globals a host provides with `Runtime.make`.
 - [x] Imports of globals by Node module name: `import x from "m"`, `import { a, b as c } from "m"`,
       `import * as m from "m"`, `import "m"`, `require("m")`, and `await import("m")`, with `node:fs` naming the
       same module as `fs` and `fs/promises`, `url`, `util`, and `buffer` mapped to their globals. Imports load before
       the program runs; a default import binds the module itself and the namespace adds it as `default`, the way
       Node presents a CommonJS module. Anything else throws, and `import()` of it rejects. `export` is a parse error,
       and an import below the top level throws.
-- [x] The global `search(...)` built-in: synchronous tool discovery that counts as an admitted tool call and is
-      shadowable by program declarations like other globals. Its result can also be awaited or chained with
-      `then`, `catch`, and `finally`.
-- [x] Cooperative timeout, an optional total tool-call limit, output bounding, and unrestricted tool-call concurrency.
+- [x] Cooperative timeout, output bounding, and unrestricted host-call concurrency.
 - [x] The timeout fires between interpreter steps, so one built-in is bounded in what it may build: strings up to
       2^24 characters (`repeat`, `pad*`, `concat`, `join`, `+`, template literals, `JSON.stringify`), arrays up to
       10,000,000 elements (`Array(n)`, `length =`, `Array.from`, `split`, `matchAll`, `concat`, `flat`; below the JS
@@ -124,7 +120,7 @@ the ultimate source of truth. Upstream test262 files run verbatim from `test/tes
 - [x] `for`, `while`, and `do...while`.
 - [x] `for...of` over arrays, strings, Maps, Sets, URLSearchParams, Headers, Uint8Arrays, built-in iterators, custom
       synchronous iterators, and confined synchronous generators. Abrupt completion invokes the iterator's optional `return()`.
-- [x] `for...in` over own keys of plain objects, arrays, strings, and tool references. `null`, `undefined`, and other
+- [x] `for...in` over own keys of plain objects, arrays, strings, and host namespaces. `null`, `undefined`, and other
       non-objects iterate nothing. An un-awaited promise throws rather than iterating.
 - [x] `for...in` over inherited enumerable keys (`Object.create(proto)`): own keys first, then each prototype's, skipping
       keys a nearer level already has, even as a non-enumerable property.
@@ -161,7 +157,7 @@ Math.floor)` is `"3"`). A detached method loses its receiver, as in JS: `values.
 - [x] Constructors work as callbacks with JS call semantics: `Error` types construct (`messages.map(Error)`),
       and new-requiring constructors (`Map`, `Set`, `URL`, `URLSearchParams`, `Headers`, `Promise`) throw a `TypeError`,
       like JS.
-- [x] Tool references and detached `Promise` statics are rejected as callbacks with a hint to wrap them in an
+- [x] Host functions and detached `Promise` statics are rejected as callbacks with a hint to wrap them in an
       arrow function.
 - [x] Promise-returning string replacers are coerced synchronously to `"[object Promise]"`, like JavaScript; they are
       not automatically awaited.
@@ -226,7 +222,7 @@ Math.floor)` is `"3"`). A detached method loses its receiver, as in JS: `values.
 
 - [x] Property access with dot or computed bracket syntax.
 - [x] Optional property access and optional calls.
-- [x] Function/tool calls and spread arguments.
+- [x] Function and host calls and spread arguments.
 - [x] Sequence expressions (the comma operator).
 - [x] `await` for psychoscript promises and callable thenables; a plain value passes through unchanged, though every
       `await` still defers its continuation one reaction turn.
@@ -250,14 +246,14 @@ Math.floor)` is `"3"`). A detached method loses its receiver, as in JS: `values.
       non-reference (`delete 0`, `delete f()`) evaluates the operand and is `true`; `delete x` on a variable throws.
 - [x] Coercion helpers and template interpolation accept functions and namespaces: `String(fn)` and `${fn}` give
       `"[object Function]"` rather than the source text, `isNaN(fn)` is `true`.
-- [x] `==` and `!=` follow IsLooselyEqual: objects (including functions and tool references) compare by identity, a
+- [x] `==` and `!=` follow IsLooselyEqual: objects (including functions and host references) compare by identity, a
       nullish operand never coerces the other side, and a data object facing a primitive converts through its own
       `valueOf`/`toString` (default hint) (`fn == null` is `false`, `fn == fn` is `true`, `[1] == 1` and `[1, 2] == "1,2"` are `true`).
       `switch` matches cases with `===`, so `switch (fn) { case fn: }` selects, and `Object.is` compares any two
       values. Operators inspect only their direct operands, so `rows == null` on a large array costs the same as
       `rows === null`, and an object merely holding a function inside (`[fn] + ""`, `-[fn]`) coerces like any other
       data object (`"[object Function]"`, `NaN`).
-- [ ] Coercing a function, promise, generator, or tool reference itself: `fn + ""`, `-fn`, `fn++`, and `fn == 1`
+- [ ] Coercing a function, promise, generator, or host reference itself: `fn + ""`, `-fn`, `fn++`, and `fn == 1`
       throw `TypeError: Binary operators require data values.` (or the unary/update form) where JavaScript would use
       the source text or `NaN`.
 - [x] ToPrimitive on program objects: `+ - * / % **`, the relational and bitwise operators, unary `+ - ~`, `++`/`--`,
@@ -279,7 +275,7 @@ Math.floor)` is `"3"`). A detached method loses its receiver, as in JS: `values.
       converts through its own `toString`/`valueOf` (string hint) exactly once per access, in reads, writes,
       compound assignment, `++`, `delete`, `in`, object literals, and destructuring:
       `o[{ toString() { return "id" } }] += 1` updates `o.id`. A nullish base throws before the key converts, as
-      in JS. Opaque values (functions, promises, tool references) keep their built-in string form.
+      in JS. Opaque values (functions, promises, host references) keep their built-in string form.
 
 ## Promises and host calls
 
@@ -300,7 +296,7 @@ Math.floor)` is `"3"`). A detached method loses its receiver, as in JS: `values.
 - [x] Every `await` (including of plain values and already-settled promises) defers its continuation one reaction
       turn, so concurrent async functions interleave at await points as in JavaScript.
 - [x] Each job runs to completion: code between two awaits, and an async function's body up to its first await,
-      finishes before another job runs, even when the scheduler preempts a long job. Tool calls still run
+      finishes before another job runs, even when the scheduler preempts a long job. Async host calls still run
       concurrently.
 - [x] Combinators settle one reaction turn after their deciding member (V8-observable ordering): reactions already
       attached to members run first, and an aggregate cannot beat a plain value settling in the same turn into a
@@ -309,7 +305,7 @@ Math.floor)` is `"3"`). A detached method loses its receiver, as in JS: `values.
       interrupted when the program returns; rejections that settled un-awaited become `Success.warnings`
       diagnostics. A combinator abandoned inside its final settlement turn counts as pending and is interrupted
       without a warning.
-- [x] `try`/`catch` can handle awaited tool and promise failures.
+- [x] `try`/`catch` can handle awaited host and promise failures.
 - [x] `Promise.any`: first fulfillment wins; all-rejected rejects with an `AggregateError` whose `errors` array holds
       the catch-normalized reasons in input order, and empty input rejects with an empty `AggregateError`.
 - [x] `new Promise((resolve, reject) => ...)`: the executor runs synchronously and receives first-class resolve/reject
@@ -326,13 +322,6 @@ reject }` object.
       constructors, reactions, `finally`, `await`, and async returns. Thenable methods run deferred, receive
       first-call-wins resolve/reject functions, and ignore throws after settlement. Inherited and accessor `then`
       fields are supported; an accessor `then` is read in a job of its own, one microtask after JS would read it.
-- [x] Dotted tool names are canonicalized into namespace paths; a path can be both callable and a namespace, and the
-      last tool supplied for a canonical path wins.
-- [x] Tool path segments may be named `constructor`, `prototype`, or `__proto__` because paths use inert Map keys.
-- [x] Outbound tool arguments are what `JSON.stringify` would serialize (see the boundary rule above). Tools never
-      receive `undefined` inside their input object, though a bare `tools.t(undefined)` argument still reaches schema
-      decoding as `undefined`.
-- [ ] Tokenize and case-fold non-ASCII tool paths, descriptions, and queries for tool search.
 
 ## Objects and properties
 
@@ -350,7 +339,7 @@ reject }` object.
       synchronous iterator support for `fromEntries`. Sources follow ToObject: strings enumerate by index, other
       primitives and wrappers contribute nothing, and `null`/`undefined` throw. `Object.assign` accepts array
       targets for index keys only; a primitive target is a `TypeError` rather than a boxed object.
-- [x] `Object.keys` over arrays and tool references.
+- [x] `Object.keys` over arrays and host namespaces.
 - [x] Object identity is preserved by in-psychoscript Object helpers.
 - [x] Every value has a real prototype chain built fresh for each run: `Object.prototype`, `Array.prototype`,
       `String.prototype`, `Error.prototype` → `TypeError.prototype`, and so on hold the built-in methods as
@@ -408,7 +397,7 @@ reject }` object.
 - [x] Mutation: `push`, `pop`, `shift`, `unshift`, `splice`, `fill`, and `copyWithin`.
 - [x] `keys`, `values`, `entries`, and `[Symbol.iterator]` (the same function as `values`) return live iterator objects
       with `next()` and `[Symbol.iterator]`, as in JS. Iterator objects are opaque references: they print as
-      `[opaque reference]`, serialize to `{}`, and cannot be passed to extensions. Every built-in collection iterator
+      `[opaque reference]`, serialize to `{}`, and cannot be passed to host functions. Every built-in collection iterator
       shares one prototype, where JavaScript gives each collection its own; `Object.getPrototypeOf` shows the
       difference.
 - [x] `length`, numeric indexing, index assignment, spread, and `for...of`.
@@ -474,7 +463,7 @@ reject }` object.
       use their epoch time) and reject opaque runtime references as data errors.
 - [x] Unknown static members on global namespaces and on `Number`/`String`/the coercion functions read as `undefined`
       for feature detection. Calling any undefined value reports a native-style `TypeError` naming the callee, for
-      example `Math.sum is not a function.` or `search(...).catch is not a function.` Unknown `Promise` statics keep
+      example `Math.sum is not a function.` or `JSON.rawJSON is not a function.` Unknown `Promise` statics keep
       their descriptive error.
 - [x] `Math.sumPrecise` over finite collections and custom synchronous iterators/generators, rejecting non-number
       elements without coercion.
@@ -563,7 +552,7 @@ reject }` object.
 - [x] Set composition and relation methods: `union`, `intersection`, `difference`, `symmetricDifference`, `isSubsetOf`,
       `isSupersetOf`, and `isDisjointFrom`, including supported Set-like operands.
 - [x] `WeakMap` (`get`, `set`, `has`, `delete`, `getOrInsert`, `getOrInsertComputed`) and `WeakSet` (`add`, `has`,
-      `delete`), constructed from iterables. Keys must be program objects: a primitive or tool reference throws
+      `delete`), constructed from iterables. Keys must be program objects: a primitive or host reference throws
       `Invalid value used as weak map key`, while `has`/`delete`/`get` with one answer `false`/`undefined`. Entries are
       held by a host weak collection, so nothing is retained past the key's own lifetime. As in JS they have no `size`,
       iteration, or `clear`, `structuredClone` rejects them, and they serialize to `{}` at host boundaries.
@@ -584,7 +573,7 @@ reject }` object.
 
 ## Uint8Array
 
-The only binary type. Bytes stay inside the program or cross to extensions as copies; the tool boundary rejects them
+The only binary type. Bytes stay inside the program or cross to host functions as copies; the result boundary rejects them
 with a hint to encode as text first (`TextDecoder`, `toBase64`, `toHex`).
 
 - [x] `new Uint8Array(length | array | iterable | Uint8Array)`, `Uint8Array.from`, `Uint8Array.of`, `fromBase64`,
@@ -632,7 +621,7 @@ method works on it, and its text conversions default to UTF-8.
       the prototype is not kept), arrays (holes and extra keys kept), Map, Set, Date, RegExp (`lastIndex` reset to 0),
       Uint8Array, and errors (standard `name`, `message`, `cause`, and `stack`; other names become `Error`, extra
       fields drop). Shared references stay shared in the copy, and the copy is extensible even when the source was
-      frozen. Functions, symbols, promises, iterators, URL, Headers, and tool references cannot be cloned; without a
+      frozen. Functions, symbols, promises, iterators, URL, Headers, and host references cannot be cloned; without a
       `DOMException`, the failure is a `TypeError` whose message starts with `DataCloneError:`.
 - [x] `TextEncoder` and `TextDecoder` for UTF-8 only: any other label is a `RangeError`. `TextDecoder` accepts the
       `fatal` and `ignoreBOM` options. `decode(chunk, { stream: true })` accepts incremental Uint8Array input;
@@ -641,18 +630,24 @@ method works on it, and its text conversions default to UTF-8.
       fold to lowercase, values are normalized and combined, and invalid names or values throw a `TypeError`.
 - [x] Headers `append`, `delete`, `get`, `getSetCookie`, `has`, `set`, `forEach`, `keys`, `values`, `entries`, and
       `[Symbol.iterator]`; iteration is live and sorted by name, with `set-cookie` values kept apart.
-- [x] Headers serialize to a `{ name: value }` object in JSON, in results, and in tool arguments.
+- [x] Headers serialize to a `{ name: value }` object in JSON, in results, and in host function arguments.
 - [ ] `Request`, `Response`, and `Blob`.
 - [x] A host-provided streaming fetch response exposes `bodyUsed`, whole-body readers, a default stream reader and `for await` iteration. `arrayBuffer()` crosses as a `Uint8Array`.
 - [ ] `crypto.subtle` and non-UTF-8 `TextDecoder` encodings.
 
 ## Host functions
 
-Host functions a host opts in through `Host.fn` and `Runtime.make`.
-Nothing is exposed unless a host provides it; extension calls are not tool calls.
+Host functions a host opts in through `Host.fn`, `Host.durableFn`, and `Host.namespace`, given to `Runtime.make` as
+`globals` (plain objects of them nest). Nothing is exposed unless a host provides it.
 
-- [x] Each global is a function, callable but not constructible, run with `this` undefined. A global that shadows
-      a built-in or another extension throws at `make`.
+- [x] Each host function is callable, run with `this` undefined, and constructible only when marked `constructible`.
+- [x] `Host.namespace` is a lazy tree: `keys(path)` answers `Object.keys` and `for...in`, and `resolve(path)` gives
+      the function a call reaches or a failure the call throws.
+- [x] A call's `type`: `sync` blocks the program until the function (or the Effect it returns) completes; `async`
+      hands the program a promise at once and starts the work eagerly; `sync-thenable` blocks, and an object result
+      can also be awaited or chained. An `idempotent` async call is interrupted by a suspend and called again, with
+      the same key, on resume; otherwise a suspend fails while a call is running. `Host.durableFn` keeps its work
+      running across a suspend through `start`, `wait`, and `cancel`.
 - [x] Every value crossing in either direction is converted, never shared: plain objects and arrays are copied,
       `Date`, `RegExp`, `URL`, `URLSearchParams`, `Headers`, `Map`, `Set`, and `Uint8Array` become fresh copies with
       their contents converted (a host `ArrayBuffer` comes in as a `Uint8Array`; other typed arrays cannot come out),
@@ -662,8 +657,6 @@ Nothing is exposed unless a host provides it; extension calls are not tool calls
 - [x] A host function inside a result becomes a program function whose calls cross the same way, so a result can
       carry methods (`res.json()`) whose host closures keep the host state. Diagnostics name it by its path
       (`fetch.json`). Like any program function it vanishes at the data boundary.
-- [x] Each call to an extension global runs inside the host's `extension.before`/`extension.after` hooks as
-      `{ extension, name, args }`, with the host's own error on failure; calls to functions inside results do not.
 - [x] A host `Promise` becomes a program promise. Whatever host code returns, resolves, throws, or rejects with
       crosses the same way, so `catch (e)` receives a copy of the thrown value (an `Error` of the matching type, or
       plain data).
@@ -671,10 +664,7 @@ Nothing is exposed unless a host provides it; extension calls are not tool calls
       `code`, `errno`, `syscall`, and `path` reach the program and `err.code === "ENOENT"` works. `stack` stays on its
       own side, no field may shadow an Error method, and a field that cannot cross (a class instance, a function) is
       left behind rather than replacing the error.
-- [x] A synchronous global that returns an Effect blocks the program until the Effect completes and returns its
-      value or throws its error, as `fs.readFileSync` does. An `async` global (or one marked `Extension.async`) hands
-      the program a promise instead.
-- [ ] Program functions as arguments to extension code (callbacks such as `forEach`).
+- [ ] Program functions as arguments to host code (callbacks such as `forEach`).
 - [ ] Host classes. Stateful host objects are expressed as closures; a declared method table would be the next
       step if `new X()` in a program is ever needed.
 
@@ -687,24 +677,23 @@ Nothing is exposed unless a host provides it; extension calls are not tool calls
 - [x] Error `name`/`message`, error inheritance through `instanceof`, and plain-data serialization. `message` is an own
       non-enumerable property and `name` is inherited, as in JS, so `Object.keys(err)` is `[]` for a plain error. The
       result boundary still emits `{ name, message, ...own enumerable }`, so a field such as `code` crosses. `cause` is
-      non-enumerable: an extension Error carries it, and this JSON form does not. Errors have no `stack`; the diagnostic
+      non-enumerable: a host Error carries it, and this JSON form does not. Errors have no `stack`; the diagnostic
       carries a 1-based line and column in the submitted source instead.
 - [x] `instanceof` against any constructor with a `prototype`, including every built-in and `Function`.
 - [x] Derived error constructors extend `Error` itself: `Object.getPrototypeOf(TypeError) === Error`, so
       `TypeError.isError` is inherited, and `TypeError.prototype` inherits from `Error.prototype`.
-- [x] Catchable user throws, runtime failures raised during interpreted evaluation, awaited tool failures, and awaited
-      tool-call-limit failures; parse/compile failures, cooperative timeout, and output bounding remain outside program
+- [x] Catchable user throws, runtime failures raised during interpreted evaluation, and awaited host failures; parse/compile failures, cooperative timeout, and output bounding remain outside program
       `catch`.
 - [x] Source locations on unsupported-syntax diagnostics. The diagnostic names the rejected node type and attaches a
       short orientation to the supported subset; this matrix is the full reference.
-- [x] Model-visible host failure messages and underlying causes, including output-validation errors.
-- [x] Caught errors do not distinguish user throws, interpreter failures, and tool failures; a program sees one
+- [x] Host failure messages and underlying causes reach the diagnostic.
+- [x] Caught errors do not distinguish user throws, interpreter failures, and host failures; a program sees one
       Error-shaped value in `catch`, rejection handlers, and `Promise.allSettled` reasons. It always has `name` and
       `message`, plus `cause` and own data when the failure carried them. This is deliberate: the program should
       handle a failure the same way regardless of where it originated.
 - [x] Failures raised by the interpreter are `TypeError`s unless JavaScript names them otherwise (`RangeError`,
       `ReferenceError`, `SyntaxError`, `URIError`), so `e instanceof TypeError` and `e.constructor === TypeError`
-      hold. Unsupported syntax reached at runtime is a `SyntaxError`; awaited tool failures stay plain `Error`.
+      hold. Unsupported syntax reached at runtime is a `SyntaxError`; awaited host failures stay plain `Error`.
       Host errors escaping a built-in (`(1).toFixed(200)`) become the same-named program error at the call.
       A failure raised inside a promise a built-in created (`Promise.all(1)`, `Promise.race([])`, a resolution cycle)
       is located at the call that created the promise.
