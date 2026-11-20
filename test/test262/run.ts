@@ -3,7 +3,6 @@
 // `assert.throws` can call the function it tests and catch what it throws as plain program code. Its checks and
 // failure messages are the host's (`$assert`).
 import path from "node:path"
-import { Effect } from "effect"
 import { finishExecution, type Setup, startProgram } from "../../src/runtime/execute.js"
 import type { Interpreter } from "../../src/runtime/interpreter.js"
 import { Throw } from "../../src/runtime/model.js"
@@ -49,19 +48,17 @@ export const run = async (file: string): Promise<Outcome> => {
   // A host drains the job queue after an async test's script ends; the program end interrupts un-awaited
   // work instead, so drain explicitly.
   const drain = meta.flags?.includes("async") ? "\nfor (let i = 0; i < 100; i++) await null" : ""
-  const result = await Effect.runPromise(
-    finishExecution(
-      startProgram<never>(
-        {
-          ...setup,
-          programGlobals: (ctx) =>
-            harness(ctx, (error) => {
-              done ??= { error }
-            }),
-        },
-        `"use strict"; ${prelude}\n${source}${drain}`,
-      ).run(),
-    ),
+  const result = await finishExecution(
+    startProgram<never>(
+      {
+        ...setup,
+        programGlobals: (ctx) =>
+          harness(ctx, (error) => {
+            done ??= { error }
+          }),
+      },
+      `"use strict"; ${prelude}\n${source}${drain}`,
+    ).run(),
   )
   if (meta.negative !== undefined) {
     // Runtime negatives only check that execution failed: diagnostics do not carry the error name.

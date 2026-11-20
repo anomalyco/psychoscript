@@ -1,4 +1,4 @@
-import type { DurableFn, Fn } from "../host-function.js"
+import type { DurableFn, Fn } from "../runtime/contract.js"
 import { Interpreter } from "../runtime/interpreter.js"
 import {
   type AstNode,
@@ -116,9 +116,9 @@ export type HostBridge = {
   readonly fromHost: (value: unknown, label: string, owner: string | undefined) => Value
   /** What a call's failure is to the program. */
   readonly failure: (reason: unknown, label: string) => unknown
-  /** Whether a call's result is still pending: a Promise or an Effect. */
+  /** Whether a call's result is still pending: a Promise or `HostWork`. */
   readonly isPending: (value: unknown) => boolean
-  /** Calls a host function now: its value, what it left pending, or the Effect to block on. */
+  /** Calls a host function now: its value, what it left pending, or the `HostWork` to block on. */
   readonly invoke: (
     fn: Fn<unknown>,
     args: ReadonlyArray<unknown>,
@@ -163,7 +163,7 @@ export type DecodeEnv = {
   readonly named: (name: string) => Obj | undefined
   readonly anchor: (name: string) => object | undefined
   readonly node: (source: string, index: number) => AstNode | undefined
-  /** An `Interruption` (it holds an Effect cause, which this module does not make). */
+  /** An `Interruption`. */
   readonly interruption: () => Interruption
   readonly hosts?: HostBridge | undefined
   readonly specs?: ReadonlyArray<ClassSpec> | undefined

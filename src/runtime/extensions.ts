@@ -1,5 +1,4 @@
-import { Effect } from "effect"
-import { DurableFn, Fn, Namespace, type Snapshot } from "../host-function.js"
+import { DurableFn, Fn, HostWork, Namespace, type Snapshot } from "./contract.js"
 import type { HostTarget } from "../host.js"
 import { BufferObj } from "../stdlib/buffer.js"
 import { StreamingResponse } from "../streaming-response.js"
@@ -63,8 +62,11 @@ type Within = {
  * The global bindings of one run's host globals (see `Host`), and the bridge its calls cross (`ctx.hosts`).
  * Everything crossing the boundary is converted: plain data and built-in wrappers are copied, a host function becomes
  * a program function whose calls cross the same way, a namespace becomes a path the program reads into, and a host
- * Promise or Effect becomes a program promise.
+ * Promise or `HostWork` becomes a program promise.
  */
+// A synchronous call's signal: its pending work, if any, runs later under the driver's own.
+const NEVER = new AbortController().signal
+
 const setterOnly = (slot: Slot): boolean => !("value" in slot) && slot.get === undefined
 
 export const hostGlobals = <R>(
@@ -415,15 +417,15 @@ export const hostGlobals = <R>(
             : undefined,
       }),
     failure,
-    isPending: (value) => value instanceof Promise || Effect.isEffect(value),
+    isPending: (value) => value instanceof Promise || value instanceof HostWork,
     invoke: (fn, args, key, label) => {
       let result: unknown
       try {
-        result = fn.run(args, { key, suspending: () => false })
+        result = fn.run(args, { key, suspending: () => false, signal: NEVER, context: undefined })
       } catch (reason) {
         throw failure(reason, label)
       }
-      if (Effect.isEffect(result)) return { kind: "block", work: result }
+      if (result instanceof HostWork) return { kind: "block", work: result }
       if (result instanceof Promise) return { kind: "pending", work: result }
       return { kind: "value", value: result }
     },

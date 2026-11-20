@@ -1,5 +1,5 @@
 import type { Json } from "./data.js"
-import type { DurableFn, Fn } from "./host-function.js"
+import type { DurableFn, Fn } from "./runtime/contract.js"
 import type { HostTarget } from "./host.js"
 import { locate } from "./runtime/errors.js"
 import type { AstNode } from "./runtime/model.js"

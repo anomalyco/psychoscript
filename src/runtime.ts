@@ -1,21 +1,22 @@
 export * as Runtime from "./runtime.js"
 
-import { Deferred, Effect, Exit } from "effect"
+import { type Context, Effect } from "effect"
 import type { Json } from "./data.js"
-import type { DurableFn, Fn, Namespace } from "./host-function.js"
+import { type DurableFn, type Fn, Interrupted, type Namespace } from "./runtime/contract.js"
 import {
+  checkMaxBytes,
   finishExecution,
+  makeProgram,
   type Outcome,
   type Result,
   resumeProgram,
   type Run,
-  type Running,
   type Setup,
   startProgram,
   SuspendError,
   type Suspended,
 } from "./runtime/execute.js"
-import type { SnapshotError } from "./snapshot/snapshot.js"
+import { SnapshotError } from "./snapshot/snapshot.js"
 
 export { SuspendError }
 export type { Outcome, Result, Run, Suspended }
@@ -139,12 +140,22 @@ export const make = <const G extends Globals = {}>(options: Options<G> = {}): Ru
       promises: options.translate?.promises ?? "error",
     },
   }
-  const program = (code: string, programOptions?: ProgramOptions) =>
-    makeProgram(() => Effect.succeed(startProgram(setup, code, programOptions?.bindings, programOptions?.runId)))
+  const program = (code: string, programOptions?: ProgramOptions): Program<R> =>
+    wrap(makeProgram(() => startProgram(setup, code, programOptions?.bindings, programOptions?.runId)))
   return {
-    execute: (code, programOptions) => Effect.suspend(() => finishExecution(program(code, programOptions).run())),
+    execute: (code, programOptions) =>
+      Effect.flatMap(Effect.context<R>(), (services) =>
+        fromPromise((signal) =>
+          finishExecution(
+            makeProgram(() => startProgram(setup, code, programOptions?.bindings, programOptions?.runId)).run({
+              signal,
+              context: services,
+            }),
+          ),
+        ),
+      ) as Effect.Effect<Result, never, R>,
     program,
-    resume: (state) => makeProgram(() => resumeProgram(setup, state)),
+    resume: (state) => wrap(makeProgram(() => resumeProgram(setup, state))) as Program<R, SnapshotError>,
   }
 }
 
@@ -155,32 +166,38 @@ const validateLimit = (name: string, value: number | undefined, minimum: number)
   return value
 }
 
-// A program's one run: `start` makes it when `run()` is called, and a suspend waits for it.
-const makeProgram = <R, E>(start: () => Effect.Effect<Running<R>, E>): Program<R, E> => {
-  let claimed = false
-  const started = Deferred.makeUnsafe<Running<R>, SuspendError>()
-  return {
-    run: () =>
-      Effect.suspend(() => {
-        if (claimed) {
-          return Effect.die(new Error("A program runs once; make another with runtime.program or runtime.resume."))
-        }
-        claimed = true
-        return start().pipe(
-          Effect.onExit((exit) =>
-            Exit.isSuccess(exit)
-              ? Deferred.succeed(started, exit.value)
-              : Deferred.fail(started, new SuspendError({ message: "The program didn't start.", running: [] })),
-          ),
-          Effect.flatMap((running) => running.run()),
-        )
-      }),
-    suspend: (options) => {
-      const maxBytes = options?.maxBytes
-      if (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes < 0)) {
-        throw new RangeError("maxBytes must be a safe integer greater than or equal to 0.")
-      }
-      return Effect.flatMap(Deferred.await(started), (running) => running.suspend(maxBytes))
-    },
-  }
-}
+// The Effect API over a program's Promise one: `run` gives host calls the caller's services, and interrupting it
+// aborts the run.
+const wrap = <R>(program: ReturnType<typeof makeProgram<R>>): Program<R, never> => ({
+  run: () =>
+    Effect.flatMap(Effect.context<R>(), (services: Context.Context<R>) =>
+      fromPromise((signal) => program.run({ signal, context: services })),
+    ),
+  suspend: (options) => {
+    const maxBytes = options?.maxBytes
+    checkMaxBytes(maxBytes)
+    return fromPromise(() => program.suspend(maxBytes)) as Effect.Effect<Outcome, SuspendError>
+  },
+})
+
+// A Promise as an Effect: `Interrupted` interrupts, a `SuspendError` or `SnapshotError` fails, and anything else is a
+// defect. Interrupting the Effect aborts the signal and waits for the Promise to settle.
+const fromPromise = <A>(start: (signal: AbortSignal) => Promise<A>): Effect.Effect<A> =>
+  Effect.callback<A>((resume) => {
+    const controller = new AbortController()
+    const settled = start(controller.signal).then(
+      (value) => resume(Effect.succeed(value)),
+      (error: unknown) =>
+        resume(
+          error instanceof Interrupted
+            ? Effect.interrupt
+            : error instanceof SuspendError || error instanceof SnapshotError
+              ? (Effect.fail(error) as unknown as Effect.Effect<A>)
+              : Effect.die(error),
+        ),
+    )
+    return Effect.promise(() => {
+      controller.abort()
+      return settled
+    })
+  })
