@@ -36,6 +36,7 @@ mod reach;
 mod run;
 mod runtime;
 mod snapshot;
+mod stack;
 mod streaming;
 mod strings;
 #[cfg(feature = "test262")]

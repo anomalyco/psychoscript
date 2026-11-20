@@ -1049,6 +1049,8 @@ fn make_error_from(vm: &mut Vm, proto: Id, message: &Value, options: &Value) -> 
         let mk = vm.names.message;
         vm.define_hidden(id, mk, Value::Str(m));
     }
+    let trace = vm.stack_trace();
+    vm.add_stack(id, trace);
     if let Value::Obj(o) = *options {
         let ck = vm.names.cause;
         // A program getter for `cause` is read ahead (`Vm::with_reads`).

@@ -182,29 +182,23 @@ impl Vm {
     /// Whether opening `v` reads its `[Symbol.iterator]` through a program getter (see `program_iterator_method`).
     pub(crate) fn iterator_getter(&self, v: &Value) -> bool {
         let Value::Obj(id) = v else { return false };
-        !self.walks(v)
-            && !matches!(
-                self.heap[*id as usize].kind,
-                Kind::Generator(_)
-                    | Kind::Arguments(_)
-                    | Kind::ArrayIter { .. }
-                    | Kind::StrIter { .. }
-            )
-            && self.has_program_getter(*id, SYM_ITERATOR)
+        !self.walks(v) && !self.iterates_itself(*id) && self.has_program_getter(*id, SYM_ITERATOR)
+    }
+
+    /// Whether `id` opens as itself, with no `[Symbol.iterator]` of the program's: a generator or a built-in iterator,
+    /// and the arguments object while arrays are walked (after, its own `[Symbol.iterator]` is called).
+    fn iterates_itself(&self, id: Id) -> bool {
+        match self.heap[id as usize].kind {
+            Kind::Generator(_) | Kind::ArrayIter { .. } | Kind::StrIter { .. } => true,
+            Kind::Arguments(_) => self.arrays_walked,
+            _ => false,
+        }
     }
 
     /// The `[Symbol.iterator]` method opening `v` calls, when it is not one the VM runs itself.
     pub(crate) fn program_iterator_method(&mut self, v: &Value) -> Option<Res> {
         let Value::Obj(id) = v else { return None };
-        if self.walks(v)
-            || matches!(
-                self.heap[*id as usize].kind,
-                Kind::Generator(_)
-                    | Kind::Arguments(_)
-                    | Kind::ArrayIter { .. }
-                    | Kind::StrIter { .. }
-            )
-        {
+        if self.walks(v) || self.iterates_itself(*id) {
             return None;
         }
         if self.has_program_getter(*id, SYM_ITERATOR) {

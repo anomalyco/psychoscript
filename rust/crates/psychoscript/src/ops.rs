@@ -27,6 +27,9 @@ impl Vm {
     pub fn get(&mut self, v: &Value, key: Atom) -> Res {
         match v {
             Value::Obj(id) => {
+                if key == self.names.stack {
+                    return Ok(self.get_stack(*id));
+                }
                 let v = self.get_obj(*id, key);
                 if let Value::Uninit = v {
                     return Err(crate::builtins::accessor_error(self, *id, key));
@@ -117,6 +120,24 @@ impl Vm {
             Value::Obj(_) => crate::builtins::builtin_string(self, k).unwrap_or_default(),
             k => self.quiet_string(k),
         }
+    }
+
+    /// [[Get]] of an error's `stack`, which its first read formats (see `stack.rs`).
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn get_stack(&mut self, id: Id) -> Value {
+        let key = self.names.stack;
+        let mut cur = Some(id);
+        while let Some(c) = cur {
+            if let Some(p) = self.heap[c as usize].props.prop(key) {
+                if p.flags & PENDING_STACK != 0 {
+                    return self.fix_stack(c, key);
+                }
+                break;
+            }
+            cur = self.heap[c as usize].proto;
+        }
+        self.get_obj(id, key)
     }
 
     #[inline(never)]
@@ -722,7 +743,10 @@ impl Vm {
                 if flags & FROZEN != 0 || p.flags & WRITABLE == 0 {
                     return Err(self.read_only(key));
                 }
-                self.heap[id as usize].props.items[i].value = val;
+                self.guard(id, key);
+                let p = &mut self.heap[id as usize].props.items[i];
+                p.value = val;
+                p.flags &= !PENDING_STACK;
             }
             None => {
                 if let Some(pair) = self.inherited_accessor(id, key) {
@@ -734,12 +758,34 @@ impl Vm {
                 if flags & NON_EXTENSIBLE != 0 {
                     return Err(self.not_extensible(key));
                 }
+                self.guard(id, key);
                 self.heap[id as usize]
                     .props
                     .push_new(key, val, DEFAULT_FLAGS);
             }
         }
         Ok(())
+    }
+
+    /// Clears the array-iteration protector when a program changes `Array.prototype[Symbol.iterator]` or the built-in
+    /// iterators' `next` (the reference's `guard`): from then on, for the rest of the run, arrays are iterated through
+    /// the iterator protocol (see `Vm::walks`).
+    #[inline]
+    pub(crate) fn guard(&mut self, id: Id, key: Atom) {
+        if (key == SYM_ITERATOR && id == self.realm.array_proto)
+            || (key == self.names.next && id == self.realm.iter_proto)
+        {
+            self.arrays_walked = false;
+        }
+    }
+
+    /// Whether the array `id` is iterated directly, as the reference's `Arr.iterator` decides: while the protector
+    /// holds, with `Array.prototype` its prototype and no `[Symbol.iterator]` of its own.
+    pub(crate) fn array_walked(&self, id: Id) -> bool {
+        let o = &self.heap[id as usize];
+        self.arrays_walked
+            && o.proto == Some(self.realm.array_proto)
+            && (o.props.len() == 0 || o.props.find(SYM_ITERATOR).is_none())
     }
 
     /// The error for a write a built-in accessor with no setter refuses, as the reference's `failedAssignment` words it.
@@ -851,6 +897,7 @@ impl Vm {
             }
             None => o.props.push_new(key, val, DEFAULT_FLAGS),
         }
+        self.guard(id, key);
     }
 
     pub fn define_hidden(&mut self, id: Id, key: Atom, val: Value) {
@@ -910,7 +957,9 @@ impl Vm {
             let k = self.key_text(key);
             return Err(self.type_error(&format!("Cannot delete property '{k}'.")));
         }
-        self.heap[id as usize].props.remove(key);
+        if self.heap[id as usize].props.remove(key) {
+            self.guard(id, key);
+        }
         Ok(true)
     }
 
@@ -1830,6 +1879,7 @@ impl Vm {
     pub fn iterate_to_vec(&mut self, v: &Value) -> Result<Vec<Value>, Value> {
         if let Value::Obj(id) = v {
             match &self.heap[*id as usize].kind {
+                Kind::Array(_) if !self.array_walked(*id) => {}
                 Kind::Array(_) if self.heap[*id as usize].flags & SPARSE != 0 => {
                     if self.array_len(*id) > MAX_ARRAY_LEN {
                         return Err(self.range_error("Invalid array length"));
@@ -1951,7 +2001,9 @@ impl Vm {
         let proto = self.realm.iter_proto;
         match v {
             Value::Obj(id) => {
-                if let Kind::Arguments(_) = self.heap[*id as usize].kind {
+                if let Kind::Arguments(_) = self.heap[*id as usize].kind
+                    && self.arrays_walked
+                {
                     // Like the reference: the values of its enumerable own keys when iteration starts.
                     let items: std::sync::Arc<[Value]> =
                         self.own_entries(*id).into_iter().map(|(_, v)| v).collect();
@@ -1959,7 +2011,7 @@ impl Vm {
                     return Ok(Value::Obj(self.alloc(Obj::new(Some(proto), it))));
                 }
                 let kind = match &self.heap[*id as usize].kind {
-                    Kind::Array(_) => Some(Kind::ArrayIter {
+                    Kind::Array(_) if self.array_walked(*id) => Some(Kind::ArrayIter {
                         target: *id,
                         pos: 0,
                         kind: IterKind::Values,
@@ -2036,6 +2088,8 @@ impl Vm {
                 }
                 Ok(Some(Some(step)))
             }
+            // An iterator over an array is stepped by its `next` once the protector is cleared (see `Vm::guard`).
+            Kind::ArrayIter { .. } if !self.arrays_walked => Ok(None),
             Kind::ArrayIter { .. }
             | Kind::MapIter { .. }
             | Kind::StrIter { .. }

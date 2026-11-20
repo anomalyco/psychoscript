@@ -191,6 +191,7 @@ pub fn start(
         let a = vm.atoms.intern(&k.to_run_text());
         vm.global_map.insert(a, val);
     }
+    vm.code = code.clone();
     vm.load(program);
     Ok(Box::new(Running::new(vm, code)))
 }
@@ -227,9 +228,11 @@ pub fn start_for_resume(
     crate::builtins::ensure_globals(&mut vm, &program.globals);
     host::install(&mut vm, &program.globals);
     vm.snapshot_base = crate::snapshot::Base::of(&vm);
+    let code: Arc<str> = Arc::from(code);
+    vm.code = code.clone();
     vm.load(program);
     Ok(Resumed {
-        running: Box::new(Running::new(vm, Arc::from(code))),
+        running: Box::new(Running::new(vm, code)),
         bytecode,
     })
 }
@@ -438,7 +441,7 @@ fn suffix(location: Option<(u32, u32)>) -> String {
 }
 
 /// 1-based line and column (in UTF-16 units) of a byte offset.
-fn line_col(code: &str, offset: u32) -> (u32, u32) {
+pub(crate) fn line_col(code: &str, offset: u32) -> (u32, u32) {
     let offset = (offset as usize).min(code.len());
     let before = code.get(..offset).unwrap_or(code);
     let line = before.matches('\n').count() as u32 + 1;

@@ -359,6 +359,13 @@ return [thrown instanceof RangeError, thrown.message, sent instanceof Promise, a
   { code: `let closed = 0; const src = { [Symbol.asyncIterator]() { return { next: () => Promise.resolve({ done: false, value: 1 }), get return() { closed = double(load(1)); return () => Promise.resolve({ done: true }) } } } }; for await (const x of src) break; return closed`, translate: wait },
   { code: `const del = { [Symbol.iterator]() { return { next: () => ({ done: false, value: 1 }), get return() { const n = double(load(1)); return () => ({ done: true, value: n }) } } } }; function* g() { yield* del } const it = g(); it.next(); return it.return(5)`, translate: wait },
   { code: `const entry = { get 0() { return 'a' }, get 1() { return double(load(1)) } }; return [Object.fromEntries([entry]), [...new Map([entry])]]`, translate: wait },
+  // An error's stack: a host failure's names the site where the program observed it.
+  { code: `try { refuse() } catch (e) { return e.stack }` },
+  { code: `function f() { return refuse() }\nfunction g() { try { return f() } catch (e) { return e.stack } }\nreturn g()` },
+  { code: `try { api.nope() } catch (e) { return [e.stack, e.name] }` },
+  { code: `return [await post({ p: Promise.resolve(1) }).catch((e) => e.stack), await load({ get a() { throw new Error('g') } }).catch((e) => e.stack)]` },
+  { code: `try { await post(() => 1) } catch (e) { return e.stack }` },
+  { code: `try { double({ get x() { throw new TypeError('in a getter') } }) } catch (e) { return e.stack }` },
   // Compiling gives the diagnostic a run of the source fails with first.
   { code: `  `, compiled: true },
   { code: `return (`, compiled: true },
@@ -422,6 +429,11 @@ const suspensions: Array<Entry> = [
   { code: `let closed = 0; const src = { [Symbol.asyncIterator]() { return { next: () => Promise.resolve({ done: false, value: 1 }), get return() { closed = double(wait()); return () => Promise.resolve({ done: true }) } } } }; for await (const x of src) break; return closed`, runId: "n", translate: wait },
   { code: `const del = { [Symbol.iterator]() { return { next: () => ({ done: false, value: 1 }), get return() { const n = double(wait()); return () => ({ done: true, value: n }) } } } }; function* g() { yield* del } const it = g(); it.next(); return it.return(5)`, runId: "n", translate: wait },
   { code: `const entry = { get 0() { return 'a' }, get 1() { return double(wait()) } }; return [Object.fromEntries([entry]), [...new Map([entry])]]`, runId: "n", translate: wait },
+  // An error's stack is saved unformatted until it is read, its header taken at that first read.
+  { code: `function make() { return new TypeError('bad') }\nconst made = make()\nlet caught\ntry { null.x } catch (error) { caught = error }\nawait wait()\nreturn [made.stack, caught.stack]`, runId: "e" },
+  { code: `const unread = new Error('bad')\nconst read = new Error('worse')\nread.stack\nawait wait()\nunread.name = 'Late'\nread.name = 'Late'\nreturn [unread.stack, read.stack, Object.getOwnPropertyDescriptor(unread, 'stack').enumerable]`, runId: "e" },
+  // An overridden array iterator stays honoured across a suspend.
+  { code: `Array.prototype[Symbol.iterator] = function* () { yield 42; yield 43 }\nawait wait()\nconst [a, b] = [1, 2, 3]\nreturn [a, b, ...[5]]`, runId: "p" },
   // Limits are saved with the run.
   {
     code: `await wait(); console.log("x".repeat(20)); return "y".repeat(20)`,
