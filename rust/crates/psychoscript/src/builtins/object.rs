@@ -227,6 +227,20 @@ fn entries_of(vm: &mut Vm, label: &str, v: &Value) -> Result<Vec<(Value, Value)>
     })
 }
 
+/// `Object.values` or `Object.entries` of an object with program accessors: each getter runs in key order from a frame,
+/// and a key's enumerability is checked when it is reached (the reference's `objectEntries`). `None` for any other.
+fn entries_by_frame(vm: &mut Vm, label: &str, v: &Value, mode: usize) -> Option<Res> {
+    let Value::Obj(id) = *v else { return None };
+    if vm.heap[id as usize].flags & ACCESSORS == 0 {
+        return None;
+    }
+    if let Err(e) = vm.enumerable_source(label, v) {
+        return Some(Err(e));
+    }
+    let out = vm.new_array(Vec::new());
+    Some(vm.copy_by_frame(mode, out, vec![*v], &[]))
+}
+
 fn object_keys(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
     let v = arg(args, 0);
     // A namespace lists its names.
@@ -251,6 +265,14 @@ fn object_keys(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
 }
 
 fn object_values(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
+    if let Some(r) = entries_by_frame(
+        vm,
+        "Object.values(...)",
+        &arg(args, 0),
+        crate::accessors::COPY_VALUES,
+    ) {
+        return r;
+    }
     let items = entries_of(vm, "Object.values(...)", &arg(args, 0))?
         .into_iter()
         .map(|(_, v)| v)
@@ -259,6 +281,14 @@ fn object_values(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
 }
 
 fn object_entries(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
+    if let Some(r) = entries_by_frame(
+        vm,
+        "Object.entries(...)",
+        &arg(args, 0),
+        crate::accessors::COPY_ENTRIES,
+    ) {
+        return r;
+    }
     let pairs = entries_of(vm, "Object.entries(...)", &arg(args, 0))?;
     let items = pairs
         .into_iter()
@@ -291,30 +321,8 @@ fn object_assign(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
             .skip(1)
             .any(|s| matches!(s, Value::Obj(id) if vm.heap[*id as usize].flags & ACCESSORS != 0));
     if calling {
-        for src in args.iter().skip(1) {
-            match src {
-                Value::Obj(s) => {
-                    let s = *s;
-                    for k in vm.own_property_keys(s) {
-                        if !vm.own_slot(s, k).is_some_and(|x| x.enumerable) {
-                            continue;
-                        }
-                        let v = vm.get_calling(s, k)?;
-                        vm.check_assignment_at(&target, k, &v)?;
-                        vm.op_access = true;
-                        let r = vm.set_obj(t, k, v);
-                        vm.op_access = false;
-                        r?;
-                        if let Some(setter) = vm.setter_hit.take() {
-                            vm.call(&setter, target, &[v])?;
-                        }
-                    }
-                }
-                Value::Str(_) => vm.copy_props(t, src, &[])?,
-                _ => {}
-            }
-        }
-        return Ok(target);
+        let sources = args.iter().skip(1).copied().collect();
+        return vm.copy_by_frame(crate::accessors::COPY_ASSIGN, target, sources, &[]);
     }
     for src in args.iter().skip(1) {
         if src.is_nullish() {
@@ -356,7 +364,13 @@ pub(crate) fn object_from_entries(vm: &mut Vm, _this: Value, args: &[Value], cal
         callee,
         Value::Undef,
         source,
-        &[Value::Obj(id), Value::Undef],
+        &[
+            Value::Obj(id),
+            Value::Undef,
+            Value::Undef,
+            Value::Num(0.0),
+            Value::Undef,
+        ],
     )
 }
 
@@ -371,15 +385,11 @@ impl crate::native::ForOf for FromEntries {
         if !matches!(x, Value::Obj(_)) || contains_opaque(vm, &x, &mut Vec::new()) {
             return Err(vm.type_error("Object.fromEntries expects [key, value] entry objects."));
         }
-        let k = vm.get_elem(&x, &Value::Num(0.0))?;
-        let v = vm.get_elem(&x, &Value::Num(1.0))?;
-        if vm.converts_by_call(&k, Hint::String) {
-            fr.set(vm, crate::native::FOR_OF_SLOTS + 1, v);
-            let step = super::convert_catching(vm, fr, k, Hint::String)?;
-            return Ok(crate::native::Flow::Call(step));
+        // `String(entry[0])`, then `entry[1]`, as the prelude's `$Define(result, String(entry[0]), entry[1])`.
+        match crate::native::entry_get(vm, fr, x, ENTRY_AT, 0)? {
+            Ok(k) => entry_key(vm, fr, k),
+            Err(flow) => Ok(flow),
         }
-        define_entry(vm, fr, &k, v)?;
-        Ok(crate::native::Flow::Next)
     }
 
     fn returned(
@@ -387,14 +397,56 @@ impl crate::native::ForOf for FromEntries {
         fr: crate::native::Frame,
         r: crate::value::Slot,
     ) -> Result<crate::native::Flow, Value> {
-        let v = fr.get(vm, crate::native::FOR_OF_SLOTS + 1);
-        define_entry(vm, fr, &r.get(), v)?;
-        Ok(crate::native::Flow::Next)
+        match crate::native::entry_getter(vm, fr, ENTRY_AT) {
+            Some(0) => entry_key(vm, fr, r.get()),
+            Some(_) => {
+                let k = fr.get(vm, crate::native::FOR_OF_SLOTS + 1);
+                define_entry(vm, fr, &k, r.get())?;
+                Ok(crate::native::Flow::Next)
+            }
+            // The key's conversion returned.
+            None => entry_value(vm, fr, r.get()),
+        }
     }
 
     fn finish(vm: &mut Vm, fr: crate::native::Frame) -> Res {
         vm.bytecode_builtin();
         Ok(fr.get(vm, crate::native::FOR_OF_SLOTS))
+    }
+}
+
+/// Where `Object.fromEntries` keeps an entry while a getter of it runs (see `native::read_entry`).
+const ENTRY_AT: usize = crate::native::FOR_OF_SLOTS + 2;
+
+/// An entry's key, read: converted (from the frame when that calls the program), then its value read.
+fn entry_key(
+    vm: &mut Vm,
+    fr: crate::native::Frame,
+    k: Value,
+) -> Result<crate::native::Flow, Value> {
+    if vm.converts_by_call(&k, Hint::String) {
+        let step = super::convert_catching(vm, fr, k, Hint::String)?;
+        return Ok(crate::native::Flow::Call(step));
+    }
+    entry_value(vm, fr, k)
+}
+
+/// An entry's value, read once its key is, then defined under the key.
+fn entry_value(
+    vm: &mut Vm,
+    fr: crate::native::Frame,
+    k: Value,
+) -> Result<crate::native::Flow, Value> {
+    let x = crate::native::kept_entry(vm, fr, ENTRY_AT);
+    match crate::native::entry_get(vm, fr, x, ENTRY_AT, 1)? {
+        Ok(v) => {
+            define_entry(vm, fr, &k, v)?;
+            Ok(crate::native::Flow::Next)
+        }
+        Err(flow) => {
+            fr.set(vm, crate::native::FOR_OF_SLOTS + 1, k);
+            Ok(flow)
+        }
     }
 }
 
@@ -1693,6 +1745,7 @@ pub(crate) fn family_step(
         SUB_HOST_WAIT => crate::cross::wait_step(vm, fr, input),
         crate::accessors::SUB_GETTER_METHOD => crate::accessors::getter_method_step(vm, fr, input),
         crate::accessors::SUB_SETTER => crate::accessors::setter_step(vm, fr, input),
+        crate::accessors::SUB_COPY => crate::accessors::copy_step(vm, fr, input),
         _ => Ok(crate::native::Step::Done(Value::Undef)),
     }
 }

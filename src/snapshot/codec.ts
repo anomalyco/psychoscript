@@ -24,6 +24,7 @@ import {
   changed,
   DateObj,
   ErrorObj,
+  StackSlot,
   GeneratorObj,
   HeadersObj,
   HostNamespace,
@@ -42,6 +43,7 @@ import {
   URLSearchParamsObj,
   WeakMapObj,
   WeakSetObj,
+  Protector,
 } from "../runtime/objects.js"
 import { Convert, Interruption, Invoke, Prefetch } from "../runtime/signals.js"
 import { deleted, OrderedTable } from "../runtime/table.js"
@@ -325,11 +327,12 @@ const builtinSpecs = (): ReadonlyArray<ClassSpec> => [
   { name: "Invoke", ctor: Invoke, fields: ["callable", "thisValue", "args", "site"] },
   { name: "HostNamespace", ctor: HostNamespace, fields: ["root", "path"] },
   { name: "Lost", ctor: Lost, fields: ["description"] },
+  { name: "Protector", ctor: Protector, anchor: "protector", fields: ["intact"] },
   {
     name: "Interpreter",
     ctor: Interpreter,
     anchor: "ctx",
-    fields: ["logs", "globalScope", "modules", "namespaces"],
+    fields: ["logs", "globalScope", "modules", "namespaces", "protector"],
     skip: ["builtins", "vm", "intrinsics", "hosts", "hostNamespaces", "moduleGlobals", "sources", "prelude"],
   },
 ]
@@ -578,7 +581,7 @@ class Encoder {
       for (const key of Object.keys(object)) {
         if (fields.includes(key) || spec.skip?.includes(key) || (spec.constants !== undefined && key in spec.constants))
           continue
-        if (spec.obj && (objFields.includes(key) || key === "tag" || key === "hasProgramAccessors")) continue
+        if (spec.obj && (objFields.includes(key) || key === "tag" || key === "hasProgramAccessors" || key === "guard")) continue
         throw new SnapshotError(`Codec gap: ${spec.name}.${key} is not saved.`)
       }
     }
@@ -590,7 +593,10 @@ class Encoder {
     const props: Array<Encoded> = []
     for (const [key, slot] of object.props) {
       props.push(typeof key === "symbol" ? this.value(key) : key)
-      if ("value" in slot) {
+      // An error's `stack` not read yet stays unformatted: its header is the error's name and message when it is.
+      if (slot instanceof StackSlot && slot.trace !== undefined) {
+        props.push(slot.trace, 16 | (slot.writable ? 1 : 0) | (slot.enumerable ? 2 : 0) | (slot.configurable ? 4 : 0))
+      } else if ("value" in slot) {
         props.push(
           this.value(slot.value),
           (slot.writable ? 1 : 0) | (slot.enumerable ? 2 : 0) | (slot.configurable ? 4 : 0),
@@ -969,6 +975,17 @@ class Decoder {
           enumerable,
           configurable,
         })
+        continue
+      }
+      if ((flags & 16) !== 0) {
+        const trace = entries[at + 1]
+        if (!(target instanceof ErrorObj) || typeof trace !== "string")
+          return invalid(`the stack ${String(key)} is not an error's.`)
+        const slot = new StackSlot(target, trace)
+        slot.writable = (flags & 1) !== 0
+        slot.enumerable = enumerable
+        slot.configurable = configurable
+        props.set(key as string | symbol, slot)
         continue
       }
       props.set(key as string | symbol, {

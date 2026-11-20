@@ -150,8 +150,13 @@ pub(crate) enum Request {
 }
 
 impl Vm {
-    /// Whether converting `v` with `hint` calls the program: one of the methods ToPrimitive may call is not native.
+    /// Whether converting `v` with `hint` calls the program: one of the methods ToPrimitive may call is not native,
+    /// or is an array's `toString` over an element whose conversion calls it.
     pub(crate) fn converts_by_call(&mut self, v: &Value, hint: Hint) -> bool {
+        self.converts_by_call_at(v, hint, 0)
+    }
+
+    fn converts_by_call_at(&mut self, v: &Value, hint: Hint, depth: u32) -> bool {
         let Value::Obj(id) = v else { return false };
         // A namespace or a promise converts without consulting its methods (see `Vm::primitive_of`).
         if matches!(
@@ -175,6 +180,18 @@ impl Vm {
                 return true;
             }
             let f = self.get_obj(*id, name);
+            if crate::builtins::array::is_join(self, &f) {
+                // `join` converts each element, as the reference's bytecode calls it: an element that calls the
+                // program makes the array's conversion one that does (an array nested deeper than this is left
+                // inline, as one that holds itself would recurse).
+                let items = match &self.heap[*id as usize].kind {
+                    Kind::Array(items) if depth < 8 => items.clone(),
+                    _ => Vec::new(),
+                };
+                return items
+                    .iter()
+                    .any(|e| self.converts_by_call_at(e, Hint::String, depth + 1));
+            }
             self.is_callable(&f) && !matches!(&f, Value::Obj(m) if matches!(self.heap[*m as usize].kind, Kind::Native { .. }))
         })
     }
@@ -701,7 +718,7 @@ fn convert_next(vm: &mut Vm, fr: Frame) -> Result<Step, Value> {
 }
 
 /// A key as a value, for the frame's slots.
-fn key_value(vm: &Vm, k: Atom) -> Value {
+pub(crate) fn key_value(vm: &Vm, k: Atom) -> Value {
     if k <= SYM_ASYNC_ITERATOR {
         Value::Sym(k)
     } else {

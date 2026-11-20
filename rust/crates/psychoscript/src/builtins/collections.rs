@@ -162,18 +162,32 @@ impl ForOf for FillCollection {
         if !matches!(x, Value::Obj(_)) {
             return Err(vm.type_error("new Map(...) expects [key, value] pairs as entry objects."));
         }
-        let k = vm.get_elem(&x, &Value::Num(0.0))?;
-        let v = vm.get_elem(&x, &Value::Num(1.0))?;
-        let key = vm.map_key(&k);
-        let entry_key = vm.map_entry_key(key, k);
-        table(vm, id).set(key, entry_key, v);
-        fuel::native(vm);
-        Ok(Flow::Next)
+        match crate::native::read_entry(vm, fr, x, FOR_OF_SLOTS + 1)? {
+            Ok((k, v)) => Ok(map_entry(vm, id, k, v)),
+            Err(flow) => Ok(flow),
+        }
+    }
+
+    fn returned(vm: &mut Vm, fr: Frame, r: crate::value::Slot) -> Result<Flow, Value> {
+        let id = fr.slot(vm, FOR_OF_SLOTS).obj().unwrap_or(0);
+        match crate::native::entry_read(vm, fr, r.get(), FOR_OF_SLOTS + 1)? {
+            Ok((k, v)) => Ok(map_entry(vm, id, k, v)),
+            Err(flow) => Ok(flow),
+        }
     }
 
     fn finish(vm: &mut Vm, fr: Frame) -> Res {
         Ok(fr.get(vm, FOR_OF_SLOTS))
     }
+}
+
+/// One entry of `new Map(iterable)`, read.
+fn map_entry(vm: &mut Vm, id: Id, k: Value, v: Value) -> Flow {
+    let key = vm.map_key(&k);
+    let entry_key = vm.map_entry_key(key, k);
+    table(vm, id).set(key, entry_key, v);
+    fuel::native(vm);
+    Flow::Next
 }
 
 fn map_ctor(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
@@ -186,7 +200,9 @@ fn map_ctor(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
     if !src.is_nullish() {
         fuel::method(vm);
         let op = crate::native::NativeOp::FillCollection;
-        return enter_for_of(vm, op, callee, Value::Undef, src, &[Value::Obj(id)]);
+        // The map, then where an entry is kept while a getter of it runs (see `native::read_entry`).
+        let own = [Value::Obj(id), Value::Undef, Value::Num(0.0), Value::Undef];
+        return enter_for_of(vm, op, callee, Value::Undef, src, &own);
     }
     Ok(Value::Obj(id))
 }

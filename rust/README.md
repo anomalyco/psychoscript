@@ -65,9 +65,6 @@ libm and are recorded only on Linux.
 Known differences:
 
 - A saved state resumes only in the implementation and build that saved it: the snapshot formats differ.
-- A getter that native code reads (iterator `next`/`done`/`value`, spread, `Object.assign`/`entries`, `valueOf` and
-  `toString`, a Set-like argument's `size`/`has`/`keys`) runs to completion inline: unlike the reference, it cannot
-  wait on a host call or be suspended.
 - Date's `toLocaleString`, `toLocaleDateString` and `toLocaleTimeString` format any locale and `Intl.DateTimeFormat`
   options through ICU4X rather than the host ICU4C: the common cases match, and the rest render ICU4X's closest output.
   The differences are recorded by `conformance/date-locale.ts` in `conformance/date-locale.differences.json` and pinned

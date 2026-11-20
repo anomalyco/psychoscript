@@ -1,6 +1,8 @@
 //! Live iterators over standard-library collections, and the shared iterator prototype's `next`.
 
 use super::{arg, fuel};
+use crate::accessors::Got;
+use crate::iteration::{item_of, read_result};
 use crate::native::{
     FOR_OF_SLOTS, Flow, ForOf, Frame, Input, NativeOp, Step, THREW, enter_for_of_record,
 };
@@ -138,15 +140,44 @@ fn iterator_ctor(vm: &mut Vm, this: Value, _args: &[Value], _: Id) -> Res {
     Err(vm.type_error("Constructor Iterator requires 'new'."))
 }
 
-/// GetIteratorDirect: the iterator and its `next`, read once; the reference's `$Direct` helper.
+/// GetIteratorDirect for a built-in's body: the iterator and its `next`, read once; the reference's `$Direct` helper,
+/// which reads `next` ahead (`Vm::reading`): a program getter runs from a frame, then the built-in again.
 fn direct(vm: &mut Vm, v: &Value) -> Result<(Value, Value), Value> {
-    let Value::Obj(id) = v else {
+    let Value::Obj(id) = *v else {
         return Err(vm.type_error("An iterator must be an object."));
     };
     let nk = vm.names.next;
-    let next = vm.get_calling(*id, nk)?;
+    let next = if vm.convert_ok {
+        vm.reading(|vm| Ok(vm.get_obj(id, nk)))?
+    } else {
+        vm.get_calling(id, nk)?
+    };
     fuel::native(vm);
     Ok((*v, next))
+}
+
+/// `direct` for a helper's step: a program getter for `next` is called from a frame, and `ITEM` keeps the iterator
+/// while it runs (see `READ_NEXT`).
+fn direct_stepping(
+    vm: &mut Vm,
+    fr: Frame,
+    v: &Value,
+) -> Result<Result<(Value, Value), Step>, Value> {
+    let Value::Obj(id) = *v else {
+        return Err(vm.type_error("An iterator must be an object."));
+    };
+    let nk = vm.names.next;
+    match vm.get_stepping(id, nk)? {
+        Got::Value(next) => {
+            fuel::native(vm);
+            Ok(Ok((*v, next)))
+        }
+        Got::Call(step) => {
+            fr.set(vm, ITEM, *v);
+            fr.set_index(vm, READING, READ_NEXT);
+            Ok(Err(step))
+        }
+    }
 }
 
 /// Whether the reference steps `iter` without calling its `next`: a built-in iterator, a generator or a helper.
@@ -164,9 +195,9 @@ fn stepped_directly(vm: &Vm, iter: &Value) -> bool {
 }
 
 /// The prelude's `flattenable` up to its call: `$IsObject` for a value that is not a string, `$Describe` when it
-/// fails, then the value's `[Symbol.iterator]` method, which the caller calls (when it is not nullish) and opens with
-/// `direct`.
-fn flattenable(vm: &mut Vm, v: &Value, strings: bool, name: &str) -> Result<Value, Value> {
+/// fails, then the caller reads the value's `[Symbol.iterator]` method,
+/// calls it (when it is not nullish) and opens with `direct`.
+fn flattenable_check(vm: &mut Vm, v: &Value, strings: bool, name: &str) -> Result<(), Value> {
     fuel::method(vm);
     let ok = match v {
         Value::Str(_) => strings,
@@ -186,7 +217,7 @@ fn flattenable(vm: &mut Vm, v: &Value, strings: bool, name: &str) -> Result<Valu
             "{name} expects an iterable or iterator, received {d}."
         )));
     }
-    vm.get_calling_value(v, SYM_ITERATOR)
+    Ok(())
 }
 
 /// The error of a call of a value that is not callable, naming `site` (a helper's kept name or the running call's), as
@@ -252,7 +283,30 @@ fn iterator_from(vm: &mut Vm, _this: Value, args: &[Value], callee: Id) -> Res {
         vm.bytecode_builtin();
         return Ok(v);
     }
-    let method = flattenable(vm, &v, true, "Iterator.from")?;
+    flattenable_check(vm, &v, true, "Iterator.from")?;
+    if let Value::Obj(id) = v
+        && vm.has_program_getter(id, SYM_ITERATOR)
+    {
+        // The getter is called from the frame, which goes on with the method it gives.
+        let site = match vm.call_site().map(str::to_owned) {
+            Some(name) => vm.string_val(name),
+            None => Value::Undef,
+        };
+        return vm.enter_native_sub(
+            NativeOp::Iterators,
+            FROM,
+            callee,
+            Value::Undef,
+            &[
+                v,
+                Value::Undef,
+                Value::Undef,
+                Value::Num(FROM_METHOD as f64),
+                site,
+            ],
+        );
+    }
+    let method = vm.get_calling_value(&v, SYM_ITERATOR)?;
     if method.is_nullish() {
         let (iter, next) = direct(vm, &v)?;
         return Ok(primed(vm, iter, next, HelperOp::Wrap));
@@ -269,7 +323,7 @@ fn iterator_from(vm: &mut Vm, _this: Value, args: &[Value], callee: Id) -> Res {
         FROM,
         callee,
         Value::Undef,
-        &[v, method],
+        &[v, method, Value::Undef, Value::Num(0.0), Value::Undef],
     )
 }
 
@@ -452,8 +506,14 @@ fn helper_return(vm: &mut Vm, this: Value, _args: &[Value], callee: Id) -> Res {
 // closes), whether the prelude generator's loop owes a back-edge, and while closing, the error to throw, the close's
 // fuel (or for `closeIterator` whether `return` is native) and whether a close failed.
 const HELPER: u16 = 0;
-/// `Iterator.from` calling an iterable's `[Symbol.iterator]`: slots the iterable and the method.
+/// `Iterator.from` calling an iterable's `[Symbol.iterator]`: slots the iterable and the method, then the iterator it
+/// returned and whether its `next` is a program getter that runs.
 const FROM: u16 = 1;
+const FROM_IT: usize = 2;
+const FROM_READING: usize = 3;
+/// The call's name, for a method that is not a function, when the frame reads `[Symbol.iterator]` (`FROM_METHOD`).
+const FROM_SITE: usize = 4;
+const FROM_METHOD: usize = 2;
 
 const PHASE: usize = 0;
 const ITEM: usize = 1;
@@ -461,6 +521,20 @@ const BACK: usize = 2;
 const STASH: usize = 3;
 const CLOSE: usize = 4;
 const FAILED: usize = 5;
+/// Which program getter the frame called from a frame of its own, as the prelude's bytecode reads it, while it runs.
+const READING: usize = 6;
+
+// What `READING` says.
+const NOT_READING: usize = 0;
+/// A `next()` result's `done` and `value`, by a `RESULT` frame (see `iteration::read_result`), its errors caught.
+const READ_RESULT: usize = 1;
+/// An iterator's `next` (`direct_stepping`).
+const READ_NEXT: usize = 2;
+/// The value `flatMap`'s callback returned: its `[Symbol.iterator]` (`flattenable`), the value in `ITEM`.
+const READ_FLAT: usize = 3;
+/// The `return` of the iterator being closed: `closeIterator`'s first read, or the close's.
+const READ_SOURCE_RETURN: usize = 4;
+const READ_RETURN: usize = 5;
 
 // Where a helper's frame is: what the call it waits on, if any, is for. A generator's phase follows its call's.
 const START: usize = 0;
@@ -487,6 +561,7 @@ fn enter_helper(vm: &mut Vm, callee: Id, id: Id, phase: usize, back: bool, item:
         Slot::UNDEF,
         Slot::index(0),
         Slot::index(0),
+        Slot::index(NOT_READING),
     ];
     let r = vm.enter_native_slots(
         NativeOp::Iterators,
@@ -517,6 +592,17 @@ fn helper_frame(vm: &mut Vm, fr: Frame, input: Input) -> Result<Step, Value> {
 
 fn helper_input(vm: &mut Vm, fr: Frame, input: Input) -> Result<Step, Value> {
     let phase = fr.index(vm, PHASE);
+    let reading = fr.index(vm, READING);
+    fr.set_index(vm, READING, NOT_READING);
+    match input {
+        Input::Returned(r) if reading != NOT_READING => {
+            return read_returned(vm, fr, reading, r.get());
+        }
+        // A `RESULT` frame's failure, as the call's whose result it read.
+        Input::Threw(e) if reading == READ_RESULT && phase == OUTER_CALL => return Err(e),
+        Input::Threw(e) if reading == READ_RESULT => return close_throw(vm, fr, e),
+        _ => {}
+    }
     match input {
         Input::Start => match phase {
             START => next_start(vm, fr),
@@ -544,28 +630,25 @@ fn helper_input(vm: &mut Vm, fr: Frame, input: Input) -> Result<Step, Value> {
             _ => closed(vm, fr, Ok(())),
         },
         Input::Returned(r) => match phase {
-            OUTER_CALL => match result_of(vm, r.get())? {
-                Some(item) => after_item(vm, fr, item),
-                None => out(vm, fr, None),
+            OUTER_CALL => match read_result(vm, r, Some(fr))? {
+                Err(step) => {
+                    fr.set_index(vm, READING, READ_RESULT);
+                    Ok(step)
+                }
+                Ok(got) => outer_item(vm, fr, got),
             },
             OUTER_GEN => after_item(vm, fr, r.get()),
-            INNER_CALL => match result_of(vm, r.get()) {
-                Ok(Some(v)) => out(vm, fr, Some(v)),
-                Ok(None) => {
-                    inner_done(vm, fr);
-                    next_loop(vm, fr)
+            INNER_CALL => match read_result(vm, r, Some(fr)) {
+                Ok(Err(step)) => {
+                    fr.set_index(vm, READING, READ_RESULT);
+                    Ok(step)
                 }
+                Ok(Ok(got)) => inner_item(vm, fr, got),
                 Err(e) => close_throw(vm, fr, e),
             },
             INNER_GEN => out(vm, fr, Some(r.get())),
             CALLBACK => callback_returned(vm, fr, r.get()),
-            FLAT_OPEN => match direct(vm, &r.get()) {
-                Ok(inner) => {
-                    set_inner(vm, fr, Some(inner));
-                    next_loop(vm, fr)
-                }
-                Err(e) => close_throw(vm, fr, e),
-            },
+            FLAT_OPEN => flat_open(vm, fr, r.get()),
             _ => {
                 // A close: a `return` method's result must be an object, as `closeIterator` checks it with its own
                 // message; a generator's close returns no result.
@@ -585,6 +668,66 @@ fn helper_input(vm: &mut Vm, fr: Frame, input: Input) -> Result<Step, Value> {
                 closed(vm, fr, outcome)
             }
         },
+    }
+}
+
+/// A step after a program getter the frame called returned `v`: goes on from the read, as `reading` says.
+fn read_returned(vm: &mut Vm, fr: Frame, reading: usize, v: Value) -> Result<Step, Value> {
+    match reading {
+        READ_RESULT if fr.index(vm, PHASE) == OUTER_CALL => {
+            outer_item(vm, fr, item_of(Slot::pack(v)))
+        }
+        READ_RESULT => inner_item(vm, fr, item_of(Slot::pack(v))),
+        READ_NEXT => {
+            fuel::native(vm);
+            let inner = (fr.get(vm, ITEM), v);
+            set_inner(vm, fr, Some(inner));
+            next_loop(vm, fr)
+        }
+        READ_FLAT => {
+            let r = fr.get(vm, ITEM);
+            flat_method(vm, fr, r, v)
+        }
+        READ_SOURCE_RETURN => source_return(vm, fr, v),
+        _ => {
+            let it = if fr.index(vm, PHASE) == CLOSE_INNER {
+                fr.get(vm, ITEM)
+            } else {
+                helper_mut(vm, helper_of(vm, fr)).iter
+            };
+            close_with(vm, fr, it, v)
+        }
+    }
+}
+
+/// The source's next value, or `None` once it is done.
+fn outer_item(vm: &mut Vm, fr: Frame, got: Option<Value>) -> Result<Step, Value> {
+    match got {
+        Some(item) => after_item(vm, fr, item),
+        None => out(vm, fr, None),
+    }
+}
+
+/// `flatMap`'s inner record's next value, or `None` once it is done.
+fn inner_item(vm: &mut Vm, fr: Frame, got: Option<Value>) -> Result<Step, Value> {
+    match got {
+        Some(v) => out(vm, fr, Some(v)),
+        None => {
+            inner_done(vm, fr);
+            next_loop(vm, fr)
+        }
+    }
+}
+
+/// `flatMap`'s inner iterator, returned by the method that opened it: its record, then the loop goes on.
+fn flat_open(vm: &mut Vm, fr: Frame, it: Value) -> Result<Step, Value> {
+    match direct_stepping(vm, fr, &it) {
+        Ok(Ok(inner)) => {
+            set_inner(vm, fr, Some(inner));
+            next_loop(vm, fr)
+        }
+        Ok(Err(step)) => Ok(step),
+        Err(e) => close_throw(vm, fr, e),
     }
 }
 
@@ -719,31 +862,37 @@ fn callback_returned(vm: &mut Vm, fr: Frame, r: Value) -> Result<Step, Value> {
             next_loop(vm, fr)
         }
         HelperOp::FlatMap(..) => {
-            let method = match flattenable(vm, &r, false, "Iterator.prototype.flatMap") {
-                Ok(m) => m,
-                Err(e) => return close_throw(vm, fr, e),
-            };
-            if method.is_nullish() {
-                return match direct(vm, &r) {
-                    Ok(inner) => {
-                        set_inner(vm, fr, Some(inner));
-                        next_loop(vm, fr)
-                    }
-                    Err(e) => close_throw(vm, fr, e),
-                };
-            }
-            if !vm.is_callable(&method) {
-                let site = helper_mut(vm, id).site;
-                let e = not_callable(vm, site);
+            if let Err(e) = flattenable_check(vm, &r, false, "Iterator.prototype.flatMap") {
                 return close_throw(vm, fr, e);
             }
-            fr.set_index(vm, PHASE, FLAT_OPEN);
-            match call(vm, fr, Slot::pack(method), Slot::pack(r), [], true) {
-                Ok(s) => Ok(s),
+            match vm.get_stepping_value(&r, SYM_ITERATOR) {
+                Ok(Got::Value(method)) => flat_method(vm, fr, r, method),
+                Ok(Got::Call(step)) => {
+                    fr.set(vm, ITEM, r);
+                    fr.set_index(vm, READING, READ_FLAT);
+                    Ok(step)
+                }
                 Err(e) => close_throw(vm, fr, e),
             }
         }
         _ => out(vm, fr, Some(r)),
+    }
+}
+
+/// `flatMap` opens what its callback returned with its `[Symbol.iterator]` `method`, once read.
+fn flat_method(vm: &mut Vm, fr: Frame, r: Value, method: Value) -> Result<Step, Value> {
+    if method.is_nullish() {
+        return flat_open(vm, fr, r);
+    }
+    if !vm.is_callable(&method) {
+        let site = helper_mut(vm, helper_of(vm, fr)).site;
+        let e = not_callable(vm, site);
+        return close_throw(vm, fr, e);
+    }
+    fr.set_index(vm, PHASE, FLAT_OPEN);
+    match call(vm, fr, Slot::pack(method), Slot::pack(r), [], true) {
+        Ok(s) => Ok(s),
+        Err(e) => close_throw(vm, fr, e),
     }
 }
 
@@ -888,12 +1037,23 @@ fn close_source(vm: &mut Vm, fr: Frame) -> Result<Step, Value> {
         return out(vm, fr, None);
     };
     let rk = vm.names.return_;
-    let method = vm.get_calling(id, rk)?;
+    match vm.get_stepping(id, rk)? {
+        Got::Value(method) => source_return(vm, fr, method),
+        Got::Call(step) => {
+            fr.set_index(vm, READING, READ_SOURCE_RETURN);
+            Ok(step)
+        }
+    }
+}
+
+/// `closeIterator` once it read the source's `return`.
+fn source_return(vm: &mut Vm, fr: Frame, method: Value) -> Result<Step, Value> {
     if method.is_nullish() {
         return out(vm, fr, None);
     }
     let native = !vm.is_closure(&method);
     fr.set_index(vm, CLOSE, native as usize);
+    let iter = helper_mut(vm, helper_of(vm, fr)).iter;
     close(vm, fr, iter)
 }
 
@@ -920,23 +1080,33 @@ fn close(vm: &mut Vm, fr: Frame, it: Value) -> Result<Step, Value> {
         | Kind::ListIter { .. } => closed(vm, fr, Ok(())),
         _ => {
             let rk = vm.names.return_;
-            let f = vm.get_calling(id, rk)?;
-            if f.is_nullish() {
-                return closed(vm, fr, Ok(()));
+            match vm.get_stepping(id, rk)? {
+                Got::Value(f) => close_with(vm, fr, it, f),
+                Got::Call(step) => {
+                    fr.set_index(vm, READING, READ_RETURN);
+                    Ok(step)
+                }
             }
-            if !vm.is_callable(&f) {
-                // `closeIterator` calls it, which fails as a call of the helper's prelude generator does.
-                let e = if fr.index(vm, PHASE) == CLOSE_SOURCE {
-                    let site = helper_mut(vm, helper_of(vm, fr)).site;
-                    not_callable(vm, site)
-                } else {
-                    vm.type_error("Iterator return must be a function.")
-                };
-                return closed(vm, fr, Err(e));
-            }
-            call(vm, fr, Slot::pack(f), Slot::pack(it), [], false)
         }
     }
+}
+
+/// A close once it read the iterator's `return`.
+fn close_with(vm: &mut Vm, fr: Frame, it: Value, f: Value) -> Result<Step, Value> {
+    if f.is_nullish() {
+        return closed(vm, fr, Ok(()));
+    }
+    if !vm.is_callable(&f) {
+        // `closeIterator` calls it, which fails as a call of the helper's prelude generator does.
+        let e = if fr.index(vm, PHASE) == CLOSE_SOURCE {
+            let site = helper_mut(vm, helper_of(vm, fr)).site;
+            not_callable(vm, site)
+        } else {
+            vm.type_error("Iterator return must be a function.")
+        };
+        return closed(vm, fr, Err(e));
+    }
+    call(vm, fr, Slot::pack(f), Slot::pack(it), [], false)
 }
 
 /// A close the frame made ended: spends its fuel, then goes on by what the frame was closing for.
@@ -1190,14 +1360,55 @@ fn it_reduce(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
 
 /// `Iterator.from` over an iterable whose `[Symbol.iterator]` it calls, as the prelude's `flattenable` does.
 fn from_step(vm: &mut Vm, fr: Frame, input: Input) -> Result<Step, Value> {
+    if fr.index(vm, FROM_READING) == FROM_METHOD {
+        let v = fr.get(vm, 0);
+        let method = match input {
+            Input::Start => match vm.get_stepping_value(&v, SYM_ITERATOR)? {
+                Got::Value(m) => m,
+                Got::Call(step) => return Ok(step),
+            },
+            Input::Returned(m) => m.get(),
+            Input::Threw(e) => return Err(e),
+            Input::Finished(_) => return Ok(Step::Done(Value::Undef)),
+        };
+        fr.set_index(vm, FROM_READING, 0);
+        if method.is_nullish() {
+            // Opened directly, as `Iterator.from` opens an iterator.
+            return from_step(vm, fr, Input::Returned(Slot::pack(v)));
+        }
+        if !vm.is_callable(&method) {
+            let site = fr.get(vm, FROM_SITE);
+            return Err(not_callable(vm, site));
+        }
+        fr.set(vm, 1, method);
+        return fr.call_slots(vm, Slot::pack(method), Slot::pack(v), []);
+    }
     match input {
         Input::Start => {
             let (method, v) = (fr.slot(vm, 1), fr.slot(vm, 0));
             fr.call_slots(vm, method, v, [])
         }
+        Input::Returned(next) if fr.index(vm, FROM_READING) == 1 => {
+            fuel::native(vm);
+            let iter = fr.get(vm, FROM_IT);
+            Ok(Step::Done(primed(vm, iter, next.get(), HelperOp::Wrap)))
+        }
         Input::Returned(it) => {
-            let (iter, next) = direct(vm, &it.get())?;
-            Ok(Step::Done(primed(vm, iter, next, HelperOp::Wrap)))
+            let Value::Obj(id) = it.get() else {
+                return Err(vm.type_error("An iterator must be an object."));
+            };
+            let nk = vm.names.next;
+            match vm.get_stepping(id, nk)? {
+                Got::Value(next) => {
+                    fuel::native(vm);
+                    Ok(Step::Done(primed(vm, it.get(), next, HelperOp::Wrap)))
+                }
+                Got::Call(step) => {
+                    fr.set(vm, FROM_IT, it.get());
+                    fr.set_index(vm, FROM_READING, 1);
+                    Ok(step)
+                }
+            }
         }
         Input::Threw(e) => Err(e),
         Input::Finished(_) => Ok(Step::Done(Value::Undef)),
