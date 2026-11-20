@@ -4,6 +4,7 @@
 use std::sync::OnceLock;
 
 use super::arg;
+use super::date_locale;
 use super::fuel::Conversions;
 use crate::object::*;
 use crate::ops::Hint;
@@ -257,23 +258,7 @@ fn time_string(t: f64) -> String {
     )
 }
 
-fn locale_date(f: &Fields) -> String {
-    let year = if f.year <= 0 { 1 - f.year } else { f.year };
-    format!("{}/{}/{}", f.month + 1, f.date, year)
-}
-
-fn locale_time(f: &Fields) -> String {
-    let h = f.hours % 12;
-    format!(
-        "{}:{:02}:{:02} {}",
-        if h == 0 { 12 } else { h },
-        f.minutes,
-        f.seconds,
-        if f.hours < 12 { "AM" } else { "PM" }
-    )
-}
-
-// ---------- parsing ----------
+// ---------- parse_date_fallback ----------
 
 fn digits(b: &[u8], i: &mut usize, n: usize) -> Option<i64> {
     if *i + n > b.len() || !b[*i..*i + n].iter().all(u8::is_ascii_digit) {
@@ -867,36 +852,199 @@ fn to_utc_string(vm: &mut Vm, this: Value, _args: &[Value], _: Id) -> Res {
     format_with(vm, &this, "toUTCString", utc_string)
 }
 
-// The locale forms are `en-US` in the host's time zone. The reference formats any locale and options through Intl;
-// here they are not read (a known difference), but null fails as it does there.
-fn locale_args(vm: &mut Vm, this: &Value, name: &str, args: &[Value]) -> Result<(), Value> {
-    this_date(vm, this, name)?;
-    if args.iter().take(2).any(|a| matches!(a, Value::Null)) {
+// The locale forms match the reference's `Intl.DateTimeFormat`, through ICU4X (see `date_locale`). The locale list and
+// options are read through their getters and converted (strings, `hour12` to a boolean, `fractionalSecondDigits` to a
+// number), as the reference hands them to the host; `null` fails as it does there.
+fn to_locale(vm: &mut Vm, this: Value, args: &[Value], kind: date_locale::Kind, name: &str) -> Res {
+    let (_, t) = this_date(vm, &this, name)?;
+    let locales = arg(args, 0);
+    let options = arg(args, 1);
+    if matches!(locales, Value::Null) || matches!(options, Value::Null) {
         return Err(vm.type_error("Cannot convert undefined or null to object."));
     }
-    Ok(())
+    let mut c = Conversions::default();
+    let r = locale_read(vm, &mut c, kind, t, locales, options);
+    c.finish(vm, r)
 }
 
 fn to_locale_string(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
-    locale_args(vm, &this, "toLocaleString", args)?;
-    format_with(vm, &this, "toLocaleString", |t| {
-        let f = fields(local_time(t));
-        format!("{}, {}", locale_date(&f), locale_time(&f))
-    })
+    to_locale(
+        vm,
+        this,
+        args,
+        date_locale::Kind::DateTime,
+        "toLocaleString",
+    )
 }
 
 fn to_locale_date_string(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
-    locale_args(vm, &this, "toLocaleDateString", args)?;
-    format_with(vm, &this, "toLocaleDateString", |t| {
-        locale_date(&fields(local_time(t)))
-    })
+    to_locale(
+        vm,
+        this,
+        args,
+        date_locale::Kind::Date,
+        "toLocaleDateString",
+    )
 }
 
 fn to_locale_time_string(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
-    locale_args(vm, &this, "toLocaleTimeString", args)?;
-    format_with(vm, &this, "toLocaleTimeString", |t| {
-        locale_time(&fields(local_time(t)))
-    })
+    to_locale(
+        vm,
+        this,
+        args,
+        date_locale::Kind::Time,
+        "toLocaleTimeString",
+    )
+}
+
+/// The options `Intl.DateTimeFormat` reads, in the reference's order; `hour12` reads `Boolean` (truthiness), the
+/// others are handed over for their ToString, and `fractionalSecondDigits` for ToNumber.
+const DATE_TIME_OPTIONS: [&str; 20] = [
+    "localeMatcher",
+    "calendar",
+    "numberingSystem",
+    "hour12",
+    "hourCycle",
+    "timeZone",
+    "weekday",
+    "era",
+    "year",
+    "month",
+    "day",
+    "dayPeriod",
+    "hour",
+    "minute",
+    "second",
+    "fractionalSecondDigits",
+    "timeZoneName",
+    "formatMatcher",
+    "dateStyle",
+    "timeStyle",
+];
+
+fn locale_read(
+    vm: &mut Vm,
+    c: &mut Conversions,
+    kind: date_locale::Kind,
+    t: f64,
+    locales: Value,
+    options: Value,
+) -> Res {
+    // The raw tag values and, in order, the option values with their position in `DATE_TIME_OPTIONS`.
+    let (tags, opted) = vm.reading(|vm| {
+        let mut tags = Vec::new();
+        match locales {
+            Value::Undef => {}
+            // A real array's items are the tags.
+            Value::Obj(id) if matches!(vm.heap[id as usize].kind, Kind::Array(_)) => {
+                if let Kind::Array(items) = &vm.heap[id as usize].kind {
+                    tags.extend(items.iter().cloned());
+                }
+            }
+            // A non-array object is array-like to Intl, so its elements are the tags.
+            Value::Obj(id) => {
+                let lk = vm.names.length;
+                let len = match vm.get_obj(id, lk) {
+                    Value::Num(n) if n.is_finite() && n > 0.0 => n.trunc(),
+                    Value::Num(n) if n == f64::INFINITY => n,
+                    _ => 0.0,
+                };
+                if len > crate::ops::MAX_ARRAY_LEN as f64 {
+                    return Err(vm.range_error("Invalid array length"));
+                }
+                for i in 0..len.max(0.0) as usize {
+                    let key = vm.atoms.intern(&i.to_string());
+                    if vm.has_key(id, key) {
+                        tags.push(vm.get_obj(id, key));
+                    }
+                }
+            }
+            other => tags.push(other),
+        }
+        let mut opted = Vec::new();
+        if let Value::Obj(id) = options {
+            for (at, name) in DATE_TIME_OPTIONS.iter().enumerate() {
+                let key = vm.atoms.intern_static(name);
+                let value = vm.get_obj(id, key);
+                if matches!(value, Value::Undef) {
+                    continue;
+                }
+                // `Boolean(value)`, no user code, as the reference reads it.
+                opted.push((
+                    at,
+                    if at == 3 {
+                        Value::Bool(vm.truthy(&value))
+                    } else {
+                        value
+                    },
+                ));
+            }
+        }
+        Ok((tags, opted))
+    })?;
+    let n = tags.len();
+    let mut hints = Vec::with_capacity(n + opted.len());
+    let mut values = Vec::with_capacity(n + opted.len());
+    values.extend(tags);
+    hints.extend(std::iter::repeat_n(Hint::String, n));
+    for (at, value) in &opted {
+        values.push(*value);
+        // `fractionalSecondDigits` converts with the number hint; the rest with the string hint.
+        hints.push(if *at == 15 {
+            Hint::Number
+        } else {
+            Hint::String
+        });
+    }
+    c.convert(vm, &hints, &mut values, false)?;
+    let (tag_values, opt_values) = values.split_at(n);
+    let mut tags = Vec::with_capacity(n);
+    for tag in tag_values {
+        let text = vm.string_of(tag)?;
+        tags.push(vm.text(text).to_owned());
+    }
+    let text = |vm: &mut Vm, value: &Value| -> Result<String, Value> {
+        let s = vm.string_of(value)?;
+        Ok(vm.text(s).to_owned())
+    };
+    let mut resolved = date_locale::Options::default();
+    for ((at, _), value) in opted.iter().zip(opt_values) {
+        match *at {
+            1 => resolved.calendar = Some(text(vm, value)?),
+            3 => {
+                resolved.hour12 = match value {
+                    Value::Bool(b) => Some(*b),
+                    _ => None,
+                }
+            }
+            4 => resolved.hour_cycle = Some(text(vm, value)?),
+            5 => resolved.time_zone = Some(text(vm, value)?),
+            6 => resolved.weekday = Some(text(vm, value)?),
+            7 => resolved.era = Some(text(vm, value)?),
+            8 => resolved.year = Some(text(vm, value)?),
+            9 => resolved.month = Some(text(vm, value)?),
+            10 => resolved.day = Some(text(vm, value)?),
+            11 => resolved.day_period = Some(text(vm, value)?),
+            12 => resolved.hour = Some(text(vm, value)?),
+            13 => resolved.minute = Some(text(vm, value)?),
+            14 => resolved.second = Some(text(vm, value)?),
+            15 => resolved.fractional_second_digits = Some(vm.number_of(value)?),
+            16 => resolved.time_zone_name = Some(text(vm, value)?),
+            18 => resolved.date_style = Some(text(vm, value)?),
+            19 => resolved.time_style = Some(text(vm, value)?),
+            _ => {} // `localeMatcher` and `formatMatcher` don't shape the format.
+        }
+    }
+    let request = date_locale::Request {
+        kind,
+        tags,
+        options: resolved,
+    };
+    match date_locale::format(t, &request) {
+        Ok(s) => Ok(vm.string_val(s)),
+        Err(date_locale::DateError::Range(message)) => Err(vm.range_error(&message)),
+        Err(date_locale::DateError::Type(message)) => Err(vm.type_error(&message)),
+    }
 }
 
 fn get_timezone_offset(vm: &mut Vm, this: Value, _args: &[Value], _: Id) -> Res {

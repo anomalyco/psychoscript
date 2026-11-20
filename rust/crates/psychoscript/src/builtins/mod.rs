@@ -5,6 +5,7 @@ mod buffer;
 pub mod bytes;
 pub(crate) mod collections;
 pub mod date;
+mod date_locale;
 pub mod exotic;
 pub(crate) mod fuel;
 pub mod iterator;
