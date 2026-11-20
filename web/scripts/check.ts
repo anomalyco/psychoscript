@@ -97,7 +97,7 @@ const expandShown = (w: Locator) =>
     }
   }
   for (const name of names) {
-    const want = name === "fetch-demo" ? false : surfaces.has(name) || name.endsWith("-demo") || name === "minigame"
+    const want = name === "fetch-demo" || name === "local-demo" ? false : surfaces.has(name) || name.endsWith("-demo") || name === "minigame"
     check((await expandShown(widget(page, name))) === want, `${name}: full-screen button ${want ? "offered" : "not offered"}`)
   }
   check(errors.length === 0, "all: no page errors", errors.slice(0, 3))
@@ -417,6 +417,26 @@ for (const [query, backend] of [["?only=shader-demo", "webgpu"], ["?only=shader-
   check(/isn't among the hosts/.test(other), "fetch: an undeclared host is denied", other)
   await shot(w, "fetch")
   check(errors.length === 0, "fetch: no page errors", errors)
+  await page.close()
+}
+
+// ---------- local network in dev mode ----------
+for (const [query, on] of [["?only=local-demo", true], ["?only=local-demo&local=0", false]] as const) {
+  const { page, errors } = await open(query)
+  const w = widget(page, "local-demo")
+  await rendered(w)
+  const end = Date.now() + 8000
+  let text = ""
+  while (Date.now() < end && !/status|CapabilityDenied|Network/.test(text)) {
+    text = (await w.locator(".pw-text").allTextContents()).join(" | ")
+    await page.waitForTimeout(100)
+  }
+  if (on) {
+    check(/status 200/.test(text), "fetch: allowLocalNetwork lets a declared localhost:port through over http:", text)
+    check(/local network allowed/.test((await w.locator(".pw-chip").textContent()) ?? ""), "fetch: the chip says the local network is allowed")
+    await shot(w, "local-network")
+  } else check(/CapabilityDenied: only https/.test(text), "fetch: without allowLocalNetwork the same request is denied", text)
+  check(errors.length === 0, `local network (${on ? "on" : "off"}): no page errors`, errors)
   await page.close()
 }
 

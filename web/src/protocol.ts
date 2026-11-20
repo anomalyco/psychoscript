@@ -57,7 +57,7 @@ export type ToWorker =
   | { t: "event"; wid: number; event: WidgetEvent }
   | { t: "draw"; wid: number; req: number; frame: Frame }
   | { t: "close"; wid: number }
-  | { t: "live"; wid: number; pid: number; data: string; hosts?: string[]; sliceBudgetMs?: number }
+  | { t: "live"; wid: number; pid: number; data: string; hosts?: string[]; localNetwork?: boolean; sliceBudgetMs?: number }
   | { t: "deliver"; wid: number; message: unknown }
   | { t: "pause"; wid: number }
   | { t: "resume"; wid: number }

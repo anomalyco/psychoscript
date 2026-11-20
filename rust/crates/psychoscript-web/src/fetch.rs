@@ -1,8 +1,10 @@
 //! `__host.fetch(request)`'s rules, enforced here; the browser's `fetch` carries the request (the web package calls it
 //! with `credentials: "omit"`, no referrer, no cache).
 //!
-//! `https:` only; the host on the run's allow-list (exact names, `*.` suffix wildcards, `*` for any); no URL
-//! credentials; no localhost or `.local` names, no private, loopback or link-local literal addresses; methods GET,
+//! `https:` only; the host on the run's allow-list (exact names, `*.` suffix wildcards, `*` for any; an entry may name a
+//! port); no URL credentials; no localhost or `.local` names, no private, loopback or link-local literal addresses,
+//! unless the host turned on dev mode (`Policy::local_network`): then those destinations, over `http:` too, when an
+//! entry other than `*` declares them (widgets-live.md, "Local network in dev mode"); methods GET,
 //! POST, PUT, PATCH, DELETE, HEAD; no cookie headers either way; request body <= 256 KB, response body <= 2 MB; 15 s
 //! per request; at most 4 in flight and 10 a second per run. Rejections are errors with `kind` (`CapabilityDenied`,
 //! `Network`, `Timeout`, `TooLarge`, `RateLimited`) and `message`.
@@ -148,7 +150,7 @@ pub struct Request {
 }
 
 impl Request {
-    pub fn parse(value: Option<&HostValue>, allowed: &[String]) -> Result<Request, Rejection> {
+    pub fn parse(value: Option<&HostValue>, policy: &Policy) -> Result<Request, Rejection> {
         let bad = |m: &str| Rejection::new("Network", format!("invalid request: {m}"));
         let Some(value) = value else {
             return Err(bad("expected { url, method?, headers?, body? }"));
@@ -162,7 +164,7 @@ impl Request {
                 .to_owned(),
         };
         let url = Url::parse(&url).map_err(|e| bad(&format!("{url}: {e}")))?;
-        check_url(&url, allowed)?;
+        check_url(&url, policy)?;
         let method = match value.get("method") {
             None | Some(HostValue::Undefined | HostValue::Null) => "GET".to_owned(),
             Some(m) => m
@@ -246,68 +248,119 @@ impl Request {
     }
 }
 
-/// Whether `host` is on `allowed`: exact names, `*.` suffixes (not the bare domain), `*`.
-pub fn host_allowed(host: &str, allowed: &[String]) -> bool {
-    let host = host.trim_end_matches('.').to_ascii_lowercase();
-    allowed.iter().any(|entry| {
-        let entry = entry.trim().trim_end_matches('.').to_ascii_lowercase();
-        match entry.strip_prefix("*.") {
-            _ if entry == "*" => true,
+/// What a run's `fetch` may reach: the template's declared hosts and, in dev mode (`local_network`), the local
+/// network among them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Policy {
+    /// Exact names or addresses, `*.` suffixes, `*` for any; an entry may name a port (`localhost:4097`,
+    /// `[::1]:8080`), and then matches only that port.
+    pub hosts: Vec<String>,
+    /// Dev mode: also loopback, private and link-local destinations and local names (`localhost`, `*.local`), over
+    /// `http:` too, when an entry other than `*` declares them.
+    pub local_network: bool,
+}
+
+/// An allow-list entry: its host pattern (lowercase, no brackets or trailing dot) and port, if it names one.
+fn entry(raw: &str) -> (String, Option<u16>) {
+    let e = raw.trim().to_ascii_lowercase();
+    let (host, port) = if let Some(rest) = e.strip_prefix('[') {
+        match rest.split_once(']') {
+            Some((h, tail)) => (
+                h.to_owned(),
+                tail.strip_prefix(':').and_then(|p| p.parse().ok()),
+            ),
+            None => (rest.to_owned(), None),
+        }
+    } else {
+        match e.rsplit_once(':') {
+            // One colon and digits after it: a port. More colons: a bare IPv6 address.
+            Some((h, p))
+                if !h.contains(':') && !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) =>
+            {
+                (h.to_owned(), p.parse().ok())
+            }
+            _ => (e.clone(), None),
+        }
+    };
+    (host.trim_end_matches('.').to_owned(), port)
+}
+
+/// Whether `host` (at `port`) is on `allowed`: exact names, `*.` suffixes (not the bare domain), `*` unless
+/// `explicit`; an entry with a port matches only that port.
+pub fn host_allowed(host: &str, port: Option<u16>, allowed: &[String], explicit: bool) -> bool {
+    let host = host
+        .trim_matches(['[', ']'])
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    allowed.iter().any(|raw| {
+        let (pattern, want) = entry(raw);
+        if want.is_some() && want != port {
+            return false;
+        }
+        match pattern.strip_prefix("*.") {
+            _ if pattern == "*" => !explicit,
             Some(suffix) => {
                 host.len() > suffix.len() + 1
                     && host.ends_with(suffix)
                     && host[..host.len() - suffix.len()].ends_with('.')
             }
-            None => host == entry,
+            None => host == pattern,
         }
     })
 }
 
-/// A URL the run may reach: https, no credentials, an allowed host, not a local name or a non-public address.
-pub fn check_url(url: &Url, allowed: &[String]) -> Result<(), Rejection> {
-    if url.scheme() != "https" {
-        return Err(Rejection::denied(format!(
-            "only https: URLs, not {}:",
-            url.scheme()
-        )));
+/// Whether a URL's host is on the local network: a loopback, private, link-local or other non-public address, or a
+/// local name.
+fn local(host: &url::Host<&str>) -> bool {
+    match host {
+        url::Host::Ipv4(ip) => !public_v4(*ip),
+        url::Host::Ipv6(ip) => !public(IpAddr::V6(*ip)),
+        url::Host::Domain(d) => {
+            let d = d.trim_end_matches('.').to_ascii_lowercase();
+            d == "localhost"
+                || d.ends_with(".localhost")
+                || d.ends_with(".local")
+                || d.ends_with(".internal")
+                || !d.contains('.')
+        }
     }
+}
+
+/// A URL the run may reach: no credentials and a declared host; `https:` to a public destination, or in dev mode a
+/// declared local one over `https:` or `http:`.
+pub fn check_url(url: &Url, policy: &Policy) -> Result<(), Rejection> {
     if !url.username().is_empty() || url.password().is_some() {
         return Err(Rejection::denied("URLs with credentials aren't allowed"));
     }
     let Some(host) = url.host() else {
         return Err(Rejection::denied("the URL has no host"));
     };
+    let is_local = local(&host);
+    let dev = policy.local_network && is_local;
+    if url.scheme() != "https" && !(dev && url.scheme() == "http") {
+        return Err(Rejection::denied(format!(
+            "only https: URLs, not {}:",
+            url.scheme()
+        )));
+    }
     let name = match &host {
         url::Host::Domain(d) => (*d).to_owned(),
         url::Host::Ipv4(ip) => ip.to_string(),
         url::Host::Ipv6(ip) => ip.to_string(),
     };
-    if !host_allowed(&name, allowed) {
+    if !host_allowed(&name, url.port_or_known_default(), &policy.hosts, is_local) {
         return Err(Rejection::denied(format!(
-            "{name} isn't among the hosts this widget may reach"
+            "{name}{} isn't among the hosts this widget may reach",
+            url.port().map(|p| format!(":{p}")).unwrap_or_default()
         )));
     }
-    match host {
-        url::Host::Ipv4(ip) if !public_v4(ip) => {
-            Err(Rejection::denied(format!("{ip} isn't a public address")))
-        }
-        url::Host::Ipv6(ip) if !public(IpAddr::V6(ip)) => {
-            Err(Rejection::denied(format!("{ip} isn't a public address")))
-        }
-        url::Host::Domain(d) => {
-            let d = d.trim_end_matches('.').to_ascii_lowercase();
-            if d == "localhost"
-                || d.ends_with(".localhost")
-                || d.ends_with(".local")
-                || d.ends_with(".internal")
-                || !d.contains('.')
-            {
-                return Err(Rejection::denied(format!("{d} is a local name")));
-            }
-            Ok(())
-        }
-        _ => Ok(()),
+    if is_local && !dev {
+        return Err(Rejection::denied(match host {
+            url::Host::Domain(_) => format!("{name} is a local name (the local network is off)"),
+            _ => format!("{name} isn't a public address (the local network is off)"),
+        }));
     }
+    Ok(())
 }
 
 /// A run's fetch budget: in flight, and started in the last second.
@@ -346,11 +399,7 @@ impl Budget {
 /// What the browser got: `{ status, url, headers }` (the final URL after redirects; headers as `[[name, value]]` or
 /// an object) as JSON, and the body bytes. Checked, then made `{ status, url, headers, body | body64 }`: the body as
 /// text when it's UTF-8, else base64.
-pub fn response(
-    meta_json: &str,
-    body: Vec<u8>,
-    allowed: &[String],
-) -> Result<HostValue, Rejection> {
+pub fn response(meta_json: &str, body: Vec<u8>, policy: &Policy) -> Result<HostValue, Rejection> {
     let meta: serde_json::Value = serde_json::from_str(meta_json)
         .map_err(|e| Rejection::new("Network", format!("bad response from the host: {e}")))?;
     let status = meta
@@ -363,8 +412,7 @@ pub fn response(
         .unwrap_or("");
     let url = Url::parse(url)
         .map_err(|e| Rejection::new("Network", format!("bad final URL {url}: {e}")))?;
-    check_url(&url, allowed)
-        .map_err(|r| Rejection::denied(format!("redirected: {}", r.message)))?;
+    check_url(&url, policy).map_err(|r| Rejection::denied(format!("redirected: {}", r.message)))?;
     if body.len() > MAX_RESPONSE_BYTES {
         return Err(Rejection::new(
             "TooLarge",
@@ -463,21 +511,58 @@ mod tests {
         list.iter().map(|s| (*s).to_owned()).collect()
     }
 
+    fn policy(list: &[&str], local_network: bool) -> Policy {
+        Policy {
+            hosts: hosts(list),
+            local_network,
+        }
+    }
+
     #[test]
     fn hosts_match_exactly_or_by_suffix() {
         let allowed = hosts(&["api.github.com", "*.coingecko.com"]);
-        assert!(host_allowed("api.github.com", &allowed));
-        assert!(host_allowed("API.GitHub.com.", &allowed));
-        assert!(!host_allowed("github.com", &allowed));
-        assert!(host_allowed("pro.api.coingecko.com", &allowed));
-        assert!(!host_allowed("coingecko.com", &allowed));
-        assert!(!host_allowed("evilcoingecko.com", &allowed));
-        assert!(host_allowed("anything.example", &hosts(&["*"])));
+        let ok = |h: &str| host_allowed(h, Some(443), &allowed, false);
+        assert!(ok("api.github.com"));
+        assert!(ok("API.GitHub.com."));
+        assert!(!ok("github.com"));
+        assert!(ok("pro.api.coingecko.com"));
+        assert!(!ok("coingecko.com"));
+        assert!(!ok("evilcoingecko.com"));
+        assert!(host_allowed(
+            "anything.example",
+            Some(443),
+            &hosts(&["*"]),
+            false
+        ));
+        assert!(!host_allowed("localhost", Some(80), &hosts(&["*"]), true));
+    }
+
+    #[test]
+    fn entries_may_name_a_port() {
+        let allowed = hosts(&[
+            "localhost:4097",
+            "[::1]:8080",
+            "127.0.0.1",
+            "api.example.com:8443",
+        ]);
+        assert!(host_allowed("localhost", Some(4097), &allowed, true));
+        assert!(!host_allowed("localhost", Some(4098), &allowed, true));
+        assert!(host_allowed("::1", Some(8080), &allowed, true));
+        assert!(!host_allowed("::1", Some(80), &allowed, true));
+        assert!(host_allowed("127.0.0.1", Some(3000), &allowed, true));
+        assert!(host_allowed("api.example.com", Some(8443), &allowed, false));
+        assert!(!host_allowed("api.example.com", Some(443), &allowed, false));
+        assert!(host_allowed(
+            "fe80::1",
+            Some(80),
+            &hosts(&["fe80::1"]),
+            true
+        ));
     }
 
     #[test]
     fn urls_follow_the_rules() {
-        let any = hosts(&["*"]);
+        let any = policy(&["*"], false);
         let check = |u: &str| check_url(&Url::parse(u).unwrap(), &any).map_err(|r| r.kind);
         assert_eq!(check("https://example.com/x"), Ok(()));
         assert_eq!(check("http://example.com/x"), Err("CapabilityDenied"));
@@ -491,11 +576,73 @@ mod tests {
         assert_eq!(check("https://[::1]/"), Err("CapabilityDenied"));
         assert_eq!(check("https://169.254.169.254/"), Err("CapabilityDenied"));
         assert_eq!(check("https://1.1.1.1/"), Ok(()));
+        // A declared local host is still refused while the local network is off.
+        let declared = policy(&["localhost:4097", "10.0.0.5"], false);
+        let off = |u: &str| check_url(&Url::parse(u).unwrap(), &declared).map_err(|r| r.message);
+        assert!(
+            off("http://localhost:4097/")
+                .unwrap_err()
+                .contains("only https")
+        );
+        assert!(
+            off("https://localhost:4097/")
+                .unwrap_err()
+                .contains("local network is off")
+        );
+        assert!(
+            off("https://10.0.0.5/")
+                .unwrap_err()
+                .contains("local network is off")
+        );
+    }
+
+    #[test]
+    fn dev_mode_lets_declared_local_hosts_through() {
+        let dev = policy(
+            &[
+                "localhost:4097",
+                "127.0.0.1",
+                "*.local",
+                "192.168.1.20:8000",
+                "*",
+            ],
+            true,
+        );
+        let check = |u: &str| check_url(&Url::parse(u).unwrap(), &dev).map_err(|r| r.message);
+        assert_eq!(check("http://localhost:4097/api"), Ok(()));
+        assert_eq!(check("https://localhost:4097/api"), Ok(()));
+        assert!(
+            check("http://localhost:4098/")
+                .unwrap_err()
+                .contains("isn't among the hosts")
+        );
+        assert_eq!(check("http://127.0.0.1:5173/"), Ok(()));
+        assert_eq!(check("http://printer.local/status"), Ok(()));
+        assert_eq!(check("http://192.168.1.20:8000/"), Ok(()));
+        // `*` doesn't declare the local network, and plain http stays local-only.
+        assert!(
+            check("http://10.0.0.1/")
+                .unwrap_err()
+                .contains("isn't among the hosts")
+        );
+        assert!(
+            check("http://example.com/")
+                .unwrap_err()
+                .contains("only https")
+        );
+        assert_eq!(check("https://example.com/"), Ok(()));
+        // Redirects end where the same rules allow.
+        let to_local = response(
+            r#"{"status":200,"url":"http://localhost:4097/x"}"#,
+            Vec::new(),
+            &policy(&["api.example.com"], true),
+        );
+        assert_eq!(to_local.unwrap_err().kind, "CapabilityDenied");
     }
 
     #[test]
     fn responses_are_checked_and_shaped() {
-        let allowed = hosts(&["api.example.com"]);
+        let allowed = policy(&["api.example.com"], false);
         let ok = response(
             r#"{"status":200,"url":"https://api.example.com/a","headers":[["Content-Type","text/plain"],["Set-Cookie","a=b"]]}"#,
             b"hi".to_vec(),

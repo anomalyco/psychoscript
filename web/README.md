@@ -45,6 +45,7 @@ const widget = mount(element, {
   data,               // the widget tool call's data
   mode: "step",       // or "live" (Program.mode)
   capabilities,       // Program.capabilities (live): { https: { hosts } }, granted as declared, shown as a chip
+  allowLocalNetwork,  // dev mode only, default false: see "Local network in dev mode" below
   state: "open",      // the server State.status: "submitted" | "dismissed" render read-only with a status line
   response,           // optional: State.response, summarized after "Submitted"
   onSubmit: (value) => rpc.respond({ sessionID, messageID, callID, response: { value } }),
@@ -104,6 +105,7 @@ What the page needs (the demo server, `scripts/serve.ts`, sends exactly this and
 script-src 'self' 'wasm-unsafe-eval'     # WebAssembly.compile in the page and the worker
 worker-src 'self'                        # module worker from the same origin (or where worker.js is served)
 connect-src 'self' https:                # fetching the .wasm (self), and live widgets' fetch capability
+                                         # (+ the local hosts, e.g. http://localhost:4097, with allowLocalNetwork)
 img-src 'self' data: https:              # image nodes and draw images (plus your file-content endpoint)
 style-src 'self'                         # no inline styles: constructable stylesheets and CSSOM only
 ```
@@ -120,6 +122,27 @@ Rules are enforced in Rust (`rust/crates/psychoscript-web/src/fetch.rs`): `https
 link-local literal addresses, GET/POST/PUT/PATCH/DELETE/HEAD, no cookie headers either way, request body ≤ 256 KB,
 response ≤ 2 MB, 15 s, at most 4 in flight and 10 a second. The worker carries it with
 `fetch(url, { credentials: "omit", referrerPolicy: "no-referrer", cache: "no-store", mode: "cors" })`.
+
+### Local network in dev mode
+
+`allowLocalNetwork: true` (default false; widgets-live.md, "Local network in dev mode") also lets a widget reach
+loopback, private and link-local addresses and local names (`localhost`, `*.localhost`, `*.local`, `*.internal`,
+single-label names), over `http:` as well as `https:`, but only hosts the template declares by name or address, never
+through `*`. Entries may name a port (`localhost:4097`, `127.0.0.1:5173`, `[::1]:8080`) and then match only it; an
+entry without a port matches any. Turn it on only behind a dev setting (e.g. a debug toggle or an
+`OPENCODE_WIDGETS_DEV_NETWORK`-style flag), never by default in release builds. The capability chip then says
+"local network allowed".
+
+The browser has its own say:
+
+- The page's CSP must allow the destination too, e.g. `connect-src 'self' https: http://localhost:4097
+  http://127.0.0.1:4097`; otherwise the request fails with `Network`.
+- An `https:` page can't fetch plain `http:` except to `localhost`/`127.0.0.1`/`[::1]` (mixed content); other private
+  hosts need `https:` there.
+- Chromium asks the user before a public page reaches the local network (Private/Local Network Access), and the
+  local server must answer CORS (and Private Network Access preflights) for the page's origin.
+- A browser can't pin the address it connects to, so with dev mode off a public name that resolves to a private
+  address is only stopped by those browser checks, not here.
 
 Browser limits: the target must allow CORS (else `Network`); the browser follows redirects itself (the final URL is
 checked against the same rules before the program sees anything, intermediate hops are not visible); names aren't

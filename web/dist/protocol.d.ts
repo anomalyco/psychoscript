@@ -89,6 +89,7 @@ export type ToWorker = {
     pid: number;
     data: string;
     hosts?: string[];
+    localNetwork?: boolean;
     sliceBudgetMs?: number;
 } | {
     t: "deliver";
