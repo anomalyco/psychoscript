@@ -125,10 +125,12 @@ export const CSS: string = /* css */ `
 .pw-readonly .pw-view { pointer-events: none; }
 .pw-readonly .pw-view .pw-carousel { pointer-events: auto; }
 .pw-hint {
-  position: absolute; top: -2px; right: 30px; z-index: 2; font-size: 11px; line-height: 16px; padding: 2px 8px;
+  position: absolute; top: -2px; right: 30px; z-index: 2; font-size: 11px; line-height: 16px; padding: 2px 6px;
+  display: inline-flex; align-items: center; gap: 4px; font-family: var(--pw-mono);
   border-radius: 999px; color: var(--pw-muted); background: var(--pw-bg); border: 1px solid var(--pw-border);
   pointer-events: none;
 }
+.pw-hint svg { width: 13px; height: 13px; }
 :host(:fullscreen) .pw-hint { position: fixed; top: 14px; right: 48px; }
 .pw-expand {
   position: absolute; top: -4px; right: -4px; z-index: 2; width: 28px; height: 28px; border-radius: 6px; padding: 0;

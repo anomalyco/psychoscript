@@ -217,6 +217,11 @@ declare class Widget implements MountedWidget {
     private exited;
     private loading;
     private render;
+    /**
+     * The focus hint: a keyboard icon plus "Esc" (a cursor icon while the pointer is captured). Touch devices show it only
+     * once a hardware keyboard typed, and then the icon alone.
+     */
+    private updateHint;
     private updateExpand;
     private inlineError;
     private button;
