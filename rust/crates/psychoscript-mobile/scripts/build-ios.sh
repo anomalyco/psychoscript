@@ -45,7 +45,7 @@ public extension PsychoScriptError {
     var reason: String {
         switch self {
         case let .Syntax(_, reason, _, _), let .Runtime(_, reason, _, _): return reason
-        case let .Timeout(reason, _), let .OutputTooLarge(reason, _): return reason
+        case let .Timeout(reason, _), let .OutputTooLarge(reason, _), let .MemoryLimitExceeded(reason, _): return reason
         case let .InvalidInput(reason), let .Snapshot(reason), let .InvalidState(reason): return reason
         case let .SliceBudget(reason, _): return reason
         }

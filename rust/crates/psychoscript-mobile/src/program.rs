@@ -16,6 +16,10 @@ pub struct RunOptions {
     /// Bytes of JSON the result may take; over it the run fails with `OutputTooLarge`.
     #[uniffi(default)]
     pub max_output_bytes: Option<u64>,
+    /// Bytes the run's heap may hold (the language's size model: what the program can still reach); over it the run
+    /// fails with `MemoryLimitExceeded`.
+    #[uniffi(default)]
+    pub max_heap_bytes: Option<u64>,
 }
 
 /// A program compiled once, to run as often as needed, from any thread, concurrently too: each run
@@ -35,7 +39,7 @@ impl Program {
     pub fn new(source: String, input_name: String) -> Result<Program, PsychoScriptError> {
         let compiled = Runtime::make()
             .compile(&source)
-            .map_err(|d| PsychoScriptError::from_diagnostic(d, None))?;
+            .map_err(|d| PsychoScriptError::from_diagnostic(d, None, None))?;
         Ok(Program {
             compiled,
             input_name,
@@ -75,13 +79,14 @@ impl Program {
             })
             .limits(Limits {
                 timeout_ms: options.timeout_ms,
-                max_output_bytes: None,
+                max_heap_bytes: options.max_heap_bytes,
+                ..Default::default()
             });
         let outcome = runtime.execute(&self.compiled);
         drop(runtime);
-        let data = outcome
-            .result
-            .map_err(|d| PsychoScriptError::from_diagnostic(d, options.timeout_ms))?;
+        let data = outcome.result.map_err(|d| {
+            PsychoScriptError::from_diagnostic(d, options.timeout_ms, options.max_heap_bytes)
+        })?;
         let out = data.to_json_string();
         match options.max_output_bytes {
             Some(max) if out.len() as u64 > max => Err(PsychoScriptError::OutputTooLarge {
