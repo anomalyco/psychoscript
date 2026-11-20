@@ -1849,6 +1849,19 @@ fn a_copy_within(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
             return Ok(this);
         }
         let count = (end - start).min(n - target);
+        // An unchanged length and no holes in the source range copy in one slice; the per-index HasProperty/Set or
+        // delete loop runs only after a shrink or over holes.
+        if !is_sparse(vm, id)
+            && len(vm, id) == n
+            && !items(vm, id)[start..start + count]
+                .iter()
+                .any(|v| matches!(v, Value::Uninit))
+        {
+            let copy: Vec<Value> = items(vm, id)[start..start + count].to_vec();
+            let out = array_items(vm, id)?;
+            out[target..target + count].copy_from_slice(&copy);
+            return Ok(this);
+        }
         let (mut from, mut to, direction): (i64, i64, i64) =
             if start < target && target < start + count {
                 ((start + count - 1) as i64, (target + count - 1) as i64, -1)
@@ -1859,8 +1872,7 @@ fn a_copy_within(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
             let from_i = from as usize;
             let to_i = to as usize;
             if let Some(v) = present(vm, id, from_i) {
-                let key = vm.atoms.intern(&to_i.to_string());
-                vm.set_obj(id, key, v)?;
+                vm.set_elem(&Value::Obj(id), &Value::Num(to_i as f64), v)?;
             } else {
                 let key = vm.atoms.intern(&to_i.to_string());
                 if !vm.delete(&Value::Obj(id), key)? {

@@ -420,6 +420,21 @@ export const arrayGlobal = <R>(ctx: Interpreter<R>) => {
           const final = e === undefined ? len : relative(e, len)
           if (from >= final) return target
           const count = Math.min(final - from, len - to)
+          // An unchanged length and no holes in the source range copy in one native step; the per-index
+          // HasProperty/Get/Set or delete loop runs only after a shrink or over holes.
+          if (target.items.length === len) {
+            let holes = false
+            for (let at = from; at < from + count; at++) {
+              if (!(at in target.items)) {
+                holes = true
+                break
+              }
+            }
+            if (!holes) {
+              target.items.copyWithin(to, from, final)
+              return target
+            }
+          }
           let [source, destination, direction] =
             from < to && to < from + count ? [from + count - 1, to + count - 1, -1] : [from, to, 1]
           for (let remaining = count; remaining > 0; remaining--) {
