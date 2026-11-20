@@ -26,6 +26,8 @@ pub enum PsychoScriptError {
     },
     /// The run went past `timeout_ms` of active time.
     Timeout { reason: String, timeout_ms: u64 },
+    /// The run's heap went over `max_heap_bytes` (the language's own size model, not the process's memory).
+    MemoryLimitExceeded { reason: String, max_heap_bytes: u64 },
     /// The result is over `max_output_bytes` of JSON.
     OutputTooLarge {
         reason: String,
@@ -44,7 +46,11 @@ pub enum PsychoScriptError {
 }
 
 impl PsychoScriptError {
-    pub(crate) fn from_diagnostic(d: Diagnostic, timeout_ms: Option<u64>) -> PsychoScriptError {
+    pub(crate) fn from_diagnostic(
+        d: Diagnostic,
+        timeout_ms: Option<u64>,
+        max_heap_bytes: Option<u64>,
+    ) -> PsychoScriptError {
         let kind = d.kind.name().to_owned();
         let reason = d.message_lossy();
         let (line, column) = d.location.map_or((None, None), |(l, c)| (Some(l), Some(c)));
@@ -52,6 +58,10 @@ impl PsychoScriptError {
             DiagnosticKind::TimeoutExceeded => PsychoScriptError::Timeout {
                 reason,
                 timeout_ms: timeout_ms.unwrap_or(0),
+            },
+            DiagnosticKind::MemoryLimitExceeded => PsychoScriptError::MemoryLimitExceeded {
+                reason,
+                max_heap_bytes: max_heap_bytes.unwrap_or(0),
             },
             DiagnosticKind::ParseError | DiagnosticKind::UnsupportedSyntax => {
                 PsychoScriptError::Syntax {
@@ -76,6 +86,7 @@ impl PsychoScriptError {
             PsychoScriptError::Syntax { reason, .. }
             | PsychoScriptError::Runtime { reason, .. }
             | PsychoScriptError::Timeout { reason, .. }
+            | PsychoScriptError::MemoryLimitExceeded { reason, .. }
             | PsychoScriptError::OutputTooLarge { reason, .. }
             | PsychoScriptError::InvalidInput { reason }
             | PsychoScriptError::SliceBudget { reason, .. }
