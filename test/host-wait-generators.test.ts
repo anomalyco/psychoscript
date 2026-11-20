@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Fiber } from "effect"
-import { Host, Runtime, toBytes } from "../src/index.js"
+import { Host, Runtime, toBytes } from "../src/effect/index.js"
 
 // A synchronous host function blocks: when an argument is a promise the runtime awaits (`promises: "await"`), the run
 // parks until it settled, and the program goes on as if the call had answered synchronously. Inside a running sync

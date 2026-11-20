@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
-import { Host, Runtime } from "../src/index.js"
+import { Host, Runtime } from "../src/effect/index.js"
 
 // Key enumeration: Object.keys and for...in share one surface over plain objects, arrays (index strings), and host
 // namespaces (the names `keys` lists at each path).

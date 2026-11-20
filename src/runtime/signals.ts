@@ -1,4 +1,3 @@
-import type { Cause } from "effect"
 import type { AstNode, GeneratorRequestKind } from "./model.js"
 import type { GeneratorObj, Value } from "./objects.js"
 
@@ -69,9 +68,7 @@ export type Hints = Hint | ReadonlyArray<Hint>
  * it: handlers, `catch`, and `finally` are skipped, an unobserved one is not reported, and one that reaches the
  * program's body interrupts the execution.
  */
-export class Interruption {
-  constructor(readonly cause: Cause.Cause<unknown>) {}
-}
+export class Interruption {}
 
 /** A call a built-in hands on (`Function.prototype.call`, say): the VM makes it as the built-in's own result. */
 export class Invoke {

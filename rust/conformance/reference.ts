@@ -1,5 +1,6 @@
-// Loads the reference (the TypeScript implementation in `src/` of this repository) and `effect` as
-// the reference resolves it, and defines the `tools` host global the generators and the reference bench drivers share.
+// Loads the reference (the TypeScript implementation in `src/` of this repository) through its Effect API
+// (`src/effect/index.ts`; `src/index.ts` in a reference from before the Promise API) and `effect` as the reference
+// resolves it, and defines the `tools` host global the generators and the reference bench drivers share.
 //
 // The reference package directory: `override` (a generator's first argument or PSYCHOSCRIPT_REF), or by default
 // the repository root.
@@ -16,6 +17,7 @@
 //     so calling it rejects its promise.
 //   Each function's `run` takes one parameter (`length` 1); its name is the last segment of its path.
 
+import { existsSync } from "node:fs"
 import { join, resolve } from "node:path"
 
 // Recordings are made in UTC, so dates in local time read the same on every machine (the Rust tests run in UTC too,
@@ -25,7 +27,8 @@ process.env.TZ = "UTC"
 export const reference = async (override?: string) => {
   const pkg = override === undefined ? resolve(import.meta.dir, "../..") : resolve(override)
   const effect = await import(Bun.resolveSync("effect", join(pkg, "src")))
-  const language = await import(join(pkg, "src/index.ts"))
+  const effectApi = join(pkg, "src/effect/index.ts")
+  const language = await import(existsSync(effectApi) ? effectApi : join(pkg, "src/index.ts"))
   return { pkg, Effect: effect.Effect, Fiber: effect.Fiber, Language: language }
 }
 

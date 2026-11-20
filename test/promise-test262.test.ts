@@ -14,7 +14,7 @@
  */
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
-import { Runtime } from "../src/index.js"
+import { Runtime } from "../src/effect/index.js"
 
 const execute = (code: string) => Effect.runPromise(Runtime.make({ limits: { timeoutMs: 1_000 } }).execute(code))
 

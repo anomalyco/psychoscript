@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
-import { Runtime } from "../src/index.js"
+import { Runtime } from "../src/effect/index.js"
 import { createBuiltins } from "../src/runtime/intrinsics.js"
 import { Interpreter } from "../src/runtime/interpreter.js"
 import { type Snapshot, SnapshotError } from "../src/snapshot/snapshot.js"

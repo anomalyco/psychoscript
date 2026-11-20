@@ -12,8 +12,8 @@ import type { Source } from "../src/runtime/source.js"
 import { fromBytes, type Snapshot, toBytes } from "../src/snapshot/snapshot.js"
 import { Effect } from "effect"
 import type { Json } from "../src/data.js"
-import { Host } from "../src/host-function.js"
-import { Runtime } from "../src/runtime.js"
+import { Host } from "../src/effect/host-function.js"
+import { Runtime } from "../src/effect/runtime.js"
 
 /** Runs a program in a fresh runtime with no host globals. */
 export const execute = (code: string, bindings?: Readonly<Record<string, Json>>, options?: Runtime.Options) =>
