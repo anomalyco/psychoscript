@@ -20,6 +20,7 @@ pub const THREW: usize = 1;
 pub const START: usize = 2;
 /// With the completion value of a generator it resumed (`Vm::native_resume`).
 pub const FINISHED: usize = 3;
+use crate::accessors::Got;
 use crate::value::{Slot, Value};
 use crate::vm::{Res, Vm};
 
@@ -340,6 +341,82 @@ pub trait ForOf {
     }
 }
 
+/// An entry's `0` or `1` (`index`) for a `ForOf` body (`Object.fromEntries`, `new Map`), read as the reference's
+/// bytecode reads `entry[0]` and `entry[1]`: a program getter is called from the frame, and what it throws closes the
+/// iterator. `Err` has the flow to return; the body's `ForOf::returned` then gets the getter's result, and
+/// `entry_getter` says which it was. Its three slots from `at` keep the entry, which getter runs and a key read.
+pub fn entry_get(
+    vm: &mut Vm,
+    fr: Frame,
+    x: Value,
+    at: usize,
+    index: usize,
+) -> Result<Result<Value, Flow>, Value> {
+    fr.set(vm, at, x);
+    let key = vm.atoms.intern_static(if index == 0 { "0" } else { "1" });
+    match vm.get_stepping_value(&x, key)? {
+        Got::Value(v) => Ok(Ok(v)),
+        Got::Call(step) => {
+            fr.set_index(vm, at + 1, index + 1);
+            let sp = (vm.stack.len() - 2 - fr.0) as u32;
+            vm.handlers_mut().push(crate::vm::Handler {
+                pc: THREW as u32,
+                sp,
+            });
+            Ok(Err(Flow::Call(step)))
+        }
+    }
+}
+
+/// Which of the entry's getters `entry_get` called returned, if one did: `0` or `1`.
+pub fn entry_getter(vm: &mut Vm, fr: Frame, at: usize) -> Option<usize> {
+    let stage = fr.index(vm, at + 1);
+    fr.set_index(vm, at + 1, 0);
+    stage.checked_sub(1)
+}
+
+/// The entry kept at `at`, as `entry_get` keeps it.
+pub fn kept_entry(vm: &Vm, fr: Frame, at: usize) -> Value {
+    fr.get(vm, at)
+}
+
+/// Both of an entry's elements, `0` then `1`, with `entry_get`: `new Map`'s.
+pub fn read_entry(
+    vm: &mut Vm,
+    fr: Frame,
+    x: Value,
+    at: usize,
+) -> Result<Result<(Value, Value), Flow>, Value> {
+    match entry_get(vm, fr, x, at, 0)? {
+        Ok(k) => read_entry_value(vm, fr, k, at),
+        Err(flow) => Ok(Err(flow)),
+    }
+}
+
+/// `read_entry` after the getter it called returned `r`.
+pub fn entry_read(
+    vm: &mut Vm,
+    fr: Frame,
+    r: Value,
+    at: usize,
+) -> Result<Result<(Value, Value), Flow>, Value> {
+    if entry_getter(vm, fr, at) == Some(0) {
+        return read_entry_value(vm, fr, r, at);
+    }
+    Ok(Ok((fr.get(vm, at + 2), r)))
+}
+
+fn read_entry_value(
+    vm: &mut Vm,
+    fr: Frame,
+    k: Value,
+    at: usize,
+) -> Result<Result<(Value, Value), Flow>, Value> {
+    let x = fr.get(vm, at);
+    fr.set(vm, at + 2, k);
+    Ok(entry_get(vm, fr, x, at, 1)?.map(|v| (k, v)))
+}
+
 /// What a `ForOf` body does next.
 pub enum Flow {
     /// Go on to the next value (after a back-edge).
@@ -368,6 +445,16 @@ const STEP: usize = 5;
 const START_LOOP: usize = 6;
 /// The iterator is done and the built-in's own work goes on (`ForOf::after`).
 const AFTER: usize = 7;
+/// A program getter called from a frame, as the reference's bytecode calls it: the source's `[Symbol.iterator]` (the
+/// open's fuel in `LOOP_STASH`), the opened iterator's `next` (the iterator in `LOOP_IT`), the result's `done` and
+/// `value` (a `RESULT` frame, see `iteration::read_result`), the iterator's `next` read on each step, or its `return`
+/// while closing (and after a throw).
+const READ_METHOD: usize = 8;
+const READ_OPENED: usize = 9;
+const READ_RESULT: usize = 10;
+const READ_NEXT: usize = 11;
+const READ_RETURN: usize = 12;
+const READ_RETURN_THROW: usize = 13;
 
 /// Pushes a `ForOf` frame over `source`, with the built-in's own slots after the loop's.
 pub fn enter_for_of(
@@ -450,13 +537,24 @@ pub fn for_of_step<C: ForOf>(vm: &mut Vm, fr: Frame, input: Input) -> Result<Ste
     match input {
         Input::Start => {}
         Input::Returned(r) => match phase {
-            OPENING => {
-                let it = r.get();
-                let Value::Obj(id) = it else {
-                    return Err(vm.type_error("Iterator method result must be an object."));
+            OPENING | READ_OPENED => {
+                let (it, next) = if phase == READ_OPENED {
+                    (fr.get(vm, LOOP_IT), r.get())
+                } else {
+                    let it = r.get();
+                    let Value::Obj(id) = it else {
+                        return Err(vm.type_error("Iterator method result must be an object."));
+                    };
+                    let nk = vm.names.next;
+                    match vm.get_stepping(id, nk)? {
+                        Got::Value(next) => (it, next),
+                        Got::Call(step) => {
+                            fr.set(vm, LOOP_IT, it);
+                            fr.set_index(vm, LOOP_PHASE, READ_OPENED);
+                            return Ok(step);
+                        }
+                    }
                 };
-                let nk = vm.names.next;
-                let next = vm.get_calling(id, nk)?;
                 if !vm.is_callable(&next) {
                     return Err(vm.type_error("Iterator next must be a function."));
                 }
@@ -468,17 +566,44 @@ pub fn for_of_step<C: ForOf>(vm: &mut Vm, fr: Frame, input: Input) -> Result<Ste
                 fr.set(vm, LOOP_NEXT, next);
                 phase = STEP;
             }
-            STEPPING => {
-                let Some(rid) = r.obj() else {
-                    return Err(vm.type_error("Iterator next() result must be an object."));
+            STEPPING | READ_RESULT => {
+                let got = if phase == READ_RESULT {
+                    crate::iteration::item_of(r)
+                } else {
+                    match crate::iteration::read_result(vm, r, None)? {
+                        Ok(got) => got,
+                        Err(step) => {
+                            fr.set_index(vm, LOOP_PHASE, READ_RESULT);
+                            return Ok(step);
+                        }
+                    }
                 };
-                let (dk, vk) = (vm.names.done, vm.names.value);
-                let d = vm.get_calling(rid, dk)?;
-                if vm.truthy(&d) {
+                let Some(v) = got else {
                     return loop_done::<C>(vm, fr);
-                }
-                let v = vm.get_calling(rid, vk)?;
+                };
                 flow = Some(body::<C>(vm, fr, |vm, fr| C::item(vm, fr, v)));
+            }
+            READ_METHOD => {
+                let open = fr.index(vm, LOOP_STASH) as i32;
+                if let Some(step) = open_with::<C>(vm, fr, r.get(), open)? {
+                    return Ok(step);
+                }
+            }
+            READ_NEXT => {
+                let it = fr.slot(vm, LOOP_IT);
+                return call_next(vm, fr, it, r, true);
+            }
+            READ_RETURN | READ_RETURN_THROW => {
+                fr.set_index(
+                    vm,
+                    LOOP_PHASE,
+                    if phase == READ_RETURN {
+                        CLOSING
+                    } else {
+                        CLOSING_THROW
+                    },
+                );
+                return close_with::<C>(vm, fr, r.get());
             }
             // A generator yielded.
             STEP => flow = Some(body::<C>(vm, fr, |vm, fr| C::item(vm, fr, r.get()))),
@@ -503,29 +628,19 @@ pub fn for_of_step<C: ForOf>(vm: &mut Vm, fr: Frame, input: Input) -> Result<Ste
         let open = vm.open_fuel(&source, crate::bytecode::ITER_FOR_OF);
         let method = match source {
             Value::Obj(id) if !vm.walks(&source) && !is_builtin_iterator(vm, id) => {
-                vm.get_calling(id, crate::object::SYM_ITERATOR)?
+                match vm.get_stepping(id, crate::object::SYM_ITERATOR)? {
+                    Got::Value(m) => m,
+                    Got::Call(step) => {
+                        fr.set_index(vm, LOOP_STASH, open as usize);
+                        fr.set_index(vm, LOOP_PHASE, READ_METHOD);
+                        return Ok(step);
+                    }
+                }
             }
             _ => Value::Undef,
         };
-        if method.is_nullish() {
-            let it = vm.get_iterator(&source)?;
-            vm.fuel(open);
-            let next = vm.record_next_of(&source, &it)?;
-            fr.set(vm, LOOP_IT, it);
-            fr.set(vm, LOOP_NEXT, next);
-        } else {
-            if !vm.is_callable(&method) {
-                return Err(vm.type_error("Iterator method must be a function."));
-            }
-            fr.set_index(vm, LOOP_STASH, open as usize);
-            fr.set_index(vm, LOOP_PHASE, OPENING);
-            return fr.call_slots_as(
-                vm,
-                Slot::pack(method),
-                Slot::pack(source),
-                [],
-                Step::CallUncounted,
-            );
+        if let Some(step) = open_with::<C>(vm, fr, method, open)? {
+            return Ok(step);
         }
     }
     loop {
@@ -572,17 +687,17 @@ pub fn for_of_step<C: ForOf>(vm: &mut Vm, fr: Frame, input: Input) -> Result<Ste
                 };
                 let f = if direct {
                     let nk = vm.names.next;
-                    vm.get_calling(id, nk)?
+                    match vm.get_stepping(id, nk)? {
+                        Got::Value(f) => f,
+                        Got::Call(step) => {
+                            fr.set_index(vm, LOOP_PHASE, READ_NEXT);
+                            return Ok(step);
+                        }
+                    }
                 } else {
                     next
                 };
-                fr.set_index(vm, LOOP_PHASE, STEPPING);
-                let mode = if uncounted {
-                    Step::CallUncounted
-                } else {
-                    Step::Call
-                };
-                return fr.call_slots_as(vm, Slot::pack(f), Slot::pack(it), [], mode);
+                return call_next(vm, fr, Slot::pack(it), Slot::pack(f), uncounted);
             }
         };
         let x = match stepped {
@@ -594,6 +709,50 @@ pub fn for_of_step<C: ForOf>(vm: &mut Vm, fr: Frame, input: Input) -> Result<Ste
         };
         flow = Some(body::<C>(vm, fr, |vm, fr| C::item(vm, fr, x)));
     }
+}
+
+/// Opens the loop's source with its `[Symbol.iterator]` method once read: a method of the program's is called from
+/// the frame (`Some` step), none opens the source as the VM does.
+fn open_with<C: ForOf>(
+    vm: &mut Vm,
+    fr: Frame,
+    method: Value,
+    open: i32,
+) -> Result<Option<Step>, Value> {
+    let source = fr.get(vm, LOOP_SOURCE);
+    if method.is_nullish() {
+        let it = vm.get_iterator(&source)?;
+        vm.fuel(open);
+        let next = vm.record_next_of(&source, &it)?;
+        fr.set(vm, LOOP_IT, it);
+        fr.set(vm, LOOP_NEXT, next);
+        fr.set_index(vm, LOOP_PHASE, START_LOOP);
+        return Ok(None);
+    }
+    if !vm.is_callable(&method) {
+        return Err(vm.type_error("Iterator method must be a function."));
+    }
+    fr.set_index(vm, LOOP_STASH, open as usize);
+    fr.set_index(vm, LOOP_PHASE, OPENING);
+    fr.call_slots_as(
+        vm,
+        Slot::pack(method),
+        Slot::pack(source),
+        [],
+        Step::CallUncounted,
+    )
+    .map(Some)
+}
+
+/// Calls the iterator's `next`, once read: the VM's own helpers and exotic iterators without a native's fifty.
+fn call_next(vm: &mut Vm, fr: Frame, it: Slot, f: Slot, uncounted: bool) -> Result<Step, Value> {
+    fr.set_index(vm, LOOP_PHASE, STEPPING);
+    let mode = if uncounted {
+        Step::CallUncounted
+    } else {
+        Step::Call
+    };
+    fr.call_slots_as(vm, f, it, [], mode)
 }
 
 /// The iterator is done: the built-in finishes, or goes on to work of its own (`ForOf::done`).
@@ -669,26 +828,43 @@ fn close<C: ForOf>(vm: &mut Vm, fr: Frame, outcome: Result<Value, Value>) -> Res
         | Kind::ListIter { .. } => close_done::<C>(vm, fr, None),
         _ => {
             let rk = vm.names.return_;
-            let f = vm.get_calling(id, rk)?;
-            if f.is_nullish() {
-                return close_done::<C>(vm, fr, None);
-            }
-            if !vm.is_callable(&f) {
-                if throwing {
-                    return close_done::<C>(vm, fr, None);
+            match vm.get_stepping(id, rk)? {
+                Got::Value(f) => close_with::<C>(vm, fr, f),
+                Got::Call(step) => {
+                    let reading = if throwing {
+                        READ_RETURN_THROW
+                    } else {
+                        READ_RETURN
+                    };
+                    fr.set_index(vm, LOOP_PHASE, reading);
+                    Ok(step)
                 }
-                return Err(vm.type_error("Iterator return must be a function."));
             }
-            if throwing {
-                let sp = (vm.stack.len() - fr.0) as u32;
-                vm.handlers_mut().push(crate::vm::Handler {
-                    pc: THREW as u32,
-                    sp,
-                });
-            }
-            fr.call_slots_as(vm, Slot::pack(f), Slot::pack(it), [], Step::CallUncounted)
         }
     }
+}
+
+/// Closes the loop's iterator with its `return` method, once read.
+fn close_with<C: ForOf>(vm: &mut Vm, fr: Frame, f: Value) -> Result<Step, Value> {
+    let throwing = fr.index(vm, LOOP_PHASE) == CLOSING_THROW;
+    let it = fr.get(vm, LOOP_IT);
+    if f.is_nullish() {
+        return close_done::<C>(vm, fr, None);
+    }
+    if !vm.is_callable(&f) {
+        if throwing {
+            return close_done::<C>(vm, fr, None);
+        }
+        return Err(vm.type_error("Iterator return must be a function."));
+    }
+    if throwing {
+        let sp = (vm.stack.len() - fr.0) as u32;
+        vm.handlers_mut().push(crate::vm::Handler {
+            pc: THREW as u32,
+            sp,
+        });
+    }
+    fr.call_slots_as(vm, Slot::pack(f), Slot::pack(it), [], Step::CallUncounted)
 }
 
 /// The iterator closed (`result` is what its `return()` returned, when it was called): spends the close's fuel, then

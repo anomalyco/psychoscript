@@ -302,7 +302,14 @@ fn array_from(vm: &mut Vm, _this: Value, args: &[Value], callee: Id) -> Res {
         f => Some(super::require_callback(vm, &f, "Array.from")?),
     };
     let this_arg = arg(args, 2);
-    if vm.is_iterable(&src) {
+    let iterable = match src {
+        // The reference reads a getter for the method ahead (`Vm::reading`) to choose, and its loop reads it again.
+        Value::Obj(id) if vm.convert_ok && vm.has_program_getter(id, SYM_ITERATOR) => !vm
+            .reading(|vm| Ok(vm.get_obj(id, SYM_ITERATOR)))?
+            .is_nullish(),
+        _ => vm.is_iterable(&src),
+    };
+    if iterable {
         fuel::handoff(vm);
         let out = vm.new_array(Vec::new());
         return enter_for_of(
@@ -602,6 +609,13 @@ fn a_join(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
         v => v,
     };
     joined(vm, id, Some(sep))
+}
+
+/// Whether `f` is the arrays' `toString` or `join`, which convert each element.
+pub(crate) fn is_join(vm: &Vm, f: &Value) -> bool {
+    let Value::Obj(id) = *f else { return false };
+    matches!(vm.heap[id as usize].kind, Kind::Native { f, .. }
+        if std::ptr::fn_addr_eq(f, a_to_string as crate::vm::NativeFn) || std::ptr::fn_addr_eq(f, a_join as crate::vm::NativeFn))
 }
 
 fn a_to_string(vm: &mut Vm, this: Value, _args: &[Value], callee: Id) -> Res {

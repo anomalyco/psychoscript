@@ -1323,7 +1323,23 @@ impl Vm {
         if !v.is_nullish() {
             self.enumerable_source("Object spread", v)?;
         }
+        if self.copies_by_frame(v) {
+            return self
+                .copy_by_frame(
+                    crate::accessors::COPY_SPREAD,
+                    Value::Obj(target),
+                    vec![*v],
+                    &[],
+                )
+                .map(|_| ());
+        }
         self.copy_props(target, v, &[])
+    }
+
+    /// Whether copying `v`'s properties calls a program getter, which a frame calls (see `Vm::copy_by_frame`); the
+    /// caller sees `Vm::entered`.
+    fn copies_by_frame(&self, v: &Value) -> bool {
+        matches!(v, Value::Obj(id) if self.heap[*id as usize].flags & ACCESSORS != 0)
     }
 
     /// An object rest pattern's properties of `v`, but `excluded`, copied into `target`.
@@ -1335,6 +1351,16 @@ impl Vm {
         excluded: &[Atom],
     ) -> Result<(), Value> {
         self.enumerable_source("Object destructuring", v)?;
+        if self.copies_by_frame(v) {
+            return self
+                .copy_by_frame(
+                    crate::accessors::COPY_REST,
+                    Value::Obj(target),
+                    vec![*v],
+                    excluded,
+                )
+                .map(|_| ());
+        }
         self.copy_props(target, v, excluded)
     }
 
@@ -2037,6 +2063,7 @@ impl Vm {
         kind: u8,
         arg: Option<Value>,
         cached_next: Value,
+        missing: u32,
     ) -> Result<Option<Value>, Value> {
         if let Value::Obj(id) = it
             && let Kind::AsyncFromSync { sync, next } = self.heap[id as usize].kind
@@ -2051,6 +2078,11 @@ impl Vm {
             cached_next
         } else {
             let name = self.request_name(kind);
+            // A program getter is called from a frame, which takes the method as below.
+            if let Some(entered) = self.method_by_call(it, name, kind, arg, false, missing) {
+                entered?;
+                return Ok(Some(Value::Undef));
+            }
             self.get_calling_value(&it, name)?
         };
         if kind != REQ_NEXT && m.is_nullish() {
@@ -2091,7 +2123,7 @@ impl Vm {
         false
     }
 
-    fn request_name(&mut self, kind: u8) -> Atom {
+    pub(crate) fn request_name(&mut self, kind: u8) -> Atom {
         match kind {
             REQ_NEXT => self.names.next,
             REQ_RETURN => self.names.return_,
@@ -2119,19 +2151,40 @@ impl Vm {
     #[inline(never)]
     pub fn get_async_iterator(&mut self, v: &Value, ctx: u8, slot: u32) -> Res {
         if let Value::Obj(id) = v {
-            let f = self.get_calling(*id, SYM_ASYNC_ITERATOR)?;
+            // A program getter is called from the frame, which opens with what it gives.
+            if self.has_program_getter(*id, SYM_ASYNC_ITERATOR) {
+                return self.open_async_by_getter(*v, slot, ctx);
+            }
+            let f = self.get_obj(*id, SYM_ASYNC_ITERATOR);
             if !f.is_nullish() {
                 if self.calls_program(&f) {
                     return self.open_async_by_call(f, *v, slot, None);
                 }
-                // The reference calls the method as bytecode calls it.
-                let it = self.open_with(&f, v)?;
-                if !self.is_closure(&f) {
-                    self.fuel(NATIVE_FUEL);
-                }
-                return Ok(it);
+                return self.open_async_native(&f, v);
             }
         }
+        match self.open_sync_for_async(v, ctx)? {
+            Ok(it) => Ok(it),
+            Err((method, open)) => self.open_async_by_call(method, *v, slot, Some(open)),
+        }
+    }
+
+    /// `[Symbol.asyncIterator]` of the host's or the VM's, called as the reference's bytecode calls it.
+    pub(crate) fn open_async_native(&mut self, f: &Value, v: &Value) -> Res {
+        let it = self.open_with(f, v)?;
+        if !self.is_closure(f) {
+            self.fuel(NATIVE_FUEL);
+        }
+        Ok(it)
+    }
+
+    /// `GetAsyncIter` with no `[Symbol.asyncIterator]`: the sync iterator, adapted, or `Err` with the program's
+    /// `[Symbol.iterator]` method to call from a frame and the open's fuel.
+    pub(crate) fn open_sync_for_async(
+        &mut self,
+        v: &Value,
+        ctx: u8,
+    ) -> Result<Result<Value, (Value, i32)>, Value> {
         // Anything but a value the reference walks itself it opens in its internal bytecode
         // (`$vmOpenSyncForAsync`), entered for one unit, which calls the `Symbol.iterator` method.
         let open = self.open_fuel(v, ITER_FOR_OF);
@@ -2143,7 +2196,7 @@ impl Vm {
         {
             let method = method?;
             if self.calls_program(&method) {
-                return self.open_async_by_call(method, *v, slot, Some(open));
+                return Ok(Err((method, open)));
             }
         }
         let Value::Obj(sync) = self.get_iterator_in(v, ctx)? else {
@@ -2152,10 +2205,10 @@ impl Vm {
         self.fuel(open);
         let next = self.record_next_of(v, &Value::Obj(sync))?;
         let proto = self.realm.async_from_sync_proto;
-        Ok(Value::Obj(self.alloc(Obj::new(
+        Ok(Ok(Value::Obj(self.alloc(Obj::new(
             Some(proto),
             Kind::AsyncFromSync { sync, next },
-        ))))
+        )))))
     }
 
     /// The promise of an async-from-sync iterator's `next`, `throw` or `return`. A step that calls the program or
@@ -2296,13 +2349,17 @@ impl Vm {
     /// program's is called by a frame, which pushes the result for the instruction itself: the caller sees
     /// `Vm::entered`.
     #[inline(never)]
-    pub fn async_close(&mut self, it: Value) -> Result<Option<Value>, Value> {
+    pub fn async_close(&mut self, it: Value, skip: u32) -> Result<Option<Value>, Value> {
         match it {
             Value::Undef | Value::Null => Ok(None),
             Value::Obj(id)
                 if !matches!(self.heap[id as usize].kind, Kind::AsyncFromSync { .. }) =>
             {
                 let rk = self.names.return_;
+                if let Some(entered) = self.method_by_call(it, rk, REQ_RETURN, None, true, skip) {
+                    entered?;
+                    return Ok(Some(Value::Undef));
+                }
                 let m = self.get_calling_value(&it, rk)?;
                 if m.is_nullish() {
                     return Ok(None);
@@ -2317,7 +2374,7 @@ impl Vm {
                 // The reference calls it as bytecode calls it.
                 self.call_counted(&m, it, &[]).map(Some)
             }
-            _ => self.delegate_call(it, REQ_RETURN, None, Value::Undef),
+            _ => self.delegate_call(it, REQ_RETURN, None, Value::Undef, 0),
         }
     }
 

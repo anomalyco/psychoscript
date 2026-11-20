@@ -3429,9 +3429,14 @@ impl Vm {
                         }
                     }
                     Op::ObjectSpread => {
+                        self.frames[fi].pc = pc;
                         let src = self.pop();
                         if let Value::Obj(id) = self.top() {
                             tri!(self.spread_props(id, &src));
+                            // Its getters are called from a frame, which leaves the object where it is.
+                            if std::mem::take(&mut self.entered) {
+                                continue 'outer;
+                            }
                         }
                     }
                     Op::ObjRest(n) => {
@@ -3446,7 +3451,12 @@ impl Vm {
                             excluded.push(tri!(self.key_of(k)));
                         }
                         let id = self.new_object();
+                        self.frames[fi].pc = pc;
                         tri!(self.rest_props(id, &src, &excluded));
+                        // Its getters are called from a frame, which pushes the object.
+                        if std::mem::take(&mut self.entered) {
+                            continue 'outer;
+                        }
                         self.push(Value::Obj(id));
                     }
                     Op::ToKey => {
@@ -4169,7 +4179,7 @@ impl Vm {
                         }
                         let arg = (flags & DELEGATE_NO_ARG == 0).then(|| received.get());
                         let next = self.stack[base + slot as usize + 1].get();
-                        let r = tri!(self.delegate_call(it.get(), kind, arg, next));
+                        let r = tri!(self.delegate_call(it.get(), kind, arg, next, missing));
                         // A method of the program's runs in a frame, which pushes its result itself.
                         if std::mem::take(&mut self.entered) {
                             continue 'outer;
@@ -4184,6 +4194,12 @@ impl Vm {
                     }
                     Op::DelegateResult(exit, kind) => {
                         let r = self.pop();
+                        if let Some(entered) = self.delegate_result_by_call(&r, exit) {
+                            self.frames[fi].pc = pc;
+                            tri!(entered);
+                            self.entered = false;
+                            continue 'outer;
+                        }
                         let (v, done) = tri!(self.iter_result_parts(&r, kind));
                         self.push(v);
                         pc = if done {
@@ -4207,7 +4223,7 @@ impl Vm {
                     Op::AsyncClose(slot, skip) => {
                         self.frames[fi].pc = pc;
                         let it = std::mem::take(&mut self.stack[base + slot as usize]).get();
-                        let r = tri!(self.async_close(it));
+                        let r = tri!(self.async_close(it, skip));
                         if std::mem::take(&mut self.entered) {
                             continue 'outer;
                         }
