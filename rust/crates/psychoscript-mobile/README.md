@@ -47,9 +47,171 @@ val out = program.run("""{"n":21}""", RunOptions(timeoutMs = 250uL))
 
 Swift errors also get `.reason` on the enum. Kotlin exceptions' `message` lists every field.
 
+## Live runs
+
+`program.startLive(inputJson, handler, options = LiveOptions(), transport = nil)` runs the program on a thread of
+its own until it returns or is stopped. Beside its input function it gets `__host`:
+
+| Function | Kind | |
+| --- | --- | --- |
+| `__host.post(message)` | sync | `handler.onPost(json)` |
+| `await __host.receive()` | async | the next message `deliver(json)` queued, in order |
+| `await __host.sleep(ms)` | async | resolves after `ms` of running time (clamped to >= 0) |
+| `__host.now()` | sync | ms of running time, paused time left out |
+| `await __host.fetch(request)` | async | HTTPS through the app's `FetchTransport` (below) |
+
+- `LiveHandler` (callback interface): `onPost(messageJson)` and `onWarning(message)` run on the run's thread, inside
+  the program's call: hand them to the UI thread and return. `onExit(LiveExit)` runs once on the run's thread:
+  `Finished(resultJson)`, `Failed(error)` (`SliceBudget`, `Runtime`, ...), or `Stopped`.
+- `LiveOptions(sliceBudgetMs = 50, maxPostsPerSecond = 240, httpsHosts = nil)`.
+  - **Slice budget:** a run computing past the budget without waiting on `receive`, `sleep` or `fetch` is stopped with
+    `SliceBudget`. The language can't time-slice a VM, so the crate has psychoscript's suspender stop the run at its next
+    step boundary (that works inside tight loops), from a timer that checks each stretch of compute. A stretch counts
+    from when one of those calls resolves (or the run starts) until the program next waits on one that's pending.
+    Compute that follows such a wait in the same turn (`__host.sleep(1000); await null; while (true) {}`) isn't
+    counted.
+  - **Posts:** past the limit in one second they're dropped, with one `onWarning` per second.
+  - **Heap:** psychoscript has no heap cap today, so a run's heap isn't bounded beyond its time budget.
+- `deliver(json)`, `pause()`, `resume()`, `snapshot()`, `stop()`, `isRunning()`;
+  `LiveRun.restore(snapshot, handler, inputName = "__input", options = LiveOptions(), transport = nil)`.
+  - `pause()`: no frames, messages or timers reach the program. `sleep` timers freeze with their remaining time,
+    `now()` stops, delivered messages and finished fetches are held, and nothing is scheduled. A stretch of compute in
+    progress finishes first (within the slice budget). After that it costs no CPU (measured: 0 ms over 2 s).
+  - `resume()`: the program's next `receive` is `{ type: "resumed", pausedMs }`, before anything delivered meanwhile.
+    A program waiting in `sleep` or `fetch` finishes that first.
+  - `snapshot()`: for a run paused a while (over 30 s, or when the OS asks for memory). It saves the paused run's state
+    (psychoscript `suspend`), ends its thread and frees its VM, and returns the bytes. `resume()` continues it here;
+    `LiveRun.restore` continues it in a later process of the same build, with input, running time and timers. Messages
+    delivered but not yet received stay in the old run. It fails with `Snapshot` while a `fetch` is in flight: then
+    `stop()` and start again later.
+  - `stop()`: doesn't block. A waiting run wakes to an interrupt; a computing one is suspended at its next step.
+    Dropping the `LiveRun` stops it.
+
+### fetch
+
+`options.httpsHosts` is the template's `https` capability: exact names, `*.` suffixes (not the bare domain), or `*`.
+Without it, or without a transport, every fetch rejects with `CapabilityDenied`. The program passes
+`{ url, method?, headers?, body? | body64? }` and gets `{ status, url, headers, body | body64 }`: the body is text when
+it's UTF-8, else base64. Headers come lowercased, with repeats joined and `set-cookie` dropped. Rejections are errors
+with `kind` (`CapabilityDenied`, `Network`, `Timeout`, `TooLarge`, `RateLimited`) and `message`.
+
+The crate enforces:
+- `https:` only, and no credentials in the URL.
+- The host must be on the list, checked again on every redirect. The crate follows redirects itself, at most 5, and
+  turns 303 (and 301/302 after POST) into GET.
+- Methods GET, POST, PUT, PATCH, DELETE and HEAD.
+- `Cookie`, `Host`, `Content-Length` and hop-by-hop request headers are dropped.
+- Request body at most 256 KB, response body at most 2 MB, 15 s per fetch with its redirects included.
+- At most 4 fetches in flight and 10 a second per run.
+- No loopback, private, link-local, CGNAT, multicast or reserved destination:
+  - A literal IP is checked as is.
+  - A name is resolved by the crate (`getaddrinfo`) and refused if any of its addresses isn't public.
+  - The address the transport reports (`remoteAddress`) is checked again before the program sees the response.
+  - The transport resolves the name again itself, so a DNS answer that changes in between (rebinding) could still
+    reach a private address. A transport that filters its own resolution with `isPublicAddress` (OkHttp's `Dns`, as
+    below) closes that gap.
+
+The transport carries one exchange and doesn't follow redirects. It uses an ephemeral session: no cookies, cache,
+credential store or client certificates. It calls `completion.succeed(...)` or `completion.fail(...)` once, from any
+thread.
+
+```swift
+final class URLSessionTransport: NSObject, FetchTransport, URLSessionTaskDelegate, @unchecked Sendable {
+    private lazy var session: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.httpCookieStorage = nil
+        config.httpShouldSetCookies = false
+        config.urlCredentialStorage = nil
+        config.urlCache = nil
+        return URLSession(configuration: config, delegate: self, delegateQueue: nil)
+    }()
+    private var tasks: [UInt64: URLSessionTask] = [:]
+    private let lock = NSLock()
+
+    func start(request: FetchRequest, completion: FetchCompletion) {
+        guard let url = URL(string: request.url) else { return completion.fail(message: "bad URL") }
+        var r = URLRequest(url: url, timeoutInterval: Double(request.timeoutMs) / 1000)
+        r.httpMethod = request.method
+        r.httpBody = request.body
+        for h in request.headers { r.setValue(h.value, forHTTPHeaderField: h.name) }
+        let task = session.dataTask(with: r) { [weak self] data, response, error in
+            self?.lock.withLock { _ = self?.tasks.removeValue(forKey: request.id) }
+            guard let http = response as? HTTPURLResponse else {
+                return completion.fail(message: error?.localizedDescription ?? "no response")
+            }
+            let headers = http.allHeaderFields.map { HttpHeader(name: "\($0.key)", value: "\($0.value)") }
+            completion.succeed(response: FetchResponse(
+                status: UInt16(http.statusCode), headers: headers, body: data ?? Data(), remoteAddress: nil))
+        }
+        lock.withLock { tasks[request.id] = task }
+        task.resume()
+    }
+
+    func cancel(id: UInt64) {
+        lock.withLock { tasks.removeValue(forKey: id) }?.cancel()
+    }
+
+    // The crate checks and follows redirects.
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(nil)
+    }
+
+    // Server trust as usual; no client certificates or HTTP auth.
+    func urlSession(_ session: URLSession, task: URLSessionTask, didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        completionHandler(challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust
+            ? .performDefaultHandling : .cancelAuthenticationChallenge, nil)
+    }
+}
+```
+
+```kotlin
+class OkHttpTransport : FetchTransport {
+    private val client = OkHttpClient.Builder()
+        .followRedirects(false).followSslRedirects(false)        // the crate checks and follows redirects
+        .cookieJar(CookieJar.NO_COOKIES)
+        .dns { host ->                                           // only public addresses: no DNS rebinding
+            Dns.SYSTEM.lookup(host).filter { isPublicAddress(it.hostAddress ?: "") }
+                .ifEmpty { throw UnknownHostException("$host has no public address") }
+        }
+        .build()
+    private val calls = ConcurrentHashMap<ULong, Call>()
+
+    override fun start(request: FetchRequest, completion: FetchCompletion) {
+        val type = request.headers.firstOrNull { it.name == "content-type" }?.value?.toMediaTypeOrNull()
+        val body = request.body?.toRequestBody(type)
+            ?: if (HttpMethod.requiresRequestBody(request.method)) ByteArray(0).toRequestBody(type) else null
+        val builder = Request.Builder().url(request.url).method(request.method, body)
+        request.headers.forEach { builder.addHeader(it.name, it.value) }
+        val call = client.newBuilder().callTimeout(request.timeoutMs.toLong(), TimeUnit.MILLISECONDS).build()
+            .newCall(builder.build())
+        calls[request.id] = call
+        call.enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                calls.remove(request.id); completion.fail(e.message ?: "network error")
+            }
+            override fun onResponse(call: Call, response: Response) {
+                calls.remove(request.id)
+                response.use {
+                    val max = request.maxResponseBytes.toLong() + 1       // one more: the crate reports TooLarge
+                    val source = it.body.source().apply { request(max) }
+                    val bytes = source.buffer.readByteArray(minOf(source.buffer.size, max))
+                    completion.succeed(FetchResponse(it.code.toUShort(), it.headers.map { (n, v) -> HttpHeader(n, v) }, bytes, null))
+                }
+            }
+        })
+    }
+
+    override fun cancel(id: ULong) { calls.remove(id)?.cancel() }
+}
+```
+
 ## Threading and cost
 
-`Program` is `Send + Sync`. Runs may come from any thread, concurrently too: each run gets its own VM over the shared
+`Program` and `LiveRun` are `Send + Sync`. Each live run has one thread (1 MB of stack reserved, ~136 KB resident
+while idle with a small program), one timer thread shared by all, and a short-lived thread per `fetch` and per budget
+stop. `run`s may come from any thread, concurrently too: each run gets its own VM over the shared
 compiled program. A run is synchronous, so keep it off the main thread when it can be slow. In Kotlin, `Program` is
 `AutoCloseable`: `close()` frees it right away, rather than when the GC cleaner gets to it.
 
