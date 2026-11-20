@@ -97,7 +97,7 @@ const expandShown = (w: Locator) =>
     }
   }
   for (const name of names) {
-    const want = name === "fetch-demo" || name === "local-demo" ? false : surfaces.has(name) || name.endsWith("-demo") || name === "minigame"
+    const want = name === "fetch-demo" || name === "local-demo" || name === "keys-live" ? false : surfaces.has(name) || name.endsWith("-demo") || name === "minigame"
     check((await expandShown(widget(page, name))) === want, `${name}: full-screen button ${want ? "offered" : "not offered"}`)
   }
   check(errors.length === 0, "all: no page errors", errors.slice(0, 3))
@@ -417,6 +417,111 @@ for (const [query, backend] of [["?only=shader-demo", "webgpu"], ["?only=shader-
   check(/isn't among the hosts/.test(other), "fetch: an undeclared host is denied", other)
   await shot(w, "fetch")
   check(errors.length === 0, "fetch: no page errors", errors)
+  await page.close()
+}
+
+// ---------- keyboard focus and pointer capture ----------
+{
+  const { page, errors } = await open("?only=keys-demo")
+  const w = widget(page, "keys-demo")
+  await rendered(w)
+  await page.evaluate(() => {
+    const spacer = document.createElement("div")
+    spacer.style.height = "3000px"
+    document.body.append(spacer)
+  })
+  const text = async () => (await w.locator(".pw-text").allTextContents()).join(" | ")
+  const until = async (re: RegExp, ms = 3000) => {
+    const end = Date.now() + ms
+    let t = await text()
+    while (Date.now() < end && !re.test(t)) {
+      await page.waitForTimeout(50)
+      t = await text()
+    }
+    return t
+  }
+  const hint = () => w.evaluate((el) => getComputedStyle(el.shadowRoot!.querySelector(".pw-hint")!).display !== "none")
+  const pad = (await w.locator("canvas").boundingBox())!
+  await page.mouse.click(pad.x + pad.width / 2, pad.y + pad.height / 2)
+  let t = await until(/focus true/)
+  check(/focus true/.test(t), "keys: a click inside gives the widget keyboard focus ({ type: focus, value: true })", t)
+  check((await hint()) && (await w.evaluate((el) => "focused" in el.dataset)), "keys: focus ring and the Esc-to-release hint show")
+  const scrolled = await page.evaluate(() => window.scrollY)
+  await page.keyboard.press("ArrowDown")
+  await page.keyboard.press("x")
+  t = await until(/last up x · keys 4/)
+  check(/last up x · keys 4/.test(t), "keys: down and up reach update, with key and code", t)
+  check((await page.evaluate(() => window.scrollY)) === scrolled, "keys: the page doesn't scroll on the widget's arrow keys")
+  const slot = page.locator('.slot[data-name="keys-demo"]')
+  await shot(slot, "keys-focused")
+  await page.keyboard.press(process.platform === "darwin" ? "Meta+a" : "Control+a")
+  await page.waitForTimeout(300)
+  check(/keys 4/.test(await text()), "keys: Cmd/Ctrl chords go to the page, not the widget")
+  // The chord was the page's select-all: clear it for the screenshots.
+  await page.evaluate(() => getSelection()?.removeAllRanges())
+  await page.keyboard.press("Escape")
+  t = await until(/focus false/)
+  check(/focus false/.test(t) && /keys 4/.test(t), "keys: Esc releases focus and is never delivered", t)
+  check(!(await hint()), "keys: the hint goes with the focus")
+  await w.focus()
+  t = await until(/focus true/)
+  check(/focus true/.test(t), "keys: tabbing to the widget (focus) gives it the keyboard too", t)
+  await page.keyboard.press("Escape")
+  await until(/focus false/)
+
+  // Pointer capture: the root asks with capture: "pointer"; the next click grants it.
+  await w.locator("button.pw-btn", { hasText: "Ask for the mouse" }).click()
+  await w.locator("button.pw-btn", { hasText: "Stop asking" }).waitFor({ timeout: 3000 })
+  const locked = () => w.evaluate((el) => document.pointerLockElement === el)
+  check(!(await locked()), "capture: not granted before the next click")
+  await page.mouse.click(pad.x + pad.width / 2, pad.y + pad.height / 2)
+  t = await until(/captured true/)
+  check((await locked()) && /captured true/.test(t), "capture: the next click locks the pointer ({ type: capture, value: true })", t)
+  for (let i = 1; i <= 5; i++) {
+    await page.mouse.move(pad.x + pad.width / 2 + i * 12, pad.y + pad.height / 2 + i * 3)
+    await page.waitForTimeout(40)
+  }
+  await page.mouse.down()
+  await page.mouse.up()
+  t = await until(/buttons 2/)
+  const moved = Number(/moved (\d+)/.exec(t)?.[1] ?? 0)
+  check(moved > 0 && /buttons 2/.test(t), `capture: relative moves (dx, dy) and buttons reach the program (moved ${moved})`, t)
+  await shot(slot, "keys-captured")
+  await page.keyboard.press("Escape")
+  t = await until(/focus false · captured false/)
+  check(!(await locked()) && /focus false · captured false/.test(t), "capture: one Esc releases the pointer and the keyboard", t)
+  check(errors.length === 0, "keys: no page errors", errors)
+  await page.close()
+}
+{
+  const { page, errors } = await open("?only=keys-live")
+  const w = widget(page, "keys-live")
+  await rendered(w)
+  const text = async () => (await w.locator(".pw-text").allTextContents()).join(" | ")
+  const until = async (re: RegExp) => {
+    const end = Date.now() + 3000
+    let t = await text()
+    while (Date.now() < end && !re.test(t)) {
+      await page.waitForTimeout(50)
+      t = await text()
+    }
+    return t
+  }
+  const pad = (await w.locator("canvas").boundingBox())!
+  await page.mouse.click(pad.x + 20, pad.y + pad.height / 2)
+  await until(/focus true/)
+  await page.keyboard.press("k")
+  let t = await until(/last up k/)
+  check(/focus true/.test(t) && /last up k · keys 2/.test(t), "keys (live): focus and keys reach widget.event()", t)
+  await w.locator("button.pw-btn", { hasText: "Capture the mouse" }).click()
+  await page.waitForTimeout(200)
+  await page.mouse.click(pad.x + 40, pad.y + pad.height / 2)
+  t = await until(/captured true/)
+  check(/captured true/.test(t), "capture (live): capturePointer() is granted on the next click", t)
+  await page.keyboard.press("Escape")
+  t = await until(/focus false · captured false/)
+  check(/focus false · captured false/.test(t), "capture (live): Esc releases both", t)
+  check(errors.length === 0, "keys (live): no page errors", errors)
   await page.close()
 }
 

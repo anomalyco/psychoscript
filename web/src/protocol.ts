@@ -1,9 +1,9 @@
 // Messages between the page and the widget workers.
 
-/** A user event (widgets.md, Events; widgets-fullscreen.md). */
+/** A user event (widgets.md, Events; widgets-fullscreen.md; widgets-input.md). */
 export interface WidgetEvent {
   id: string
-  type: "press" | "change" | "pointer" | "fullscreen"
+  type: "press" | "change" | "pointer" | "fullscreen" | "key" | "focus" | "capture"
   value?: unknown
 }
 
