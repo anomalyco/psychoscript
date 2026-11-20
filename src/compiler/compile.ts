@@ -66,6 +66,7 @@ import {
   type Scope,
   type ScopeAnalysis,
   supportedClassMember,
+  defaultSuperCalls,
 } from "./scope.js"
 
 /** Each binary operator as the op and `a` operand that apply it. */
@@ -151,7 +152,7 @@ type ControlEntry =
 const idx = (node: AstNode | undefined | null): number => (node ? (nodeId(node)?.index ?? -1) : -1)
 
 /** Bump when the compiler emits different bytecode for the same source; it is part of the snapshot build id. */
-export const COMPILER_VERSION = 2
+export const COMPILER_VERSION = 3
 
 const compileCache = new Map<string, ReadonlyArray<Code>>()
 const MAX_CACHE_SIZE = 64
@@ -1544,7 +1545,9 @@ const compileFunctionBody = (
       return fnInfo.node.type === "ArrowFunctionExpression"
         ? emitUnsupportedSuper("super() inside an arrow function is not supported. Call super() directly in the constructor.", node.callee)
         : emitUnsupported("Super", node.callee)
-    const spread = emitArguments(node.arguments, node)
+    const spread = defaultSuperCalls.has(node)
+      ? (compileExpression((node.arguments[0] as SpreadElement).argument), true)
+      : emitArguments(node.arguments, node)
     const n = node.arguments.length
     builder.emit(Op.SUPER_CALL, spread ? 255 : n, fnInfo.newTargetDecl!.slot, idx(node), spread ? 0 : 1 - n)
     const [captured, slot] = thisOperand()

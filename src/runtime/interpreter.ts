@@ -3,9 +3,9 @@ import { Vm } from "../vm.js"
 import { globals } from "./globals.js"
 import type { Builtins } from "./intrinsics.js"
 import { IntrinsicNames } from "./intrinsic-names.js"
-import { type AstNode, type Binding, PendingThrow } from "./model.js"
+import { type AstNode, type Binding, IteratorSymbol, PendingThrow } from "./model.js"
 import { isRuntimeModule, moduleName, resolveModule } from "./modules.js"
-import { define, type HostNamespace, keys, peek, makingIntrinsics, nativeRule, Obj, type Value } from "./objects.js"
+import { define, type HostNamespace, keys, peek, makingIntrinsics, nativeRule, Obj, Protector, type Value } from "./objects.js"
 import type { HostResult } from "../host.js"
 import { Prelude } from "../prelude/prelude.js"
 import type { NodeId, Source } from "./source.js"
@@ -39,6 +39,8 @@ export class Interpreter<R> {
   private readonly modules = new Map<string, Value>()
   private readonly moduleGlobals: Readonly<Record<string, string>>
   private readonly namespaces = new Map<string, Obj>()
+  /** Whether arrays may still be iterated directly; see `Protector`. Saved with the run. */
+  readonly protector = new Protector()
 
   constructor(options: {
     readonly builtins: Builtins
@@ -61,6 +63,8 @@ export class Interpreter<R> {
       return [intrinsics, new Prelude(this as Interpreter<unknown>, intrinsics)] as const
     })
     this.prelude = prelude
+    this.builtins.Array.guard = { key: IteratorSymbol, protector: this.protector }
+    this.builtins.Iterator.guard = { key: "next", protector: this.protector }
     const hosts = options.globals?.(this) ?? []
     this.intrinsics = new IntrinsicNames(
       made,
