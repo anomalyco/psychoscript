@@ -652,3 +652,23 @@ fn local_network_in_dev_mode() {
     assert_eq!(kind(&run, &rx, "https://93.184.215.14/x"), "local");
     run.stop();
 }
+
+#[test]
+fn caps_the_heap() {
+    let source = "const a = []; while (true) { a.push(new Array(1000).fill(a.length)); await __host.sleep(0) }";
+    let (_run, rx) = start_source(
+        source,
+        LiveOptions {
+            max_heap_bytes: Some(2 << 20),
+            ..Default::default()
+        },
+    );
+    match next(&rx) {
+        Event::Exit(LiveExit::Failed {
+            error: PsychoScriptError::MemoryLimitExceeded { max_heap_bytes, .. },
+        }) => {
+            assert_eq!(max_heap_bytes, 2 << 20)
+        }
+        other => panic!("{other:?}"),
+    }
+}

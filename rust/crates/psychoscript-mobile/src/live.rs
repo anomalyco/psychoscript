@@ -18,7 +18,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use psychoscript::{
-    Compiled, Data, HostFunction, HostResult, HostString, HostValue, ProgramOptions, Run,
+    Compiled, Data, HostFunction, HostResult, HostString, HostValue, Limits, ProgramOptions, Run,
     RunOutcome, Runtime, Snapshot, Suspender, from_bytes, to_bytes,
 };
 
@@ -45,6 +45,10 @@ pub struct LiveOptions {
     /// turns it on.
     #[uniffi(default)]
     pub allow_local_network: bool,
+    /// Bytes the run's heap may hold (the language's size model, not the process's memory); over it the run ends
+    /// with `Failed(MemoryLimitExceeded)`. The spec's default for live widgets is 32 MB: set it.
+    #[uniffi(default)]
+    pub max_heap_bytes: Option<u64>,
 }
 
 impl Default for LiveOptions {
@@ -54,6 +58,7 @@ impl Default for LiveOptions {
             max_posts_per_second: 240,
             https_hosts: None,
             allow_local_network: false,
+            max_heap_bytes: None,
         }
     }
 }
@@ -467,7 +472,7 @@ impl Control {
                 },
                 Err(_) if why == Why::Stop => LiveExit::Stopped,
                 Err(d) => LiveExit::Failed {
-                    error: PsychoScriptError::from_diagnostic(d, None),
+                    error: PsychoScriptError::from_diagnostic(d, None, self.options.max_heap_bytes),
                 },
             },
             Err(_interrupted) => LiveExit::Stopped,
@@ -487,7 +492,11 @@ impl Control {
     fn runtime(self: &Arc<Self>, input: Option<Arc<str>>, restored: bool) -> Runtime {
         let control = self.clone();
         let name = self.input_name.clone();
-        Runtime::make().globals(move |run| {
+        let limits = Limits {
+            max_heap_bytes: self.options.max_heap_bytes,
+            ..Default::default()
+        };
+        Runtime::make().limits(limits).globals(move |run| {
             let text: Arc<str> = match &input {
                 Some(text) => {
                     run.set_metadata(control.metadata(text));

@@ -136,3 +136,25 @@ fn fails_with_a_kind_and_message() {
         Err(PsychoScriptError::InvalidInput { .. })
     ));
 }
+
+#[test]
+fn caps_the_heap() {
+    let growing = program("const a = []; while (true) a.push({ n: a.length, s: 'x'.repeat(100) })");
+    let options = RunOptions {
+        timeout_ms: Some(10_000),
+        max_heap_bytes: Some(1 << 20),
+        ..Default::default()
+    };
+    match growing.run("null".into(), options) {
+        Err(PsychoScriptError::MemoryLimitExceeded { max_heap_bytes, .. }) => {
+            assert_eq!(max_heap_bytes, 1 << 20)
+        }
+        other => panic!("{other:?}"),
+    }
+    let small = RunOptions {
+        max_heap_bytes: Some(1 << 20),
+        ..Default::default()
+    };
+    assert_eq!(run("[1, 2, 3].length", "null").unwrap(), "3");
+    assert_eq!(program("1 + 1").run("null".into(), small).unwrap(), "2");
+}

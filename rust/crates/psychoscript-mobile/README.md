@@ -24,8 +24,8 @@ val out = program.run("""{"n":21}""", RunOptions(timeoutMs = 250uL))
 - `Program(source, inputName = "__input")` compiles once. Fails with `Syntax`.
 - `run(inputJson, options = RunOptions())` runs it: `inputName()` is a sync host function returning the input, and the
   result is the program's completion value (a top-level `return`'s, or the last expression statement's) as compact
-  JSON, `undefined` as `null`. `RunOptions(timeoutMs?, maxOutputBytes?)`: active-time limit and result size limit,
-  both off by default.
+  JSON, `undefined` as `null`. `RunOptions(timeoutMs?, maxOutputBytes?, maxHeapBytes?)`: active-time limit, result
+  size limit and heap cap, all off by default.
 - `PsychoScriptError` (Kotlin `PsychoScriptException`); `reason` is the message, `kind` the language's diagnostic kind,
   `line`/`column` 1-based in the source:
   - `Syntax(kind, reason, line, column)`: `ParseError`, or `UnsupportedSyntax` (which may surface only when a run
@@ -34,6 +34,8 @@ val out = program.run("""{"n":21}""", RunOptions(timeoutMs = 250uL))
     `TypeError: ...`), `InvalidDataValue` (a result that isn't JSON data), or a host kind.
   - `Timeout(reason, timeoutMs)`, `OutputTooLarge(reason, maxOutputBytes)`, `InvalidInput(reason)` (input not JSON,
     `timeoutMs` 0).
+  - `MemoryLimitExceeded(reason, maxHeapBytes)`: the run's heap went over `maxHeapBytes`. Sizes follow the language's
+    model of what the program can still reach, not the process's memory.
 - `translateWgsl(source, target: msl | glslEs300, stage: vertex | fragment, entry) -> TranslatedShader(code,
   entryName, uniformBlocks: [UniformBlock(group, binding, name, slot)])`, or `ShaderError` (Kotlin `ShaderException`):
   `Parse` / `Validation` (with `line`, `column`), `Unsupported` (no such entry, or a resource other than uniform
@@ -63,7 +65,8 @@ its own until it returns or is stopped. Beside its input function it gets `__hos
 - `LiveHandler` (callback interface): `onPost(messageJson)` and `onWarning(message)` run on the run's thread, inside
   the program's call: hand them to the UI thread and return. `onExit(LiveExit)` runs once on the run's thread:
   `Finished(resultJson)`, `Failed(error)` (`SliceBudget`, `Runtime`, ...), or `Stopped`.
-- `LiveOptions(sliceBudgetMs = 50, maxPostsPerSecond = 240, httpsHosts = nil, allowLocalNetwork = false)`.
+- `LiveOptions(sliceBudgetMs = 50, maxPostsPerSecond = 240, httpsHosts = nil, allowLocalNetwork = false,
+  maxHeapBytes = nil)`.
   - **Slice budget:** a run computing past the budget without waiting is stopped with `SliceBudget`. Only the VM's
     compute counts, not the time it waits on pending host calls (several at once included). The language can't
     time-slice a VM, so the crate has psychoscript's suspender stop the run at its next step, which works inside tight
@@ -71,7 +74,9 @@ its own until it returns or is stopped. Beside its input function it gets `__hos
     which the VM polls as soon as it waits and can't while it computes. An unanswered probe (30 ms grace) means the run
     is still computing.
   - **Posts:** past the limit in one second they're dropped, with one `onWarning` per second.
-  - **Heap:** psychoscript has no heap cap today, so a run's heap isn't bounded beyond its time budget.
+  - **Heap:** `maxHeapBytes` caps the run's heap: over it the run ends with `Failed(MemoryLimitExceeded)`. The
+    contract's default for live widgets is 32 MB (`32 * 1024 * 1024`), but the crate sets no default: pass it.
+    A snapshot keeps the cap it ran with.
 - `deliver(json)`, `pause()`, `resume()`, `snapshot()`, `stop()`, `isRunning()`;
   `LiveRun.restore(snapshot, handler, inputName = "__input", options = LiveOptions(), transport = nil)`.
   - `pause()`: no frames, messages or timers reach the program. `sleep` timers freeze with their remaining time,
