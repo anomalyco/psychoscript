@@ -1,0 +1,37 @@
+[package]
+name = "psychoscript-mobile"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "PsychoScript for iOS (Swift) and Android (Kotlin): UniFFI bindings that compile a program once and run it with a JSON input"
+
+# A plain `lib` for workspace builds; the build scripts ask for `staticlib` (iOS) and `cdylib` (Android).
+[lib]
+name = "psychoscript_mobile"
+
+[features]
+default = ["shader"]
+# `translate_wgsl`: WGSL to MSL and GLSL ES 3.00 with naga (about 1 MB of code). Off, the library is the
+# language alone.
+shader = ["dep:naga"]
+# The bindings generators (`uniffi-bindgen`, `uniffi-bindgen-swift`), for the build scripts only.
+cli = ["uniffi/cli"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["cli"]
+
+[[bin]]
+name = "uniffi-bindgen-swift"
+path = "src/bin/uniffi-bindgen-swift.rs"
+required-features = ["cli"]
+
+[dependencies]
+psychoscript = { path = "../psychoscript" }
+serde = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
+uniffi = "0.32"
+naga = { version = "30", default-features = false, features = ["wgsl-in", "msl-out", "glsl-out"], optional = true }
+
