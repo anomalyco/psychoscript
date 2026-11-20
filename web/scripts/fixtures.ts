@@ -286,17 +286,19 @@ async function main(data) {
   return { full: false, taps: 0 }
 }
 
+// In full screen "pulse" and "echo" share the free height (the default); "strip" keeps its 40 px (fill: false).
 function view(state, data) {
   return ui.column({ gap: 2, fullscreen: true }, [
     ui.text(data.title + (state.full ? " (full screen)" : ""), { style: "title" }),
-    !state.full && ui.text("Expand me: the canvas fills the screen and the text goes away.", { tone: "muted" }),
+    !state.full && ui.text("Expand me: both canvases share the screen, the strip keeps its height.", { tone: "muted" }),
     ui.canvas({
       key: "pulse",
       height: 140,
-      fill: state.full,
       fps: 60,
       onPointer: (state, p) => (p.kind === "down" ? { ...state, taps: state.taps + 1 } : state),
     }),
+    ui.canvas({ key: "echo", height: 80 }),
+    ui.canvas({ key: "strip", height: 40, fill: false }),
     ui.text("taps: " + state.taps, { style: "caption" }),
   ])
 }
@@ -307,11 +309,18 @@ function onFullscreen(state, on) {
 
 function draw(state, data, frame) {
   const g = ui.draw()
-  const r = Math.min(frame.width, frame.height) * (0.25 + 0.08 * Math.sin(frame.t * 3))
   g.rect(0, 0, frame.width, frame.height, "surface")
-  g.circle(frame.width / 2, frame.height / 2, r, { fill: { radial: [frame.width / 2, frame.height / 2, r], stops: [[0, "accent"], [1, "#00000000"]] } })
-  g.text(12, 22, frame.width + " x " + frame.height + (frame.fullscreen ? " full screen" : ""), { color: "muted", mono: true })
-  if (frame.pointer) g.circle(frame.pointer.x, frame.pointer.y, frame.pointer.down ? 14 : 8, { stroke: "text", width: 2 })
+  const label = frame.key + " " + frame.width + " x " + frame.height + (frame.fullscreen ? " full screen" : "")
+  if (frame.key === "pulse") {
+    const r = Math.min(frame.width, frame.height) * (0.25 + 0.08 * Math.sin(frame.t * 3))
+    g.circle(frame.width / 2, frame.height / 2, r, { fill: { radial: [frame.width / 2, frame.height / 2, r], stops: [[0, "accent"], [1, "#00000000"]] } })
+    if (frame.pointer) g.circle(frame.pointer.x, frame.pointer.y, frame.pointer.down ? 14 : 8, { stroke: "text", width: 2 })
+  } else if (frame.key === "echo") {
+    for (let i = 0; i < 6; i++) g.rrect(12 + i * (frame.width - 24) / 6, frame.height * 0.3, (frame.width - 24) / 6 - 8, frame.height * 0.5, 6, i % 2 ? "border" : "accent")
+  } else {
+    g.rect(0, frame.height / 2 - 2, frame.width * 0.6, 4, "success")
+  }
+  g.text(12, 20, label, { color: "muted", mono: true, size: 12 })
   return g
 }`,
   },

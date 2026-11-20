@@ -355,26 +355,70 @@ for (const [query, backend] of [["?only=shader-demo", "webgpu"], ["?only=shader-
   const { page, errors } = await open("?only=fullscreen-demo")
   const w = widget(page, "fullscreen-demo")
   await rendered(w)
+  const heights = () =>
+    w.evaluate((el) =>
+      Object.fromEntries(
+        [...el.shadowRoot!.querySelectorAll(".pw-surface")].map((s, i) => [["pulse", "echo", "strip"][i]!, Math.round(s.getBoundingClientRect().height)]),
+      ),
+    )
+  const inline = await heights()
+  check(inline.pulse === 140 && inline.echo === 80 && inline.strip === 40, "full screen: inline, canvases keep their heights", inline)
   await w.hover()
-  const expand = w.locator(".pw-expand")
-  await expand.click()
+  await w.locator(".pw-expand").click()
   await page.waitForFunction(() => document.fullscreenElement !== null, undefined, { timeout: 3000 }).catch(() => {})
-  await page.waitForTimeout(700)
+  await page.waitForTimeout(800)
   const inFull = await page.evaluate(() => document.fullscreenElement?.className)
   const title = await w.locator(".pw-text").first().textContent()
-  const height = (await w.locator("canvas").boundingBox())?.height ?? 0
+  const full = await heights()
   check(inFull === "psychoscript-widget", "full screen: the widget's element goes full screen", inFull)
-  check(title?.includes("(full screen)") ?? false, "full screen: update gets { id: '', type: 'fullscreen', value: true }", title)
-  check(height > 500, `full screen: the fill canvas takes the free height (${Math.round(height)} px)`)
+  check(title?.includes("(full screen)") ?? false, "full screen: onFullscreen gets { type: 'fullscreen', value: true }", title)
+  check(
+    full.pulse! > 300 && Math.abs(full.pulse! - full.echo!) <= 2 && full.strip === 40,
+    "full screen: canvases share the free height equally by default, fill: false keeps its height",
+    full,
+  )
+  const close = await w.evaluate((el) => {
+    const b = el.shadowRoot!.querySelector(".pw-expand") as HTMLElement
+    const r = b.getBoundingClientRect()
+    const chrome = [...el.shadowRoot!.querySelectorAll(".pw-root > :not(.pw-view):not(.pw-expand):not(.pw-hint)")].filter(
+      (e) => getComputedStyle(e).display !== "none",
+    ).length
+    return { position: getComputedStyle(b).position, w: r.width, h: r.height, top: r.top, right: innerWidth - r.right, label: b.getAttribute("aria-label"), chrome }
+  })
+  check(
+    close.position === "fixed" && close.w <= 32 && close.h <= 32 && close.top <= 16 && close.right <= 16 && close.label === "Exit full screen" && close.chrome === 0,
+    "full screen: the only chrome is a small floating close button in the corner",
+    close,
+  )
   await shot(page, "fullscreen")
   await page.keyboard.press("Escape")
   await page.waitForTimeout(500)
   if (await page.evaluate(() => document.fullscreenElement !== null)) await page.evaluate(() => document.exitFullscreen())
   await page.waitForTimeout(500)
   const after = await w.locator(".pw-text").first().textContent()
-  const back = (await w.locator("canvas").boundingBox())?.height ?? 0
-  check(!after?.includes("(full screen)") && Math.round(back) === 140, "full screen: leaving it sends value false and the canvas keeps its height", { after, back })
+  const back = await heights()
+  check(!after?.includes("(full screen)") && back.pulse === 140 && back.echo === 80 && back.strip === 40, "full screen: leaving it sends value false and restores the heights", { after, back })
   check(errors.length === 0, "full screen: no page errors", errors)
+  await page.close()
+}
+{
+  // A canvas without any fill prop (the chart) grows in full screen too; the close button takes it back.
+  const { page, errors } = await open("?only=chart")
+  const w = widget(page, "chart")
+  await rendered(w)
+  const height = () => w.evaluate((el) => Math.round(el.shadowRoot!.querySelector(".pw-surface")!.getBoundingClientRect().height))
+  const before = await height()
+  await w.hover()
+  await w.locator(".pw-expand").click()
+  await page.waitForFunction(() => document.fullscreenElement !== null, undefined, { timeout: 3000 }).catch(() => {})
+  await page.waitForTimeout(800)
+  const grown = await height()
+  check(grown > before + 200, `full screen: the chart's canvas fills by default (${before} -> ${grown} px)`)
+  await shot(page, "fullscreen-chart")
+  await w.locator(".pw-expand").click()
+  await page.waitForTimeout(600)
+  check((await page.evaluate(() => document.fullscreenElement === null)) && (await height()) === before, "full screen: the close button exits and the canvas is back to its height")
+  check(errors.length === 0, "full screen (chart): no page errors", errors)
   await page.close()
 }
 

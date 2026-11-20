@@ -48,7 +48,7 @@ export declare function reconcile(ctx: RenderContext, parent: Element, nodes: re
 export declare function destroy(el: Element): void;
 declare function icon(ctx: RenderContext, path: string): SVGSVGElement;
 export { icon };
-/** A sized drawing surface that follows its width (and in full screen with `fill`, the free height). */
+/** A sized drawing surface that follows its width (and in full screen, unless `fill: false`, its share of the free height). */
 declare abstract class SurfaceBase {
     protected ctx: RenderContext;
     readonly el: HTMLDivElement;

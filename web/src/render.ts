@@ -84,7 +84,8 @@ export function hasSurface(node: ViewNode | undefined): boolean {
 }
 
 function hasFill(node: ViewNode): boolean {
-  if ((node.type === "canvas" || node.type === "shader") && node.fill === true) return true
+  // In full screen every canvas and shader fills unless it says `fill: false`.
+  if ((node.type === "canvas" || node.type === "shader") && node.fill !== false) return true
   return children(node).some((c) => c && typeof c === "object" && hasFill(c))
 }
 
@@ -636,7 +637,7 @@ const BUILDERS: Record<string, Builder> = {
 
 // ---------- surfaces: canvas and shader ----------
 
-/** A sized drawing surface that follows its width (and in full screen with `fill`, the free height). */
+/** A sized drawing surface that follows its width (and in full screen, unless `fill: false`, its share of the free height). */
 abstract class SurfaceBase {
   readonly el: HTMLDivElement
   readonly canvas: HTMLCanvasElement
@@ -753,14 +754,15 @@ abstract class SurfaceBase {
     const height = Math.max(1, Math.min(4096, finite(n.height, 160)))
     const width = finite(n.width, 0)
     // Live programs re-render every frame: touch the DOM only when the size or label changes.
-    const key = `${height}|${width}|${n.fill === true}|${this.ctx.fullscreen()}|${str(n.alt)}`
+    const fill = n.fill !== false
+    const key = `${height}|${width}|${fill}|${this.ctx.fullscreen()}|${str(n.alt)}`
     if (key === this.laid) return false
     this.laid = key
     this.el.style.minHeight = `${height}px`
-    this.el.style.height = n.fill === true && this.ctx.fullscreen() ? "auto" : `${height}px`
+    this.el.style.height = fill && this.ctx.fullscreen() ? "auto" : `${height}px`
     this.el.style.width = width > 0 ? `${width}px` : ""
     this.el.style.maxWidth = "100%"
-    this.el.classList.toggle("pw-fill", n.fill === true)
+    this.el.classList.toggle("pw-fill", fill)
     const alt = str(n.alt)
     if (alt) this.canvas.setAttribute("aria-label", alt)
     this.canvas.setAttribute("role", "img")

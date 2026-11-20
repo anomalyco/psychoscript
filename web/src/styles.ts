@@ -11,11 +11,18 @@ export const CSS: string = /* css */ `
   min-width: 0;
 }
 :host(:fullscreen) { background: var(--pw-bg); overflow: auto; }
-:host(:fullscreen) .pw-root { min-height: 100%; display: flex; flex-direction: column; padding: 24px; }
+:host(:fullscreen) .pw-root {
+  min-height: 100%; display: flex; flex-direction: column;
+  padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+}
+/* Full screen (widgets-fullscreen.md, Layout): the root fills the screen; every canvas and shader not opted out with
+   fill: false shares the remaining height equally (its height is the minimum); taller content scrolls. */
 :host(:fullscreen) .pw-root > .pw-view { flex: 1 1 auto; display: flex; flex-direction: column; }
 :host(:fullscreen) .pw-root > .pw-view > * { flex: 1 1 auto; }
-:host(:fullscreen) .pw-has-fill { flex: 1 1 auto; min-height: 0; }
-:host(:fullscreen) .pw-fill { flex: 1 1 auto; }
+:host(:fullscreen) .pw-has-fill { flex: 1 1 auto; }
+:host(:fullscreen) .pw-col > .pw-fill, :host(:fullscreen) .pw-card > .pw-fill { flex: 1 1 0; }
+:host(:fullscreen) .pw-row > .pw-fill { align-self: stretch; }
+:host(:fullscreen) .pw-chip { display: none; }
 .pw-view { min-width: 0; }
 .pw-col { display: flex; flex-direction: column; min-width: 0; }
 .pw-row { display: flex; flex-direction: row; min-width: 0; }
@@ -131,7 +138,7 @@ export const CSS: string = /* css */ `
   pointer-events: none;
 }
 .pw-hint svg { width: 13px; height: 13px; }
-:host(:fullscreen) .pw-hint { position: fixed; top: 14px; right: 48px; }
+:host(:fullscreen) .pw-hint { position: fixed; top: max(14px, env(safe-area-inset-top)); right: max(48px, calc(env(safe-area-inset-right) + 38px)); }
 .pw-expand {
   position: absolute; top: -4px; right: -4px; z-index: 2; width: 28px; height: 28px; border-radius: 6px; padding: 0;
   display: flex; align-items: center; justify-content: center; cursor: pointer;
@@ -142,7 +149,11 @@ export const CSS: string = /* css */ `
 .pw-root:hover > .pw-expand, .pw-expand:focus-visible { opacity: 1; }
 .pw-expand:focus-visible { outline: 2px solid var(--pw-accent); outline-offset: 1px; }
 @media (hover: none) { .pw-expand { opacity: .85; } }
-:host(:fullscreen) .pw-expand { position: fixed; top: 12px; right: 12px; opacity: 1; }
+:host(:fullscreen) .pw-expand {
+  /* The only chrome in full screen: a small floating close button, clear of the safe areas. */
+  position: fixed; top: max(10px, env(safe-area-inset-top)); right: max(10px, env(safe-area-inset-right)); opacity: .9;
+  border-radius: 50%; background: color-mix(in srgb, var(--pw-bg) 80%, transparent);
+}
 `
 
 let sheet: CSSStyleSheet | undefined

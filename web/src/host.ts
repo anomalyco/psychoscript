@@ -756,7 +756,7 @@ class Widget implements MountedWidget {
       this.expand.title = label
       this.expand.setAttribute("aria-label", label)
       this.expand.replaceChildren(
-        icon(this.ctx, this.isFullscreen ? "M6 2v4H2M10 2v4h4M6 14v-4H2M10 14v-4h4" : "M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4"),
+        icon(this.ctx, this.isFullscreen ? "M4 4l8 8M12 4l-8 8" : "M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4"),
       )
     }
   }
