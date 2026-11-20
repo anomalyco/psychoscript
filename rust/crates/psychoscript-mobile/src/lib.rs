@@ -4,7 +4,8 @@
 //! The surface is the crate's essentials for a host that hands a program JSON and reads JSON back:
 //! [`Program`] compiles a source once; [`Program::run`] runs it with its JSON input behind one sync
 //! host function (`__input()` unless named otherwise) under [`RunOptions`]' limits, and returns
-//! the program's completion value as JSON, or a [`PsychoScriptError`].
+//! the program's completion value as JSON, or a [`PsychoScriptError`]. [`Program::start_live`] runs it as a
+//! [`LiveRun`] instead: long-running, on a thread of its own, talking to the host through `__host`.
 //!
 //! With feature `shader` (on by default), [`translate_wgsl`] translates a WGSL entry point with naga
 //! to MSL (Metal) or GLSL ES 3.00 (OpenGL ES 3).
@@ -12,12 +13,19 @@
 //! `README.md` covers packaging, threading and what a run copies.
 
 mod error;
-mod input;
+mod fetch;
+mod json;
+mod live;
 mod program;
 #[cfg(feature = "shader")]
 mod shader;
+mod timer;
 
 pub use error::PsychoScriptError;
+pub use fetch::{
+    FetchCompletion, FetchRequest, FetchResponse, FetchTransport, HttpHeader, is_public_address,
+};
+pub use live::{LiveExit, LiveHandler, LiveOptions, LiveRun};
 pub use program::{Program, RunOptions};
 #[cfg(feature = "shader")]
 pub use shader::{
