@@ -79,6 +79,8 @@ for (const [name, f] of Object.entries(fixtures)) {
     data: f.data,
     mode: f.mode,
     capabilities: f.capabilities,
+    // Dev mode for the local-demo fixture; ?local=0 turns it off.
+    allowLocalNetwork: f.localNetwork === true && params.get("local") !== "0",
     theme,
     onSubmit: (value) => log(`${name} submit ${JSON.stringify(value)}`),
     onDismiss: () => log(`${name} dismiss`),

@@ -18,6 +18,14 @@ export interface MountOptions {
     mode?: "step" | "live";
     /** The template's capabilities (live only); granted as declared, shown as a chip. */
     capabilities?: Capabilities;
+    /**
+     * Dev mode only (widgets-live.md, "Local network in dev mode"; default false): `fetch` may also reach loopback,
+     * private and link-local addresses and local names (`localhost`, `*.local`), over `http:` too and on any declared
+     * port, when the template declares them (`localhost:4097`, `127.0.0.1`; `*` doesn't count). The page's CSP
+     * `connect-src` must allow them as well (e.g. `http://localhost:4097`). Never turn it on for release builds by
+     * default.
+     */
+    allowLocalNetwork?: boolean;
     /** The widget's state on the server: `"submitted"`/`"dismissed"` render read-only with a status line. */
     state?: WidgetStatus;
     /** The submitted value, summarized under a submitted widget. */
@@ -53,6 +61,7 @@ export interface Labels {
     restart: string;
     retry: string;
     network: string;
+    localNetwork: string;
     loading: string;
 }
 /** A mounted widget. */

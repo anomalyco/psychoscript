@@ -40,6 +40,10 @@ pub struct LiveOptions {
     /// The `https` capability: hosts `__host.fetch` may reach (exact names, `*.` suffixes, `*` for any). `None`:
     /// every fetch is rejected with `CapabilityDenied`.
     pub https_hosts: Option<Vec<String>>,
+    /// Dev mode (widgets-live.md, "Local network in dev mode"): `fetch` may also reach loopback, private and
+    /// link-local destinations and local names, over `http:` too, when the template declares them (not through `*`).
+    /// Off by default.
+    pub allow_local_network: bool,
 }
 
 impl Default for LiveOptions {
@@ -48,6 +52,7 @@ impl Default for LiveOptions {
             slice_budget_ms: 50,
             max_posts_per_second: 240,
             https_hosts: None,
+            allow_local_network: false,
         }
     }
 }
@@ -134,7 +139,8 @@ struct FetchSlot {
 
 struct Shared {
     input: Arc<str>,
-    hosts: Option<Vec<String>>,
+    /// `None`: no https capability.
+    policy: Option<fetch::Policy>,
     max_posts: u32,
     inbox: VecDeque<HostValue>,
     receive: Option<Waker>,
@@ -272,7 +278,10 @@ impl LiveRun {
         let now = Instant::now();
         let shared = Arc::new(Mutex::new(Shared {
             input: input_json.into(),
-            hosts: options.https_hosts.clone(),
+            policy: options.https_hosts.clone().map(|hosts| fetch::Policy {
+                hosts,
+                local_network: options.allow_local_network,
+            }),
             max_posts: options.max_posts_per_second,
             inbox: VecDeque::new(),
             receive: None,
@@ -413,8 +422,8 @@ impl LiveRun {
     /// redirects), `body` the body's bytes. Pump afterwards.
     pub fn fetch_done(&mut self, id: u64, meta_json: &str, body: Vec<u8>) {
         let s = lock(&self.shared);
-        let hosts = s.hosts.clone().unwrap_or_default();
-        let result = fetch::response(meta_json, body, &hosts).map_err(Rejection::value);
+        let policy = s.policy.clone().unwrap_or_default();
+        let result = fetch::response(meta_json, body, &policy).map_err(Rejection::value);
         answer(s, id, result);
     }
 
@@ -666,10 +675,10 @@ fn start_fetch(
     request: Option<&HostValue>,
 ) -> Result<Fetching, Rejection> {
     let mut s = lock(shared);
-    let Some(hosts) = s.hosts.clone() else {
+    let Some(policy) = s.policy.clone() else {
         return Err(Rejection::denied("this widget has no https capability"));
     };
-    let request = Request::parse(request, &hosts)?;
+    let request = Request::parse(request, &policy)?;
     s.budget.admit()?;
     let id = s.next_fetch;
     s.next_fetch += 1;

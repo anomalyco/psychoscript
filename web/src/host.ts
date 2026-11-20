@@ -26,6 +26,14 @@ export interface MountOptions {
   mode?: "step" | "live"
   /** The template's capabilities (live only); granted as declared, shown as a chip. */
   capabilities?: Capabilities
+  /**
+   * Dev mode only (widgets-live.md, "Local network in dev mode"; default false): `fetch` may also reach loopback,
+   * private and link-local addresses and local names (`localhost`, `*.local`), over `http:` too and on any declared
+   * port, when the template declares them (`localhost:4097`, `127.0.0.1`; `*` doesn't count). The page's CSP
+   * `connect-src` must allow them as well (e.g. `http://localhost:4097`). Never turn it on for release builds by
+   * default.
+   */
+  allowLocalNetwork?: boolean
   /** The widget's state on the server: `"submitted"`/`"dismissed"` render read-only with a status line. */
   state?: WidgetStatus
   /** The submitted value, summarized under a submitted widget. */
@@ -59,6 +67,7 @@ export interface Labels {
   restart: string
   retry: string
   network: string
+  localNetwork: string
   loading: string
 }
 
@@ -70,6 +79,7 @@ const LABELS: Labels = {
   restart: "Restart",
   retry: "Try again",
   network: "Network",
+  localNetwork: "local network allowed",
   loading: "Loading widget",
 }
 
@@ -441,7 +451,7 @@ class Widget implements MountedWidget {
     if (hosts?.length) {
       const chip = doc.createElement("div")
       chip.className = "pw-chip"
-      chip.textContent = `${this.label("network")}: ${hosts.join(", ")}`
+      chip.textContent = `${this.label("network")}: ${hosts.join(", ")}${options.allowLocalNetwork ? ` (${this.label("localNetwork")})` : ""}`
       chip.title = chip.textContent
       this.root.append(chip)
     }
@@ -542,6 +552,7 @@ class Widget implements MountedWidget {
           pid: p.pid,
           data,
           hosts: this.options.capabilities?.https?.hosts,
+          localNetwork: this.options.allowLocalNetwork === true,
           sliceBudgetMs: this.host.options.sliceBudgetMs ?? SLICE_BUDGET_MS,
         })
         if (!this.visible) this.livePause(true)

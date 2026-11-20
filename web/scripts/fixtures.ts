@@ -101,6 +101,26 @@ const DEMO = {
   }
 }`,
   },
+  "local-demo": {
+    mode: "live",
+    localNetwork: true,
+    capabilities: { https: { hosts: ["localhost:4173"] } },
+    data: { title: "Local network (dev mode)" },
+    source: `async function main(data) {
+  const show = (lines, tone) => widget.render(ui.column({ gap: 1, fullscreen: false }, [
+    ui.text(data.title, { style: "title" }),
+    ...lines.map((l) => ui.text(l, { style: "code", tone })),
+  ]))
+  const url = "http://localhost:4173/demo/demo.css"
+  try {
+    const r = await widget.fetch(url)
+    show(["GET " + url, "status " + r.status + ", " + (await r.text()).length + " bytes"], "success")
+  } catch (e) {
+    show(["GET " + url, e.kind + ": " + e.message], "error")
+  }
+  await widget.event()
+}`,
+  },
   "clock-demo": {
     mode: "live",
     data: { title: "Running time" },
@@ -188,7 +208,7 @@ function draw(state, data, frame) {
   },
 }
 
-const fixtures: Record<string, { mode: string; source: string; data: unknown; capabilities?: unknown }> = {}
+const fixtures: Record<string, { mode: string; source: string; data: unknown; capabilities?: unknown; localNetwork?: boolean }> = {}
 for (const name of names) {
   if (data[name] === undefined) {
     console.warn(`no example data for ${name}: skipped`)
@@ -198,7 +218,13 @@ for (const name of names) {
   fixtures[name] = { mode: LIVE.has(name) ? "live" : "step", source, data: data[name] }
 }
 for (const [name, t] of Object.entries(DEMO))
-  fixtures[name] = { mode: t.mode, source: t.source, data: t.data, ...("capabilities" in t ? { capabilities: t.capabilities } : {}) }
+  fixtures[name] = {
+    mode: t.mode,
+    source: t.source,
+    data: t.data,
+    ...("capabilities" in t ? { capabilities: t.capabilities } : {}),
+    ...("localNetwork" in t ? { localNetwork: t.localNetwork } : {}),
+  }
 
 const out = path.join(root, "demo/fixtures.js")
 await Bun.write(

@@ -10,7 +10,8 @@ Web Worker) and hand programs JSON. The web counterpart of `psychoscript-mobile`
 class Program {
   constructor(source: string, inputName?: string)              // compile once; throws PsychoScriptError
   run(inputJson: string, timeoutMs?: number, maxOutputBytes?: number): string   // one run, its completion value as JSON
-  startLive(inputJson: string, options?: { sliceBudgetMs?: number; maxPostsPerSecond?: number; httpsHosts?: string[] }): LiveRun
+  startLive(inputJson: string, options?: { sliceBudgetMs?: number; maxPostsPerSecond?: number; httpsHosts?: string[];
+            allowLocalNetwork?: boolean }): LiveRun
 }
 class LiveRun {
   pump(maxMs: number): number      // -3 ended (see exit()), -2 still computing: pump again soon,
@@ -37,8 +38,9 @@ so `pump(8)` returns within ~8 ms and the worker's event loop stays responsive; 
 slice budget (50 ms) with no wait on the host stops the run with `sliceBudget`. Pausing freezes `now()` and sleeps,
 and holds deliveries and fetch answers; `resume` queues `{ type: "resumed", pausedMs }` first.
 
-`fetch` rules are checked here (`src/fetch.rs`): https only, the declared hosts, no URL credentials, no local names
-or non-public literal addresses, the six methods, no cookie headers, 256 KB out / 2 MB in, 4 in flight and 10 a
+`fetch` rules are checked here (`src/fetch.rs`): https only, the declared hosts (an entry may name a port), no URL
+credentials, no local names or non-public literal addresses (unless `allowLocalNetwork`, dev mode: then those too,
+over `http:` as well, when an entry other than `*` declares them), the six methods, no cookie headers, 256 KB out / 2 MB in, 4 in flight and 10 a
 second; the browser carries the request and the final URL after redirects is checked again. Snapshots
 (`suspend`/`toBytes`) aren't offered: `Suspender::suspend` blocks on a condition variable, which a single-threaded
 host can't do while it is the thread that must reach the safe point.

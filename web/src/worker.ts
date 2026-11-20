@@ -394,6 +394,7 @@ function handle(m: ToWorker) {
       try {
         const run = c.program.startLive(`{"data":${m.data}}`, {
           httpsHosts: m.hosts,
+          allowLocalNetwork: m.localNetwork === true,
           sliceBudgetMs: m.sliceBudgetMs,
         })
         const live: Live = { run, scheduled: false, timer: undefined, fetches: new Map() }

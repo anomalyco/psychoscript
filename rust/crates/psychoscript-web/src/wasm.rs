@@ -59,7 +59,7 @@ impl JsProgram {
     }
 
     /// Starts the program as a live run with `inputJson` behind its input function and `__host`. `options`:
-    /// `{ sliceBudgetMs = 50, maxPostsPerSecond = 240, httpsHosts?: string[] }`.
+    /// `{ sliceBudgetMs = 50, maxPostsPerSecond = 240, httpsHosts?: string[], allowLocalNetwork = false }`.
     #[wasm_bindgen(js_name = startLive)]
     pub fn start_live(&self, input_json: &str, options: JsValue) -> Result<JsLiveRun, JsValue> {
         let mut o = LiveOptions::default();
@@ -71,6 +71,8 @@ impl JsProgram {
             if let Some(n) = get("maxPostsPerSecond").and_then(|v| v.as_f64()) {
                 o.max_posts_per_second = n.max(0.0) as u32;
             }
+            o.allow_local_network =
+                get("allowLocalNetwork").is_some_and(|v| v.as_bool() == Some(true));
             if let Some(hosts) = get("httpsHosts").filter(js_sys::Array::is_array) {
                 o.https_hosts = Some(
                     js_sys::Array::from(&hosts)

@@ -1566,6 +1566,21 @@ export const fixtures = {
    }
   }
  },
+ "local-demo": {
+  "mode": "live",
+  "source": "async function main(data) {\n  const show = (lines, tone) => widget.render(ui.column({ gap: 1, fullscreen: false }, [\n    ui.text(data.title, { style: \"title\" }),\n    ...lines.map((l) => ui.text(l, { style: \"code\", tone })),\n  ]))\n  const url = \"http://localhost:4173/demo/demo.css\"\n  try {\n    const r = await widget.fetch(url)\n    show([\"GET \" + url, \"status \" + r.status + \", \" + (await r.text()).length + \" bytes\"], \"success\")\n  } catch (e) {\n    show([\"GET \" + url, e.kind + \": \" + e.message], \"error\")\n  }\n  await widget.event()\n}",
+  "data": {
+   "title": "Local network (dev mode)"
+  },
+  "capabilities": {
+   "https": {
+    "hosts": [
+     "localhost:4173"
+    ]
+   }
+  },
+  "localNetwork": true
+ },
  "clock-demo": {
   "mode": "live",
   "source": "async function main(data) {\n  let resumed = 0\n  let paused = 0\n  while (true) {\n    widget.render(ui.column({ gap: 1 }, [\n      ui.text(data.title, { style: \"title\" }),\n      ui.text(\"running \" + (widget.now() / 1000).toFixed(1) + \" s\", { style: \"code\" }),\n      ui.text(\"resumed \" + resumed + \"x, paused \" + paused + \" ms in all\", { style: \"caption\", tone: \"muted\" }),\n    ]))\n    const next = await widget.next({ timeout: 100 })\n    if (next.type === \"resumed\") { resumed++; paused += next.pausedMs }\n  }\n}",
