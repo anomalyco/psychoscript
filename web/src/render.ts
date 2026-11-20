@@ -129,6 +129,8 @@ function create(ctx: RenderContext, node: ViewNode): HTMLElement {
   const make = BUILDERS[node.type]!
   const { el, rec } = make(ctx, node)
   REC.set(el, rec)
+  // Event handlers read the node from the record: it must be this one from the start, not only after an update.
+  rec.node = node
   rec.update(node)
   return el
 }
@@ -347,7 +349,7 @@ const BUILDERS: Record<string, Builder> = {
       return s.includes(".") ? Math.min(6, s.length - s.indexOf(".") - 1) : 0
     }
     const show = () => {
-      const step = finite(rec.node.step, 0)
+      const step = input.step === "any" ? 0 : Number(input.step)
       shown.textContent = step > 0 ? Number(input.value).toFixed(decimals(step)) : String(Math.round(Number(input.value) * 100) / 100)
     }
     const rec: Rec = {
@@ -356,7 +358,8 @@ const BUILDERS: Record<string, Builder> = {
       update(n) {
         const min = finite(n.min, 0)
         const max = Math.max(min, finite(n.max, 100))
-        const step = finite(n.step, 0)
+        // Without a step, whole-number bounds step by 1 (keyboard and drag), others move freely.
+        const step = finite(n.step, 0) || (Number.isInteger(min) && Number.isInteger(max) && max - min >= 1 ? 1 : 0)
         input.min = String(min)
         input.max = String(max)
         input.step = step > 0 ? String(step) : "any"

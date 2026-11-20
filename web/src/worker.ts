@@ -289,6 +289,35 @@ async function transfer(wid: number, live: Live, e: Envelope) {
   }
 }
 
+// A program shaped like a widget step: compiling and running it once makes the engine compile the interpreter's common
+// paths (it compiles WebAssembly functions lazily, on first call), so the first real widget doesn't wait for that.
+// Workers given the same module share the compiled code.
+const WARM = `class Box { constructor(v) { this.v = v } get twice() { return this.v * 2 } static of(v) { return new Box(v) } }
+const ui = { column: (props, nodes) => Array.isArray(props) ? { type: "column", children: [props].flat(Infinity).filter(Boolean) } : { ...props, type: "column", children: [nodes].flat(Infinity).filter(Boolean) } }
+function view(state, data) {
+  return ui.column({ gap: 2 }, [data.items.map((item, i) => ({ type: "text", text: String(item.label) + " " + i, selected: state.picked === i })), state.picked !== null && { type: "button", id: "go" }])
+}
+const input = __input()
+const state = { picked: null, ...input.state, list: [3, 1, 2].sort((a, b) => a - b) }
+const out = []
+for (let i = 0; i < 40; i++) out.push(Box.of(i).twice * Math.sin(i / 3) + Math.max(i, 2) - Math.floor(i / 2))
+const pairs = Object.entries({ a: 1, b: "x" }).map(([k, v]) => k + "=" + v).join("&")
+const seen = new Map([["k", 1]]); const set = new Set([1, 2, 2])
+const text = \`t\${out.length}\`.padStart(4, "0").toUpperCase().replace(/T/g, "x").split("").reverse().join("")
+async function later(v) { await null; return v }
+later(1).then((v) => v + 1)
+try { null.x } catch (e) { out.push(e instanceof TypeError) }
+return { state, view: view(state, input.data), sum: out.reduce((a, b) => a + (typeof b === "number" ? b : 0), 0), pairs, seen: seen.get("k"), size: set.size, text, json: JSON.parse(JSON.stringify({ n: [1, { m: 2 }] })), keys: Object.keys(input.data).length, fixed: (1.5).toFixed(2), date: typeof Date.now() }`
+
+function warm() {
+  try {
+    const program = new Program(WARM)
+    const input = JSON.stringify({ state: { x: 1 }, data: { items: [{ label: "a" }, { label: "b" }] } })
+    for (let i = 0; i < 2; i++) program.run(input, 1000)
+    program.free()
+  } catch {}
+}
+
 // ---------- messages ----------
 
 function handle(m: ToWorker) {
@@ -297,6 +326,7 @@ function handle(m: ToWorker) {
       if (!ready) {
         initSync({ module: m.module })
         ready = true
+        warm()
       }
       post({ t: "ready" })
       return
