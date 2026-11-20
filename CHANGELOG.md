@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1
+
+- `psychoscript/effect`: a plain function the host gives the program (inside a host function's result, such as a
+  method of a returned object, or among the globals) may return an Effect again, as in 0.1; it runs with the run's
+  services and the same failure mapping as a `Host.fn`'s Effect.
+- The program sees a `Host.fn`'s own `name` and `length` again, not those of a wrapper.
+
 ## 0.2.0
 
 **Breaking.**

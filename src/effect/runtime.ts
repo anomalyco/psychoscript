@@ -1,6 +1,7 @@
 export * as Runtime from "./runtime.js"
 
 import { type Context, Effect } from "effect"
+import { adapt } from "./work.js"
 import { type DurableFn, type Fn, Interrupted, type Namespace } from "../runtime/contract.js"
 import {
   checkMaxBytes,
@@ -68,7 +69,7 @@ type ServicesOf<T, Depth extends ReadonlyArray<unknown>> = Depth["length"] exten
  */
 export const make = <const G extends Globals = {}>(options: Options<G> = {}): Runtime<Services<G>> => {
   type R = Services<G>
-  const setup = makeSetup<R>(options)
+  const setup = { ...makeSetup<R>(options), adapt }
   const program = (code: string, programOptions?: ProgramOptions): Program<R> =>
     wrap(makeProgram(() => startProgram(setup, code, programOptions?.bindings, programOptions?.runId)))
   return {

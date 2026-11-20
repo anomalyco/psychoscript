@@ -1,20 +1,18 @@
 export * as Host from "./host-function.js"
 
-import { Cause, Context, Effect, Exit } from "effect"
+import { Effect } from "effect"
 import type { Json } from "../data.js"
 import {
   type Call,
   DurableFn,
   type DurableCall,
   Fn,
-  HostDefect,
-  HostWork,
-  Interrupted,
   Namespace,
   type Snapshot,
   type Type,
 } from "../runtime/contract.js"
 import { HostFailure } from "../runtime/model.js"
+import { adapt, work } from "./work.js"
 
 // Host functions a program calls as globals. Arguments cross into the host as copies (`Date`, `Map`, `Set`,
 // `Uint8Array`, `URL`, `Headers`, errors, plain data), and results cross back the same way; a function inside a
@@ -64,14 +62,14 @@ export const fn = <F extends (args: ReadonlyArray<any>, call: Call) => unknown>(
 ): Fn<Requirements<ReturnType<F>>> =>
   new Fn(
     (args, call) => {
-      const result = f(args, call)
-      return Effect.isEffect(result) ? work(result) : result
+      return adapt(f(args, call))
     },
     options.type ?? "sync",
     options.type === "async" && options.idempotent === true,
     options.snapshot,
     options.constructible === true,
     options.takesFunctions === true,
+    f,
   )
 
 /**
@@ -107,28 +105,3 @@ export const fail = (kind: string, message: string, suggestions?: ReadonlyArray<
 /** What `resolve` gives for a path with no function: calling it throws this failure. */
 export const missing = (message: string, suggestions?: ReadonlyArray<string>, kind = "ExecutionFailure"): HostFailure =>
   new HostFailure(kind, message, suggestions)
-
-// An Effect as host work: it runs with the run's services when the driver starts it, an abort interrupts it, and its
-// exit settles the call. An interruption stays one, and a defect gets the call's location.
-const work = (effect: Effect.Effect<unknown, unknown, unknown>): HostWork =>
-  new HostWork((context, done) => {
-    const fiber = Effect.runForkWith((context ?? emptyServices) as Context.Context<unknown>)(effect)
-    fiber.addObserver((exit) => {
-      if (Exit.isSuccess(exit)) {
-        const value = exit.value
-        return done({ ok: true, value: Effect.isEffect(value) ? work(value) : value })
-      }
-      const cause = exit.cause
-      done({
-        ok: false,
-        error: Cause.hasInterruptsOnly(cause)
-          ? new Interrupted()
-          : Cause.hasDies(cause)
-            ? new HostDefect(Cause.squash(cause))
-            : Cause.squash(cause),
-      })
-    })
-    return () => fiber.interruptUnsafe()
-  })
-
-const emptyServices = Context.empty()

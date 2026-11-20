@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { Context, Data, Effect, Exit, Fiber, Layer, References } from "effect"
 import { Host, Runtime } from "../src/effect/index.js"
+import { Host as PromiseHost, Runtime as PromiseRuntime } from "../src/index.js"
 
 class Counter extends Context.Service<Counter, { readonly next: () => number }>()("Counter") {}
 class NotFound extends Data.TaggedError("NotFound")<{ readonly message: string }> {}
@@ -189,5 +190,43 @@ describe("Effect API", () => {
     })
     await run(runtime.execute("probe()").pipe(Effect.annotateLogs("request", "r1"), Effect.withSpan("outer")))
     expect(seen).toEqual(["outer", { request: "r1" }])
+  })
+
+  test("plain functions inside results and among the globals may return Effects", async () => {
+    const read = (path: string) =>
+      path === "missing" ? Effect.fail(Host.fail("NotFound", `no ${path}`)) : Effect.map(Counter, (c) => `${path}:${c.next()}`)
+    class Glob {
+      constructor(readonly pattern: string) {}
+    }
+    const runtime = Runtime.make({
+      globals: () => ({
+        Bun: {
+          file: Host.fn(([path]) => ({ text: () => read(path), size: () => Effect.succeed(3) }), { type: "sync-thenable" }),
+          Glob: Host.fn(([pattern]) => {
+            const glob = new Glob(pattern)
+            return { scan: () => Effect.succeed([glob.pattern]) }
+          }, { constructible: true }),
+          read,
+        },
+      }),
+    })
+    const exec = (code: string) => run(Effect.provideService(runtime.execute(code), Counter, counter()))
+    expect(await exec("return await Bun.file('a').text()")).toMatchObject({ ok: true, value: "a:1" })
+    expect(await exec("const f = Bun.file('a'); return [f.text(), f.text(), f.size()]")).toMatchObject({ ok: true, value: ["a:1", "a:2", 3] })
+    expect(await exec("return (await Bun.file('b')).text()")).toMatchObject({ ok: true, value: "b:1" })
+    expect(await exec("return Bun.read('c')")).toMatchObject({ ok: true, value: "c:1" })
+    expect(await exec("return new Bun.Glob('*.ts').scan()")).toMatchObject({ ok: true, value: ["*.ts"] })
+    expect(await exec("try { Bun.file('missing').text() } catch (e) { return e.message }")).toMatchObject({ value: "no missing" })
+    expect(await exec("await Bun.file('missing').text()")).toMatchObject({ ok: false, error: { kind: "NotFound" } })
+  })
+
+  test("the program sees a host function's own name and length", async () => {
+    const make = (fn: typeof Host.fn) =>
+      fn(Object.defineProperty(Object.defineProperty((args: ReadonlyArray<unknown>) => args.length, "name", { value: "original" }), "length", { value: 2 }))
+    const effect = Runtime.make({ globals: () => ({ f: make(Host.fn), g: Host.fn(function named(_a) { return 1 }) }) })
+    const promise = PromiseRuntime.make({ globals: () => ({ f: make(PromiseHost.fn as typeof Host.fn), g: PromiseHost.fn(function named(_a) { return 1 }) }) })
+    const code = "return [f.name, f.length, g.name, g.length]"
+    expect(await run(effect.execute(code))).toMatchObject({ value: ["original", 2, "named", 1] })
+    expect(await promise.execute(code)).toMatchObject({ value: ["original", 2, "named", 1] })
   })
 })

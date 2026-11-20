@@ -1,4 +1,4 @@
-import { DurableFn, Fn, HostWork, Namespace, promiseControllers, type Snapshot } from "./contract.js"
+import { type Call, DurableFn, Fn, HostWork, Namespace, promiseControllers, type Snapshot } from "./contract.js"
 import type { HostTarget } from "../host.js"
 import { BufferObj } from "../stdlib/buffer.js"
 import { StreamingResponse } from "../streaming-response.js"
@@ -72,7 +72,18 @@ export const hostGlobals = <R>(
   ctx: Interpreter<R>,
   globals: Readonly<Record<string, unknown>>,
   translate: Required<Translate> = { functions: "error", promises: "error" },
+  adapt?: (value: unknown, call: Call) => unknown,
 ): ReadonlyArray<readonly [string, Value]> => {
+  // A plain host function is called like a `sync` host function that takes functions.
+  const plain = (value: Function) =>
+    new Fn(
+      adapt === undefined ? (args) => value(...args) : (args, call) => adapt(value(...args), call),
+      "sync",
+      false,
+      undefined,
+      false,
+      true,
+    )
   const builtins = ctx.builtins
   // The `snapshot` hooks of the host functions among the globals that have them, by label.
   const owners = new Map<string, Snapshot>()
@@ -330,7 +341,7 @@ export const hostGlobals = <R>(
     source?: Function,
     callee?: Obj,
   ) => {
-    const named = source ?? (fn instanceof Fn ? fn.run : undefined)
+    const named = source ?? (fn instanceof Fn ? (fn.source ?? fn.run) : undefined)
     const own: unknown = named?.name
     // A host function made inline has no name of its own: it is named by where it is.
     const name =
@@ -493,10 +504,6 @@ export const hostGlobals = <R>(
     ([name, value]) => [name, fromHost(value, name, 0, new Set(), { global: [name], installed: true })] as const,
   )
 }
-
-// A plain host function (one inside a result, or among the globals) is called like a `sync` host function that takes
-// functions.
-const plain = (value: Function) => new Fn((args) => value(...args), "sync", false, undefined, false, true)
 
 // Runs a host function's `snapshot` hook; what goes wrong is the state's problem, said as such.
 const hostStep = <A>(owner: string, what: "save" | "restore", step: () => A): A => {
