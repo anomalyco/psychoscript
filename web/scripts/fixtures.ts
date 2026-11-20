@@ -76,31 +76,40 @@ const data: Record<string, unknown> = {
   ...diagrams,
 }
 
+// Demo templates, in the authoring style of widgets.md: handlers on nodes (`onPress`, `onChange`, `onPointer`), hooks
+// for events that belong to no node (`onKey`, `onFocus`, `onFullscreen`, `onCapture`; live: `widget.on`), no `update`
+// and no `widget.event()`.
 const DEMO = {
   "fetch-demo": {
     mode: "live",
     capabilities: { https: { hosts: ["api.github.com"] } },
     data: { title: "GitHub status" },
     source: `async function main(data) {
-  const show = (lines, tone) => widget.render(ui.column({ gap: 2, fullscreen: false }, [
-    ui.text(data.title, { style: "title" }),
-    ...lines.map((l) => ui.text(l, { style: "code", tone })),
-    ui.row({ gap: 1 }, [ui.button("again", "Fetch again", { variant: "primary" }), ui.button("local", "Try http://localhost"), ui.button("other", "Try example.com")]),
-  ]))
-  show(["press a button"])
-  let url = "https://api.github.com/zen"
-  while (true) {
+  let lines = ["press a button"]
+  let tone
+  const show = () =>
+    widget.render(ui.column({ gap: 2, fullscreen: false }, [
+      ui.text(data.title, { style: "title" }),
+      ...lines.map((l) => ui.text(l, { style: "code", tone })),
+      ui.row({ gap: 1 }, [
+        ui.button("Fetch again", { variant: "primary", onPress: () => get("https://api.github.com/zen") }),
+        ui.button("Try http://localhost", { onPress: () => get("http://localhost/x") }),
+        ui.button("Try example.com", { onPress: () => get("https://example.com/") }),
+      ]),
+    ]))
+  const get = async (url) => {
     try {
       const r = await widget.fetch(url)
-      show(["GET " + url, "status " + r.status, (await r.text()).slice(0, 120)], "success")
+      lines = ["GET " + url, "status " + r.status, (await r.text()).slice(0, 120)]
+      tone = "success"
     } catch (e) {
-      show(["GET " + url, e.kind + ": " + e.message], "error")
+      lines = ["GET " + url, e.kind + ": " + e.message]
+      tone = "error"
     }
-    let ev = await widget.event()
-    // Focus and key events (widgets-input.md) arrive too: wait for a press.
-    while (ev.type !== "press") ev = await widget.event()
-    url = ev.id === "local" ? "http://localhost/x" : ev.id === "other" ? "https://example.com/" : "https://api.github.com/zen"
+    show()
   }
+  show()
+  await get("https://api.github.com/zen")
 }`,
   },
   "local-demo": {
@@ -120,33 +129,51 @@ const DEMO = {
   } catch (e) {
     show(["GET " + url, e.kind + ": " + e.message], "error")
   }
-  await widget.event()
 }`,
   },
   "keys-demo": {
     mode: "step",
     data: { title: "Keyboard and mouse" },
-    source: `function init() { return { capture: false, focus: false, captured: false, last: "-", keys: 0, moved: 0, buttons: 0, hover: 0 } }
+    source: `function init() {
+  return { capture: false, focus: false, captured: false, last: "-", keys: 0, moved: 0, buttons: 0, hover: 0, pressed: false }
+}
+
 function view(state, data) {
   return ui.column({ gap: 1, capture: state.capture ? "pointer" : undefined }, [
     ui.text(data.title, { style: "title" }),
-    ui.canvas({ id: "pad", height: 110 }),
+    ui.canvas({ key: "pad", height: 110, onPointer: padPointer }),
     ui.text("focus " + state.focus + " · captured " + state.captured, { style: "code" }),
     ui.text("last " + state.last + " · keys " + state.keys + " · moved " + state.moved + " · buttons " + state.buttons, { style: "code" }),
     ui.text("hover " + state.hover, { style: "code" }),
-    ui.row({ gap: 1 }, [ui.button("capture", state.capture ? "Stop asking for the mouse" : "Ask for the mouse")]),
+    ui.row({ gap: 1 }, [
+      ui.button(state.capture ? "Stop asking for the mouse" : "Ask for the mouse", {
+        onPress: (state) => ({ ...state, capture: !state.capture }),
+      }),
+    ]),
   ])
 }
-function update(state, event) {
-  if (event.type === "focus") return { ...state, focus: event.value }
-  if (event.type === "capture") return { ...state, captured: event.value }
-  if (event.type === "key") return { ...state, last: event.value.kind + " " + event.value.key, keys: state.keys + 1 }
-  if (event.type === "pointer" && event.value.kind === "move" && event.value.down === false) return { ...state, hover: state.hover + 1 }
-  if (event.type === "pointer" && event.value.dx !== undefined) return { ...state, moved: state.moved + Math.abs(event.value.dx) + Math.abs(event.value.dy) }
-  if (event.type === "pointer" && event.value.button !== undefined) return { ...state, buttons: state.buttons + 1 }
-  if (event.id === "capture") return { ...state, capture: !state.capture }
-  return state
+
+// Captured: relative moves and buttons. Otherwise absolute: a move with no button held is a hover.
+function padPointer(state, p) {
+  if (p.dx !== undefined)
+    return p.kind === "move" ? { ...state, moved: state.moved + Math.abs(p.dx) + Math.abs(p.dy) } : { ...state, buttons: state.buttons + 1 }
+  if (p.kind === "down") return { ...state, pressed: true }
+  if (p.kind === "up") return { ...state, pressed: false }
+  return state.pressed ? state : { ...state, hover: state.hover + 1 }
 }
+
+function onKey(state, key) {
+  return { ...state, last: key.kind + " " + key.key, keys: state.keys + 1 }
+}
+
+function onFocus(state, focused) {
+  return { ...state, focus: focused }
+}
+
+function onCapture(state, captured) {
+  return { ...state, captured }
+}
+
 function draw(state, data, frame) {
   const g = ui.draw()
   g.rrect(0, 0, frame.width, frame.height, 8, state.captured ? "accent" : "surface")
@@ -160,23 +187,29 @@ function draw(state, data, frame) {
     data: { title: "Keys in a live widget" },
     source: `async function main(data) {
   const s = { focus: false, captured: false, last: "-", keys: 0, moved: 0 }
-  while (true) {
+  const show = () => {
     widget.render(ui.column({ gap: 1, fullscreen: false }, [
       ui.text(data.title, { style: "title" }),
-      ui.canvas({ id: "pad", height: 70 }),
+      ui.canvas({
+        key: "pad",
+        height: 70,
+        onPointer: (p) => {
+          if (p.dx === undefined || p.kind !== "move") return
+          s.moved += Math.abs(p.dx) + Math.abs(p.dy)
+          show()
+        },
+      }),
       ui.text("focus " + s.focus + " · captured " + s.captured + " · last " + s.last + " · keys " + s.keys + " · moved " + s.moved, { style: "code" }),
-      ui.button("capture", "Capture the mouse"),
+      ui.button("Capture the mouse", { onPress: () => widget.capturePointer() }),
     ]))
     const g = ui.draw()
     g.rrect(0, 0, 2000, 70, 8, s.captured ? "accent" : "surface")
     widget.draw("pad", g)
-    const e = await widget.event()
-    if (e.id === "capture") widget.capturePointer ? widget.capturePointer() : __host.post({ type: "capture", value: true })
-    if (e.type === "focus") s.focus = e.value
-    if (e.type === "capture") s.captured = e.value
-    if (e.type === "key") { s.last = e.value.kind + " " + e.value.key; s.keys++ }
-    if (e.type === "pointer" && e.value.dx !== undefined) s.moved += Math.abs(e.value.dx) + Math.abs(e.value.dy)
   }
+  widget.on("focus", (focused) => { s.focus = focused; show() })
+  widget.on("capture", (captured) => { s.captured = captured; show() })
+  widget.on("key", (key) => { s.last = key.kind + " " + key.key; s.keys++; show() })
+  show()
 }`,
   },
   "clock-demo": {
@@ -185,14 +218,14 @@ function draw(state, data, frame) {
     source: `async function main(data) {
   let resumed = 0
   let paused = 0
+  widget.on("resumed", (ms) => { resumed++; paused += ms })
   while (true) {
     widget.render(ui.column({ gap: 1 }, [
       ui.text(data.title, { style: "title" }),
       ui.text("running " + (widget.now() / 1000).toFixed(1) + " s", { style: "code" }),
       ui.text("resumed " + resumed + "x, paused " + paused + " ms in all", { style: "caption", tone: "muted" }),
     ]))
-    const next = await widget.next({ timeout: 100 })
-    if (next.type === "resumed") { resumed++; paused += next.pausedMs }
+    await widget.sleep(100)
   }
 }`,
   },
@@ -209,23 +242,23 @@ function draw(state, data, frame) {
 
 async function main(data) {
   const s = { down: 0, move: 0, up: 0, hover: 0, x: 0.5, y: 0.5, pressed: 0, frames: 0 }
+  // Drags count as moves; moves with no button held (hover) light the orb dimly.
+  const onPointer = (p) => {
+    if (p.kind === "down") { s.down++; s.pressed = 1 }
+    else if (p.kind === "up") { s.up++; s.pressed = 0 }
+    else if (s.pressed) s.move++
+    else s.hover++
+    s.x = p.x / p.width
+    s.y = p.y / p.height
+  }
   while (true) {
     widget.render(ui.column({ gap: 1 }, [
       ui.text(data.title, { style: "title" }),
-      ui.shader(WGSL, { id: "orb", height: 160, fps: 0, values: [widget.now() / 1000, s.x, s.y, s.pressed], alt: "A glowing orb that follows the pointer" }),
+      ui.shader(WGSL, { key: "orb", height: 160, fps: 0, values: [widget.now() / 1000, s.x, s.y, s.pressed], alt: "A glowing orb that follows the pointer", onPointer }),
       ui.text("frames " + s.frames + " · down " + s.down + " · move " + s.move + " · up " + s.up + " · hover " + s.hover, { style: "caption", tone: "muted" }),
     ]))
-    const next = await widget.next({ frame: true })
-    if (next.type === "frame") s.frames++
-    if (next.type === "event" && next.event.type === "pointer") {
-      const v = next.event.value
-      // Hover moves (no button held) light the orb dimly; drags count as moves.
-      if (v.kind === "move" && v.down === false) s.hover++
-      else s[v.kind]++
-      s.x = v.x / v.width
-      s.y = v.y / v.height
-      s.pressed = v.kind === "up" ? 0 : 1
-    }
+    await widget.frame()
+    s.frames++
   }
 }`,
   },
@@ -233,29 +266,45 @@ async function main(data) {
     mode: "live",
     data: { title: "A runaway loop" },
     source: `async function main(data) {
-  widget.render(ui.column({ gap: 2 }, [ui.text(data.title, { style: "title" }), ui.text("Press to spin forever: the host stops it after 50 ms.", { tone: "muted" }), ui.button("spin", "Spin", { variant: "danger" })]))
-  while ((await widget.event()).id !== "spin") {}
-  let n = 0
-  while (true) n++
+  widget.render(ui.column({ gap: 2 }, [
+    ui.text(data.title, { style: "title" }),
+    ui.text("Press to spin forever: the host stops it after 50 ms.", { tone: "muted" }),
+    ui.button("Spin", {
+      variant: "danger",
+      onPress: () => {
+        let n = 0
+        while (true) n++
+      },
+    }),
+  ]))
 }`,
   },
   "fullscreen-demo": {
     mode: "step",
     data: { title: "Pulse" },
-    source: `function init() { return { full: false, taps: 0 } }
+    source: `function init() {
+  return { full: false, taps: 0 }
+}
+
 function view(state, data) {
   return ui.column({ gap: 2, fullscreen: true }, [
     ui.text(data.title + (state.full ? " (full screen)" : ""), { style: "title" }),
     !state.full && ui.text("Expand me: the canvas fills the screen and the text goes away.", { tone: "muted" }),
-    ui.canvas({ id: "pulse", height: 140, fill: state.full, fps: 60 }),
+    ui.canvas({
+      key: "pulse",
+      height: 140,
+      fill: state.full,
+      fps: 60,
+      onPointer: (state, p) => (p.kind === "down" ? { ...state, taps: state.taps + 1 } : state),
+    }),
     ui.text("taps: " + state.taps, { style: "caption" }),
   ])
 }
-function update(state, event) {
-  if (event.type === "fullscreen") return { ...state, full: event.value }
-  if (event.type === "pointer" && event.value.kind === "down") return { ...state, taps: state.taps + 1 }
-  return state
+
+function onFullscreen(state, on) {
+  return { ...state, full: on }
 }
+
 function draw(state, data, frame) {
   const g = ui.draw()
   const r = Math.min(frame.width, frame.height) * (0.25 + 0.08 * Math.sin(frame.t * 3))
