@@ -293,6 +293,11 @@ return [thrown instanceof RangeError, thrown.message, sent instanceof Promise, a
   { code: `console.log("1"); console.log("2"); console.log("3"); return 1`, limits: { maxOutputBytes: 4 } },
   { code: `count(); console.log("x".repeat(30)); throw new Error("y".repeat(30))`, limits: { maxOutputBytes: 8 } },
   { code: `for (let i = 0; i < 5; i++) Promise.reject(new Error("e" + i)); return 1`, limits: { maxOutputBytes: 100 } },
+  // The heap limit: measured where the calls are handed over, which then never start, and when the body ends.
+  { code: `note(1); const a = new Array(100000); await load(1); return a.length`, limits: { maxHeapBytes: 1000000 } },
+  { code: `const a = []; while (true) a.push(inc(a.length))`, limits: { maxHeapBytes: 1000000 } },
+  { code: `note(1); Math.kept = new Array(1000).fill("y".repeat(100000)); return 1`, limits: { maxHeapBytes: 216080 } },
+  { code: `note(1); Math.kept = new Array(1000).fill("y".repeat(100000)); return 1`, limits: { maxHeapBytes: 216079 } },
   // Warnings: rejections nothing handled.
   { code: `Promise.reject(new Error("x")); return 1` },
   { code: `const p = Promise.reject(1); await null; p.catch(() => 0); return 2` },
@@ -372,6 +377,12 @@ return [thrown instanceof RangeError, thrown.message, sent instanceof Promise, a
   { code: `export const x = 1`, compiled: true },
 ]
 const suspensions: Array<Entry> = [
+  // A resumed run keeps its heap limit: under it when suspended, over it once resumed.
+  {
+    code: `const kept = []; for (let i = 0; i < 1000; i++) kept.push({ i }); await wait(); while (true) kept.push({})`,
+    runId: "h",
+    limits: { maxHeapBytes: 1000000 },
+  },
   // run.metadata across a suspend; the globals are made again on resume.
   { code: `count(); count(); await wait(); return count()`, runId: "m" },
   { code: `count(); count(); await wait(); return count()`, runId: "m", compiled: true },

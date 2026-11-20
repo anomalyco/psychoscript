@@ -1,4 +1,5 @@
 import type { Builtins } from "./intrinsics.js"
+import { charging, ELEMENT_BYTES, OBJECT_BYTES } from "./heap.js"
 import { checkArrayLength } from "./limits.js"
 import {
   type AstNode,
@@ -137,10 +138,13 @@ export class Obj {
   intrinsic = 0
   /** Whether a program accessor was ever defined here: the bulk readers' cue to take their slow paths. */
   hasProgramAccessors = false
+  /** The last heap measurement that reached it (see `measure` in snapshot/codec.ts). */
+  visited = 0
   /** Only on `Array.prototype` and the built-in iterators' prototype: the key whose change clears the protector. */
   declare guard?: { readonly key: PropertyKey; readonly protector: Protector }
   constructor(public proto: Obj | null) {
     if (making !== undefined) making.push(this)
+    if (charging !== undefined) charging.debt += OBJECT_BYTES
   }
 
   /** The class name `Object.prototype.toString` reports: `[object Map]`. */
@@ -228,6 +232,7 @@ export class Arr extends Obj {
     readonly items: Array<Value> = [],
   ) {
     super(proto)
+    if (charging !== undefined) charging.debt += ELEMENT_BYTES * items.length
   }
   override get describe() {
     return "an array"

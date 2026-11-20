@@ -36,7 +36,7 @@ fn main() {
         .globals(move |_| [("tools", HostValue::from(tools.clone()))])
         .limits(Limits {
             timeout_ms: Some(2000),
-            max_output_bytes: None,
+            ..Limits::default()
         });
     let outcome = runtime.execute(&code);
     for line in &outcome.logs {

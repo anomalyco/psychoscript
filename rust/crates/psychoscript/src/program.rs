@@ -374,14 +374,22 @@ impl<'a> Program<'a> {
                 if r.vm.gc_pending() && r.vm.fatal.is_none() {
                     r.vm.gc_point();
                 }
+                if r.vm.heap_meter.is_some() && r.vm.fatal.is_none() && r.vm.outcome.is_none() {
+                    r.vm.heap_point(0);
+                }
                 #[cfg(feature = "gc-stats")]
                 r.vm.publish_stats();
                 if let Some(o) = &mut r.vm.host.offload {
                     o.at = None;
                 }
             }
-            // The run stopped: the reference's driver starts the host calls queued so far.
-            if !r.vm.host.queued.is_empty() {
+            // The run stopped: the reference's driver starts the host calls queued so far, unless the heap is over its
+            // limit.
+            let over = matches!(
+                r.vm.fatal,
+                Some((crate::DiagnosticKind::MemoryLimitExceeded, _))
+            );
+            if !r.vm.host.queued.is_empty() && !over {
                 crate::host::launch(&mut r.vm);
                 if r.vm.outcome.is_none() && r.vm.fatal.is_none() && !r.vm.suspended {
                     continue;

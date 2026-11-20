@@ -300,6 +300,7 @@ fn runtime(entry: &Json, state: &State) -> Runtime {
         max_output_bytes: entry["limits"]["maxOutputBytes"]
             .as_u64()
             .map(|n| n as usize),
+        max_heap_bytes: entry["limits"]["maxHeapBytes"].as_u64(),
     };
     let state = state.clone();
     Runtime::make()

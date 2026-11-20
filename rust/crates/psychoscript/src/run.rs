@@ -182,6 +182,7 @@ pub fn start(
     crate::builtins::ensure_globals(&mut vm, &program.globals);
     host::install(&mut vm, &program.globals);
     vm.snapshot_base = crate::snapshot::Base::of(&vm);
+    vm.start_heap_meter(false);
     for (k, v) in &options.bindings {
         // Host globals of the same name win, as in the reference.
         if k.as_str().is_some_and(|k| host::has_host_global(&vm, k)) {
@@ -228,6 +229,7 @@ pub fn start_for_resume(
     crate::builtins::ensure_globals(&mut vm, &program.globals);
     host::install(&mut vm, &program.globals);
     vm.snapshot_base = crate::snapshot::Base::of(&vm);
+    vm.start_heap_meter(true);
     let code: Arc<str> = Arc::from(code);
     vm.code = code.clone();
     vm.load(program);
@@ -284,6 +286,9 @@ pub fn finish(r: Running) -> Outcome {
     let code: &str = &code;
     vm.host.tasks.clear();
     let vm = &mut vm;
+    if vm.outcome.is_some() {
+        vm.heap_final();
+    }
     let result = match (vm.fatal.clone(), vm.outcome.take()) {
         (Some((kind, message)), _) => Err(diagnostic(kind, message)),
         (None, Some(Ok(v))) => match vm.result_json.take() {

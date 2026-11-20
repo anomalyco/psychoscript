@@ -78,7 +78,9 @@ Known differences:
 - **Threading:** a run stays on the thread that drives it; as a future, compute past 1 ms moves to a worker of the
   run's own while host code is always handed back to the executor, in the same order.
 - **Memory:** an incremental, non-moving mark-sweep collector (`collector.rs`) frees what a run can no longer reach,
-  at safe points only (`bench/GC.md`).
+  at safe points only (`bench/GC.md`). `Limits::max_heap_bytes` (the reference's `maxHeapBytes`) caps what a run
+  can reach, measured in the size model both share (`heap.rs`), so a measurement finds the same in both; when the
+  measurements between the first and the last fall differs, as the pacing counts allocations each its own way.
 - Layout: `crates/psychoscript` (compiler on `oxc_parser`, VM, standard library, host functions, snapshots),
   `conformance/` (generators and recordings), `bench/`, `test262/`.
 

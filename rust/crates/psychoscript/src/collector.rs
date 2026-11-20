@@ -229,6 +229,11 @@ impl Gc {
         (self.free.len(), self.cell_free.len())
     }
 
+    /// The freed object slots the next allocations reuse, the last first.
+    pub(crate) fn free_objects(&self) -> &[Id] {
+        &self.free
+    }
+
     /// Someone other than the collector asks the run to stop.
     pub(crate) fn disown_suspend(&mut self) {
         self.owns_suspend = false;
@@ -611,6 +616,9 @@ impl Vm {
             Some(id) => {
                 self.heap.marks.color[id as usize] =
                     reused_color(phase, id as usize, self.gc.obj_sweep.0, BLACK);
+                if let Some(m) = self.heap_meter.as_deref_mut() {
+                    m.debt += crate::heap::OBJECT_BYTES;
+                }
             }
             None => {
                 if self.heap.len() >= MAX_OBJECTS {

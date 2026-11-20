@@ -20,6 +20,12 @@ pub enum Ref {
 /// Every reference the VM holds outside its heap objects and cells: stacks, frames, globals, constants, the realm's
 /// lazily made prototypes, jobs, coroutines, the host's calls (queued, in flight, settled), and the outcome.
 pub fn roots(vm: &Vm, visit: &mut impl FnMut(Ref)) {
+    roots_but(vm, false, visit);
+}
+
+/// [`roots`], without the compiled program's constants when `measuring`: a heap measurement counts a literal
+/// only where the program stored it.
+pub fn roots_but(vm: &Vm, measuring: bool, visit: &mut impl FnMut(Ref)) {
     let mut t = Tracer(visit);
     t.slots(&vm.stack);
     for f in &vm.frames {
@@ -33,7 +39,9 @@ pub fn roots(vm: &Vm, visit: &mut impl FnMut(Ref)) {
     for a in &vm.global_names {
         t.atom(*a);
     }
-    t.vals(vm.consts.iter());
+    if !measuring {
+        t.vals(vm.consts.iter());
+    }
     let std = &vm.realm.std;
     for id in [
         std.regexp,
