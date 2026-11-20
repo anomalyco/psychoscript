@@ -255,9 +255,9 @@ export class WidgetHost {
     return ++this.ids
   }
 
-  /** Starts loading the WebAssembly now rather than at the first mount. */
+  /** Loads and compiles the WebAssembly and starts (and warms) the step worker now rather than at the first mount. */
   preload(): Promise<void> {
-    return this.languageModule().then(() => undefined)
+    return this.steps().ready
   }
 
   languageModule(): Promise<WebAssembly.Module> {

@@ -128,7 +128,7 @@ export declare class WidgetHost {
     private translations;
     constructor(options?: HostOptions);
     nextId(): number;
-    /** Starts loading the WebAssembly now rather than at the first mount. */
+    /** Loads and compiles the WebAssembly and starts (and warms) the step worker now rather than at the first mount. */
     preload(): Promise<void>;
     languageModule(): Promise<WebAssembly.Module>;
     shaderModule(): Promise<WebAssembly.Module>;
