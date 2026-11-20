@@ -2,6 +2,7 @@
 
 use std::fmt::Write as _;
 
+use crate::accessors::Got;
 use crate::object::*;
 
 use crate::value::{Id, Slot, Value, write_num};
@@ -632,6 +633,8 @@ const TO_JSON: usize = 0;
 const REPLACED: usize = 1;
 /// A program getter `holder[key]` met, whose value is the one visited.
 const GOT: usize = 2;
+/// A program getter for the value's `toJSON`, called from the frame as the reference's walk reads it in bytecode.
+const GOT_TO_JSON: usize = 3;
 
 /// Where a step of the internal walk is.
 #[derive(Clone, Copy)]
@@ -694,6 +697,24 @@ pub fn enter_stringify(vm: &mut Vm, callee: Id, v: Value, opts: Stringify) -> Re
     )
 }
 
+/// Calls the visited value's `toJSON` `f`, once read, when it is callable.
+fn call_to_json(
+    vm: &mut Vm,
+    fr: crate::native::Frame,
+    out: &mut String,
+    f: Value,
+) -> Result<Option<crate::native::Step>, Value> {
+    if !vm.is_callable(&f) {
+        return Ok(None);
+    }
+    let kv = walk_key(vm, fr);
+    flush(vm, fr, out);
+    fr.set_index(vm, J_PHASE, TO_JSON);
+    let v = fr.slot(vm, J_VAL);
+    fr.call_slots(vm, Slot::pack(f), v, [Slot::pack(kv)])
+        .map(Some)
+}
+
 /// The step of the internal walk: it writes what it can, and keeps what it wrote in its slots before each call of a
 /// `toJSON` or the replacer. A key and its separator are written only once the value under it is known to be written,
 /// so nothing written has to be taken back.
@@ -727,6 +748,12 @@ fn stringify_walk(
     };
     let mut stage = match input {
         Input::Start => Stage::Visit,
+        Input::Returned(f) if fr.index(vm, J_PHASE) == GOT_TO_JSON => {
+            if let Some(step) = call_to_json(vm, fr, out, f.get())? {
+                return Ok(step);
+            }
+            Stage::Replace
+        }
         Input::Returned(r) => {
             fr.set_slot(vm, J_VAL, r);
             match fr.index(vm, J_PHASE) {
@@ -788,12 +815,17 @@ fn stringify_walk(
                     )
                 {
                     let k = vm.names.to_json;
-                    let f = vm.get_calling(id, k)?;
-                    if vm.is_callable(&f) {
-                        let kv = walk_key(vm, fr);
-                        flush(vm, fr, out);
-                        fr.set_index(vm, J_PHASE, TO_JSON);
-                        return fr.call_slots(vm, Slot::pack(f), Slot::pack(v), [Slot::pack(kv)]);
+                    match vm.get_stepping(id, k)? {
+                        Got::Value(f) => {
+                            if let Some(step) = call_to_json(vm, fr, out, f)? {
+                                return Ok(step);
+                            }
+                        }
+                        Got::Call(step) => {
+                            flush(vm, fr, out);
+                            fr.set_index(vm, J_PHASE, GOT_TO_JSON);
+                            return Ok(step);
+                        }
                     }
                 }
                 Stage::Replace

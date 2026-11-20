@@ -2,6 +2,8 @@
 //! WeakSet.
 
 use super::{arg, describe_value, fuel, incompatible, require_callback};
+use crate::accessors::Got;
+use crate::iteration::{item_of, read_result};
 use crate::native::{
     FOR_OF_SLOTS, Flow, ForOf, Frame, Input, NativeOp, Step, enter_for_of, enter_for_of_sub,
     for_of_step,
@@ -356,8 +358,9 @@ fn set_method(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
         return Err(vm.type_error(&format!("Set.{name} expects a Set-like object.")));
     }
     let sk = vm.names.size;
-    // `other.size`, `other.has` and `other.keys` as the reference's prelude reads them, through any getters.
-    let raw = vm.get_calling_value(&other, sk)?;
+    // `other.size`, `other.has` and `other.keys` as the reference's prelude reads them, through any getters, read
+    // ahead (`Vm::reading`): a getter runs from a frame, then the built-in again.
+    let raw = read_record(vm, &other, &[sk])?[0];
     let size = vm.number_of(&raw)?;
     if size.is_nan() {
         return Err(vm.type_error(&format!(
@@ -372,8 +375,8 @@ fn set_method(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
     }
     let hk = vm.atoms.intern_static("has");
     let kk = vm.atoms.intern_static("keys");
-    let has = vm.get_calling_value(&other, hk)?;
-    let keys = vm.get_calling_value(&other, kk)?;
+    let read = read_record(vm, &other, &[hk, kk])?;
+    let (has, keys) = (read[0], read[1]);
     fuel::native(vm);
     let callable = vm.is_callable(&has);
     if callable {
@@ -456,6 +459,11 @@ const KEYS: usize = 1;
 const STEPPING: usize = 2;
 const CLOSING: usize = 3;
 const CLOSING_GEN: usize = 4;
+/// A program getter called from the frame: the iterator's `next`, the result's `done` and `value` (a `RESULT` frame,
+/// see `iteration::read_result`), or the iterator's `return`.
+const READ_NEXT: usize = 5;
+const READ_RESULT: usize = 6;
+const READ_RETURN: usize = 7;
 
 fn set_method_step(vm: &mut Vm, fr: Frame, input: Input) -> Result<Step, Value> {
     let name = SET_METHODS[fr.index(vm, SM_WHICH)].0;
@@ -477,21 +485,32 @@ fn set_method_step(vm: &mut Vm, fr: Frame, input: Input) -> Result<Step, Value> 
                 }
                 fuel::step(vm);
             }
-            KEYS => opened(vm, fr, r.get(), name)?,
-            STEPPING => {
-                let Some(rid) = r.obj() else {
-                    return Err(vm.type_error("Iterator next() result must be an object."));
-                };
-                let (dk, vk) = (vm.names.done, vm.names.value);
-                let done = vm.get_calling(rid, dk)?;
-                if vm.truthy(&done) {
-                    return set_done(vm, set_result(result));
+            KEYS => {
+                if let Some(step) = opened(vm, fr, r.get(), name)? {
+                    return Ok(step);
                 }
-                let item = vm.get_calling(rid, vk)?;
+            }
+            READ_NEXT => opened_next(vm, fr, r.get())?,
+            STEPPING | READ_RESULT => {
+                let got = if phase == READ_RESULT {
+                    item_of(r)
+                } else {
+                    match read_result(vm, r, None)? {
+                        Ok(got) => got,
+                        Err(step) => {
+                            fr.set_index(vm, SM_PHASE, READ_RESULT);
+                            return Ok(step);
+                        }
+                    }
+                };
+                let Some(item) = got else {
+                    return set_done(vm, set_result(result));
+                };
                 if let Some(step) = take_key(vm, fr, item, name, target, result)? {
                     return Ok(step);
                 }
             }
+            READ_RETURN => return close_with(vm, fr, r.get()),
             CLOSING => {
                 if r.obj().is_none() {
                     return Err(vm.type_error("Iterator return() result must be an object."));
@@ -604,8 +623,19 @@ fn answer(vm: &mut Vm, name: &str, result: Option<Id>, item: Value, found: bool)
     }
 }
 
-/// What `keys()` returned: keeps the iterator to step.
-fn opened(vm: &mut Vm, fr: Frame, iterator: Value, name: &str) -> Result<(), Value> {
+/// The Set-like object's `keys` read in turn, ahead where its built-in can run again; inline where it cannot.
+fn read_record(vm: &mut Vm, other: &Value, keys: &[Atom]) -> Result<Vec<Value>, Value> {
+    if vm.convert_ok {
+        return vm.reading(|vm| keys.iter().map(|k| vm.get(other, *k)).collect());
+    }
+    keys.iter()
+        .map(|k| vm.get_calling_value(other, *k))
+        .collect()
+}
+
+/// What `keys()` returned: keeps the iterator to step. Its `next` read by a program getter is called from the frame
+/// (`Some` step): the step goes on in `opened_next`.
+fn opened(vm: &mut Vm, fr: Frame, iterator: Value, name: &str) -> Result<Option<Step>, Value> {
     fuel::native(vm);
     let Value::Obj(iid) = iterator else {
         return Err(vm.type_error(&format!(
@@ -621,13 +651,23 @@ fn opened(vm: &mut Vm, fr: Frame, iterator: Value, name: &str) -> Result<(), Val
         iterator
     };
     let nk = vm.names.next;
-    let next = vm.get_calling(iid, nk)?;
-    if !array && !vm.is_callable(&next) {
+    fr.set(vm, SM_ITER, it);
+    fr.set(vm, SM_ARRAY, Value::Bool(array));
+    match vm.get_stepping(iid, nk)? {
+        Got::Value(next) => opened_next(vm, fr, next).map(|_| None),
+        Got::Call(step) => {
+            fr.set_index(vm, SM_PHASE, READ_NEXT);
+            Ok(Some(step))
+        }
+    }
+}
+
+/// The `next` of the iterator `keys()` returned, read.
+fn opened_next(vm: &mut Vm, fr: Frame, next: Value) -> Result<(), Value> {
+    if !vm.truthy(&fr.get(vm, SM_ARRAY)) && !vm.is_callable(&next) {
         return Err(vm.type_error("The called value is not a function."));
     }
-    fr.set(vm, SM_ITER, it);
     fr.set(vm, SM_NEXT, next);
-    fr.set(vm, SM_ARRAY, Value::Bool(array));
     Ok(())
 }
 
@@ -700,18 +740,28 @@ fn close_keys(vm: &mut Vm, fr: Frame) -> Result<Step, Value> {
         | Kind::ListIter { .. } => set_done(vm, Value::Bool(false)),
         _ => {
             let rk = vm.names.return_;
-            let f = vm.get_calling(id, rk)?;
-            if f.is_nullish() {
-                return set_done(vm, Value::Bool(false));
+            match vm.get_stepping(id, rk)? {
+                Got::Value(f) => close_with(vm, fr, f),
+                Got::Call(step) => {
+                    fr.set_index(vm, SM_PHASE, READ_RETURN);
+                    Ok(step)
+                }
             }
-            if !vm.is_callable(&f) {
-                return Err(vm.type_error("Iterator return must be a function."));
-            }
-            fr.set_index(vm, SM_PHASE, CLOSING);
-            let it = Slot::pack(Value::Obj(id));
-            fr.call_slots_as(vm, Slot::pack(f), it, [], Step::CallUncounted)
         }
     }
+}
+
+/// Closes the keys iterator with its `return`, once read.
+fn close_with(vm: &mut Vm, fr: Frame, f: Value) -> Result<Step, Value> {
+    if f.is_nullish() {
+        return set_done(vm, Value::Bool(false));
+    }
+    if !vm.is_callable(&f) {
+        return Err(vm.type_error("Iterator return must be a function."));
+    }
+    fr.set_index(vm, SM_PHASE, CLOSING);
+    let it = fr.slot(vm, SM_ITER);
+    fr.call_slots_as(vm, Slot::pack(f), it, [], Step::CallUncounted)
 }
 
 fn set_result(result: Option<Id>) -> Value {

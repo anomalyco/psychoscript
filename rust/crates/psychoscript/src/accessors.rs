@@ -12,8 +12,15 @@
 
 use crate::native::{Frame, Input, Step};
 use crate::object::*;
-use crate::value::{Id, Value};
+use crate::value::{Id, Slot, Value};
 use crate::vm::{Res, Vm};
+
+/// What a native frame's step reads (`Vm::get_stepping`): the value, or the call of the program getter it meets.
+pub(crate) enum Got {
+    Value(Value),
+    /// The getter's call, to return from the step: its result is the step's next input.
+    Call(Step),
+}
 
 /// The program getters a built-in reads ahead (the reference's `reads`).
 #[derive(Default)]
@@ -407,6 +414,222 @@ pub(crate) fn setter_step(vm: &mut Vm, fr: Frame, input: Input) -> Result<Step, 
     }
 }
 
+/// Copying own enumerable properties from sources with program accessors, as the reference's prelude does in its
+/// bytecode (`objectAssign`, `objectEntries`, `$vmCopyDataProps`): key by key, each getter, and for `Object.assign`
+/// each setter on the target's chain, called from a frame of its own, so it can wait and be suspended. Its slots: what
+/// it copies for (`COPY_*`), the target (or the array of results), the sources (an internal array), the next of them,
+/// the current source's keys (an internal array, undefined until it is reached), the next of them, the keys left out
+/// (an internal array, or undefined), and which call runs (`COPY_GETTER` or `COPY_SETTER`).
+pub(crate) const SUB_COPY: u16 = 10;
+
+/// An object spread: defined on the target, which stays below the frame.
+pub(crate) const COPY_SPREAD: usize = 0;
+/// An object rest pattern: defined on the target, which is the frame's result.
+pub(crate) const COPY_REST: usize = 1;
+/// `Object.entries` and `Object.values` of the one source: its string keys, each `[key, value]` or the value.
+pub(crate) const COPY_ENTRIES: usize = 2;
+pub(crate) const COPY_VALUES: usize = 3;
+/// `Object.assign`: Get, then Set on the target through its chain.
+pub(crate) const COPY_ASSIGN: usize = 4;
+
+const C_MODE: usize = 0;
+const C_TARGET: usize = 1;
+const C_SOURCES: usize = 2;
+const C_SOURCE_I: usize = 3;
+const C_KEYS: usize = 4;
+const C_KEY_I: usize = 5;
+const C_EXCLUDED: usize = 6;
+const C_CALLING: usize = 7;
+
+const COPY_GETTER: usize = 1;
+const COPY_SETTER: usize = 2;
+
+pub(crate) fn copy_step(vm: &mut Vm, fr: Frame, input: Input) -> Result<Step, Value> {
+    let calling = fr.index(vm, C_CALLING);
+    fr.set_index(vm, C_CALLING, 0);
+    match input {
+        Input::Returned(v) if calling == COPY_GETTER => {
+            if let Some(step) = copy_value(vm, fr, v.get())? {
+                return Ok(step);
+            }
+        }
+        Input::Threw(e) => return Err(e),
+        _ => {}
+    }
+    let mode = fr.index(vm, C_MODE);
+    loop {
+        let i = fr.index(vm, C_SOURCE_I);
+        let Some(src) = internal_item(vm, fr.get(vm, C_SOURCES), i) else {
+            return Ok(match mode {
+                COPY_SPREAD => Step::DoneEmpty,
+                _ => Step::Done(fr.get(vm, C_TARGET)),
+            });
+        };
+        let Value::Obj(s) = src else {
+            // `Object.assign` copies a string's indices, which calls nothing.
+            if let (COPY_ASSIGN, Value::Str(_), Some(t)) =
+                (mode, src, fr.get(vm, C_TARGET).as_obj())
+            {
+                vm.copy_props(t, &src, &[])?;
+            }
+            next_source(vm, fr, i);
+            continue;
+        };
+        if matches!(fr.get(vm, C_KEYS), Value::Undef) {
+            let keys: Vec<Value> = vm
+                .own_property_keys(s)
+                .into_iter()
+                .map(|k| crate::conversion::key_value(vm, k))
+                .collect();
+            let keys = vm.new_array(keys);
+            fr.set(vm, C_KEYS, keys);
+            fr.set_index(vm, C_KEY_I, 0);
+        }
+        let ki = fr.index(vm, C_KEY_I);
+        let Some(kv) = internal_item(vm, fr.get(vm, C_KEYS), ki) else {
+            next_source(vm, fr, i);
+            continue;
+        };
+        fr.set_index(vm, C_KEY_I, ki + 1);
+        let k = key_atom(vm, kv)?;
+        let strings_only = matches!(mode, COPY_ENTRIES | COPY_VALUES);
+        if (strings_only && k <= SYM_ASYNC_ITERATOR) || excluded(vm, fr, k)? {
+            continue;
+        }
+        if !vm.own_slot(s, k).is_some_and(|x| x.enumerable) {
+            continue;
+        }
+        match vm.get_stepping(s, k)? {
+            Got::Value(v) => {
+                if let Some(step) = copy_value(vm, fr, v)? {
+                    return Ok(step);
+                }
+            }
+            Got::Call(step) => {
+                fr.set_index(vm, C_CALLING, COPY_GETTER);
+                return Ok(step);
+            }
+        }
+    }
+}
+
+/// The value of the current key, read: copied as the frame copies, or `Some` setter call to make.
+fn copy_value(vm: &mut Vm, fr: Frame, v: Value) -> Result<Option<Step>, Value> {
+    let ki = fr.index(vm, C_KEY_I) - 1;
+    let kv = internal_item(vm, fr.get(vm, C_KEYS), ki).unwrap_or_default();
+    let k = key_atom(vm, kv)?;
+    let target = fr.get(vm, C_TARGET);
+    let Some(t) = target.as_obj() else {
+        return Ok(None);
+    };
+    match fr.index(vm, C_MODE) {
+        COPY_ENTRIES | COPY_VALUES => {
+            let item = if fr.index(vm, C_MODE) == COPY_ENTRIES {
+                let key = vm.atom_val(k);
+                vm.new_array(vec![key, v])
+            } else {
+                v
+            };
+            if let Kind::Array(items) = &mut vm.heap[t as usize].kind {
+                items.push(item);
+            }
+        }
+        COPY_ASSIGN => {
+            vm.check_assignment_at(&target, k, &v)?;
+            vm.op_access = true;
+            let r = vm.set_obj(t, k, v);
+            vm.op_access = false;
+            r?;
+            if let Some(setter) = vm.setter_hit.take() {
+                vm.stack.extend_from_slice(&[
+                    Slot::pack(setter),
+                    Slot::pack(target),
+                    Slot::pack(v),
+                ]);
+                fr.set_index(vm, C_CALLING, COPY_SETTER);
+                return Ok(Some(Step::CallUncounted(1)));
+            }
+        }
+        _ => vm.define(t, k, v),
+    }
+    Ok(None)
+}
+
+fn next_source(vm: &mut Vm, fr: Frame, i: usize) {
+    fr.set_index(vm, C_SOURCE_I, i + 1);
+    fr.set(vm, C_KEYS, Value::Undef);
+}
+
+fn excluded(vm: &mut Vm, fr: Frame, k: Atom) -> Result<bool, Value> {
+    let Some(list) = fr.get(vm, C_EXCLUDED).as_obj() else {
+        return Ok(false);
+    };
+    let n = match &vm.heap[list as usize].kind {
+        Kind::Array(items) => items.len(),
+        _ => 0,
+    };
+    for i in 0..n {
+        let kv = internal_item(vm, Value::Obj(list), i).unwrap_or_default();
+        if key_atom(vm, kv)? == k {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn internal_item(vm: &Vm, list: Value, i: usize) -> Option<Value> {
+    match &vm.heap[list.as_obj()? as usize].kind {
+        Kind::Array(items) => items.get(i).copied(),
+        _ => None,
+    }
+}
+
+fn key_atom(vm: &mut Vm, kv: Value) -> Result<Atom, Value> {
+    match kv {
+        Value::Sym(s) => Ok(s),
+        k => vm.key_of(&k),
+    }
+}
+
+impl Vm {
+    /// Copies the sources' own enumerable properties by a `SUB_COPY` frame (see `copy_step`), `excluded` keys left out.
+    pub(crate) fn copy_by_frame(
+        &mut self,
+        mode: usize,
+        target: Value,
+        sources: Vec<Value>,
+        excluded: &[Atom],
+    ) -> Res {
+        let sources = self.new_array(sources);
+        let excluded = if excluded.is_empty() {
+            Value::Undef
+        } else {
+            let keys = excluded
+                .iter()
+                .map(|k| crate::conversion::key_value(self, *k))
+                .collect();
+            self.new_array(keys)
+        };
+        let slots = [
+            Value::Num(mode as f64),
+            target,
+            sources,
+            Value::Num(0.0),
+            Value::Undef,
+            Value::Num(0.0),
+            excluded,
+            Value::Num(0.0),
+        ];
+        self.enter_native_with(
+            crate::native::NativeOp::Callbacks,
+            SUB_COPY,
+            Value::Undef,
+            Value::Undef,
+            &slots,
+        )
+    }
+}
+
 impl Vm {
     /// Calls the program getter an instruction's read met, with the read's receiver, as a call from the instruction:
     /// its result is the read's. Whether a frame was pushed.
@@ -462,9 +685,10 @@ impl Vm {
         }
     }
 
-    /// [[Get]] for native code stepping the iterator protocol (`next`, `done`, `value`, `return`, `[Symbol.iterator]`),
-    /// which the reference reads in program code: a program getter is called here, inline, to completion. A getter
-    /// read this way cannot park or suspend the run.
+    /// [[Get]] calling a program getter here, inline, to completion, so it cannot park or suspend the run. Only where
+    /// the read already runs inline: in a built-in called from native code rather than from a frame, or on paths no
+    /// program getter reaches (the results of a native `next`). Native frames read with `get_stepping`, and built-ins
+    /// called from frames read ahead (`Vm::reading`).
     pub(crate) fn get_calling(&mut self, id: Id, key: Atom) -> Res {
         // Restored after, for the instruction whose read this is part of (a key's conversion).
         let outer = self.op_access;
@@ -494,6 +718,38 @@ impl Vm {
         };
         self.op_access = outer;
         r
+    }
+
+    /// [[Get]] for a native frame's step, as `get_calling` reads `id`'s property, except that a program getter is not
+    /// called here: its call is left on the stack for the step to hand to the dispatch loop, which calls it as native
+    /// code calls a function, from a frame of its own. So the getter can wait for a host call and be suspended, as the
+    /// reference's getters, which its bytecode calls, can. The step's next input is the getter's result.
+    pub(crate) fn get_stepping(&mut self, id: Id, key: Atom) -> Result<Got, Value> {
+        let outer = self.op_access;
+        self.op_access = true;
+        let v = self.get_obj(id, key);
+        self.op_access = outer;
+        Ok(self.got(v, Value::Obj(id)))
+    }
+
+    /// `get_stepping` for any value, as `get_calling_value` reads it.
+    pub(crate) fn get_stepping_value(&mut self, v: &Value, key: Atom) -> Result<Got, Value> {
+        let outer = self.op_access;
+        self.op_access = true;
+        let r = self.get(v, key);
+        self.op_access = outer;
+        Ok(self.got(r?, *v))
+    }
+
+    fn got(&mut self, v: Value, receiver: Value) -> Got {
+        match self.getter_hit.take() {
+            Some(g) => {
+                self.stack.push(Slot::pack(g));
+                self.stack.push(Slot::pack(receiver));
+                Got::Call(Step::CallUncounted(0))
+            }
+            None => Got::Value(v),
+        }
     }
 
     /// Whether `id`'s chain has a program getter for `key` first, which `get_calling` would call.
