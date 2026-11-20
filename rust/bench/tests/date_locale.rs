@@ -134,9 +134,6 @@ fn describe(
     };
     format!(
         "case {i} {} ({} {} {}):\n  reference: {expected}\n  rust:      {actual}",
-        what,
-        case.method,
-        locale,
-        case.options,
+        what, case.method, locale, case.options,
     )
 }
