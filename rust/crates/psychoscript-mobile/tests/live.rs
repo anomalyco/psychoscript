@@ -573,3 +573,82 @@ fn computing_after_starting_a_call_counts() {
         start.elapsed()
     );
 }
+
+#[test]
+fn local_network_in_dev_mode() {
+    let local = || {
+        Arc::new(Fake {
+            answer: Box::new(|r| {
+                let remote = if r.url.contains("93.184.215.14") {
+                    "93.184.215.14"
+                } else {
+                    "127.0.0.1"
+                };
+                Ok(FetchResponse {
+                    remote_address: Some(remote.into()),
+                    ..ok(200, &[], b"local")
+                })
+            }),
+            delay: Duration::from_millis(1),
+            seen: Mutex::new(Vec::new()),
+        })
+    };
+    let kind = |run: &LiveRun, rx: &Receiver<Event>, url: &str| {
+        let got = fetch(run, rx, serde_json::json!({ "url": url }));
+        got["kind"].as_str().map_or_else(
+            || got["response"]["body"].as_str().unwrap_or("?").to_owned(),
+            str::to_owned,
+        )
+    };
+    // Off: no local destinations, no http.
+    let (run, rx) = start_fetching(Some(&["localhost:4097", "127.0.0.1"]), local());
+    assert_eq!(kind(&run, &rx, "https://127.0.0.1/x"), "CapabilityDenied");
+    assert_eq!(
+        kind(&run, &rx, "https://localhost:4097/x"),
+        "CapabilityDenied"
+    );
+    assert_eq!(
+        kind(&run, &rx, "http://localhost:4097/x"),
+        "CapabilityDenied"
+    );
+    run.stop();
+
+    // On: local destinations and http to them, for declared hosts and ports.
+    let fake = local();
+    let program = Program::new(LOOP.into(), "__input".into()).unwrap();
+    let (h, rx) = handler();
+    let options = LiveOptions {
+        https_hosts: Some(vec![
+            "localhost:4097".into(),
+            "127.0.0.1".into(),
+            "93.184.215.14".into(),
+        ]),
+        allow_local_network: true,
+        ..Default::default()
+    };
+    let run = program
+        .start_live("{}".into(), h, options, Some(fake.clone()))
+        .unwrap();
+    post(&rx);
+    assert_eq!(kind(&run, &rx, "http://localhost:4097/x"), "local");
+    let seen = fake.seen.lock().unwrap().last().cloned().unwrap();
+    assert!(
+        seen.addresses
+            .iter()
+            .all(|a| a == "127.0.0.1" || a == "::1")
+            && !seen.addresses.is_empty(),
+        "{:?}",
+        seen.addresses
+    );
+    assert_eq!(kind(&run, &rx, "https://127.0.0.1:8443/x"), "local");
+    assert_eq!(
+        kind(&run, &rx, "http://localhost:5000/x"),
+        "CapabilityDenied"
+    );
+    assert_eq!(
+        kind(&run, &rx, "http://93.184.215.14/x"),
+        "CapabilityDenied"
+    );
+    assert_eq!(kind(&run, &rx, "https://93.184.215.14/x"), "local");
+    run.stop();
+}
