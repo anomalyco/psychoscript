@@ -83,7 +83,8 @@ Behavior, per the contract:
   New `values` (a live program re-rendering every frame) update the uniforms only: same element, same pipeline.
   Over 50 ms of GPU time a frame three frames in a row stops it (measured on WebGPU only). A failing shader shows
   `poster` or `alt` with the error.
-- `canvas` and `shader` with an `id` send `pointer` events to `update` or `widget.event()`: `down`, `up`, and `move`
+- `canvas` and `shader` with an `id` (the prelude gives one to nodes with `onPointer` or a `key`) send `pointer`
+  events, which the prelude routes to `onPointer`: `down`, `up`, and `move`
   at most once a frame, with `down: true` while a button is held and, on desktop and web, hover moves
   `{ kind: "move", x, y, down: false, width, height }` while the pointer is over the node (touch has no hover).
 - Full screen (widgets-fullscreen.md): an expand button in the top-right corner (on hover/focus; always on touch)
@@ -98,7 +99,8 @@ Behavior, per the contract:
   is captured; `aria-label` "Esc to release"). Touch devices show no hint until a hardware keyboard types, then the
   icon alone. The program gets `{ id: "", type: "focus", value }`, and
   while focused `{ id: "", type: "key", value: { kind: "down" | "up", key, code, repeat, shift, alt, ctrl, meta } }`
-  through `update` (step) or `widget.event()`/`widget.next()` (live). Delivered keys are `preventDefault`ed and stop
+  which the prelude routes to the hooks (`onKey`, `onFocus`, `onCapture`, `onFullscreen` in step mode,
+  `widget.on(...)` in live mode). Delivered keys are `preventDefault`ed and stop
   propagating at the widget (no page scrolling, no app shortcuts in the bubble phase).
 - Not delivered: Cmd (macOS) / Ctrl (elsewhere) chords, which reach the page; Tab, which moves focus; keys typed into
   text inputs; Enter/Space on buttons and options, and arrows on sliders, options and carousels, which keep working.
@@ -112,8 +114,9 @@ Behavior, per the contract:
   as do leaving full screen, the window losing focus, submit/dismiss and `destroy()`. The program gets
   `{ type: "focus", value: false }` and, if it had the pointer, `{ type: "capture", value: false }`. A live program
   must call `capturePointer()` again after a release; a root `capture: "pointer"` is granted again on the next click.
-- Programs now see `focus` and `key` events they didn't before: a live loop that treats any `widget.event()` as a press
-  should check `event.type` or `event.id`.
+- The host sends only the wire events (`{ id, type, value }`, widgets.md, Events); ids come from the prelude and the
+  host never interprets them, so templates written with handlers (`onPress`, `onChange`, `onPointer`) and hooks need
+  nothing from the host.
 
 ### Theme
 

@@ -687,6 +687,8 @@ class Widget implements MountedWidget {
 
   private exited(exit: LiveExit) {
     this.live.running = false
+    // The run is over (returned, failed or stopped): its worker and memory go; the last view stays.
+    this.stopWorker()
     if (exit.type === "failed" && this.status === "open") this.inlineError(exit.error, true)
     if (exit.type === "failed") this.warn(describe(exit.error))
   }
