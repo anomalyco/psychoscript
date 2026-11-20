@@ -527,3 +527,49 @@ fn fetches() {
             && !is_public_address("100.64.0.1".into())
     );
 }
+
+fn start_source(source: &str, options: LiveOptions) -> (Arc<LiveRun>, Receiver<Event>) {
+    let program = Program::new(source.into(), "__input".into()).unwrap();
+    let (h, rx) = handler();
+    (
+        program.start_live("null".into(), h, options, None).unwrap(),
+        rx,
+    )
+}
+
+#[test]
+fn waiting_on_a_call_already_pending_isnt_computing() {
+    // After the race the program waits on the receive it started before: no new host call to poll.
+    let source = r#"const r = __host.receive(); await Promise.race([r, __host.sleep(20)]); __host.post("raced"); return await r"#;
+    let (run, rx) = start_source(source, LiveOptions::default());
+    assert_eq!(post(&rx), "raced");
+    std::thread::sleep(Duration::from_millis(300));
+    run.deliver(r#"{"x":1}"#.into()).unwrap();
+    match next(&rx) {
+        Event::Exit(LiveExit::Finished { result_json }) => assert_eq!(result_json, r#"{"x":1}"#),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn computing_after_starting_a_call_counts() {
+    let (_run, rx) = start_source(
+        "__host.sleep(1000); await null; while (true) {}",
+        LiveOptions {
+            slice_budget_ms: 30,
+            ..Default::default()
+        },
+    );
+    let start = Instant::now();
+    match next(&rx) {
+        Event::Exit(LiveExit::Failed {
+            error: PsychoScriptError::SliceBudget { .. },
+        }) => {}
+        other => panic!("{other:?}"),
+    }
+    assert!(
+        start.elapsed() < Duration::from_millis(500),
+        "{:?}",
+        start.elapsed()
+    );
+}
