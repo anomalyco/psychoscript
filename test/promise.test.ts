@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Cause, Deferred, Effect, Exit } from "effect"
-import { Host, Runtime } from "../src/index.js"
+import { Host, Runtime } from "../src/effect/index.js"
 
 // Wave 5 acceptance suite: first-class promise values. Un-awaited async host calls start eagerly as
 // host work, `await` settles them, Promise.all/allSettled/race/resolve/reject are

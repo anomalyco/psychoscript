@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
-import { Host, Runtime } from "../src/index.js"
+import { Host, Runtime } from "../src/effect/index.js"
 
 // `new` is supported syntax; only the callee decides whether construction succeeds. A callee without
 // construction support is a TypeError naming it, like JS, rather than an unsupported-syntax diagnostic

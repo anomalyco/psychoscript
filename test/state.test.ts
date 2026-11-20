@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test"
 import { Glob } from "bun"
 import path from "node:path"
 import { Effect } from "effect"
-import { Runtime } from "../src/index.js"
-import { Host } from "../src/host-function.js"
+import { Runtime } from "../src/effect/index.js"
+import { Host } from "../src/effect/host-function.js"
 import { parseProgram } from "../src/runtime/execute.js"
 import { hostGlobals } from "../src/runtime/extensions.js"
 import { Interpreter } from "../src/runtime/interpreter.js"
@@ -395,21 +395,12 @@ describe("vm", () => {
     expect(loop.iterator).toBeInstanceOf(AsyncFromSyncIterator)
   })
 
-  test("the VM does not import Effect", async () => {
+  test("only the Effect entry imports Effect", async () => {
     const root = path.join(import.meta.dir, "..")
-    // The language's host boundary and driver.
-    const host = new Set([
-      "src/host-function.ts",
-      "src/runtime.ts",
-      "src/runtime/driver.ts",
-      "src/runtime/execute.ts",
-      "src/runtime/extensions.ts",
-      "src/runtime/signals.ts",
-    ])
     // Glob paths use the platform's separator.
     const files = (await Array.fromAsync(new Glob("src/**/*.ts").scan({ cwd: root })))
       .map((file) => file.split(path.sep).join("/"))
-      .filter((file) => !host.has(file))
+      .filter((file) => !file.startsWith("src/effect/"))
     expect(files.length).toBeGreaterThan(0)
     for (const file of files) {
       expect(await Bun.file(path.join(root, file)).text()).not.toMatch(/from "effect"/)

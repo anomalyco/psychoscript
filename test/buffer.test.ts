@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
-import { Host, Runtime } from "../src/index.js"
+import { Host, Runtime } from "../src/effect/index.js"
 
 const value = async (code: string, globals: Runtime.Globals = {}) => {
   const result = await Effect.runPromise(Runtime.make({ globals: () => globals }).execute(code))
