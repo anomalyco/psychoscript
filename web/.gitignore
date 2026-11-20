@@ -1,0 +1,5 @@
+node_modules/
+# wasm-bindgen's output, before the build copies it into dist/
+/wasm/
+# dist/ is committed: consumers vendor it or depend on this directory without a Rust toolchain.
+!/dist/
