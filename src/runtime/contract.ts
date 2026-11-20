@@ -79,6 +79,8 @@ export class Fn<R = never> {
     readonly snapshot: Snapshot | undefined,
     readonly constructible = false,
     readonly takesFunctions = false,
+    /** The function the program sees the name and length of, when `run` wraps it. */
+    readonly source?: Function,
   ) {}
 }
 

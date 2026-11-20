@@ -1,6 +1,6 @@
 import { parse, type Program } from "acorn"
 import { fromJson, type Json } from "../data.js"
-import { DurableFn, Interrupted } from "./contract.js"
+import { type Call, DurableFn, Interrupted } from "./contract.js"
 import { fromBytes, header, type Snapshot, SnapshotError, toBytes } from "../snapshot/snapshot.js"
 import { normalizeError } from "./errors.js"
 import { hostGlobals } from "./extensions.js"
@@ -115,6 +115,8 @@ type Globals<R> = (ctx: Interpreter<R>) => ReadonlyArray<readonly [string, Value
 export type Setup<R> = {
   readonly limits: Limits
   readonly translate?: Required<Translate> | undefined
+  /** Turns what a plain host function (one inside a result, or among the globals) returned into a value, a Promise or `HostWork`. */
+  readonly adapt?: ((value: unknown, call: Call) => unknown) | undefined
   /** Each run's host globals (see `Host`): made when it starts, and again for a restored run. */
   readonly globals?: ((run: Run) => Readonly<Record<string, unknown>>) | undefined
   /** Module names that load a global, beyond its own name; see `Runtime.Options`. */
@@ -215,7 +217,7 @@ const instantiate = <R>(setup: Setup<R>, run: Run, bindings?: Readonly<Record<st
     modules: setup.modules,
     globals: (ctx) => [
       ...(setup.programGlobals?.(ctx) ?? []),
-      ...(setup.globals === undefined ? [] : hostGlobals(ctx, setup.globals(run), setup.translate)),
+      ...(setup.globals === undefined ? [] : hostGlobals(ctx, setup.globals(run), setup.translate, setup.adapt)),
     ],
     bindings:
       bindings === undefined
