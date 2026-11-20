@@ -4936,10 +4936,14 @@ impl<'a, 's> Compiler<'a, 's> {
         Ok(())
     }
 
-    /// `delete super.x`: evaluates the reference, then throws.
+    /// `delete super.x` / `delete super[key]`: evaluates the reference, then throws, before the computed key's
+    /// `ToPropertyKey`.
     fn super_delete(&mut self, m: &'a MemberExpression<'a>) -> R<()> {
-        if self.super_ref(m)?.is_none() {
+        if !self.super_base(m.object().span())? {
             return Ok(());
+        }
+        if let MemberExpression::ComputedMemberExpression(c) = m {
+            self.expr(&c.expression)?;
         }
         let msg = self.str_const("Unsupported reference to 'super'.");
         self.pos = m.span().start;

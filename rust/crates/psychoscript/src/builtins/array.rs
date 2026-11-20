@@ -1833,16 +1833,54 @@ fn a_fill(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
 
 fn a_copy_within(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
     let id = dense_id(vm, &this, callee)?;
-    integers(vm, args, &[0, 1, 2], |vm, args| {
-        let n = len(vm, id);
-        let target = to_index(vm, &arg(args, 0), n, 0)?;
-        let start = to_index(vm, &arg(args, 1), n, 0)?;
-        let end = to_index(vm, &arg(args, 2), n, n)?;
-        let items = items_mut(vm, id, None)?;
-        if start < end && target < n {
-            let count = (end - start).min(n - target);
-            let copy: Vec<Value> = items[start..start + count].to_vec();
-            items[target..target + count].copy_from_slice(&copy);
+    // `len` rides through the conversions as their first value, as Date setters carry their time, so it is read
+    // once before `start`'s coercion can shrink the array.
+    let mut listed = vec![Value::Num(len(vm, id) as f64)];
+    for p in 0..3 {
+        listed.push(arg(args, p));
+    }
+    fuel::with_primitive_list(vm, &[Hint::Number], &listed, false, |vm, values| {
+        let n = values[0].as_num() as usize;
+        let target = to_index(vm, &values[1], n, 0)?;
+        let start = to_index(vm, &values[2], n, 0)?;
+        let end = to_index(vm, &values[3], n, n)?;
+        check_mutable(vm, id, None)?;
+        if start >= end {
+            return Ok(this);
+        }
+        let count = (end - start).min(n - target);
+        // An unchanged length and no holes in the source range copy in one slice; the per-index HasProperty/Set or
+        // delete loop runs only after a shrink or over holes.
+        if !is_sparse(vm, id)
+            && len(vm, id) == n
+            && !items(vm, id)[start..start + count]
+                .iter()
+                .any(|v| matches!(v, Value::Uninit))
+        {
+            let copy: Vec<Value> = items(vm, id)[start..start + count].to_vec();
+            let out = array_items(vm, id)?;
+            out[target..target + count].copy_from_slice(&copy);
+            return Ok(this);
+        }
+        let (mut from, mut to, direction): (i64, i64, i64) =
+            if start < target && target < start + count {
+                ((start + count - 1) as i64, (target + count - 1) as i64, -1)
+            } else {
+                (start as i64, target as i64, 1)
+            };
+        for _ in 0..count {
+            let from_i = from as usize;
+            let to_i = to as usize;
+            if let Some(v) = present(vm, id, from_i) {
+                vm.set_elem(&Value::Obj(id), &Value::Num(to_i as f64), v)?;
+            } else {
+                let key = vm.atoms.intern(&to_i.to_string());
+                if !vm.delete(&Value::Obj(id), key)? {
+                    return Err(vm.type_error(&format!("Cannot delete property '{to_i}'.")));
+                }
+            }
+            from += direction;
+            to += direction;
         }
         Ok(this)
     })

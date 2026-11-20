@@ -8,7 +8,10 @@ import {
   changed,
   define,
   get,
+  has,
   hidden,
+  remove,
+  set,
   Arr,
   Bytes,
   GeneratorObj,
@@ -402,9 +405,44 @@ export const arrayGlobal = <R>(ctx: Interpreter<R>) => {
       2,
       (thisValue, args) => {
         const target = self(thisValue, "copyWithin")
-        return integers(args, [0, 1, 2], (args) => {
+        // `len` is read once, before `start`'s `valueOf` can shrink the array; the number rides through the
+        // conversions unchanged, as Date setters carry their time.
+        return withPrimitives("number", [target.items.length, args[0], args[1], args[2]], ([length, t, s, e]) => {
           mutable(target)
-          target.items.copyWithin(optNumber(args[0]) ?? 0, optNumber(args[1]) ?? 0, optNumber(args[2]))
+          const len = coerceToNumber(length)
+          const relative = (value: Value, fallback: number) => {
+            if (value === undefined) return fallback
+            const at = coerceToInteger(value)
+            return at < 0 ? Math.max(len + at, 0) : Math.min(at, len)
+          }
+          const to = relative(t, 0)
+          const from = relative(s, 0)
+          const final = e === undefined ? len : relative(e, len)
+          if (from >= final) return target
+          const count = Math.min(final - from, len - to)
+          // An unchanged length and no holes in the source range copy in one native step; the per-index
+          // HasProperty/Get/Set or delete loop runs only after a shrink or over holes.
+          if (target.items.length === len) {
+            let holes = false
+            for (let at = from; at < from + count; at++) {
+              if (!(at in target.items)) {
+                holes = true
+                break
+              }
+            }
+            if (!holes) {
+              target.items.copyWithin(to, from, final)
+              return target
+            }
+          }
+          let [source, destination, direction] =
+            from < to && to < from + count ? [from + count - 1, to + count - 1, -1] : [from, to, 1]
+          for (let remaining = count; remaining > 0; remaining--) {
+            if (has(target, source)) set(target, destination, get(target, source))
+            else if (!remove(target, destination)) throw typeError(`Cannot delete property '${destination}'.`)
+            source += direction
+            destination += direction
+          }
           return target
         })
       },

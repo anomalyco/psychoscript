@@ -32,7 +32,6 @@ built-ins/Array/prototype/concat/create-ctor-non-object.js  # a.concat() throws 
 built-ins/Array/prototype/concat/create-ctor-poisoned.js  # a.concat() throws a Test262Error exception Expected a Test262Error to be thrown but no exception was
 built-ins/Array/prototype/concat/create-non-array.js  # TypeError: Array.prototype.concat called on incompatible receiver a data object.
 built-ins/Array/prototype/copyWithin/call-with-boolean.js  # TypeError: Array.prototype.copyWithin called on incompatible receiver a boolean.
-built-ins/Array/prototype/copyWithin/coerced-values-start-change-target.js  # Actual [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19] and expected [0, 1, 2,
 built-ins/Array/prototype/copyWithin/length-near-integer-limit.js  # TypeError: Array.prototype.copyWithin called on incompatible receiver a data object.
 built-ins/Array/prototype/copyWithin/return-abrupt-from-get-start-value.js  # Expected a Test262Error but got a TypeError
 built-ins/Array/prototype/copyWithin/return-abrupt-from-set-target-value.js  # Expected a Test262Error but got a TypeError
@@ -2391,7 +2390,6 @@ language/expressions/delete/S11.4.1_A2.2_T3.js  # TypeError: Cannot read propert
 language/expressions/delete/S11.4.1_A3.2_T3.js  # TypeError: MyFunction is not a constructor: only classes can be constructed with new. Use a class, o
 language/expressions/delete/S11.4.1_A3.3_T3.js  # TypeError: MyFunction is not a constructor: only classes can be constructed with new. Use a class, o
 language/expressions/delete/S8.12.7_A2_T2.js  # TypeError: Palette is not a constructor: only classes can be constructed with new. Use a class, or c
-language/expressions/delete/super-property-topropertykey.js  # Expected a ReferenceError but got a Test262Error
 language/expressions/delete/super-property.js  # TypeError: Extending the built-in Object is not supported. Only classes and Error types can be exten
 language/expressions/in/S8.12.6_A2_T2.js  # TypeError: Robin is not a constructor: only classes can be constructed with new. Use a class, or cal
 language/expressions/logical-assignment/lgcl-and-assignment-operator-lhs-before-rhs.js  # Expected a DummyError but got a TypeError
