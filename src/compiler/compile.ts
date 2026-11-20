@@ -1237,12 +1237,10 @@ const compileFunctionBody = (
       return
     }
     if (target.object.type === "Super" && analysis.superRefs.has(target.object)) {
-      // `delete super.x` evaluates the reference (`this` first, then the key) and always throws.
+      // `delete super.x` / `delete super[key]` evaluates the reference (`this` first, then the key) and always
+      // throws, before the computed key's ToPropertyKey.
       emitSuperBase(target)
-      if (target.computed) {
-        compileExpression(target.property as Expression)
-        builder.emit(Op.TO_KEY, 0, 0, idx(target.property), 0)
-      }
+      if (target.computed) compileExpression(target.property as Expression)
       return emitThrowError({ type: "ReferenceError", message: "Unsupported reference to 'super'." }, target)
     }
     if (unsupportedSuper(target)) return
