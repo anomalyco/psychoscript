@@ -42,6 +42,7 @@ mod strings;
 #[cfg(feature = "test262")]
 #[doc(hidden)]
 pub mod test262;
+mod time;
 mod value;
 mod vm;
 

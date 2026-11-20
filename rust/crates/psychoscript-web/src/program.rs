@@ -1,0 +1,102 @@
+use std::sync::{Arc, Mutex, PoisonError};
+
+use psychoscript::{Compiled, HostFunction, HostValue, Limits, Runtime};
+
+use crate::error::Error;
+use crate::json::Input;
+use crate::live::{LiveOptions, LiveRun};
+
+/// A program compiled once, to run as often as needed: each run has its own VM. A run reads its JSON input through
+/// one sync host function, `input_name` (`__input` by default), and its result is the program's completion value.
+#[derive(Debug, Clone)]
+pub struct Program {
+    compiled: Compiled,
+    input_name: String,
+}
+
+impl Program {
+    /// Compiles `source`. Fails with `Syntax` when it doesn't parse.
+    pub fn new(source: &str, input_name: Option<String>) -> Result<Program, Error> {
+        let compiled = Runtime::make()
+            .compile(source)
+            .map_err(|d| Error::from_diagnostic(d, None))?;
+        Ok(Program {
+            compiled,
+            input_name: input_name.unwrap_or_else(|| "__input".to_owned()),
+        })
+    }
+
+    /// Runs the program to its end with `input_json` behind its input function, under `timeout_ms` of active time,
+    /// and returns its result as JSON (`undefined` as `null`), at most `max_output_bytes` of it.
+    pub fn run(
+        &self,
+        input_json: &str,
+        timeout_ms: Option<u64>,
+        max_output_bytes: Option<u64>,
+    ) -> Result<String, Error> {
+        if timeout_ms == Some(0) {
+            return Err(Error::invalid_input("timeout_ms must be at least 1"));
+        }
+        let first = Input::parse(input_json)
+            .map_err(|e| Error::invalid_input(format!("the input isn't JSON: {e}")))?;
+        let slot = Arc::new(Mutex::new(Slot {
+            text: input_json.into(),
+            first: Some(first),
+        }));
+        let name = self.input_name.clone();
+        let runtime = Runtime::make()
+            .globals(move |_run| {
+                let slot = slot.clone();
+                [(
+                    name.clone(),
+                    HostFunction::new(move |_args, _call| {
+                        slot.lock().unwrap_or_else(PoisonError::into_inner).read()
+                    }),
+                )]
+            })
+            .limits(Limits {
+                timeout_ms,
+                max_output_bytes: None,
+            });
+        let outcome = runtime.execute(&self.compiled);
+        drop(runtime);
+        let data = outcome
+            .result
+            .map_err(|d| Error::from_diagnostic(d, timeout_ms))?;
+        let out = data.to_json_string();
+        match max_output_bytes {
+            Some(max) if out.len() as u64 > max => Err(Error::OutputTooLarge {
+                reason: format!(
+                    "the result is {} bytes of JSON, over the limit of {max}",
+                    out.len()
+                ),
+                max_output_bytes: max,
+            }),
+            _ => Ok(out),
+        }
+    }
+
+    /// Starts the program as a [`LiveRun`] with `input_json` behind its input function and `__host`.
+    pub fn start_live(&self, input_json: &str, options: LiveOptions) -> Result<LiveRun, Error> {
+        LiveRun::start(
+            self.compiled.clone(),
+            self.input_name.clone(),
+            input_json,
+            options,
+        )
+    }
+}
+
+/// A run's input: the parsed value, handed over whole on the first read, and the text to read it again from.
+struct Slot {
+    text: Arc<str>,
+    first: Option<HostValue>,
+}
+
+impl Slot {
+    fn read(&mut self) -> HostValue {
+        self.first
+            .take()
+            .unwrap_or_else(|| Input::parse(&self.text).unwrap_or_default())
+    }
+}

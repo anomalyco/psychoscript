@@ -1,8 +1,8 @@
 //! The stack machine: frames, calls, exceptions, suspension and the run loop.
 
+use crate::time::Instant;
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::time::Instant;
 
 use rustc_hash::FxHashMap;
 
@@ -358,8 +358,8 @@ impl Vm {
         let char_strs = (0u8..128)
             .map(|c| atoms.alloc((c as char).to_string()))
             .collect();
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let seed = crate::time::SystemTime::now()
+            .duration_since(crate::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(0x9e3779b97f4a7c15);
         Vm {
@@ -1007,7 +1007,7 @@ impl Vm {
         }
         // A long stretch of compute stops to move to a worker thread: see `offload`.
         if let Some(o) = &mut self.host.offload
-            && o.at.is_some_and(|at| std::time::Instant::now() >= at)
+            && o.at.is_some_and(|at| crate::time::Instant::now() >= at)
         {
             o.at = None;
             o.due = true;

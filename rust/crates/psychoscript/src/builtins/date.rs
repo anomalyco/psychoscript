@@ -164,8 +164,8 @@ fn utc(t: f64) -> f64 {
 }
 
 fn now() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    crate::time::SystemTime::now()
+        .duration_since(crate::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as f64)
         .unwrap_or(0.0)
 }
