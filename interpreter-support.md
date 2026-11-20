@@ -25,7 +25,8 @@ the ultimate source of truth. Upstream test262 files run verbatim from `test/tes
       The table, where a value cannot be JSON but what the program meant is clear: a promise is awaited (a rejection
       fails the program), a Set crosses as an array, a URLSearchParams as its query string, an Error as
       `{ name, message, ...own enumerable }`, and own `__proto__` keys are dropped so merging results cannot replace a
-      prototype. A Uint8Array in the result is rejected with a hint to encode it as text. Host function arguments
+      prototype. A Uint8Array in the result is rejected with a hint to encode it as text, and a BigInt (one a
+      `toJSON` does not convert) with a hint to convert it with `String` or `Number`. Host function arguments
       cross as copies (see Host functions); a promise or function inside an argument fails the call unless the runtime's
       `translate` option awaits promises or drops functions. In-program `JSON.stringify` keeps JS behavior except for the Error form and a
       promise, which is a `TypeError` with an await hint rather than a silent `{}`.
@@ -63,7 +64,8 @@ the ultimate source of truth. Upstream test262 files run verbatim from `test/tes
       site, as in JS, but it is not frozen: `strings[0] = "x"` succeeds here where JS throws.
 - [x] Regular-expression literals.
 - [x] `NaN` and `Infinity` globals.
-- [ ] BigInt literals and in-interpreter BigInt arithmetic; BigInt remains invalid at JSON-like host boundaries.
+- [x] BigInt literals in every base, with numeric separators, and host-native BigInt values inside the program (see
+      BigInt below). BigInts never cross a host boundary, which is JSON-like.
 - [ ] Arbitrary Symbol primitive values and symbol-keyed properties. The confined `Symbol.iterator` and
       `Symbol.asyncIterator` keys are available only for the iterator protocols.
 - [x] Getter and setter definitions in object literals (`get x() {}`, `set x(v) {}`, computed and symbol keys), named
@@ -477,6 +479,32 @@ reject }` object.
       elements without coercion.
 - [x] Global coercing `isFinite` and `isNaN`; opaque runtime references reject as data errors, like `Number(...)`.
 
+## BigInt
+
+- [x] `typeof` is `"bigint"`; `+ - * / % **`, `& | ^ ~ << >>`, unary `-`, `++`/`--`, and compound assignment follow
+      the BigInt operations: exact, `/` truncating toward zero, `%` taking the dividend's sign. Mixing a BigInt with a
+      Number (`1n + 1`), unary `+`, and `>>>` are `TypeError`s; a zero divisor and a negative exponent are
+      `RangeError`s. `+` with a string concatenates.
+- [x] `==`, `<`, `<=`, `>`, and `>=` compare a BigInt with a Number or string by mathematical value (`1n == 1`,
+      `2n > "1"`, `1n < 1.5`); `===`, `Object.is`, `switch`, `includes`, and Map and Set keys compare BigInts by value;
+      `0n` is falsy.
+- [x] Objects convert through `valueOf`/`toString` first, so a `valueOf` returning a BigInt takes part in arithmetic.
+- [x] `BigInt(value)` from integral Numbers, strings (`StringToBigInt`: whitespace, `0x`/`0o`/`0b`, empty is `0n`),
+      booleans, and objects through ToPrimitive; fractions are `RangeError`s, malformed strings `SyntaxError`s, and
+      `new BigInt()` a `TypeError`. `BigInt.asIntN` and `BigInt.asUintN`.
+- [x] `BigInt.prototype.toString(radix)`, `toLocaleString` (always `en-US`, like Number's), and `valueOf`;
+      `Object.prototype.toString` gives `"[object BigInt]"`.
+- [x] `Number(bigint)` and `String(bigint)` convert, as do template literals, `join`, and property keys
+      (`o[1n]` is `o["1"]`). Everything that applies ToNumber (`Math.*`, `isNaN`, Date, String and Array index
+      arguments) throws a `TypeError`, as in JS. `JSON.stringify` throws a `TypeError` unless a `toJSON` (on
+      `BigInt.prototype`, say) or a replacer converts it. `console.log` prints `1n`. `structuredClone` copies BigInts.
+- [x] BigInts survive a suspend and resume.
+- [x] Size: the host refuses results past its own BigInt limit (about 2^30 bits in JSC and V8), which becomes a
+      `RangeError`, and converting a BigInt to text is refused up front when the text would pass the 2^24-character
+      string limit. There is no BigInt size limit of its own, so a single operation on huge values (multiplying
+      or converting multi-million-digit numbers) can run for seconds without the timeout interrupting it.
+- [ ] `BigInt64Array` and `BigUint64Array`, and `DataView`'s BigInt methods, since those types don't exist.
+
 ## JSON and console
 
 - [x] `JSON.parse` and `JSON.stringify` for supported data objects.
@@ -623,7 +651,8 @@ method works on it, and its text conversions default to UTF-8.
 - [x] The inherited `Uint8Array` methods that make new bytes (`map`, `filter`, `slice`, `subarray`, also called
       through `Uint8Array.prototype`) make a Buffer from a Buffer, as JS's species does.
 - [x] A host Buffer crosses into the program as a Buffer, and a program Buffer crosses out as one; snapshots keep it.
-- [ ] The 64-bit `readBigInt64*`/`writeBigInt64*` methods, since programs have no BigInt.
+- [x] The 64-bit `readBigInt64LE/BE`, `readBigUInt64LE/BE`, `writeBigInt64LE/BE`, and `writeBigUInt64LE/BE` methods
+      (and their `Uint` aliases), delegated to the host Buffer, so argument errors carry the host's message.
 
 ## Web platform helpers
 
@@ -666,7 +695,8 @@ Host functions a host opts in through `Host.fn`, `Host.durableFn`, and `Host.nam
       their contents converted (a host `ArrayBuffer` comes in as a `Uint8Array`; other typed arrays cannot come out),
       errors cross as errors with their name, message, `cause`, and own enumerable data, and a `__proto__` key is
       dropped. Functions, generators,
-      un-awaited promises, and symbols cannot be passed in; a class instance, a symbol, or a BigInt cannot come out.
+      un-awaited promises, symbols, and BigInts cannot be passed in; a class instance, a symbol, or a BigInt cannot
+      come out. A BigInt in either direction fails with a hint to cross it as a string or number.
 - [x] A host function inside a result becomes a program function whose calls cross the same way, so a result can
       carry methods (`res.json()`) whose host closures keep the host state. Diagnostics name it by its path
       (`fetch.json`). Like any program function it vanishes at the data boundary.

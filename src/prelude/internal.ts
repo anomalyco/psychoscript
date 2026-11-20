@@ -9,6 +9,7 @@ import {
   Bytes,
   Callable,
   coerceToNumber,
+  coerceToNumeric,
   coerceToString,
   DateObj,
   ErrorObj,
@@ -27,13 +28,18 @@ import {
   URLSearchParamsObj,
   type Value,
 } from "../runtime/objects.js"
-import { applyBinaryOperator, hasInstance, operatorConversion, propertyKey } from "../runtime/operations.js"
+import {
+  applyBinaryOperator,
+  applyUnaryOperator,
+  hasInstance,
+  operatorConversion,
+  propertyKey,
+} from "../runtime/operations.js"
 import { isOpaque, typeofValue } from "../runtime/references.js"
 import { Convert, normal, Prefetch } from "../runtime/signals.js"
 import type { Resolving } from "../scheduler.js"
 import type { Code } from "../code.js"
 import { builtinCodes } from "../prelude/bytecode.js"
-import { UnaryOp } from "../opcodes.js"
 import { type Vm, VmInternalFn } from "../vm.js"
 
 /**
@@ -78,8 +84,8 @@ function $vmToNumeric(incFlag, v) {
 }
 
 function $vmInc(incFlag, v) {
-  const n = $ApplyToNumeric(incFlag, $vmToPrimitive(v, "number"))
-  return incFlag === 0 ? n + 1 : n - 1
+  let n = $ApplyToNumeric(incFlag, $vmToPrimitive(v, "number"))
+  return incFlag === 0 ? ++n : --n
 }
 
 function $vmUnary(sub, v) {
@@ -192,7 +198,7 @@ function $vmJsonVisitor(boundary, replacer, properties) {
       }
       val = yield val
     }
-    if ($IsObj(val)) {
+    if ($IsObj(val) || typeof val === "bigint") {
       const toJSON = val.toJSON
       if ($IsCallableAny(toJSON)) val = $Call(toJSON, val, key)
     }
@@ -346,12 +352,11 @@ export const registerVmIntrinsics = (map: Map<string, unknown>, vm: Vm): void =>
       const op = incFlag === 0 ? "++" : "--"
       throw invalidData(`'${op}' requires a data value.`, currentSite())
     }
-    return coerceToNumber(v)
+    return coerceToNumeric(v)
   })
   add("$ApplyUnary", ([sub, v]) => {
     if (isOpaque(v)) throw invalidData("Unary operators require data values.", currentSite())
-    const n = coerceToNumber(v)
-    return sub === UnaryOp.NEG ? -n : sub === UnaryOp.PLUS ? +n : ~n
+    return applyUnaryOperator(sub as number, v, currentSite())
   })
   add("$OpConvKind", ([op, lhs, rhs]) => {
     const conv = operatorConversion(op as string, lhs, rhs)
@@ -410,6 +415,13 @@ export const registerVmIntrinsics = (map: Map<string, unknown>, vm: Vm): void =>
     if (val === undefined || typeofValue(val) === "function") return 0
     if (typeof val === "number") return Number.isFinite(val) ? 1 : 2
     if (val === null || typeof val === "string" || typeof val === "boolean") return 1
+    if (typeof val === "bigint") {
+      throw boundary
+        ? invalidData(
+            "A BigInt cannot cross to the host; convert it first, e.g. `String(value)`, or `Number(value)` if it is small enough.",
+          )
+        : typeError("Do not know how to serialize a BigInt.")
+    }
     if (!(val instanceof Obj)) return 3
     if (boundary && val instanceof Bytes) {
       throw invalidData(
@@ -544,7 +556,8 @@ export const tryFastBoundaryOrJson = (
     if (cur === undefined || typeofValue(cur) === "function") return { ok: true, json: undefined }
     if (typeof cur === "number") return { ok: true, json: Number.isFinite(cur) ? cur : null }
     if (cur === null || typeof cur === "string" || typeof cur === "boolean") return { ok: true, json: cur }
-    if (cur instanceof PromiseObj) return { ok: false }
+    // A promise, and a BigInt (whose prototype may have a `toJSON`), take the prelude walk.
+    if (cur instanceof PromiseObj || typeof cur === "bigint") return { ok: false }
     if (!(cur instanceof Obj)) return { ok: true, json: {} }
     // Program getters run in the prelude walk.
     if (cur.hasProgramAccessors) return { ok: false }

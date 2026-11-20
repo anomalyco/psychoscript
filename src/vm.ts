@@ -28,7 +28,7 @@ import {
   peek,
   GetterCall,
   lookup,
-  coerceToNumber,
+  coerceToNumeric,
   coerceToString,
   define,
   Fn,
@@ -53,6 +53,8 @@ import {
 import {
   accessProperty,
   applyBinaryOperator,
+  applyUnaryOperator,
+  increment,
   assignToReference,
   builtinCursor,
   failedAssignment,
@@ -134,7 +136,6 @@ import {
   PutKind,
   type RegExpSite,
   type TemplateSite,
-  UnaryOp,
 } from "./opcodes.js"
 import { ClassInfo, hidden } from "./runtime/objects.js"
 
@@ -936,8 +937,8 @@ export class Vm {
             }
             if (
               (typeof a === "string" || typeof b === "string") &&
-              (a === null || (typeof a !== "object" && typeof a !== "symbol")) &&
-              (b === null || (typeof b !== "object" && typeof b !== "symbol"))
+              (a === null || (typeof a !== "object" && typeof a !== "symbol" && typeof a !== "bigint")) &&
+              (b === null || (typeof b !== "object" && typeof b !== "symbol" && typeof b !== "bigint"))
             ) {
               const s = (a as string) + (b as string)
               if (s.length > 16_777_216) {
@@ -1943,14 +1944,13 @@ export class Vm {
     if (isOpaque(v)) {
       throw invalidData(`'${flag === 0 ? "++" : "--"}' requires a data value.`, fcode.siteAt(pc))
     }
-    frame.regs[sp - 1] = coerceToNumber(v)
+    frame.regs[sp - 1] = coerceToNumeric(v)
     return false
   }
 
   private execIncSlow(frame: Frame, flag: number, v: Value, pc: number, sp: number): boolean {
     if (this.execToNumericSlow(frame, flag, v, pc, sp, "$vmInc")) return true
-    const n = frame.regs[sp - 1] as number
-    frame.regs[sp - 1] = flag === 0 ? n + 1 : n - 1
+    frame.regs[sp - 1] = increment(frame.regs[sp - 1] as number | bigint, flag !== 0)
     return false
   }
 
@@ -2641,8 +2641,7 @@ export class Vm {
       return true
     }
     if (isOpaque(v)) throw invalidData("Unary operators require data values.", site)
-    const n = coerceToNumber(v)
-    frame.regs[sp - 1] = sub === UnaryOp.NEG ? -n : sub === UnaryOp.PLUS ? +n : ~n
+    frame.regs[sp - 1] = applyUnaryOperator(sub, v, site)
     return false
   }
 

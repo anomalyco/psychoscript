@@ -20,7 +20,8 @@ export const coerce = <R>(ctx: Interpreter<R>, name: Coercion, args: Array<Value
     )
   }
   return withPrimitives(name === "String" || name === "parseFloat" ? "string" : "number", [raw], ([value]) => {
-    if (name === "Number") return coerceToNumber(value)
+    // Number(value) is ToNumeric, then a BigInt becomes the nearest Number.
+    if (name === "Number") return typeof value === "bigint" ? Number(value) : coerceToNumber(value)
     if (name === "isFinite") return Number.isFinite(coerceToNumber(value))
     if (name === "isNaN") return Number.isNaN(coerceToNumber(value))
     if (name === "parseFloat") return parseFloat(coerceToString(value))

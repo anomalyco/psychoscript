@@ -25,6 +25,17 @@ const programs: Record<string, string> = {
     let total = 0
     for (const byte of buffer) total += byte
     return [Buffer.isBuffer(buffer), buffer.toString(), buffer.toString("base64"), total]`,
+  "BigInts in registers, closures, arrays and Map keys": `
+    let h = 0xcbf29ce484222325n
+    const seen = new Map()
+    const big = [-(2n ** 100n), 0n, -1n]
+    const next = (() => { let s = 7n; return () => (s = (s * 6364136223846793005n + 1n) % 2n ** 64n) })()
+    for (const c of "snapshot") {
+      h = ((h ^ BigInt(c.charCodeAt(0))) * 0x100000001b3n) & 0xffffffffffffffffn
+      seen.set(h % 7n, c)
+      next()
+    }
+    return [h.toString(16), [...seen].map(([k, v]) => k + v), big.map(String), String(next())]`,
   "closures over per-iteration bindings": `
     const fns = []
     for (let i = 0; i < 5; i++) fns.push(() => i * 2)
@@ -193,7 +204,7 @@ const refusal = (snapshot: unknown) => {
 describe("snapshots", () => {
   test("hold code by source and function index, with the source's bytecode hash, and never bytecode", () => {
     const snapshot = sliced()
-    expect(snapshot.format).toBe(3)
+    expect(snapshot.format).toBe(4)
     const source = snapshot.header.sources[0]!
     expect(source.id).toBe("main")
     expect(source.bytecode).toBe(hashOf(compileSource(parse(source.code))))
