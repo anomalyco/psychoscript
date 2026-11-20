@@ -125,6 +125,11 @@ push("toLocaleString", undefined, undefined)
 push("toLocaleDateString", undefined, undefined)
 push("toLocaleTimeString", undefined, undefined)
 
+// The widths ICU4X can't render exactly, recorded so they reel in a difference rather than silently diverge.
+for (const bag of [{ weekday: "narrow" }, { month: "narrow" }, { era: "long" }, { era: "narrow" }]) {
+  push("toLocaleString", "en-US", { ...bag, timeZone: "UTC" })
+}
+
 // An error case for every option the reference rejects, pinned by kind and message.
 const errorCase = (method: string, locale: string | null | undefined, options: Bag | null | undefined) => {
   const case_: Case = { method, instant: INSTANT, error: true }
