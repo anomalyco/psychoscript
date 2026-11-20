@@ -704,6 +704,10 @@ pub(crate) fn locate_at(vm: &mut Vm, e: &Value, site: Option<u32>) {
         && f.offset.is_none()
     {
         f.offset = site;
+        if let Some(o) = site {
+            let id = *id;
+            vm.locate_stack(id, o);
+        }
     }
 }
 
@@ -715,6 +719,10 @@ fn failure_value(
 ) -> Value {
     let proto = vm.realm.error_proto;
     let e = vm.failure(proto, &message.to_run_text(), kind);
+    if let Value::Obj(id) = e {
+        // A host's failure has no site of its own: its `stack` names where a handler catches it.
+        vm.stack_at_handler(id);
+    }
     if !suggestions.is_empty()
         && let Value::Obj(id) = e
     {

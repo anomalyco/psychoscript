@@ -187,6 +187,7 @@ pub struct Names {
     pub size: Atom,
     pub return_: Atom,
     pub cause: Atom,
+    pub stack: Atom,
     pub status: Atom,
     pub reason: Atom,
     pub errors: Atom,
@@ -298,6 +299,11 @@ pub struct Vm {
     no_upvals: Arc<[u32]>,
     /// Set by a built-in that pushed a native frame instead of returning its result (`enter_native`).
     pub(crate) entered: bool,
+    /// The array-iteration protector: true until a program changes `Array.prototype[Symbol.iterator]` or the built-in
+    /// iterators' `next` (see `Vm::guard`). Saved with the run.
+    pub(crate) arrays_walked: bool,
+    /// The program's source, which `stack` lines locate sites in.
+    pub(crate) code: std::sync::Arc<str>,
     /// Set while a built-in called from bytecode or a convert frame's rerun runs: a conversion that calls the
     /// program is then restarted instead of made inline (see `conversion.rs`).
     pub(crate) convert_ok: bool,
@@ -344,6 +350,7 @@ impl Vm {
             size: atoms.intern_static("size"),
             return_: atoms.intern_static("return"),
             cause: atoms.intern_static("cause"),
+            stack: atoms.intern_static("stack"),
             status: atoms.intern_static("status"),
             reason: atoms.intern_static("reason"),
             errors: atoms.intern_static("errors"),
@@ -404,6 +411,8 @@ impl Vm {
             native_proto: Arc::new(crate::native::proto()),
             no_upvals: Arc::from([]),
             entered: false,
+            arrays_walked: true,
+            code: std::sync::Arc::from(""),
             convert_ok: false,
             convert_req: None,
             replay: VecDeque::new(),
@@ -578,6 +587,7 @@ impl Vm {
         let m = self.names.message;
         let text = self.str_val(msg);
         self.heap[id as usize].props.push_new(m, text, HIDDEN);
+        self.add_stack(id, String::new());
         Value::Obj(id)
     }
 
@@ -823,21 +833,7 @@ impl Vm {
     /// `Symbol.iterator` method. `yield*` always calls it.
     pub(crate) fn open_fuel(&mut self, v: &Value, ctx: u8) -> i32 {
         let Value::Obj(id) = v else { return 0 };
-        let walked = matches!(
-            self.heap[*id as usize].kind,
-            Kind::Array(_)
-                | Kind::Arguments(_)
-                | Kind::Map(_)
-                | Kind::Set(_)
-                | Kind::SearchParams(_)
-                | Kind::Headers(_)
-                | Kind::Bytes(_)
-                | Kind::ArrayIter { .. }
-                | Kind::MapIter { .. }
-                | Kind::StrIter { .. }
-                | Kind::ListIter { .. }
-                | Kind::ExoticIter { .. }
-        );
+        let walked = self.walks(v);
         if walked && ctx != crate::bytecode::ITER_DELEGATE {
             return 0;
         }
@@ -881,19 +877,29 @@ impl Vm {
     pub(crate) fn walks(&self, v: &Value) -> bool {
         match v {
             Value::Str(_) => true,
+            // An array and the iterators over one, while nothing could make the iterator protocol answer otherwise.
+            Value::Obj(id) if matches!(self.heap[*id as usize].kind, Kind::Array(_)) => {
+                self.array_walked(*id)
+            }
+            Value::Obj(id)
+                if matches!(
+                    self.heap[*id as usize].kind,
+                    Kind::Arguments(_)
+                        | Kind::Bytes(_)
+                        | Kind::ArrayIter { .. }
+                        | Kind::ListIter { .. }
+                ) =>
+            {
+                self.arrays_walked
+            }
             Value::Obj(id) => matches!(
                 self.heap[*id as usize].kind,
-                Kind::Array(_)
-                    | Kind::Arguments(_)
-                    | Kind::Map(_)
+                Kind::Map(_)
                     | Kind::Set(_)
                     | Kind::SearchParams(_)
                     | Kind::Headers(_)
-                    | Kind::Bytes(_)
-                    | Kind::ArrayIter { .. }
                     | Kind::MapIter { .. }
                     | Kind::StrIter { .. }
-                    | Kind::ListIter { .. }
                     | Kind::ExoticIter { .. }
             ),
             _ => false,
@@ -910,9 +916,9 @@ impl Vm {
                 Kind::ArrayIter { .. }
                 | Kind::MapIter { .. }
                 | Kind::StrIter { .. }
-                | Kind::ListIter { .. }
                 | Kind::ExoticIter { .. } => !self.walks(source),
-                Kind::Generator(_) | Kind::AsyncFromSync { .. } => false,
+                // The arguments object's values, which the reference's own `argumentsValues` generator steps.
+                Kind::ListIter { .. } | Kind::Generator(_) | Kind::AsyncFromSync { .. } => false,
                 _ => true,
             },
             _ => false,
@@ -936,7 +942,6 @@ impl Vm {
                 Kind::ArrayIter { .. }
                     | Kind::MapIter { .. }
                     | Kind::StrIter { .. }
-                    | Kind::ListIter { .. }
                     | Kind::ExoticIter { .. }
             )
             && !self.walks(source)
@@ -1697,6 +1702,10 @@ impl Vm {
         {
             let at = pc.saturating_sub(1);
             f.offset = func.site(at, f.site).or_else(|| func.pos.get(at).copied());
+            if let Some(o) = f.offset {
+                let id = *id;
+                self.locate_stack(id, o);
+            }
         }
     }
 
@@ -1921,10 +1930,12 @@ impl Vm {
         self.handover();
         let fatal = self.fatal.is_some();
         loop {
-            let Some(f) = self.frames.last_mut() else {
+            let Some(f) = self.frames.last() else {
                 return Err(Err(e));
             };
             if !fatal && self.handlers.len() > f.hbase as usize {
+                self.stack_caught(&e, self.frames.len() - 1);
+                let f = self.frames.last_mut().expect("frame");
                 let h = self.handlers.pop().expect("handler");
                 let sp = f.base + h.sp as usize;
                 f.pc = h.pc as usize;

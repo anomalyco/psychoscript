@@ -19,6 +19,9 @@ pub const FIXED: u8 = 4;
 /// An accessor property: its value is a `Kind::Accessor` object holding the getter and the setter. Its `WRITABLE`
 /// bit means nothing.
 pub const ACCESSOR: u8 = 8;
+/// An error's `stack` not read yet: its value is its `    at` lines, and its header is added at its first read (see
+/// `stack.rs`).
+pub const PENDING_STACK: u8 = 16;
 
 #[derive(Clone)]
 pub struct Prop {

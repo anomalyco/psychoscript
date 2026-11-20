@@ -332,10 +332,12 @@ fn host_errors_become_program_errors() {
             &rt,
             r#"try { open() } catch (e) {
               const c = e.cause
-              return [e.message, Object.keys(e), c instanceof Error, c.code, c.errno, c.path, c.detail, Object.keys(c), "stack" in c]
+              return [e.message, Object.keys(e), c instanceof Error, c.code, c.errno, c.path, c.detail, Object.keys(c), "stack" in c, c.stack, e.stack]
             }"#
         ),
-        json!(["open failed", [], true, "ENOENT", -2, "x", { "retried": true }, ["code", "errno", "path", "detail"], false])
+        // As in the reference, a host error and its cause have a `stack`, with no program frames.
+        json!(["open failed", [], true, "ENOENT", -2, "x", { "retried": true }, ["code", "errno", "path", "detail"], true,
+            "Error: ENOENT: no such file or directory, open 'x'", "Error: open failed"])
     );
     assert_eq!(
         value(

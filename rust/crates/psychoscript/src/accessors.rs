@@ -271,6 +271,7 @@ impl Vm {
             }
             None => o.props.push_new(key, pair, flags),
         }
+        self.guard(id, key);
     }
 
     /// Whether `id` or an object on its chain ever had a program accessor (the reference's `accessorsOnChain`).
@@ -973,6 +974,9 @@ impl Vm {
             _ => {}
         }
         let i = self.heap[id as usize].props.find(key)?;
+        if self.heap[id as usize].props.items[i].flags & PENDING_STACK != 0 {
+            self.fix_stack(id, key);
+        }
         let p = self.heap[id as usize].props.items[i].clone();
         if let Value::Uninit = p.value {
             // A built-in accessor: from now on its halves are its companions.
@@ -1408,6 +1412,7 @@ impl Vm {
             }
             None => o.props.push_new(key, value, flags),
         }
+        self.guard(id, key);
     }
 
     /// An array element: elements have no slots, so only data with the array's own attributes fits.

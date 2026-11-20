@@ -432,6 +432,7 @@ impl Enc<'_> {
             "coroutines": vm.coroutines.iter().map(|co| self.coroutine(co)).collect::<R<Vec<_>>>()?,
             "logs": vm.logs,
             "rng": vm.rng.to_string(),
+            "arraysWalked": vm.arrays_walked,
             "std": [std.regexp, std.date, std.uint8, std.buffer, std.text_encoder, std.text_decoder,
                     std.weak_map, std.weak_set, std.iterator_helper, std.uri_error, std.url, std.params,
                     std.headers, std.loaded],
@@ -2052,6 +2053,9 @@ pub fn restore(vm: &mut Vm, snapshot: &Snapshot, program_hash: &str) -> R<()> {
         .as_str()
         .and_then(|r| r.parse().ok())
         .ok_or_else(|| invalid("the random state is malformed."))?;
+    vm.arrays_walked = field(st, "arraysWalked")?
+        .as_bool()
+        .ok_or_else(|| invalid("the array-iteration protector is malformed."))?;
     let std = field_list(st, "std")?;
     let id = |i: usize| -> R<Id> {
         u32_(
