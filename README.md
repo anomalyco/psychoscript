@@ -15,9 +15,8 @@ npm install psychoscript
 bun add psychoscript
 ```
 
-Requires Node ≥ 24 or Bun ≥ 1.4. The API is Promise-based and has no dependency on Effect; for
-[Effect](https://effect.website) hosts, `psychoscript/effect` has the same API over Effects and needs `effect` (^4.1),
-an optional peer dependency (see [Effect](#effect)).
+Requires Node ≥ 24 or Bun ≥ 1.4. The API is Promise-based and has no dependency on Effect;
+`psychoscript/effect` offers the same API over [Effect](https://effect.website) (see [Using Effect](#using-effect)).
 
 ## Quick start
 
@@ -42,6 +41,39 @@ A result is `{ ok: true, value }` or `{ ok: false, error: { kind, message, sugge
 `execute(code, { signal })` and `program.run({ signal })` stop when the signal aborts: every host call's `call.signal`
 aborts, and the run rejects with a `DOMException` named `"AbortError"` (its `cause` is the signal's reason). A host
 call that ignores its signal is not waited for.
+
+```ts
+import { Host, Runtime } from "psychoscript"
+
+const runtime = Runtime.make({
+  globals: () => ({
+    slow: Host.fn(
+      (_, call) =>
+        new Promise((resolve) => {
+          const timer = setTimeout(resolve, 60_000)
+          call.signal.addEventListener("abort", () => {
+            clearTimeout(timer)
+            console.log("host call aborted")
+          })
+        }),
+      { type: "async" },
+    ),
+  }),
+})
+
+const controller = new AbortController()
+setTimeout(() => controller.abort("user cancelled"), 10)
+try {
+  await runtime.execute("return await slow()", { signal: controller.signal })
+} catch (error) {
+  console.log(error.name, error.cause)
+}
+```
+
+```
+host call aborted
+AbortError user cancelled
+```
 
 ## Suspend and resume
 
@@ -79,7 +111,7 @@ const runtime = Runtime.make({
 })
 const result = await runtime.resume(fromBytes(bytes)).run()
 console.log(JSON.stringify(result))
-// saved 5363 bytes
+// saved 5402 bytes
 // {"ok":true,"value":60,"metadata":null}
 ```
 
@@ -155,7 +187,11 @@ await run("while (true) {}")
 {"ok":false,"error":{"kind":"TimeoutExceeded","message":"Execution timed out after 1000ms."},"metadata":null}
 ```
 
-## Effect
+## Using Effect
+
+```sh
+npm install psychoscript effect
+```
 
 `psychoscript/effect` exports the same names with an Effect API: `execute`, `program(...).run()`, `suspend()` and
 `resume(...).run()` are Effects, host functions may also return Effects (whose requirements become the runtime's
@@ -163,14 +199,46 @@ services), and `Host.durableFn` takes Effect `start`, `wait` and `cancel`. Inter
 calls.
 
 ```ts
-import { Effect } from "effect"
+import { Context, Effect, Fiber } from "effect"
 import { Host, Runtime } from "psychoscript/effect"
 
+class Users extends Context.Service<Users, { readonly name: (id: number) => string | undefined }>()("Users") {}
+
 const runtime = Runtime.make({
-  globals: () => ({ double: Host.fn(([n]) => Effect.succeed(Number(n) * 2)) }),
+  globals: () => ({
+    // Needs Users, so runtime.execute(...) needs it too.
+    user: Host.fn(([id]) =>
+      Effect.flatMap(Users, (users) => {
+        const name = users.name(Number(id))
+        return name === undefined ? Effect.fail(Host.fail("NotFound", `No user ${id}`)) : Effect.succeed(name)
+      }),
+    ),
+    hang: Host.fn(() => Effect.never.pipe(Effect.onInterrupt(() => Effect.sync(() => console.log("host call interrupted"))))),
+  }),
 })
-const result = await Effect.runPromise(runtime.execute("return await double(21)"))
+
+const users = { name: (id: number) => ["ada", "grace"][id] }
+const run = (code: string) => Effect.provideService(runtime.execute(code), Users, users)
+
+console.log(JSON.stringify(await Effect.runPromise(run("return [user(0), user(1)]"))))
+console.log(JSON.stringify(await Effect.runPromise(run("return user(7)"))))
+await Effect.runPromise(
+  Effect.gen(function* () {
+    const fiber = yield* Effect.forkChild(run("hang()"))
+    yield* Effect.sleep(10)
+    yield* Fiber.interrupt(fiber)
+  }),
+)
 ```
+
+```
+{"ok":true,"value":["ada","grace"],"metadata":null}
+{"ok":false,"error":{"kind":"NotFound","message":"No user 7"},"metadata":null}
+host call interrupted
+```
+
+A host function's `Host.fail` reaches the program as a catchable error with your `kind`; other typed failures and
+defects become an `ExecutionFailure`.
 
 ## Limits
 

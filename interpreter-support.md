@@ -656,7 +656,7 @@ Host functions a host opts in through `Host.fn`, `Host.durableFn`, and `Host.nam
 - [x] Each host function is callable, run with `this` undefined, and constructible only when marked `constructible`.
 - [x] `Host.namespace` is a lazy tree: `keys(path)` answers `Object.keys` and `for...in`, and `resolve(path)` gives
       the function a call reaches or a failure the call throws.
-- [x] A call's `type`: `sync` blocks the program until the function (or the Effect it returns) completes; `async`
+- [x] A call's `type`: `sync` blocks the program until the function (or the Promise it returns) completes; `async`
       hands the program a promise at once and starts the work eagerly; `sync-thenable` blocks, and an object result
       can also be awaited or chained. An `idempotent` async call is interrupted by a suspend and called again, with
       the same key, on resume; otherwise a suspend fails while a call is running. `Host.durableFn` keeps its work
