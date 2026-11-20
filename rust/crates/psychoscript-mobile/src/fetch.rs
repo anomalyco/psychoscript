@@ -2,17 +2,20 @@
 //! (URLSession, OkHttp), so the system's TLS and proxies apply.
 //!
 //! The crate enforces the rules: `https:` only; the host on the run's allow-list (exact names, `*.` suffix wildcards,
-//! `*` for any), checked again for every redirect, which the crate follows itself (at most 5); methods GET, POST, PUT,
-//! PATCH, DELETE, HEAD; no `Cookie` header out and no `Set-Cookie` back; no localhost, private or link-local
-//! destination; request body <= 256 KB, response body <= 2 MB; 15 s per request, redirects included; at most 4 in
-//! flight and 10 a second per run. Rejections are errors with `kind` (`CapabilityDenied`, `Network`, `Timeout`,
-//! `TooLarge`, `RateLimited`) and `message`.
+//! `*` for any, each optionally with a `:port`), checked again for every redirect, which the crate follows itself (at
+//! most 5); methods GET, POST, PUT, PATCH, DELETE, HEAD; no `Cookie` header out and no `Set-Cookie` back; no
+//! localhost, private or link-local destination; request body <= 256 KB, response body <= 2 MB; 15 s per request,
+//! redirects included; at most 4 in flight and 10 a second per run. Rejections are errors with `kind`
+//! (`CapabilityDenied`, `Network`, `Timeout`, `TooLarge`, `RateLimited`) and `message`.
 //!
-//! Destinations: a literal IP is checked as is; a name is resolved by the crate first and refused if any of its
-//! addresses isn't public, and the address the transport reports having connected to (`remote_address`) is checked
-//! again before the program sees the response. The transport resolves the name again itself, so a DNS answer that
-//! changes in between (rebinding) can reach a private address; a transport that can resolve through
-//! [`is_public_address`] (OkHttp's `Dns`) closes that gap.
+//! Dev mode (`LiveOptions::allow_local_network`) also allows loopback, private and link-local destinations, and plain
+//! `http:` to them, still only for declared hosts.
+//!
+//! Destinations are resolved once, by the crate: a literal IP is checked as is, a name's addresses must all pass, and
+//! the transport gets them in [`FetchRequest::addresses`] to connect to and nothing else (OkHttp: a `Dns` returning
+//! them). The address the transport reports having connected to (`remote_address`) is checked again before the
+//! program sees the response; a transport that resolves the name itself (URLSession) can't promise to connect to a
+//! checked address, so that report is its only check.
 
 use std::collections::VecDeque;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
@@ -58,8 +61,11 @@ pub struct HttpHeader {
 pub struct FetchRequest {
     /// Pass it to [`FetchTransport::cancel`]'s calls' matching.
     pub id: u64,
-    /// An `https:` URL whose host is allowed and resolves to public addresses.
+    /// An `https:` URL (or `http:` to a local address in dev mode) whose host is allowed.
     pub url: String,
+    /// The addresses the crate resolved the URL's host to and checked: connect to one of these, not to what the name
+    /// resolves to later.
+    pub addresses: Vec<String>,
     pub method: String,
     pub headers: Vec<HttpHeader>,
     pub body: Option<Vec<u8>>,
@@ -158,6 +164,33 @@ fn public_v6(ip: Ipv6Addr) -> bool {
         || (first & 0xffc0) == 0xfec0
         || (first == 0x2001 && ip.segments()[1] == 0x0db8)
         || ip.to_ipv4().is_some_and(|v4| !public_v4(v4)))
+}
+
+/// A loopback, private (RFC 1918, CGNAT, IPv6 unique local) or link-local address: what dev mode adds.
+fn local(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => local_v4(v4),
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => local_v4(v4),
+            None => {
+                let first = v6.segments()[0];
+                v6.is_loopback() || (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80
+            }
+        },
+    }
+}
+
+fn local_v4(ip: Ipv4Addr) -> bool {
+    let [a, b, ..] = ip.octets();
+    ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || (a == 100 && (64..128).contains(&b))
+}
+
+/// Whether a run may reach `ip`: public, or local in dev mode.
+fn reachable(ip: IpAddr, local_network: bool) -> bool {
+    public(ip) || (local_network && local(ip))
 }
 
 /// A rejection the program sees: an error with `kind` and `message`.
@@ -262,74 +295,105 @@ impl Request {
     }
 }
 
-/// Whether `host` is on `allowed`: exact names, `*.` suffixes (not the bare domain), `*`.
-pub(crate) fn host_allowed(host: &str, allowed: &[String]) -> bool {
-    let host = host.trim_end_matches('.').to_ascii_lowercase();
+/// Whether `host` (and `port`) is on `allowed`: exact names, `*.` suffixes (not the bare domain), `*`; an entry with
+/// a `:port` matches that port only.
+pub(crate) fn host_allowed(host: &str, port: u16, allowed: &[String]) -> bool {
+    let host = host
+        .trim_matches(['[', ']'])
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
     allowed.iter().any(|entry| {
-        let entry = entry.trim().trim_end_matches('.').to_ascii_lowercase();
-        match entry.strip_prefix("*.") {
-            _ if entry == "*" => true,
+        let entry = entry.trim().to_ascii_lowercase();
+        let (name, entry_port) = match entry.rsplit_once(':') {
+            Some((name, p)) if !name.contains(':') || name.ends_with(']') => {
+                (name, p.parse::<u16>().ok())
+            }
+            _ => (entry.as_str(), None),
+        };
+        if entry_port.is_some_and(|p| p != port) {
+            return false;
+        }
+        let name = name.trim_matches(['[', ']']).trim_end_matches('.');
+        match name.strip_prefix("*.") {
+            _ if name == "*" => true,
             Some(suffix) => {
                 host.len() > suffix.len() + 1
                     && host.ends_with(suffix)
                     && host[..host.len() - suffix.len()].ends_with('.')
             }
-            None => host == entry,
+            None => host == name,
         }
     })
 }
 
-/// A URL the run may reach: https, an allowed host, a public destination.
-fn check_url(url: &Url, allowed: &[String]) -> Result<(), Rejection> {
-    if url.scheme() != "https" {
-        return Err(Rejection::denied(format!(
-            "only https: URLs, not {}:",
-            url.scheme()
-        )));
-    }
+/// A URL the run may reach: https (or http to the local network in dev mode), an allowed host, a reachable
+/// destination. Returns the checked addresses, resolved once.
+fn check_url(url: &Url, allowed: &[String], local_network: bool) -> Result<Vec<IpAddr>, Rejection> {
+    let http = match url.scheme() {
+        "https" => false,
+        "http" if local_network => true,
+        scheme => {
+            return Err(Rejection::denied(format!(
+                "only https: URLs, not {scheme}:"
+            )));
+        }
+    };
     if !url.username().is_empty() || url.password().is_some() {
         return Err(Rejection::denied("URLs with credentials aren't allowed"));
     }
     let Some(host) = url.host() else {
         return Err(Rejection::denied("the URL has no host"));
     };
-    let name = match host {
-        url::Host::Domain(d) => d.to_owned(),
+    let port = url.port_or_known_default().unwrap_or(443);
+    let name = match &host {
+        url::Host::Domain(d) => d.trim_end_matches('.').to_ascii_lowercase(),
         url::Host::Ipv4(ip) => ip.to_string(),
         url::Host::Ipv6(ip) => ip.to_string(),
     };
-    if !host_allowed(&name, allowed) {
+    if !host_allowed(&name, port, allowed) {
         return Err(Rejection::denied(format!(
             "{name} isn't among the hosts this widget may reach"
         )));
     }
-    let port = url.port_or_known_default().unwrap_or(443);
-    match host {
-        url::Host::Ipv4(ip) if !public_v4(ip) => {
-            Err(Rejection::denied(format!("{ip} isn't a public address")))
-        }
-        url::Host::Ipv6(ip) if !public(IpAddr::V6(ip)) => {
-            Err(Rejection::denied(format!("{ip} isn't a public address")))
-        }
-        url::Host::Domain(d) => {
-            let d = d.trim_end_matches('.').to_ascii_lowercase();
-            if d == "localhost" || d.ends_with(".localhost") || d.ends_with(".local") {
-                return Err(Rejection::denied(format!("{d} is a local name")));
+    let addresses: Vec<IpAddr> = match host {
+        url::Host::Ipv4(ip) => vec![IpAddr::V4(ip)],
+        url::Host::Ipv6(ip) => vec![IpAddr::V6(ip)],
+        url::Host::Domain(_) => {
+            if !local_network
+                && (name == "localhost" || name.ends_with(".localhost") || name.ends_with(".local"))
+            {
+                return Err(Rejection::denied(format!("{name} is a local name")));
             }
-            let addresses: Vec<_> = (d.as_str(), port)
+            let mut addresses: Vec<IpAddr> = (name.as_str(), port)
                 .to_socket_addrs()
-                .map_err(|e| Rejection::new("Network", format!("can't resolve {d}: {e}")))?
+                .map_err(|e| Rejection::new("Network", format!("can't resolve {name}: {e}")))?
+                .map(|a| a.ip())
                 .collect();
-            match addresses.iter().find(|a| !public(a.ip())) {
-                Some(a) => Err(Rejection::denied(format!(
-                    "{d} resolves to {}, which isn't a public address",
-                    a.ip()
-                ))),
-                None => Ok(()),
-            }
+            addresses.dedup();
+            addresses
         }
-        _ => Ok(()),
+    };
+    if addresses.is_empty() {
+        return Err(Rejection::new("Network", format!("{name} has no address")));
     }
+    for ip in &addresses {
+        if !reachable(*ip, local_network) {
+            let what = if local_network {
+                "a public or local"
+            } else {
+                "a public"
+            };
+            return Err(Rejection::denied(format!(
+                "{name} is at {ip}, which isn't {what} address"
+            )));
+        }
+        if http && !local(*ip) {
+            return Err(Rejection::denied(format!(
+                "http: only to the local network, and {name} is at {ip}"
+            )));
+        }
+    }
+    Ok(addresses)
 }
 
 /// One fetch's place between its worker and the program's call.
@@ -379,6 +443,7 @@ static IDS: AtomicU64 = AtomicU64::new(1);
 pub(crate) fn perform(
     transport: &dyn FetchTransport,
     allowed: &[String],
+    local_network: bool,
     request: Request,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<HostValue, Rejection> {
@@ -390,7 +455,7 @@ pub(crate) fn perform(
         mut body,
     } = request;
     for hop in 0..=MAX_REDIRECTS {
-        check_url(&url, allowed)?;
+        let addresses = check_url(&url, allowed, local_network)?;
         let id = IDS.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::channel();
         let completion = Arc::new(FetchCompletion {
@@ -401,6 +466,7 @@ pub(crate) fn perform(
             FetchRequest {
                 id,
                 url: url.to_string(),
+                addresses: addresses.iter().map(IpAddr::to_string).collect(),
                 method: method.clone(),
                 headers: headers.clone(),
                 body: body.clone(),
@@ -435,13 +501,22 @@ pub(crate) fn perform(
                 }
             }
         };
-        if let Some(addr) = &response.remote_address
-            && !is_public_address(addr.clone())
-        {
-            return Err(Rejection::denied(format!(
-                "{} connected to {addr}, which isn't a public address",
-                url.host_str().unwrap_or("")
-            )));
+        if let Some(addr) = &response.remote_address {
+            // `[::1]`, `fe80::1%en0`: the address alone.
+            let ip = addr
+                .trim_matches(['[', ']'])
+                .split('%')
+                .next()
+                .unwrap_or("")
+                .parse::<IpAddr>()
+                .ok();
+            let http = url.scheme() == "http";
+            if !ip.is_some_and(|ip| reachable(ip, local_network) && (!http || local(ip))) {
+                return Err(Rejection::denied(format!(
+                    "{} connected to {addr}, which this widget may not reach",
+                    url.host_str().unwrap_or("")
+                )));
+            }
         }
         if response.body.len() > MAX_RESPONSE_BYTES {
             return Err(Rejection::new(

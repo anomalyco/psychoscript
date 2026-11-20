@@ -63,7 +63,7 @@ its own until it returns or is stopped. Beside its input function it gets `__hos
 - `LiveHandler` (callback interface): `onPost(messageJson)` and `onWarning(message)` run on the run's thread, inside
   the program's call: hand them to the UI thread and return. `onExit(LiveExit)` runs once on the run's thread:
   `Finished(resultJson)`, `Failed(error)` (`SliceBudget`, `Runtime`, ...), or `Stopped`.
-- `LiveOptions(sliceBudgetMs = 50, maxPostsPerSecond = 240, httpsHosts = nil)`.
+- `LiveOptions(sliceBudgetMs = 50, maxPostsPerSecond = 240, httpsHosts = nil, allowLocalNetwork = false)`.
   - **Slice budget:** a run computing past the budget without waiting is stopped with `SliceBudget`. Only the VM's
     compute counts, not the time it waits on pending host calls (several at once included). The language can't
     time-slice a VM, so the crate has psychoscript's suspender stop the run at its next step, which works inside tight
@@ -89,11 +89,12 @@ its own until it returns or is stopped. Beside its input function it gets `__hos
 
 ### fetch
 
-`options.httpsHosts` is the template's `https` capability: exact names, `*.` suffixes (not the bare domain), or `*`.
-Without it, or without a transport, every fetch rejects with `CapabilityDenied`. The program passes
-`{ url, method?, headers?, body? | body64? }` and gets `{ status, url, headers, body | body64 }`: the body is text when
-it's UTF-8, else base64. Headers come lowercased, with repeats joined and `set-cookie` dropped. Rejections are errors
-with `kind` (`CapabilityDenied`, `Network`, `Timeout`, `TooLarge`, `RateLimited`) and `message`.
+`options.httpsHosts` is the template's `https` capability: exact names, `*.` suffixes (not the bare domain), or `*`,
+each optionally with a `:port` (`localhost:4097`) that then must match. Without it, or without a transport, every
+fetch rejects with `CapabilityDenied`. The program passes `{ url, method?, headers?, body? | body64? }` and gets
+`{ status, url, headers, body | body64 }`: the body is text when it's UTF-8, else base64. Headers come lowercased,
+with repeats joined and `set-cookie` dropped. Rejections are errors with `kind` (`CapabilityDenied`, `Network`,
+`Timeout`, `TooLarge`, `RateLimited`) and `message`.
 
 The crate enforces:
 - `https:` only, and no credentials in the URL.
@@ -103,20 +104,35 @@ The crate enforces:
 - `Cookie`, `Host`, `Content-Length` and hop-by-hop request headers are dropped.
 - Request body at most 256 KB, response body at most 2 MB, 15 s per fetch with its redirects included.
 - At most 4 fetches in flight and 10 a second per run.
-- No loopback, private, link-local, CGNAT, multicast or reserved destination:
-  - A literal IP is checked as is.
-  - A name is resolved by the crate (`getaddrinfo`) and refused if any of its addresses isn't public.
-  - The address the transport reports (`remoteAddress`) is checked again before the program sees the response.
-  - The transport resolves the name again itself, so a DNS answer that changes in between (rebinding) could still
-    reach a private address. A transport that filters its own resolution with `isPublicAddress` (OkHttp's `Dns`, as
-    below) closes that gap.
+- No loopback, private, link-local, CGNAT, multicast or reserved destination, checked against the address the
+  transport connects to:
+  - **Resolve once:** the crate resolves the host itself (a literal IP as is) and checks every address. The transport
+    gets them in `request.addresses` and must connect to one of them: OkHttp with a `Dns` that returns them (below),
+    so DNS rebinding can't redirect the connection.
+  - **Check again:** the address the transport reports in `remoteAddress` is checked before the program sees the
+    response.
+  - **iOS limitation:** URLSession resolves names itself and can't be told which address to use. The Swift sample
+    reports the address it connected to (transaction metrics), so a rebound response never reaches the program.
+    The request has still been sent by then.
+
+**Dev mode** (`LiveOptions.allowLocalNetwork`, default off; on only in debug builds or by the user's choice, e.g. a
+debug-settings toggle) also allows loopback, private (RFC 1918, CGNAT, IPv6 unique local) and link-local
+destinations, and plain `http:` to them (never to a public address), still only for declared hosts, e.g.
+`["localhost:4097"]`. iOS: plain `http:` also needs `NSAppTransportSecurity` / `NSAllowsLocalNetworking` in the
+debug build's Info.plist, and local addresses need `NSLocalNetworkUsageDescription`.
 
 The transport carries one exchange and doesn't follow redirects. It uses an ephemeral session: no cookies, cache,
 credential store or client certificates. It calls `completion.succeed(...)` or `completion.fail(...)` once, from any
 thread.
 
 ```swift
-final class URLSessionTransport: NSObject, FetchTransport, URLSessionTaskDelegate, @unchecked Sendable {
+final class URLSessionTransport: NSObject, FetchTransport, URLSessionDataDelegate, @unchecked Sendable {
+    private struct Exchange {
+        let request: FetchRequest
+        let completion: FetchCompletion
+        var data = Data()
+        var remote: String?
+    }
     private lazy var session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.httpCookieStorage = nil
@@ -125,6 +141,7 @@ final class URLSessionTransport: NSObject, FetchTransport, URLSessionTaskDelegat
         config.urlCache = nil
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
+    private var exchanges: [Int: Exchange] = [:]   // by task identifier
     private var tasks: [UInt64: URLSessionTask] = [:]
     private let lock = NSLock()
 
@@ -134,21 +151,46 @@ final class URLSessionTransport: NSObject, FetchTransport, URLSessionTaskDelegat
         r.httpMethod = request.method
         r.httpBody = request.body
         for h in request.headers { r.setValue(h.value, forHTTPHeaderField: h.name) }
-        let task = session.dataTask(with: r) { [weak self] data, response, error in
-            self?.lock.withLock { _ = self?.tasks.removeValue(forKey: request.id) }
-            guard let http = response as? HTTPURLResponse else {
-                return completion.fail(message: error?.localizedDescription ?? "no response")
-            }
-            let headers = http.allHeaderFields.map { HttpHeader(name: "\($0.key)", value: "\($0.value)") }
-            completion.succeed(response: FetchResponse(
-                status: UInt16(http.statusCode), headers: headers, body: data ?? Data(), remoteAddress: nil))
+        let task = session.dataTask(with: r)
+        lock.withLock {
+            exchanges[task.taskIdentifier] = Exchange(request: request, completion: completion)
+            tasks[request.id] = task
         }
-        lock.withLock { tasks[request.id] = task }
         task.resume()
     }
 
     func cancel(id: UInt64) {
         lock.withLock { tasks.removeValue(forKey: id) }?.cancel()
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        let over = lock.withLock { () -> Bool in
+            guard var e = exchanges[dataTask.taskIdentifier] else { return false }
+            e.data.append(data)
+            exchanges[dataTask.taskIdentifier] = e
+            return e.data.count > Int(e.request.maxResponseBytes)
+        }
+        if over { dataTask.cancel() }   // the crate reports TooLarge
+    }
+
+    // The address it actually connected to, which the crate checks.
+    func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
+        let remote = metrics.transactionMetrics.last?.remoteAddress
+        lock.withLock { exchanges[task.taskIdentifier]?.remote = remote }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        guard let e = lock.withLock({ () -> Exchange? in
+            tasks.removeValue(forKey: exchanges[task.taskIdentifier]?.request.id ?? 0)
+            return exchanges.removeValue(forKey: task.taskIdentifier)
+        }) else { return }
+        let over = e.data.count > Int(e.request.maxResponseBytes)
+        guard let http = task.response as? HTTPURLResponse, error == nil || over else {
+            return e.completion.fail(message: error?.localizedDescription ?? "no response")
+        }
+        let headers = http.allHeaderFields.map { HttpHeader(name: "\($0.key)", value: "\($0.value)") }
+        e.completion.succeed(response: FetchResponse(
+            status: UInt16(http.statusCode), headers: headers, body: e.data, remoteAddress: e.remote))
     }
 
     // The crate checks and follows redirects.
@@ -171,20 +213,23 @@ class OkHttpTransport : FetchTransport {
     private val client = OkHttpClient.Builder()
         .followRedirects(false).followSslRedirects(false)        // the crate checks and follows redirects
         .cookieJar(CookieJar.NO_COOKIES)
-        .dns { host ->                                           // only public addresses: no DNS rebinding
-            Dns.SYSTEM.lookup(host).filter { isPublicAddress(it.hostAddress ?: "") }
-                .ifEmpty { throw UnknownHostException("$host has no public address") }
-        }
         .build()
     private val calls = ConcurrentHashMap<ULong, Call>()
 
     override fun start(request: FetchRequest, completion: FetchCompletion) {
+        val url = request.url.toHttpUrl()
+        // Connect only to the addresses the crate resolved and checked (literals: no lookup). Other names (a proxy)
+        // resolve as usual.
+        val checked = request.addresses.map { InetAddress.getByName(it) }
         val type = request.headers.firstOrNull { it.name == "content-type" }?.value?.toMediaTypeOrNull()
         val body = request.body?.toRequestBody(type)
             ?: if (HttpMethod.requiresRequestBody(request.method)) ByteArray(0).toRequestBody(type) else null
-        val builder = Request.Builder().url(request.url).method(request.method, body)
+        val builder = Request.Builder().url(url).method(request.method, body)
         request.headers.forEach { builder.addHeader(it.name, it.value) }
-        val call = client.newBuilder().callTimeout(request.timeoutMs.toLong(), TimeUnit.MILLISECONDS).build()
+        val call = client.newBuilder()
+            .dns { host -> if (host == url.host) checked else Dns.SYSTEM.lookup(host) }
+            .callTimeout(request.timeoutMs.toLong(), TimeUnit.MILLISECONDS)
+            .build()
             .newCall(builder.build())
         calls[request.id] = call
         call.enqueue(object : Callback {

@@ -40,6 +40,11 @@ pub struct LiveOptions {
     /// every fetch is rejected with `CapabilityDenied`.
     #[uniffi(default)]
     pub https_hosts: Option<Vec<String>>,
+    /// Dev mode: `fetch` may also reach loopback, private and link-local addresses, and plain `http:` to them,
+    /// still only for `https_hosts` (with ports, e.g. `localhost:4097`). Never on in a release build unless the user
+    /// turns it on.
+    #[uniffi(default)]
+    pub allow_local_network: bool,
 }
 
 impl Default for LiveOptions {
@@ -48,6 +53,7 @@ impl Default for LiveOptions {
             slice_budget_ms: 50,
             max_posts_per_second: 240,
             https_hosts: None,
+            allow_local_network: false,
         }
     }
 }
@@ -936,8 +942,15 @@ impl Control {
             .name("psychoscript-fetch".into())
             .spawn(move || {
                 let stopping = || control.stopping.load(Ordering::SeqCst);
-                let result = fetch::perform(transport.as_ref(), &hosts, request, &stopping)
-                    .map_err(Rejection::value);
+                let local_network = control.options.allow_local_network;
+                let result = fetch::perform(
+                    transport.as_ref(),
+                    &hosts,
+                    local_network,
+                    request,
+                    &stopping,
+                )
+                .map_err(Rejection::value);
                 lock(&control.fetch_budget).in_flight -= 1;
                 let waker = {
                     let mut slot = lock(&worker_slot);
