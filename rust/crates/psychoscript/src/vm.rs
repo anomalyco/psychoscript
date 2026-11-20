@@ -329,6 +329,10 @@ pub struct Vm {
     /// The new target of a built-in constructor `super(...)` calls: its instance's prototype is the target's.
     pub(crate) new_target: Option<Id>,
     pub(crate) gc: crate::collector::Gc,
+    /// `limits.max_heap_bytes` and its pacing, once the run is set up (see `heap.rs`).
+    pub(crate) heap_meter: Option<Box<crate::heap::HeapMeter>>,
+    /// With a heap limit, the built-ins a lazy group made after the run started, which count as the runtime's own.
+    pub(crate) lazy_builtins: Vec<Id>,
 }
 
 impl Vm {
@@ -426,6 +430,8 @@ impl Vm {
             restricted_hit: false,
             new_target: None,
             gc: crate::collector::Gc::new(),
+            heap_meter: None,
+            lazy_builtins: Vec::new(),
         }
     }
 
@@ -486,10 +492,15 @@ impl Vm {
                 DiagnosticKind::ExecutionFailure,
                 "Execution exceeded its memory limit.".into(),
             ));
-            self.settle_budget();
-            self.host.meter.fuel = 1;
-            self.rebudget();
+            self.stop_soon();
         }
+    }
+
+    /// Makes the next step check the clock, where a fatal error ends the run.
+    pub(crate) fn stop_soon(&mut self) {
+        self.settle_budget();
+        self.host.meter.fuel = 1;
+        self.rebudget();
     }
 
     // Kept out of the dispatch loop, which would otherwise inline it with `alloc`.
@@ -502,6 +513,9 @@ impl Vm {
     // Kept out of the dispatch loop, which would otherwise inline it with `alloc`.
     #[inline(never)]
     pub fn new_array(&mut self, items: Vec<Value>) -> Value {
+        if let Some(m) = self.heap_meter.as_deref_mut() {
+            m.debt += crate::heap::ELEMENT_BYTES * items.len() as u64;
+        }
         let proto = self.realm.array_proto;
         Value::Obj(self.alloc(Obj::new(Some(proto), Kind::Array(items))))
     }
@@ -532,6 +546,9 @@ impl Vm {
     pub fn string_val(&mut self, s: String) -> Value {
         if self.atoms.bufs.len() >= MAX_STRINGS {
             self.out_of_memory();
+        }
+        if let Some(m) = self.heap_meter.as_deref_mut() {
+            m.debt += 2 * s.len() as u64;
         }
         Value::Str(self.atoms.alloc(s))
     }
@@ -682,6 +699,7 @@ impl Vm {
 
     #[cold]
     fn budget_out(&mut self, check: bool) -> Result<(), Value> {
+        let spent = self.host.meter.start - self.budget;
         self.settle_budget();
         // A replay's fuel is given back when it ends (see `conversion.rs`): it starts nothing meanwhile.
         let replaying = self.replay_meter.is_some();
@@ -693,6 +711,9 @@ impl Vm {
         }
         if self.atoms.gc.wanted {
             self.gc_poll();
+        }
+        if self.heap_meter.is_some() && !replaying {
+            self.heap_point(spent.max(0) as u64);
         }
         let mut r = Ok(());
         if check && !replaying && self.host.meter.fuel <= 0 {
@@ -1631,6 +1652,14 @@ impl Vm {
     #[cold]
     #[inline(never)]
     fn launch_queued(&mut self) {
+        // The reference measures the heap here when that is due, where its driver takes the calls.
+        if self.heap_meter.is_some() && self.fatal.is_none() && self.replay_meter.is_none() {
+            self.heap_point(0);
+            // Over the limit, the run ends before the calls start, as there.
+            if self.fatal.is_some() {
+                return;
+            }
+        }
         crate::host::launch(self);
     }
 

@@ -1,0 +1,12 @@
+{
+  "bindings": {},
+  "limits": {
+    "max_heap_bytes": 1000000
+  },
+  "ok": false,
+  "kind": "MemoryLimitExceeded",
+  "logs": [
+    "start"
+  ],
+  "metadata": null
+}

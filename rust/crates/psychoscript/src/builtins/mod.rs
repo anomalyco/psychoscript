@@ -98,7 +98,7 @@ pub fn ensure(vm: &mut Vm, bit: u8) {
     }
     vm.realm.std.loaded |= bit;
     if let Some((_, _, setup)) = LAZY.iter().find(|(b, _, _)| *b == bit) {
-        setup(vm);
+        vm.making_builtins(*setup);
     }
 }
 

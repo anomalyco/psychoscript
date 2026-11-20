@@ -9,8 +9,8 @@ use std::thread;
 use std::time::Duration;
 
 use psychoscript::{
-    DurableFunction, HostError, HostFunction, HostValue, Json, Limits, Namespace, Program,
-    ProgramOptions, RunOutcome, Runtime, Snapshot, Suspended, Suspender,
+    DiagnosticKind, DurableFunction, HostError, HostFunction, HostValue, Json, Limits, Namespace,
+    Program, ProgramOptions, RunOutcome, Runtime, Snapshot, Suspended, Suspender,
 };
 use serde_json::json;
 
@@ -427,6 +427,7 @@ fn a_resumed_run_keeps_its_limits_and_counts_time_across_resumes() {
         .limits(Limits {
             max_output_bytes: Some(10),
             timeout_ms: None,
+            max_heap_bytes: None,
         });
     let state = suspend_mid_loop(&rt, &gate, &code);
     assert_eq!(
@@ -467,6 +468,38 @@ fn a_resumed_run_keeps_its_limits_and_counts_time_across_resumes() {
     assert_eq!(
         o.result.unwrap_err().kind,
         psychoscript::DiagnosticKind::TimeoutExceeded
+    );
+}
+
+#[test]
+fn a_resumed_run_keeps_its_heap_limit() {
+    // Mid-loop, with 1000 small objects kept: under the limit. After the resume, a run that keeps growing goes over it.
+    let code = format!(
+        "const kept = []; for (let i = 0; i < 1000; i++) kept.push({{ i }}); await step(1); {BUSY} while (true) kept.push({{}})"
+    );
+    let gate = Gate::default();
+    let g = gate.clone();
+    let rt = Runtime::make()
+        .globals(move |_| [("step", step(Some(&g))), ("held", held(Some(&g)))])
+        .limits(Limits {
+            max_heap_bytes: Some(1_000_000),
+            ..Limits::default()
+        });
+    let state = suspend_mid_loop(&rt, &gate, &code);
+    assert_eq!(header(&state)["limits"]["maxHeapBytes"], json!(1_000_000));
+    // A runtime without limits resumes it with the ones it was saved with, from bytes too.
+    let o = done(
+        fresh()
+            .resume_bytes(&psychoscript::to_bytes(&state))
+            .unwrap()
+            .run_resumable()
+            .unwrap(),
+    );
+    let error = o.result.unwrap_err();
+    assert_eq!(error.kind, DiagnosticKind::MemoryLimitExceeded);
+    assert_eq!(
+        error.message_lossy(),
+        "Execution exceeded its memory limit of 1000000 bytes."
     );
 }
 

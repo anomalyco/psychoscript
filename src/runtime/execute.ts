@@ -4,6 +4,7 @@ import { type Call, DurableFn, Interrupted } from "./contract.js"
 import { fromBytes, header, type Snapshot, SnapshotError, toBytes } from "../snapshot/snapshot.js"
 import { normalizeError } from "./errors.js"
 import { hostGlobals } from "./extensions.js"
+import { HeapMeter } from "./heap.js"
 import { createBuiltins } from "./intrinsics.js"
 import { Interpreter } from "./interpreter.js"
 import type { Value } from "./objects.js"
@@ -108,6 +109,7 @@ export type Run = {
 export type Limits = {
   readonly timeoutMs: number | undefined
   readonly maxOutputBytes: number | undefined
+  readonly maxHeapBytes?: number | undefined
 }
 
 type Globals<R> = (ctx: Interpreter<R>) => ReadonlyArray<readonly [string, Value]>
@@ -200,10 +202,11 @@ export const resumeProgram = <R>(
         limits: {
           timeoutMs: saw.limits.timeoutMs ?? undefined,
           maxOutputBytes: saw.limits.maxOutputBytes ?? undefined,
+          maxHeapBytes: saw.limits.maxHeapBytes ?? undefined,
         },
       }
       const run: Run = { id: saw.runId, metadata: saw.metadata }
-      const fresh = instantiate(resumed, run)
+      const fresh = instantiate(resumed, run, undefined, true)
       const snapshot = restoreInto(state, fresh.vm)
       for (const call of fresh.vm.calls()) {
         if (call.status !== "started") continue
@@ -237,7 +240,12 @@ const restoreInto = (saved: unknown, vm: Vm): Snapshot =>
   })
 
 // A new runtime for a run: intrinsics, the host globals, the program's bindings, and its VM.
-const instantiate = <R>(setup: Setup<R>, run: Run, bindings?: Readonly<Record<string, Json>>): Interpreter<R> => {
+const instantiate = <R>(
+  setup: Setup<R>,
+  run: Run,
+  bindings?: Readonly<Record<string, Json>>,
+  restored = false,
+): Interpreter<R> => {
   const ctx = new Interpreter<R>({
     builtins: createBuiltins(),
     logs: [],
@@ -252,6 +260,8 @@ const instantiate = <R>(setup: Setup<R>, run: Run, bindings?: Readonly<Record<st
         : (ctx) => Object.entries(bindings).map(([name, value]) => [name, fromJson(ctx, value)] as const),
   })
   if (roundTrip) ctx.vm.tripEvery = ROUND_TRIP_TICKS
+  const maxHeapBytes = setup.limits.maxHeapBytes
+  if (maxHeapBytes !== undefined) ctx.vm.heap = new HeapMeter(maxHeapBytes, restored)
   return ctx
 }
 
@@ -460,7 +470,11 @@ export class Running<R> {
     const limits = this.setup.limits
     const saved = attempt(() =>
       vm.capture({
-        limits: { timeoutMs: limits.timeoutMs ?? null, maxOutputBytes: limits.maxOutputBytes ?? null },
+        limits: {
+          timeoutMs: limits.timeoutMs ?? null,
+          maxOutputBytes: limits.maxOutputBytes ?? null,
+          ...(limits.maxHeapBytes === undefined ? {} : { maxHeapBytes: limits.maxHeapBytes }),
+        },
         activeMs: this.activeBefore + Date.now() - this.startedAt,
         metadata: this.run_.metadata,
         strict: false,
@@ -517,7 +531,7 @@ export class Running<R> {
     if (saved.lost.length > 0) return
     const restored = fromBytes(bytes)
     const run = { id: this.run_.id, metadata: header(restored).metadata }
-    const fresh = instantiate(this.setup, run)
+    const fresh = instantiate(this.setup, run, undefined, true)
     restoreInto(restored, fresh.vm)
     this.ctx = fresh
     this.run_ = run

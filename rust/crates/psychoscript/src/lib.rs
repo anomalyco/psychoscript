@@ -22,6 +22,7 @@ mod diagnostic;
 mod exec;
 #[cfg(feature = "gc-stats")]
 mod gc;
+mod heap;
 mod host;
 mod host_function;
 mod iteration;

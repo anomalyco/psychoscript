@@ -7,6 +7,9 @@ use std::fmt;
 pub struct Limits {
     pub timeout_ms: Option<u64>,
     pub max_output_bytes: Option<usize>,
+    /// The most bytes the run's heap may hold: everything it can still reach, in the size model the reference
+    /// shares (see `heap.rs`), not the process's memory. A run over it stops with `MemoryLimitExceeded`.
+    pub max_heap_bytes: Option<u64>,
 }
 
 /// A diagnostic's kind: the language's own, or one a host function's failure names ([`Failure`](crate::Failure)),
@@ -17,6 +20,8 @@ pub enum DiagnosticKind {
     UnsupportedSyntax,
     InvalidDataValue,
     TimeoutExceeded,
+    /// The run's reachable heap went over `max_heap_bytes`.
+    MemoryLimitExceeded,
     ExecutionFailure,
     /// Warning only: additional warnings were omitted by `max_output_bytes`.
     Truncated,
@@ -32,6 +37,7 @@ impl DiagnosticKind {
             DiagnosticKind::UnsupportedSyntax => "UnsupportedSyntax",
             DiagnosticKind::InvalidDataValue => "InvalidDataValue",
             DiagnosticKind::TimeoutExceeded => "TimeoutExceeded",
+            DiagnosticKind::MemoryLimitExceeded => "MemoryLimitExceeded",
             DiagnosticKind::ExecutionFailure => "ExecutionFailure",
             DiagnosticKind::Truncated => "Truncated",
             DiagnosticKind::Host(name) => name,
@@ -45,6 +51,7 @@ impl DiagnosticKind {
             "UnsupportedSyntax" => DiagnosticKind::UnsupportedSyntax,
             "InvalidDataValue" => DiagnosticKind::InvalidDataValue,
             "TimeoutExceeded" => DiagnosticKind::TimeoutExceeded,
+            "MemoryLimitExceeded" => DiagnosticKind::MemoryLimitExceeded,
             "ExecutionFailure" => DiagnosticKind::ExecutionFailure,
             "Truncated" => DiagnosticKind::Truncated,
             other => DiagnosticKind::Host(other.into()),

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- `limits.maxHeapBytes`: an optional cap on what a run can still reach, measured in a fixed size model rather than
+  process memory, so garbage never counts and the result is the same everywhere. A run over it stops with the new
+  diagnostic kind `MemoryLimitExceeded`; a suspended run keeps its limit.
+
 ## 0.2.1
 
 - `psychoscript/effect`: a plain function the host gives the program (inside a host function's result, such as a

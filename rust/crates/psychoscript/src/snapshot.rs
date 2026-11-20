@@ -369,7 +369,7 @@ pub fn capture(vm: &Vm, c: &Capture) -> Result<Snapshot, Refusal> {
         .map_err(|e| Refusal::Other(e.message))?;
     let limits = vm.limits;
     let metadata = vm.host.run.metadata();
-    let header = json!({
+    let mut header = json!({
         "build": build_id(),
         "hosts": hosts_id(&vm.host.globals),
         "runId": vm.host.run.id.get().cloned(),
@@ -387,6 +387,9 @@ pub fn capture(vm: &Vm, c: &Capture) -> Result<Snapshot, Refusal> {
         "budget": { "activeMs": c.active_ms },
         "base": base.json(),
     });
+    if let Some(n) = limits.max_heap_bytes {
+        header["limits"]["maxHeapBytes"] = json!(n);
+    }
     Ok(Snapshot(
         json!({ "format": FORMAT, "header": header, "state": state }),
     ))
@@ -433,6 +436,7 @@ impl Enc<'_> {
             "logs": vm.logs,
             "rng": vm.rng.to_string(),
             "arraysWalked": vm.arrays_walked,
+            "lazyBuiltins": vm.lazy_builtins,
             "std": [std.regexp, std.date, std.uint8, std.buffer, std.text_encoder, std.text_decoder,
                     std.weak_map, std.weak_set, std.iterator_helper, std.uri_error, std.url, std.params,
                     std.headers, std.loaded],
@@ -1919,6 +1923,7 @@ pub fn header(snapshot: &Snapshot) -> R<Restored> {
         limits: Limits {
             timeout_ms: opt("timeoutMs")?,
             max_output_bytes: opt("maxOutputBytes")?.map(|n| n as usize),
+            max_heap_bytes: limits.get("maxHeapBytes").and_then(J::as_u64),
         },
         active_ms: field(budget, "activeMs")?.as_u64().unwrap_or(0),
     })
@@ -2056,6 +2061,15 @@ pub fn restore(vm: &mut Vm, snapshot: &Snapshot, program_hash: &str) -> R<()> {
     vm.arrays_walked = field(st, "arraysWalked")?
         .as_bool()
         .ok_or_else(|| invalid("the array-iteration protector is malformed."))?;
+    vm.lazy_builtins = match st.get("lazyBuiltins") {
+        Some(ids) => ids
+            .as_array()
+            .ok_or_else(|| invalid("the lazy built-ins are malformed."))?
+            .iter()
+            .map(u32_)
+            .collect::<R<_>>()?,
+        None => Vec::new(),
+    };
     let std = field_list(st, "std")?;
     let id = |i: usize| -> R<Id> {
         u32_(

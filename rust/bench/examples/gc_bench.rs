@@ -289,7 +289,7 @@ impl LiveRun {
         Runtime::make()
             .limits(Limits {
                 timeout_ms: None,
-                max_output_bytes: None,
+                ..Limits::default()
             })
             .globals(move |run| {
                 *slot.lock().unwrap() = Some(run.clone());

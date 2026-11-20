@@ -241,11 +241,15 @@ impl Runtime {
     ///
     /// # Panics
     ///
-    /// When `timeout_ms` is `Some(0)`, which the reference refuses with a `RangeError`.
+    /// When `timeout_ms` or `max_heap_bytes` is `Some(0)`, which the reference refuses with a `RangeError`.
     pub fn limits(mut self, limits: Limits) -> Self {
         assert!(
             limits.timeout_ms != Some(0),
             "timeoutMs must be a safe integer greater than or equal to 1."
+        );
+        assert!(
+            limits.max_heap_bytes != Some(0),
+            "maxHeapBytes must be a safe integer greater than or equal to 1."
         );
         self.setup.limits = limits;
         self

@@ -10,7 +10,7 @@
 //
 // A case may start with header comments that set its inputs:
 //   // @bindings {"event": {"type": "init"}}            the program's bindings (default `{}`)
-//   // @limits {"timeout_ms": 50, "max_output_bytes": 9}  the runtime's `limits` (default none)
+//   // @limits {"timeout_ms": 50, "max_output_bytes": 9, "max_heap_bytes": 9}  the runtime's `limits` (default none)
 //   // @translate {"functions": "drop", "promises": "await"}  the runtime's `translate` (default the reference's:
 //                                                          both "error")
 //   // @platform "linux"
@@ -98,7 +98,13 @@ for (const name of names) {
     globals: () => ({ tools }),
     ...(limits === undefined
       ? {}
-      : { limits: { timeoutMs: limits.timeout_ms, maxOutputBytes: limits.max_output_bytes } }),
+      : {
+          limits: {
+            timeoutMs: limits.timeout_ms,
+            maxOutputBytes: limits.max_output_bytes,
+            maxHeapBytes: limits.max_heap_bytes,
+          },
+        }),
     ...(translate === undefined ? {} : { translate }),
   })
   const result = await Effect.runPromise(runtime.execute(code, { bindings }))
