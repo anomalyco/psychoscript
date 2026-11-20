@@ -3,7 +3,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use psychoscript::{Compiled, HostFunction, HostValue, Limits, Runtime};
 
 use crate::error::PsychoScriptError;
-use crate::input::Input;
+use crate::fetch::FetchTransport;
+use crate::json::Input;
+use crate::live::{LiveHandler, LiveOptions, LiveRun};
 
 /// Limits for one run. Both default to none.
 #[derive(Clone, Debug, Default, PartialEq, Eq, uniffi::Record)]
@@ -91,6 +93,30 @@ impl Program {
             }),
             _ => Ok(out),
         }
+    }
+}
+
+#[uniffi::export]
+impl Program {
+    /// Starts the program as a [`LiveRun`] on a thread of its own, with `input_json` behind its input function and
+    /// `__host` (`post`, `receive`, `sleep`, `now`, `fetch`) to talk to `handler`; `fetch` goes through `transport`
+    /// to the hosts `options.https_hosts` allows. Fails with `InvalidInput`.
+    #[uniffi::method(default(transport = None, options))]
+    pub fn start_live(
+        &self,
+        input_json: String,
+        handler: Box<dyn LiveHandler>,
+        options: LiveOptions,
+        transport: Option<Arc<dyn FetchTransport>>,
+    ) -> Result<Arc<LiveRun>, PsychoScriptError> {
+        LiveRun::start(
+            self.compiled.clone(),
+            self.input_name.clone(),
+            input_json,
+            handler,
+            options,
+            transport,
+        )
     }
 }
 

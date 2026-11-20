@@ -33,6 +33,14 @@ pub enum PsychoScriptError {
     },
     /// The input isn't JSON, or the options are invalid.
     InvalidInput { reason: String },
+    /// A live run computed for more than `budget_ms` without waiting on its host (`receive`, `sleep`), and was
+    /// stopped.
+    SliceBudget { reason: String, budget_ms: u64 },
+    /// A live run couldn't be paused (it's in a host call that can't be suspended, or its state can't be saved), or a
+    /// snapshot couldn't be read back. The run is untouched.
+    Snapshot { reason: String },
+    /// A live run's method that its state doesn't allow: `resume` while running, `deliver` after it ended.
+    InvalidState { reason: String },
 }
 
 impl PsychoScriptError {
@@ -69,7 +77,10 @@ impl PsychoScriptError {
             | PsychoScriptError::Runtime { reason, .. }
             | PsychoScriptError::Timeout { reason, .. }
             | PsychoScriptError::OutputTooLarge { reason, .. }
-            | PsychoScriptError::InvalidInput { reason } => reason,
+            | PsychoScriptError::InvalidInput { reason }
+            | PsychoScriptError::SliceBudget { reason, .. }
+            | PsychoScriptError::Snapshot { reason }
+            | PsychoScriptError::InvalidState { reason } => reason,
         }
     }
 }
