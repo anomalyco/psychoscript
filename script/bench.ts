@@ -29,6 +29,15 @@ const sorted = mapped.slice(0, 20000).sort((a, b) => a - b)
 return [total, sorted[0], sorted[sorted.length - 1]]`,
   ],
   [
+    "destructuring and spread (50k)",
+    `const pairs = Array.from({ length: 50000 }, (_, i) => [i, i * 2])
+let sum = 0
+for (const [a, b] of pairs) sum += a + b
+let copied = 0
+for (let i = 0; i < 20000; i++) copied += [...pairs[i], 1].length
+return [sum, copied]`,
+  ],
+  [
     "promise fan-out (5k)",
     `const work = async (i) => { await null; return i * 2 }
 const results = await Promise.all(Array.from({ length: 5000 }, (_, i) => work(i)))

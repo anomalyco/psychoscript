@@ -208,6 +208,10 @@ Math.floor)` is `"3"`). A detached method loses its receiver, as in JS: `values.
       Promise combinators, `AggregateError`, and `Math.sumPrecise`. Mapper/grouping callbacks interleave with iterator
       steps; synchronous consumers preserve yielded promise objects rather than awaiting them. Async generators are
       rejected by every synchronous consumer.
+- [x] Replacing `Array.prototype[Symbol.iterator]`, the built-in iterators' `next` (assignment, `defineProperty`, an
+      accessor or `delete`), or giving an array its own `[Symbol.iterator]`, is honoured by every consumer above and
+      by `for...of` and `yield*`: from then on, for the rest of the run (across suspend and resume), arrays are
+      iterated through the iterator protocol instead of directly.
 - [x] Synchronous iterator acquisition and result validation follow `IteratorClose` boundaries: consumer errors and
       intentional early stops invoke `return()`, acquisition/`next()` failures do not, and an original consumer error
       wins over a cleanup failure. A generator's `return()` is an intentional stop, so a `return()` that throws or

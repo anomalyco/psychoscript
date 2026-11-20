@@ -42,6 +42,7 @@ import {
   URLSearchParamsObj,
   WeakMapObj,
   WeakSetObj,
+  Protector,
 } from "../runtime/objects.js"
 import { Convert, Interruption, Invoke, Prefetch } from "../runtime/signals.js"
 import { deleted, OrderedTable } from "../runtime/table.js"
@@ -325,11 +326,12 @@ const builtinSpecs = (): ReadonlyArray<ClassSpec> => [
   { name: "Invoke", ctor: Invoke, fields: ["callable", "thisValue", "args", "site"] },
   { name: "HostNamespace", ctor: HostNamespace, fields: ["root", "path"] },
   { name: "Lost", ctor: Lost, fields: ["description"] },
+  { name: "Protector", ctor: Protector, anchor: "protector", fields: ["intact"] },
   {
     name: "Interpreter",
     ctor: Interpreter,
     anchor: "ctx",
-    fields: ["logs", "globalScope", "modules", "namespaces"],
+    fields: ["logs", "globalScope", "modules", "namespaces", "protector"],
     skip: ["builtins", "vm", "intrinsics", "hosts", "hostNamespaces", "moduleGlobals", "sources", "prelude"],
   },
 ]
@@ -578,7 +580,7 @@ class Encoder {
       for (const key of Object.keys(object)) {
         if (fields.includes(key) || spec.skip?.includes(key) || (spec.constants !== undefined && key in spec.constants))
           continue
-        if (spec.obj && (objFields.includes(key) || key === "tag" || key === "hasProgramAccessors")) continue
+        if (spec.obj && (objFields.includes(key) || key === "tag" || key === "hasProgramAccessors" || key === "guard")) continue
         throw new SnapshotError(`Codec gap: ${spec.name}.${key} is not saved.`)
       }
     }
