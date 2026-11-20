@@ -40,6 +40,7 @@ const lives = new Map<number, Live>()
 let ready = false
 let shaderReady = false
 let crashed = false
+let memory: WebAssembly.Memory | undefined
 
 function info(e: unknown): ErrorInfo {
   if (e && typeof e === "object" && "message" in e) {
@@ -324,7 +325,7 @@ function handle(m: ToWorker) {
   switch (m.t) {
     case "init":
       if (!ready) {
-        initSync({ module: m.module })
+        memory = initSync({ module: m.module }).memory
         ready = true
         warm()
       }
@@ -442,6 +443,9 @@ function handle(m: ToWorker) {
       finish(m.wid, live)
       return
     }
+    case "stats":
+      post({ t: "stats", req: m.req, wasmBytes: memory?.buffer.byteLength ?? 0, programs: programs.size, widgets: steps.size + lives.size })
+      return
     case "translate": {
       try {
         const out = translateWgsl(m.wgsl) as { code: string; block: string }

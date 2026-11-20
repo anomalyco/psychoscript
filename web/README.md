@@ -9,8 +9,8 @@ Rust PsychoScript compiled to WebAssembly, run in Web Workers, rendered with pla
 `web/dist/` is committed and self-contained: no Rust toolchain or build step needed to use it.
 
 ```
-dist/index.js                         the page side (ESM, ~60 KB min) + index.d.ts and friends
-dist/worker.js                        the worker (module worker; includes the wasm-bindgen glue)
+dist/index.js                         the page side (ESM, 61 KB min, 20 KB gzip) + index.d.ts and friends
+dist/worker.js                        the worker (module worker, 18 KB; includes the wasm-bindgen glue)
 dist/psychoscript_web_bg.wasm         the language (Program, LiveRun)
 dist/psychoscript_web_shader_bg.wasm  naga WGSL -> GLSL ES 3.00, fetched only when a shader needs WebGL2
 ```
@@ -19,9 +19,9 @@ Pick one:
 
 - **Vendor** (simplest): copy `web/dist/` into the app (e.g. `src/vendor/psychoscript-web/`) and
   `import { mount } from "./vendor/psychoscript-web/index.js"`. Keep the four files side by side.
-- **Git dependency**: the package lives in a subdirectory, so point at the directory of a checkout
-  (`"psychoscript-web": "file:../psychoscript/web"`) or use a git URL your package manager can take a subdirectory from
-  (bun/npm can't; pnpm: `"github:anomalyco/psychoscript#web&path:web"`). Then `import { mount } from "psychoscript-web"`.
+- **Local dependency**: the package is the `web/` subdirectory, so point at a checkout of the branch
+  (`"psychoscript-web": "file:../psychoscript/web"`) and `import { mount } from "psychoscript-web"`. bun and npm can't
+  take a subdirectory of a git URL; pnpm can (`"github:anomalyco/psychoscript#web&path:/web"`).
 
 Assets: `index.js` finds `worker.js` and the `.wasm` files with `new URL("./…", import.meta.url)`. Vite and other
 bundlers that understand `new Worker(new URL(…, import.meta.url))` and `new URL(asset, import.meta.url)` emit them as
@@ -75,6 +75,15 @@ Behavior, per the contract:
   `{ type: "resumed", pausedMs }` when back. A program computing more than 50 ms without awaiting is stopped and
   shows the error with "Restart". Submit/dismiss stops the program; the last view stays read-only.
 - `onSubmit`/`onDismiss` fire once; the widget turns read-only right away. `onSend` is throttled to 10 a second.
+- `canvas`: Canvas2D, drawn on `requestAnimationFrame` only while `fps > 0` (or `duration` not reached) and
+  visible; draw steps run in the worker, at most one in flight; 8 ms / 2,000 commands budget, three overruns in a row
+  stop the animation and keep the last frame. A resize repaints the last commands at once, then draws again.
+- `shader`: WGSL straight to WebGPU; without it WebGL2 with naga's GLSL ES 3.00 (the naga module loads only then).
+  New `values` (a live program re-rendering every frame) update the uniforms only: same element, same pipeline.
+  Over 50 ms of GPU time a frame three frames in a row stops it (measured on WebGPU only). A failing shader shows
+  `poster` or `alt` with the error.
+- `canvas` and `shader` with an `id` send `pointer` events (`down`, `move` only while down and at most once a frame,
+  `up`) to `update` or `widget.event()`.
 - Full screen (widgets-fullscreen.md): an expand button in the top-right corner (on hover/focus; always on touch)
   when the root node has `fullscreen: true`, or it isn't `false` and the widget is live or its view has a `canvas` or
   `shader`. It uses the Fullscreen API on the widget's element (Esc exits); the program gets
@@ -119,8 +128,33 @@ Access checks.
 
 ## Size and speed
 
-See the commit message / `rust/crates/psychoscript-web/README.md` for current numbers (wasm size raw/gzip/brotli,
-first render, step and draw times in Chromium).
+| File | Raw | gzip | brotli |
+| --- | --- | --- | --- |
+| `psychoscript_web_bg.wasm` | 9.54 MB | 3.19 MB | 2.21 MB |
+| `psychoscript_web_shader_bg.wasm` (WebGL2 only) | 1.19 MB | 0.44 MB | 0.34 MB |
+| `index.js` + `worker.js` | 79 KB | 26 KB | |
+
+5.7 MB of the language module is data, mostly ICU4X locale data for `toLocale*String`/`Intl.DateTimeFormat`/
+`localeCompare`; trimming it is possible without code changes but changes behavior (see
+`rust/crates/psychoscript-web/README.md`).
+
+Chromium 158 on this VM (no GPU, SwiftShader), from `scripts/check.ts`:
+
+| | ms |
+| --- | --- |
+| First view on a fresh page (fetch + compile the module, start and warm the worker, compile, `init`, paint) | ~180–250 |
+| First view of another widget once the worker runs | median 17, p95 ~80 |
+| Compiling a template program | median 2–3, p95 6 |
+| A step (`init`/`update`) | median 0.8–1, p95 5–11 |
+| A draw step | median 0.5–0.6, p95 2–3 |
+
+The first program a fresh WebAssembly instance runs costs 30–100 ms more (the engine compiles the interpreter's
+functions lazily); the worker runs a small warm-up program at start for that, and workers share the compiled code.
+`host().preload()` starts it all early.
+
+Memory: each worker holds its own linear memory: ~7 MB for a live widget's worker (5.7 MB of it the module's data),
+~10.5 MB for the shared step worker with 28 step widgets and 23 programs; the page side's JS heap ~18–20 MB for the
+whole demo (27 widgets). A live widget's worker is terminated when it stops.
 
 ## Build
 
@@ -133,5 +167,14 @@ bun scripts/fixtures.ts      # demo/fixtures.js from an opencode checkout's pack
 bun scripts/serve.ts         # http://localhost:4173/demo/ (with the CSP above)
 ```
 
-Checks in a real browser: `xvfb-run -a bun scripts/check.ts` (Chromium from Playwright's cache, WebGPU through
-SwiftShader's Vulkan; headless screenshots leave WebGPU canvases blank, so it runs headful under Xvfb).
+Checks in a real browser, with the demo server running: `SHOTS=<dir> xvfb-run -a bun scripts/check.ts` (Chromium from
+Playwright's cache, WebGPU through SwiftShader's Vulkan; headless screenshots leave WebGPU canvases blank, so it runs
+headful under Xvfb). It renders every fixture in both themes and checks canvases drew, presses controls and checks the
+submits (confirm, suggestions with carousel, form), chart pointer and tap, backdrop on WebGPU and WebGL2, shader
+pointer events and values-only updates, the minigame, pause/`resumed` out of view, full screen with `fill`, the slice
+budget and Restart, and the fetch rules; then prints timings and memory.
+
+The demo (`demo/`) mounts every built-in (`suggestions`, `form`, `confirm`, `chart`, `backdrop`, `minigame` and the
+17 diagram templates, data from opencode's `packages/widget/test/fixtures/diagrams.ts`) plus demo templates for fetch,
+a running clock (pause), a runaway loop, a live shader and full screen. `?only=<name>`, `?theme=light`, `?gl=1`
+(WebGL2 even with WebGPU).

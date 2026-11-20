@@ -71,7 +71,7 @@ impl JsProgram {
             if let Some(n) = get("maxPostsPerSecond").and_then(|v| v.as_f64()) {
                 o.max_posts_per_second = n.max(0.0) as u32;
             }
-            if let Some(hosts) = get("httpsHosts").filter(|v| js_sys::Array::is_array(v)) {
+            if let Some(hosts) = get("httpsHosts").filter(js_sys::Array::is_array) {
                 o.https_hosts = Some(
                     js_sys::Array::from(&hosts)
                         .iter()

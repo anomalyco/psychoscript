@@ -77,10 +77,14 @@ Known differences:
 
 - **Threading:** a run stays on the thread that drives it; as a future, compute past 1 ms moves to a worker of the
   run's own while host code is always handed back to the executor, in the same order.
+- **Browsers (wasm32):** clocks come from `performance.now()`/`Date.now()` (`web-time`), and a run driven as a future
+  yields to its executor about every millisecond of compute instead of moving to a worker thread, so a host on one
+  thread (a Web Worker) can bound and interleave it; `crates/psychoscript-web` holds the JavaScript bindings.
 - **Memory:** an incremental, non-moving mark-sweep collector (`collector.rs`) frees what a run can no longer reach,
   at safe points only (`bench/GC.md`).
 - Layout: `crates/psychoscript` (compiler on `oxc_parser`, VM, standard library, host functions, snapshots),
-  `conformance/` (generators and recordings), `bench/`, `test262/`.
+  `crates/psychoscript-web` (wasm-bindgen bindings for the browser), `conformance/` (generators and recordings),
+  `bench/`, `test262/`.
 
 Rules: pure Rust and few dependencies, no `unsafe`, never panic on user input, and unsupported syntax throws
 `UnsupportedSyntax` with a location where it runs.

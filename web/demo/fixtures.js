@@ -2,6 +2,635 @@
 // The served program of each is prelude + "\n" + source.
 export const prelude = "// Widget prelude (specs/v2/widgets.md). A widget program is this prelude, a newline, then the template source.\n// Hosts run `<program>\\nreturn __widget_step(__input())` with `__input` as the only host global.\n\nconst ui = (() => {\n  // Children may nest arrays and contain null, undefined or false, so templates can write `cond && node` and `...list`.\n  const children = (value) => [value].flat(Infinity).filter(Boolean)\n  const container = (type) => (props, nodes) =>\n    Array.isArray(props) ? { type, children: children(props) } : { ...props, type, children: children(nodes) }\n  return {\n    column: container(\"column\"),\n    row: container(\"row\"),\n    carousel: container(\"carousel\"),\n    card: container(\"card\"),\n    text: (text, props) => ({ ...props, type: \"text\", text: String(text) }),\n    markdown: (text) => ({ type: \"markdown\", text: String(text) }),\n    image: (src, props) => ({ ...props, type: \"image\", src }),\n    button: (id, label, props) => ({ ...props, type: \"button\", id, label }),\n    checkbox: (id, label, checked, props) => ({ ...props, type: \"checkbox\", id, label, checked: checked === true }),\n    slider: (id, props) => ({ ...props, type: \"slider\", id }),\n    select: (id, options, props) => ({ ...props, type: \"select\", id, options }),\n    input: (id, value, props) => ({ ...props, type: \"input\", id, value: value ?? \"\" }),\n    divider: () => ({ type: \"divider\" }),\n    canvas: (props) => ({ ...props, type: \"canvas\" }),\n    shader: (wgsl, props) => ({ ...props, type: \"shader\", wgsl }),\n    draw: () => new __WidgetDraw(),\n  }\n})()\n\n// Draw command builder for `draw(state, data, frame)`. It runs every frame, so it only pushes compact arrays. A paint\n// may be a color string: the fill of a shape, the stroke of a line. No paint draws in the \"text\" color.\nclass __WidgetDraw {\n  constructor() {\n    this.commands = []\n  }\n  save() {\n    this.commands.push([\"save\"])\n    return this\n  }\n  restore() {\n    this.commands.push([\"restore\"])\n    return this\n  }\n  translate(x, y) {\n    this.commands.push([\"translate\", x, y])\n    return this\n  }\n  rotate(radians) {\n    this.commands.push([\"rotate\", radians])\n    return this\n  }\n  scale(sx, sy) {\n    this.commands.push([\"scale\", sx, sy ?? sx])\n    return this\n  }\n  alpha(a) {\n    this.commands.push([\"alpha\", a])\n    return this\n  }\n  rect(x, y, w, h, paint) {\n    this.commands.push([\"rect\", x, y, w, h, __widget_fill(paint)])\n    return this\n  }\n  rrect(x, y, w, h, r, paint) {\n    this.commands.push([\"rrect\", x, y, w, h, r, __widget_fill(paint)])\n    return this\n  }\n  circle(cx, cy, r, paint) {\n    this.commands.push([\"circle\", cx, cy, r, __widget_fill(paint)])\n    return this\n  }\n  line(x1, y1, x2, y2, paint) {\n    this.commands.push([\n      \"line\",\n      x1,\n      y1,\n      x2,\n      y2,\n      paint && typeof paint === \"object\" ? paint : { stroke: paint || \"text\" },\n    ])\n    return this\n  }\n  path(segments, paint) {\n    this.commands.push([\"path\", segments, __widget_fill(paint)])\n    return this\n  }\n  text(x, y, text, style) {\n    this.commands.push([\"text\", x, y, String(text), style ?? {}])\n    return this\n  }\n  image(src, x, y, w, h) {\n    this.commands.push([\"image\", src, x, y, w, h])\n    return this\n  }\n}\n\nfunction __widget_fill(paint) {\n  return paint && typeof paint === \"object\" ? paint : { fill: paint || \"text\" }\n}\n\nclass __WidgetResult {\n  constructor(kind, value, state) {\n    this.kind = kind\n    this.value = value\n    this.state = state\n  }\n}\n\nfunction submit(value, state) {\n  return new __WidgetResult(\"submit\", value, state)\n}\n\nfunction dismiss(state) {\n  return new __WidgetResult(\"dismiss\", undefined, state)\n}\n\n// Sends a message to the agent without closing the widget; `wake: false` lets the agent see it only on its next turn.\nfunction send(value, state, options) {\n  return new __WidgetResult(\"send\", { value: value ?? null, wake: options?.wake !== false }, state)\n}\n\nfunction __widget_step(input) {\n  const data = input.data\n  if (input.phase === \"draw\") {\n    const drawn = typeof draw === \"function\" ? draw(input.state, data, input.frame) : undefined\n    return { commands: (drawn instanceof __WidgetDraw ? drawn.commands : drawn) ?? [] }\n  }\n  if (input.phase === \"init\") {\n    const state = (typeof init === \"function\" ? init(data) : undefined) ?? {}\n    return { state, view: view(state, data) }\n  }\n  const next = (typeof update === \"function\" ? update(input.state, input.event, data) : undefined) ?? input.state\n  if (!(next instanceof __WidgetResult)) return { state: next, view: view(next, data) }\n  const state = next.state ?? input.state\n  if (next.kind === \"dismiss\") return { state, view: view(state, data), dismiss: true }\n  if (next.kind === \"send\") return { state, view: view(state, data), send: next.value }\n  return { state, view: view(state, data), submit: next.value ?? null }\n}\n\n// Live mode (specs/v2/widgets-live.md): `main(data)` runs once, for as long as the widget is open, on the host's\n// `__host.post`, `__host.receive`, `__host.sleep`, `__host.now` and `__host.fetch`. Messages from the client are\n// buffered here, so waiting for one kind (a frame) keeps the others (events) for later.\nconst widget = (() => {\n  const events = []\n  const live = { frame: null, requested: false, receiving: null, alarm: null, paused: null, done: false }\n  const post = (message) => {\n    if (!live.done) __host.post(message)\n  }\n  const accept = (message) => {\n    live.receiving = null\n    if (message.type === \"event\") events.push(message.event)\n    if (message.type === \"frame\") {\n      live.requested = false\n      live.frame = message.frame\n    }\n    // Resumes not seen yet add up into one.\n    if (message.type === \"resumed\") live.paused = (live.paused ?? 0) + message.pausedMs\n  }\n  // At most one receive is in flight: one left over from a timed-out wait is reused by the next wait.\n  const pull = () => live.receiving ?? (live.receiving = __host.receive().then(accept))\n  // At most one timer per deadline is in flight, so a loop that waits with the same deadline doesn't pile up sleeps.\n  const alarm = (deadline) => {\n    if (live.alarm && live.alarm.at <= deadline) return live.alarm.promise\n    const entry = { at: deadline, promise: null }\n    entry.promise = __host.sleep(deadline - __host.now()).then(() => {\n      if (live.alarm === entry) live.alarm = null\n    })\n    live.alarm = entry\n    return entry.promise\n  }\n  const request = () => {\n    if (live.requested || live.frame) return\n    live.requested = true\n    post({ type: \"frame\" })\n  }\n  const take = () => {\n    const frame = live.frame\n    live.frame = null\n    return frame\n  }\n  const response = (raw) => {\n    const text = raw.body ?? atob(raw.body64 ?? \"\")\n    return {\n      ok: raw.status >= 200 && raw.status < 300,\n      status: raw.status,\n      headers: raw.headers ?? {},\n      text: async () => text,\n      json: async () => JSON.parse(text),\n    }\n  }\n  return {\n    render: (node) => post({ type: \"render\", node }),\n    draw: (id, commands) =>\n      post({ type: \"draw\", id, commands: commands instanceof __WidgetDraw ? commands.commands : commands }),\n    event: async () => {\n      while (events.length === 0) await pull()\n      return events.shift()\n    },\n    frame: async () => {\n      request()\n      while (!live.frame) await pull()\n      return take()\n    },\n    sleep: (ms) => __host.sleep(ms),\n    now: () => __host.now(),\n    next: async (options) => {\n      const frame = options?.frame === true\n      const deadline = typeof options?.timeout === \"number\" ? __host.now() + Math.max(0, options.timeout) : undefined\n      if (frame) request()\n      while (true) {\n        if (live.paused !== null) {\n          const pausedMs = live.paused\n          live.paused = null\n          return { type: \"resumed\", pausedMs }\n        }\n        if (events.length > 0) return { type: \"event\", event: events.shift() }\n        if (frame && live.frame) return { type: \"frame\", frame: take() }\n        if (deadline === undefined) await pull()\n        else if (__host.now() >= deadline) return { type: \"timeout\" }\n        else await Promise.race([pull(), alarm(deadline)])\n      }\n    },\n    submit: (value) => {\n      post({ type: \"submit\", value: value ?? null })\n      live.done = true\n    },\n    dismiss: () => {\n      post({ type: \"dismiss\" })\n      live.done = true\n    },\n    fetch: async (url, init) => {\n      const request = { url: String(url), method: init?.method ?? \"GET\", headers: init?.headers ?? {} }\n      if (init?.body !== undefined) request.body = String(init.body)\n      try {\n        return response(await __host.fetch(request))\n      } catch (error) {\n        throw { kind: error?.kind ?? \"Network\", message: error?.message ?? String(error) }\n      }\n    },\n    send: (value, options) => post({ type: \"send\", value: value ?? null, wake: options?.wake !== false }),\n  }\n})()\n\nasync function __widget_live(input) {\n  await main(input.data)\n  return null\n}\n"
 export const fixtures = {
+ "suggestions": {
+  "mode": "step",
+  "source": "function init(data) {\n  return { picked: null, note: \"\" }\n}\n\nfunction view(state, data) {\n  return ui.column({ gap: 2 }, [\n    ui.text(data.title, { style: \"title\" }),\n    ui.row(\n      { gap: 2, align: \"start\", wrap: true },\n      data.options.map((option, index) =>\n        ui.card({ id: \"option:\" + index, selected: state.picked === index }, [\n          option.images.length === 1\n            ? ui.image(option.images[0], { alt: option.label, aspect: 4 / 3 })\n            : ui.carousel(\n                {},\n                option.images.map((src, page) =>\n                  ui.image(src, {\n                    alt: option.label + \" (\" + (page + 1) + \"/\" + option.images.length + \")\",\n                    aspect: 4 / 3,\n                  }),\n                ),\n              ),\n          ui.row({ gap: 1, align: \"center\", wrap: true }, [\n            ui.text(option.label, { style: \"body\" }),\n            option.recommended && ui.text(\"(Recommended)\", { style: \"caption\", tone: \"accent\" }),\n          ]),\n          option.note && ui.text(option.note, { style: \"caption\", tone: \"muted\" }),\n        ]),\n      ),\n    ),\n    data.allowNote !== false && ui.input(\"note\", state.note, { label: \"Note\", placeholder: \"Add a note (optional)\" }),\n    ui.row({ gap: 1, align: \"center\" }, [\n      ui.button(\"choose\", \"Choose\", { variant: \"primary\", disabled: state.picked === null }),\n      ui.button(\"dismiss\", \"Dismiss\", { variant: \"secondary\" }),\n    ]),\n  ])\n}\n\nfunction update(state, event, data) {\n  if (event.id.startsWith(\"option:\")) return { ...state, picked: Number(event.id.slice(\"option:\".length)) }\n  if (event.id === \"note\") return { ...state, note: String(event.value ?? \"\") }\n  if (event.id === \"dismiss\") return dismiss(state)\n  if (event.id !== \"choose\" || state.picked === null) return state\n  const note = data.allowNote === false ? \"\" : state.note.trim()\n  const choice = { choice: data.options[state.picked].label, index: state.picked }\n  return submit(note ? { ...choice, note } : choice, state)\n}\n",
+  "data": {
+   "title": "Which landing page direction should we build?",
+   "options": [
+    {
+     "label": "Bold gradient",
+     "note": "Big hero, product shots below",
+     "images": [
+      "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2NDAiIGhlaWdodD0iNDgwIiB2aWV3Qm94PSIwIDAgNjQwIDQ4MCI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJnIiB4MT0iMCIgeTE9IjAiIHgyPSIxIiB5Mj0iMSI+PHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjN2MzYWVkIi8+PHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjZGIyNzc3Ii8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9IjY0MCIgaGVpZ2h0PSI0ODAiIGZpbGw9InVybCgjZykiLz48Y2lyY2xlIGN4PSI0NzAiIGN5PSIxNTAiIHI9IjcwIiBmaWxsPSIjZmZmIiBmaWxsLW9wYWNpdHk9Ii4yNSIvPjxwYXRoIGQ9Ik0wIDM4MCBMMTgwIDI1MCBMMzIwIDM2MCBMNDUwIDI4MCBMNjQwIDQwMCBMNjQwIDQ4MCBMMCA0ODBaIiBmaWxsPSIjMDAwIiBmaWxsLW9wYWNpdHk9Ii4yIi8+PHRleHQgeD0iNDAiIHk9IjQ0MCIgZm9udC1mYW1pbHk9InNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iNDAiIGZvbnQtd2VpZ2h0PSI2MDAiIGZpbGw9IiNmZmYiPkhlcm88L3RleHQ+PC9zdmc+",
+      "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2NDAiIGhlaWdodD0iNDgwIiB2aWV3Qm94PSIwIDAgNjQwIDQ4MCI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJnIiB4MT0iMCIgeTE9IjAiIHgyPSIxIiB5Mj0iMSI+PHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjMjU2M2ViIi8+PHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjN2MzYWVkIi8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9IjY0MCIgaGVpZ2h0PSI0ODAiIGZpbGw9InVybCgjZykiLz48Y2lyY2xlIGN4PSI0NzAiIGN5PSIxNTAiIHI9IjcwIiBmaWxsPSIjZmZmIiBmaWxsLW9wYWNpdHk9Ii4yNSIvPjxwYXRoIGQ9Ik0wIDM4MCBMMTgwIDI1MCBMMzIwIDM2MCBMNDUwIDI4MCBMNjQwIDQwMCBMNjQwIDQ4MCBMMCA0ODBaIiBmaWxsPSIjMDAwIiBmaWxsLW9wYWNpdHk9Ii4yIi8+PHRleHQgeD0iNDAiIHk9IjQ0MCIgZm9udC1mYW1pbHk9InNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iNDAiIGZvbnQtd2VpZ2h0PSI2MDAiIGZpbGw9IiNmZmYiPkZlYXR1cmVzPC90ZXh0Pjwvc3ZnPg=="
+     ],
+     "recommended": true
+    },
+    {
+     "label": "Minimal",
+     "note": "Text-first, one screenshot",
+     "images": [
+      "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2NDAiIGhlaWdodD0iNDgwIiB2aWV3Qm94PSIwIDAgNjQwIDQ4MCI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJnIiB4MT0iMCIgeTE9IjAiIHgyPSIxIiB5Mj0iMSI+PHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjMzM0MTU1Ii8+PHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjNjQ3NDhiIi8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9IjY0MCIgaGVpZ2h0PSI0ODAiIGZpbGw9InVybCgjZykiLz48Y2lyY2xlIGN4PSI0NzAiIGN5PSIxNTAiIHI9IjcwIiBmaWxsPSIjZmZmIiBmaWxsLW9wYWNpdHk9Ii4yNSIvPjxwYXRoIGQ9Ik0wIDM4MCBMMTgwIDI1MCBMMzIwIDM2MCBMNDUwIDI4MCBMNjQwIDQwMCBMNjQwIDQ4MCBMMCA0ODBaIiBmaWxsPSIjMDAwIiBmaWxsLW9wYWNpdHk9Ii4yIi8+PHRleHQgeD0iNDAiIHk9IjQ0MCIgZm9udC1mYW1pbHk9InNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iNDAiIGZvbnQtd2VpZ2h0PSI2MDAiIGZpbGw9IiNmZmYiPk1pbmltYWw8L3RleHQ+PC9zdmc+"
+     ]
+    },
+    {
+     "label": "Playful",
+     "images": [
+      "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2NDAiIGhlaWdodD0iNDgwIiB2aWV3Qm94PSIwIDAgNjQwIDQ4MCI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJnIiB4MT0iMCIgeTE9IjAiIHgyPSIxIiB5Mj0iMSI+PHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjZjU5ZTBiIi8+PHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjZWY0NDQ0Ii8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9IjY0MCIgaGVpZ2h0PSI0ODAiIGZpbGw9InVybCgjZykiLz48Y2lyY2xlIGN4PSI0NzAiIGN5PSIxNTAiIHI9IjcwIiBmaWxsPSIjZmZmIiBmaWxsLW9wYWNpdHk9Ii4yNSIvPjxwYXRoIGQ9Ik0wIDM4MCBMMTgwIDI1MCBMMzIwIDM2MCBMNDUwIDI4MCBMNjQwIDQwMCBMNjQwIDQ4MCBMMCA0ODBaIiBmaWxsPSIjMDAwIiBmaWxsLW9wYWNpdHk9Ii4yIi8+PHRleHQgeD0iNDAiIHk9IjQ0MCIgZm9udC1mYW1pbHk9InNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iNDAiIGZvbnQtd2VpZ2h0PSI2MDAiIGZpbGw9IiNmZmYiPlBsYXlmdWw8L3RleHQ+PC9zdmc+",
+      "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2NDAiIGhlaWdodD0iNDgwIiB2aWV3Qm94PSIwIDAgNjQwIDQ4MCI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJnIiB4MT0iMCIgeTE9IjAiIHgyPSIxIiB5Mj0iMSI+PHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjMTBiOTgxIi8+PHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjMDZiNmQ0Ii8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9IjY0MCIgaGVpZ2h0PSI0ODAiIGZpbGw9InVybCgjZykiLz48Y2lyY2xlIGN4PSI0NzAiIGN5PSIxNTAiIHI9IjcwIiBmaWxsPSIjZmZmIiBmaWxsLW9wYWNpdHk9Ii4yNSIvPjxwYXRoIGQ9Ik0wIDM4MCBMMTgwIDI1MCBMMzIwIDM2MCBMNDUwIDI4MCBMNjQwIDQwMCBMNjQwIDQ4MCBMMCA0ODBaIiBmaWxsPSIjMDAwIiBmaWxsLW9wYWNpdHk9Ii4yIi8+PHRleHQgeD0iNDAiIHk9IjQ0MCIgZm9udC1mYW1pbHk9InNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iNDAiIGZvbnQtd2VpZ2h0PSI2MDAiIGZpbGw9IiNmZmYiPk1hc2NvdDwvdGV4dD48L3N2Zz4=",
+      "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2NDAiIGhlaWdodD0iNDgwIiB2aWV3Qm94PSIwIDAgNjQwIDQ4MCI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJnIiB4MT0iMCIgeTE9IjAiIHgyPSIxIiB5Mj0iMSI+PHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjMGVhNWU5Ii8+PHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjNjM2NmYxIi8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9IjY0MCIgaGVpZ2h0PSI0ODAiIGZpbGw9InVybCgjZykiLz48Y2lyY2xlIGN4PSI0NzAiIGN5PSIxNTAiIHI9IjcwIiBmaWxsPSIjZmZmIiBmaWxsLW9wYWNpdHk9Ii4yNSIvPjxwYXRoIGQ9Ik0wIDM4MCBMMTgwIDI1MCBMMzIwIDM2MCBMNDUwIDI4MCBMNjQwIDQwMCBMNjQwIDQ4MCBMMCA0ODBaIiBmaWxsPSIjMDAwIiBmaWxsLW9wYWNpdHk9Ii4yIi8+PHRleHQgeD0iNDAiIHk9IjQ0MCIgZm9udC1mYW1pbHk9InNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iNDAiIGZvbnQtd2VpZ2h0PSI2MDAiIGZpbGw9IiNmZmYiPkZvb3RlcjwvdGV4dD48L3N2Zz4="
+     ]
+    }
+   ]
+  }
+ },
+ "form": {
+  "mode": "step",
+  "source": "function init(data) {\n  return { values: Object.fromEntries(data.fields.map((field) => [field.key, initial(field)])) }\n}\n\nfunction initial(field) {\n  if (field.default !== undefined) return field.default\n  if (field.type === \"number\") return field.min\n  if (field.type === \"boolean\") return false\n  if (field.type === \"select\") return field.multiple ? [] : (field.options[0]?.value ?? \"\")\n  return \"\"\n}\n\nfunction view(state, data) {\n  return ui.column({ gap: 2 }, [\n    ui.text(data.title, { style: \"title\" }),\n    data.description && ui.markdown(data.description),\n    ui.column(\n      { gap: 2, align: \"stretch\" },\n      data.fields.map((field) => input(field, state.values[field.key])),\n    ),\n    ui.row({ gap: 1 }, [ui.button(\"submit\", data.submitLabel || \"Submit\", { variant: \"primary\" })]),\n  ])\n}\n\nfunction input(field, value) {\n  const id = \"field:\" + field.key\n  if (field.type === \"number\")\n    return ui.slider(id, { label: field.label, value, min: field.min, max: field.max, step: field.step })\n  if (field.type === \"boolean\") return ui.checkbox(id, field.label, value)\n  if (field.type === \"select\")\n    return ui.select(id, field.options, { label: field.label, value, multiple: field.multiple === true })\n  return ui.input(id, value, {\n    label: field.label,\n    placeholder: field.placeholder,\n    multiline: field.multiline === true,\n  })\n}\n\nfunction update(state, event, data) {\n  if (event.id === \"submit\") return submit(state.values, state)\n  const field = data.fields.find((field) => \"field:\" + field.key === event.id)\n  if (!field) return state\n  return { ...state, values: { ...state.values, [field.key]: coerce(field, event.value) } }\n}\n\nfunction coerce(field, value) {\n  if (field.type === \"number\") return Math.min(field.max, Math.max(field.min, Number(value)))\n  if (field.type === \"boolean\") return value === true\n  if (field.type === \"select\" && field.multiple) return [value ?? []].flat().map(String)\n  return String(value ?? \"\")\n}\n",
+  "data": {
+   "title": "Deploy settings",
+   "description": "Pick how the **staging** deploy should run. You can change these later in `deploy.toml`.",
+   "submitLabel": "Deploy",
+   "fields": [
+    {
+     "key": "name",
+     "type": "text",
+     "label": "Release name",
+     "placeholder": "v1.2.0"
+    },
+    {
+     "key": "replicas",
+     "type": "number",
+     "label": "Replicas",
+     "min": 1,
+     "max": 8,
+     "default": 2
+    },
+    {
+     "key": "canary",
+     "type": "boolean",
+     "label": "Canary rollout",
+     "default": true
+    },
+    {
+     "key": "region",
+     "type": "select",
+     "label": "Region",
+     "options": [
+      {
+       "value": "us-east",
+       "label": "US East"
+      },
+      {
+       "value": "eu-west",
+       "label": "EU West"
+      },
+      {
+       "value": "ap-south",
+       "label": "Asia Pacific"
+      }
+     ]
+    },
+    {
+     "key": "notes",
+     "type": "text",
+     "label": "Notes",
+     "multiline": true
+    }
+   ]
+  }
+ },
+ "confirm": {
+  "mode": "step",
+  "source": "function view(state, data) {\n  return ui.column({ gap: 2 }, [\n    ui.text(data.title, { style: \"title\" }),\n    ui.markdown(data.message),\n    ui.row({ gap: 1, align: \"center\" }, [\n      ui.button(\"confirm\", data.confirmLabel || \"Confirm\", { variant: data.danger ? \"danger\" : \"primary\" }),\n      ui.button(\"cancel\", data.cancelLabel || \"Cancel\", { variant: \"secondary\" }),\n    ]),\n  ])\n}\n\nfunction update(state, event) {\n  if (event.id === \"confirm\") return submit({ confirmed: true }, state)\n  if (event.id === \"cancel\") return submit({ confirmed: false }, state)\n  return state\n}\n",
+  "data": {
+   "title": "Delete the staging database?",
+   "message": "This drops **all tables** in `staging`. It can't be undone.",
+   "confirmLabel": "Delete",
+   "danger": true
+  }
+ },
+ "chart": {
+  "mode": "step",
+  "source": "// A bar or line chart drawn on a canvas. It animates in, then redraws only for pointer input: press (or drag) to read a\n// value; with `choose`, tapping a bar or point submits it.\n\nconst HEIGHT = 240\nconst INTRO = 0.65\nconst PALETTE = [\"accent\", \"#f59e0b\", \"#10b981\", \"#ef4444\", \"#8b5cf6\", \"#06b6d4\"]\n\nfunction init(data) {\n  return { active: null, down: false }\n}\n\nfunction view(state, data) {\n  const active = state.active && point(data, state.active)\n  return ui.column({ gap: 1, align: \"stretch\" }, [\n    ui.text(data.title, { style: \"title\" }),\n    ui.canvas({\n      id: \"chart\",\n      height: HEIGHT,\n      fps: 60,\n      duration: state.down ? undefined : INTRO,\n      alt: summary(data),\n    }),\n    ui.text(\n      active\n        ? active.label + \" · \" + active.series + \": \" + amount(active.value, data.unit)\n        : data.choose\n          ? \"Tap a \" + (data.kind === \"line\" ? \"point\" : \"bar\") + \" to choose it\"\n          : \"Press a \" + (data.kind === \"line\" ? \"point\" : \"bar\") + \" to read its value\",\n      { style: \"caption\", tone: active ? \"default\" : \"muted\" },\n    ),\n  ])\n}\n\nfunction update(state, event, data) {\n  if (event.type !== \"pointer\") return state\n  const pointer = event.value\n  const hit = locate(data, layout(data, pointer.width, pointer.height), pointer.x, pointer.y)\n  if (pointer.kind !== \"up\") return { active: hit ?? state.active, down: true }\n  if (data.choose && hit) {\n    const picked = point(data, hit)\n    return submit({ series: picked.series, index: hit.index, value: picked.value }, { active: hit, down: false })\n  }\n  return { active: hit, down: false }\n}\n\nfunction draw(state, data, frame) {\n  const g = ui.draw()\n  const box = layout(data, frame.width, frame.height)\n  const hover = frame.pointer && !frame.pointer.down ? locate(data, box, frame.pointer.x, frame.pointer.y) : null\n  const active = state.down || !hover ? state.active : hover\n  axes(g, data, box)\n  if (data.kind === \"line\") lines(g, data, box, frame.t, active)\n  else bars(g, data, box, frame.t, active)\n  if (data.series.length > 1) legend(g, data, box)\n  if (active && frame.t >= INTRO) tooltip(g, data, box, active, frame.width)\n  return g.commands\n}\n\n// Geometry shared by draw and update: the plot area, the value range and the slots of each index.\nfunction layout(data, width, height) {\n  const count = Math.max(1, ...data.series.map((series) => series.values.length))\n  const values = data.series.flatMap((series) => series.values)\n  const range = nice(Math.min(0, ...values), Math.max(0, ...values))\n  const left = 12 + 7 * Math.max(...range.ticks.map((tick) => compact(tick).length))\n  const top = data.series.length > 1 ? 30 : 14\n  const right = data.kind === \"line\" ? 20 : 12\n  const plot = { x: left, y: top, w: Math.max(1, width - left - right), h: Math.max(1, height - top - 26) }\n  const labels = []\n  for (let index = 0; index < count; index++) labels.push(label(data, index))\n  return { count, range, plot, slot: plot.w / count, labels }\n}\n\n// Rounds the range out to 1, 2, 2.5 or 5 times a power of ten, with 3 to 5 gridlines.\nfunction nice(min, max) {\n  const span = max - min || Math.abs(max) || 1\n  const raw = span / 4\n  const power = Math.pow(10, Math.floor(Math.log10(raw)))\n  const step = power * ([1, 2, 2.5, 5, 10].find((factor) => factor * power >= raw) ?? 10)\n  const low = Math.floor(min / step) * step\n  const high = Math.max(low + step, Math.ceil(max / step) * step)\n  const ticks = []\n  for (let tick = low; tick <= high + step / 2; tick += step) ticks.push(Math.round(tick / step) * step)\n  return { low, high, ticks }\n}\n\nfunction y(box, value) {\n  return box.plot.y + box.plot.h * (1 - (value - box.range.low) / (box.range.high - box.range.low))\n}\n\nfunction x(data, box, index) {\n  if (data.kind !== \"line\") return box.plot.x + box.slot * (index + 0.5)\n  return box.plot.x + (box.count === 1 ? box.plot.w / 2 : (box.plot.w * index) / (box.count - 1))\n}\n\nfunction bar(data, box, series, index) {\n  const group = Math.min(box.slot * 0.72, 28 * data.series.length + 4 * (data.series.length - 1))\n  const width = (group - 4 * (data.series.length - 1)) / data.series.length\n  return { x: x(data, box, index) - group / 2 + series * (width + 4), w: width }\n}\n\nfunction locate(data, box, px, py) {\n  if (\n    px < box.plot.x - 8 ||\n    px > box.plot.x + box.plot.w + 8 ||\n    py < box.plot.y - 20 ||\n    py > box.plot.y + box.plot.h + 8\n  )\n    return null\n  const index =\n    data.kind === \"line\"\n      ? Math.round(((px - box.plot.x) / box.plot.w) * Math.max(1, box.count - 1))\n      : Math.floor((px - box.plot.x) / box.slot)\n  const clamped = Math.max(0, Math.min(box.count - 1, index))\n  const candidates = data.series\n    .map((series, at) => ({ series: at, value: series.values[clamped] }))\n    .filter((candidate) => typeof candidate.value === \"number\")\n  if (candidates.length === 0) return null\n  const nearest = (score) =>\n    candidates.reduce((best, candidate) => (score(candidate) < score(best) ? candidate : best)).series\n  if (data.kind === \"line\") return { series: nearest((c) => Math.abs(y(box, c.value) - py)), index: clamped }\n  return {\n    series: nearest((c) => {\n      const span = bar(data, box, c.series, clamped)\n      return Math.abs(span.x + span.w / 2 - px)\n    }),\n    index: clamped,\n  }\n}\n\nfunction axes(g, data, box) {\n  const right = box.plot.x + box.plot.w\n  for (const tick of box.range.ticks) {\n    const at = y(box, tick)\n    g.line(box.plot.x, at, right, at, { stroke: \"border\", width: tick === 0 ? 1.5 : 1 })\n    g.text(box.plot.x - 8, at + 4, compact(tick), { size: 11, align: \"right\", color: \"muted\" })\n  }\n  const widest = Math.max(...box.labels.map((text) => text.length))\n  const every = Math.max(1, Math.ceil((7 * widest + 12) / (box.plot.w / box.count)))\n  for (let index = 0; index < box.count; index += every)\n    g.text(x(data, box, index), box.plot.y + box.plot.h + 18, box.labels[index], {\n      size: 11,\n      align: \"center\",\n      color: \"muted\",\n    })\n}\n\nfunction bars(g, data, box, t, active) {\n  const base = y(box, Math.max(box.range.low, 0))\n  data.series.forEach((series, at) => {\n    const fill = color(series, at)\n    series.values.forEach((value, index) => {\n      const grow = ease((t - (0.2 * index) / Math.max(1, box.count - 1)) / (INTRO - 0.2))\n      if (grow <= 0) return\n      const span = bar(data, box, at, index)\n      const top = base + (y(box, value) - base) * grow\n      const dim = active && (active.series !== at || active.index !== index)\n      if (dim) g.save().alpha(0.45)\n      g.rrect(span.x, Math.min(top, base), span.w, Math.max(1, Math.abs(base - top)), Math.min(4, span.w / 2), fill)\n      if (dim) g.restore()\n    })\n  })\n}\n\nfunction lines(g, data, box, t, active) {\n  const progress = ease(t / INTRO) * Math.max(1, box.count - 1)\n  const base = y(box, Math.max(box.range.low, 0))\n  if (active) g.line(x(data, box, active.index), box.plot.y, x(data, box, active.index), base, \"border\")\n  data.series.forEach((series, at) => {\n    const stroke = color(series, at)\n    const points = series.values\n      .map((value, index) => [x(data, box, index), y(box, value)])\n      .filter((_, index) => index <= Math.ceil(progress))\n    if (points.length === 0) return\n    const last = Math.min(progress, series.values.length - 1)\n    const whole = Math.floor(last)\n    if (whole < points.length - 1) {\n      const from = points[whole]\n      const to = points[whole + 1]\n      points[whole + 1] = [from[0] + (to[0] - from[0]) * (last - whole), from[1] + (to[1] - from[1]) * (last - whole)]\n    }\n    const segments = points.map((point, index) => [index === 0 ? \"M\" : \"L\", point[0], point[1]])\n    const end = points[points.length - 1]\n    if (data.series.length === 1 && points.length > 1)\n      g.save()\n        .alpha(0.12)\n        .path([...segments, [\"L\", end[0], base], [\"L\", points[0][0], base], [\"Z\"]], stroke)\n        .restore()\n    g.path(segments, { stroke, width: 2.5, cap: \"round\" })\n    points.forEach((point, index) => {\n      if (index > last) return\n      const on = active && active.series === at && active.index === index\n      g.circle(point[0], point[1], on ? 5.5 : 3, { fill: on ? stroke : \"bg\", stroke, width: 2 })\n    })\n  })\n}\n\nfunction legend(g, data, box) {\n  data.series.reduce((left, series, at) => {\n    g.circle(left + 4, 12, 4, color(series, at))\n    g.text(left + 13, 16, series.label, { size: 12, color: \"muted\" })\n    return left + 30 + 7 * series.label.length\n  }, box.plot.x)\n}\n\nfunction tooltip(g, data, box, active, width) {\n  const picked = point(data, active)\n  const title = picked.label\n  const value = amount(picked.value, data.unit)\n  const w = 20 + 7 * Math.max(title.length, value.length)\n  const span = bar(data, box, active.series, active.index)\n  const anchor = data.kind === \"line\" ? x(data, box, active.index) : span.x + span.w / 2\n  const left = Math.max(2, Math.min(width - w - 2, anchor - w / 2))\n  const top = Math.max(2, y(box, Math.max(picked.value, 0)) - 54)\n  g.rrect(left, top, w, 44, 8, { fill: \"surface\", stroke: \"border\", width: 1 })\n  g.text(left + 10, top + 17, title, { size: 11, color: \"muted\" })\n  g.text(left + 10, top + 35, value, { size: 13, weight: 600, color: color(data.series[active.series], active.series) })\n}\n\nfunction point(data, active) {\n  const series = data.series[active.series]\n  return { series: series.label, label: label(data, active.index), value: series.values[active.index] }\n}\n\nfunction summary(data) {\n  const kind = data.kind === \"line\" ? \"Line chart\" : \"Bar chart\"\n  const series = data.series.map(\n    (series) =>\n      series.label +\n      \": \" +\n      series.values\n        .map((value, index) => (data.labels?.[index] ? data.labels[index] + \" \" : \"\") + amount(value, data.unit))\n        .join(\", \"),\n  )\n  return kind + \". \" + series.join(\"; \")\n}\n\nfunction label(data, index) {\n  return data.labels?.[index] ?? String(index + 1)\n}\n\nfunction color(series, index) {\n  return series.color ?? PALETTE[index % PALETTE.length]\n}\n\nfunction amount(value, unit) {\n  const text = String(Math.round(value * 100) / 100)\n  if (!unit) return text\n  return unit.length > 1 && /^[a-z]/i.test(unit) ? text + \" \" + unit : text + unit\n}\n\nfunction compact(value) {\n  const size = Math.abs(value)\n  const round = (number) => String(Math.round(number * 10) / 10)\n  if (size >= 1e9) return round(value / 1e9) + \"B\"\n  if (size >= 1e6) return round(value / 1e6) + \"M\"\n  if (size >= 1e4) return round(value / 1e3) + \"k\"\n  return String(Math.round(value * 100) / 100)\n}\n\nfunction ease(p) {\n  const clamped = Math.max(0, Math.min(1, p))\n  return 1 - Math.pow(1 - clamped, 3)\n}\n",
+  "data": {
+   "title": "Build time by week",
+   "kind": "bar",
+   "unit": "s",
+   "choose": true,
+   "labels": [
+    "W1",
+    "W2",
+    "W3",
+    "W4",
+    "W5",
+    "W6",
+    "W7",
+    "W8"
+   ],
+   "series": [
+    {
+     "label": "Linux",
+     "values": [
+      312,
+      298,
+      305,
+      280,
+      266,
+      240,
+      236,
+      221
+     ]
+    },
+    {
+     "label": "macOS",
+     "values": [
+      402,
+      395,
+      380,
+      371,
+      350,
+      344,
+      330,
+      318
+     ],
+     "color": "#f59e0b"
+    }
+   ]
+  }
+ },
+ "backdrop": {
+  "mode": "step",
+  "source": "// An animated shader banner with a title and text. widget.values[0] is (speed, accent red, green, blue); colors are\n// sRGB. Pressing the banner lights it up around the pointer.\n\nconst ACCENTS = { plasma: \"#8b5cf6\", aurora: \"#2dd4bf\", waves: \"#3b82f6\" }\n\nconst COMMON = `\nfn hash(p: vec2f) -> f32 {\n  let q = fract(p * vec2f(123.34, 456.21));\n  let r = q + dot(q, q + 45.32);\n  return fract(r.x * r.y);\n}\n\nfn noise(p: vec2f) -> f32 {\n  let i = floor(p);\n  let f = fract(p);\n  let u = f * f * (3.0 - 2.0 * f);\n  let a = hash(i);\n  let b = hash(i + vec2f(1.0, 0.0));\n  let c = hash(i + vec2f(0.0, 1.0));\n  let d = hash(i + vec2f(1.0, 1.0));\n  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);\n}\n\nfn fbm(start: vec2f) -> f32 {\n  var p = start;\n  var amplitude = 0.5;\n  var sum = 0.0;\n  for (var i = 0; i < 5; i++) {\n    sum += amplitude * noise(p);\n    p = p * 2.03 + vec2f(1.7, 9.2);\n    amplitude *= 0.5;\n  }\n  return sum;\n}\n\nfn touch(frag: vec2f, color: vec3f) -> vec3f {\n  if (widget.pointer.z < 0.5) {\n    return color;\n  }\n  let d = distance(frag, widget.pointer.xy) / widget.resolution.y;\n  return color + widget.values[0].yzw * 0.35 * exp(-d * d * 30.0);\n}\n\nfn vignette(frag: vec2f) -> f32 {\n  let uv = frag / widget.resolution;\n  let edge = uv * (1.0 - uv);\n  return clamp(pow(edge.x * edge.y * 16.0, 0.18), 0.0, 1.0);\n}\n`\n\nconst PRESETS = {\n  plasma:\n    COMMON +\n    `\nfn shade(frag: vec2f) -> vec4f {\n  let res = widget.resolution;\n  let p = (frag - 0.5 * res) / res.y * 3.0;\n  let t = widget.time * widget.values[0].x;\n  let accent = widget.values[0].yzw;\n  var v = sin(p.x * 1.3 + t);\n  v += sin((p.y + t) * 0.7);\n  v += sin((p.x + p.y + t) * 0.6);\n  let c = p + vec2f(sin(t * 0.33), cos(t * 0.5)) * 1.5;\n  v += sin(sqrt(dot(c, c) + 1.0) * 1.8 - t);\n  let glow = 0.5 + 0.5 * sin(v * 1.4);\n  let hue = 0.5 + 0.5 * sin(v * 0.9 + 2.0);\n  let deep = accent * 0.18 + vec3f(0.02, 0.02, 0.06);\n  let warm = mix(accent, vec3f(1.0, 0.42, 0.72), 0.5);\n  let cool = mix(accent, vec3f(0.2, 0.85, 1.0), 0.5);\n  var color = mix(deep, mix(cool, warm, hue), glow * glow);\n  color = touch(frag, color * (0.6 + 0.4 * vignette(frag)));\n  return vec4f(clamp(color, vec3f(0.0), vec3f(1.0)), 1.0);\n}\n`,\n  aurora:\n    COMMON +\n    `\nfn shade(frag: vec2f) -> vec4f {\n  let res = widget.resolution;\n  let uv = frag / res;\n  let aspect = res.x / res.y;\n  let t = widget.time * widget.values[0].x;\n  let accent = widget.values[0].yzw;\n  var color = mix(vec3f(0.03, 0.06, 0.14), vec3f(0.005, 0.01, 0.04), uv.y);\n  for (var i = 0; i < 3; i++) {\n    let layer = f32(i);\n    let x = uv.x * aspect * (1.1 + layer * 0.45) + t * (0.04 + layer * 0.02);\n    let center = 0.42 + 0.14 * layer + 0.2 * (fbm(vec2f(x * 0.7, layer * 3.1 + t * 0.08)) - 0.5);\n    let d = uv.y - center;\n    let falloff = select(exp(-d * d * 14.0), exp(-d * d * 900.0), d > 0.0);\n    let rays = fbm(vec2f(x * 9.0, t * 0.25 + layer));\n    let glow = falloff * (0.35 + 0.9 * rays * rays);\n    let tint = mix(accent, vec3f(0.35, 1.0, 0.55), 0.35 + 0.25 * layer);\n    color += tint * glow * (0.75 - layer * 0.18);\n  }\n  let size = 14.0 * widget.scale;\n  let cell = floor(frag / size);\n  let spot = (cell + 0.2 + 0.6 * vec2f(hash(cell + 3.1), hash(cell + 8.7))) * size;\n  let twinkle = 0.65 + 0.35 * sin(t * 2.0 + hash(cell) * 40.0);\n  let star = step(0.82, hash(cell)) * smoothstep(1.3 * widget.scale, 0.0, distance(frag, spot)) * twinkle;\n  color += vec3f(star) * smoothstep(0.75, 0.0, uv.y);\n  color = touch(frag, color * (0.6 + 0.4 * vignette(frag)));\n  return vec4f(clamp(color, vec3f(0.0), vec3f(1.0)), 1.0);\n}\n`,\n  waves:\n    COMMON +\n    `\nfn shade(frag: vec2f) -> vec4f {\n  let res = widget.resolution;\n  let uv = frag / res;\n  let aspect = res.x / res.y;\n  let t = widget.time * widget.values[0].x;\n  let accent = widget.values[0].yzw;\n  let edge = 1.5 / res.y;\n  var color = mix(accent * 0.35 + vec3f(0.04, 0.05, 0.1), vec3f(0.02, 0.03, 0.07), uv.y);\n  for (var i = 0; i < 5; i++) {\n    let layer = f32(i);\n    let x = uv.x * aspect;\n    let h = 0.3 + layer * 0.13\n      + 0.045 * sin(x * (2.2 + layer * 0.6) + t * (0.5 + layer * 0.22) + layer * 1.7)\n      + 0.02 * sin(x * (5.3 - layer * 0.4) - t * (0.9 + layer * 0.1) + layer);\n    let body = mix(accent, vec3f(0.02, 0.04, 0.12), 0.35 + layer * 0.14) * (0.75 + 0.25 * (uv.y - h) / (1.0 - h));\n    color = mix(color, body, smoothstep(h - edge, h + edge, uv.y));\n    color += accent * 0.35 * exp(-abs(uv.y - h) * res.y * 0.08) * (1.0 - layer * 0.15);\n  }\n  color = touch(frag, color * (0.65 + 0.35 * vignette(frag)));\n  return vec4f(clamp(color, vec3f(0.0), vec3f(1.0)), 1.0);\n}\n`,\n}\n\nfunction init(data) {\n  return { speed: 1 }\n}\n\nfunction view(state, data) {\n  return ui.column({ gap: 2, align: \"stretch\" }, [\n    ui.shader(PRESETS[data.preset], {\n      id: \"backdrop\",\n      height: 200,\n      values: [state.speed, ...rgb(data.accent ?? ACCENTS[data.preset])],\n      fps: state.speed > 0 ? 60 : 0,\n      alt: \"Animated \" + data.preset + \" backdrop\",\n    }),\n    ui.text(data.title, { style: \"title\" }),\n    data.text && ui.markdown(data.text),\n    ui.slider(\"speed\", { label: \"Speed\", value: state.speed, min: 0, max: 2, step: 0.1 }),\n  ])\n}\n\nfunction update(state, event) {\n  if (event.id !== \"speed\") return state\n  return { speed: Math.round(Math.min(2, Math.max(0, Number(event.value) || 0)) * 10) / 10 }\n}\n\n// \"#rgb\" or \"#rrggbb\" to three 0..1 floats.\nfunction rgb(hex) {\n  const digits = hex.length === 4 ? hex.slice(1).replace(/./g, (digit) => digit + digit) : hex.slice(1, 7)\n  return [0, 2, 4].map((at) => parseInt(digits.slice(at, at + 2), 16) / 255)\n}\n",
+  "data": {
+   "title": "Release 2.0 is out",
+   "preset": "aurora",
+   "text": "Thanks to everyone who tested the **beta**. Drag the slider to change the speed."
+  }
+ },
+ "minigame": {
+  "mode": "live",
+  "source": "// \"Tap the dots\", a live template: dots pop up on a timer and shrink until they vanish; tapping one scores more the\n// smaller it is. The loop waits for whichever comes first, a tap or the next display frame, and draws only on frames.\n\nconst HEIGHT = 320\nconst HUD = 44\nconst COLORS = [\"#f43f5e\", \"#f59e0b\", \"#10b981\", \"#3b82f6\", \"#8b5cf6\", \"#ec4899\", \"#06b6d4\"]\nconst POP_MS = 420\n\nasync function main(data) {\n  const seconds = data.seconds ?? 20\n  const best = { score: 0 }\n  while (true) {\n    const score = await play(data, seconds)\n    const record = score > best.score && best.score > 0\n    best.score = Math.max(best.score, score)\n    widget.render(\n      ui.column({ gap: 2 }, [\n        ui.text(data.title, { style: \"title\" }),\n        ui.text(score + (score === 1 ? \" point\" : \" points\"), { style: \"title\", tone: \"accent\" }),\n        ui.text(\n          \"in \" + seconds + \" seconds\" + (record ? \" · new best!\" : best.score > score ? \" · best \" + best.score : \"\"),\n          { style: \"caption\", tone: record ? \"success\" : \"muted\" },\n        ),\n        ui.row({ gap: 1 }, [\n          ui.button(\"submit\", \"Submit score\", { variant: \"primary\" }),\n          ui.button(\"again\", \"Play again\", { variant: \"secondary\" }),\n        ]),\n      ]),\n    )\n    while (true) {\n      const event = await widget.event()\n      if (event.id === \"submit\") return widget.submit({ score, seconds })\n      if (event.id === \"again\") break\n    }\n  }\n}\n\nasync function play(data, seconds) {\n  widget.render(\n    ui.column({ gap: 1, align: \"stretch\" }, [\n      ui.text(data.title, { style: \"title\" }),\n      ui.canvas({ id: \"board\", height: HEIGHT, alt: \"Tap the dots: a game for touch or mouse\" }),\n      ui.text(\"Tap the dots before they vanish. Smaller dots score more.\", { style: \"caption\", tone: \"muted\" }),\n    ]),\n  )\n  const game = { dots: [], pops: [], score: 0, start: 0, spawn: 0, width: 0, height: HEIGHT }\n  resize(game, await widget.frame())\n  widget.draw(\"board\", ready(game, seconds))\n  while (true) {\n    const event = await widget.event()\n    if (event.type !== \"pointer\" || event.value.kind !== \"down\") continue\n    resize(game, event.value)\n    break\n  }\n  game.start = widget.now()\n  game.spawn = game.start\n  const length = seconds * 1000\n  const end = game.start + length\n  while (true) {\n    const next = await widget.next({ frame: true, timeout: end - widget.now() })\n    const now = widget.now()\n    if (now >= end) break\n    if (next.type === \"event\") tap(game, next.event, now)\n    if (next.type !== \"frame\") continue\n    resize(game, next.frame)\n    advance(game, now, (now - game.start) / length)\n    widget.draw(\"board\", paint(game, now, end - now, length))\n  }\n  return game.score\n}\n\nfunction resize(game, size) {\n  game.width = size.width\n  game.height = size.height\n}\n\nfunction ready(game, seconds) {\n  const g = ui.draw()\n  const cx = game.width / 2\n  const cy = game.height / 2\n  g.circle(cx - 70, cy - 54, 18, COLORS[0])\n    .circle(cx + 64, cy - 40, 11, COLORS[3])\n    .circle(cx + 20, cy + 70, 26, COLORS[2])\n  g.text(cx, cy + 6, \"Tap to start\", { size: 24, weight: 700, align: \"center\" })\n  g.text(cx, cy + 30, seconds + \" seconds · smaller dots score more\", { size: 13, align: \"center\", color: \"muted\" })\n  return g\n}\n\n// Spawns on a timer that speeds up as the round goes on, and drops dots and pops that are over.\nfunction advance(game, now, progress) {\n  if (now - game.spawn > 1500) game.spawn = now\n  while (game.spawn <= now) {\n    if (game.dots.length < 7) game.dots.push(dot(game, game.spawn, progress))\n    game.spawn += 620 - 280 * progress\n  }\n  game.dots = game.dots.filter((dot) => now < dot.born + dot.life)\n  game.pops = game.pops.filter((pop) => now < pop.at + POP_MS)\n}\n\n// A new dot where it overlaps the others least (best of a few random tries).\nfunction dot(game, born, progress) {\n  const r = 22 + Math.random() * 18\n  const place = () => ({\n    x: r + 8 + Math.random() * Math.max(1, game.width - 2 * r - 16),\n    y: HUD + r + 4 + Math.random() * Math.max(1, game.height - HUD - 2 * r - 12),\n  })\n  const clearance = (spot) =>\n    game.dots.reduce((least, other) => Math.min(least, Math.hypot(other.x - spot.x, other.y - spot.y) - other.r), 1e9)\n  const spot = [place(), place(), place(), place(), place()].reduce((best, spot) =>\n    clearance(spot) > clearance(best) ? spot : best,\n  )\n  return {\n    x: spot.x,\n    y: spot.y,\n    r,\n    born,\n    life: 1900 - 700 * progress,\n    color: COLORS[Math.floor(Math.random() * COLORS.length)],\n  }\n}\n\n// Pops in over 140 ms, then shrinks linearly to nothing.\nfunction radius(dot, now) {\n  const age = now - dot.born\n  const grow = Math.min(1, age / 140)\n  return dot.r * (1 - Math.pow(1 - grow, 3)) * Math.max(0, 1 - age / dot.life)\n}\n\nfunction tap(game, event, now) {\n  if (event.type !== \"pointer\" || event.value.kind !== \"down\") return\n  const x = event.value.x\n  const y = event.value.y\n  const hit = game.dots\n    .map((dot) => ({ dot, r: radius(dot, now), d: Math.hypot(dot.x - x, dot.y - y) }))\n    .filter((candidate) => candidate.d <= candidate.r + 6)\n    .sort((a, b) => a.d - b.d)[0]\n  if (!hit) {\n    game.pops.push({ x, y, r: 6, at: now, color: \"#888888\", points: 0 })\n    return\n  }\n  const points = hit.r < 14 ? 3 : hit.r < 24 ? 2 : 1\n  game.score += points\n  game.dots = game.dots.filter((dot) => dot !== hit.dot)\n  game.pops.push({ x: hit.dot.x, y: hit.dot.y, r: hit.r, at: now, color: hit.dot.color, points })\n}\n\nfunction paint(game, now, left, length) {\n  const g = ui.draw()\n  const bar = game.width - 24\n  g.text(12, 26, String(game.score), { size: 22, weight: 700 })\n  g.text(game.width - 12, 26, Math.ceil(left / 1000) + \"s\", {\n    size: 15,\n    weight: 600,\n    align: \"right\",\n    color: left < 5000 ? \"warning\" : \"muted\",\n  })\n  g.rrect(12, 34, bar, 4, 2, \"border\")\n  g.rrect(12, 34, Math.max(0, (bar * left) / length), 4, 2, left < 5000 ? \"warning\" : \"accent\")\n  for (const dot of game.dots) {\n    g.circle(dot.x, dot.y, dot.r, { stroke: dot.color + \"40\", width: 1.5 })\n    g.circle(dot.x, dot.y, Math.max(0.5, radius(dot, now)), dot.color)\n  }\n  for (const pop of game.pops) {\n    const p = (now - pop.at) / POP_MS\n    const fade = hex(1 - p)\n    g.circle(pop.x, pop.y, pop.r + 22 * p, { stroke: pop.color + fade, width: 3 * (1 - p) + 0.5 })\n    if (pop.points > 0)\n      g.text(pop.x, pop.y - 6 - 26 * p, \"+\" + pop.points, {\n        size: 16 + 2 * pop.points,\n        weight: 700,\n        color: pop.color + fade,\n      })\n  }\n  return g\n}\n\nfunction hex(alpha) {\n  const value = Math.max(0, Math.min(255, Math.round(alpha * 255)))\n  return \"0123456789abcdef\"[value >> 4] + \"0123456789abcdef\"[value & 15]\n}\n",
+  "data": {
+   "title": "Tap the dots",
+   "seconds": 15
+  }
+ },
+ "area": {
+  "mode": "step",
+  "source": "// A stacked area chart over time: \"stacked\" sums the series, \"percent\" shows each one's share and \"stream\" centers the\n// stack around a middle baseline. Bands rise in; press or drag to read every series at a point in time and tap a\n// legend entry to hide a series. With `choose`, the Choose button submits the selected series at that time.\n\nconst HEIGHT = 260\nconst INTRO = 0.7\nconst PALETTE = [\"accent\", \"#f59e0b\", \"#10b981\", \"#ef4444\", \"#8b5cf6\", \"#06b6d4\", \"#ec4899\", \"#84cc16\"]\n\nfunction init(data) {\n  return { active: null, down: false, hidden: [] }\n}\n\nfunction view(state, data) {\n  const active = state.active\n  return ui.column({ gap: 1, align: \"stretch\" }, [\n    ui.text(data.title, { style: \"title\" }),\n    ui.canvas({ id: \"area\", height: HEIGHT, fps: 60, duration: state.down ? undefined : INTRO, alt: summary(data) }),\n    ui.text(\n      active\n        ? label(data, active.index) +\n            \" · \" +\n            data.series[active.series].label +\n            \": \" +\n            amount(data.series[active.series].values[active.index], data.unit)\n        : \"Press to read the values at a point in time; tap a legend entry to hide a series\",\n      { style: \"caption\", tone: active ? \"default\" : \"muted\" },\n    ),\n    data.choose && ui.row({ gap: 1 }, [ui.button(\"choose\", \"Choose\", { variant: \"primary\", disabled: !active })]),\n  ])\n}\n\nfunction update(state, event, data) {\n  if (event.id === \"choose\" && state.active) {\n    const series = data.series[state.active.series]\n    return submit(\n      {\n        series: series.label,\n        index: state.active.index,\n        label: label(data, state.active.index),\n        value: series.values[state.active.index],\n      },\n      state,\n    )\n  }\n  if (event.type !== \"pointer\") return state\n  const pointer = event.value\n  const box = layout(data, state, pointer.width, pointer.height)\n  const entry = box.legend.findIndex(\n    (item) => pointer.y < box.plot.y - 6 && pointer.x >= item.x - 4 && pointer.x <= item.to,\n  )\n  if (entry >= 0) {\n    if (pointer.kind !== \"up\") return state\n    const hidden = state.hidden.includes(entry)\n      ? state.hidden.filter((index) => index !== entry)\n      : [...state.hidden, entry]\n    if (hidden.length === data.series.length) return state\n    return { active: null, down: false, hidden }\n  }\n  const hit = locate(data, state, box, pointer.x, pointer.y)\n  if (pointer.kind !== \"up\") return { ...state, active: hit ?? state.active, down: true }\n  return { ...state, active: hit, down: false }\n}\n\nfunction draw(state, data, frame) {\n  const g = ui.draw()\n  const box = layout(data, state, frame.width, frame.height)\n  const hover = frame.pointer && !frame.pointer.down ? locate(data, state, box, frame.pointer.x, frame.pointer.y) : null\n  const active = state.down || !hover ? state.active : hover\n  const grow = ease(frame.t / INTRO)\n  for (const tick of box.range.ticks) {\n    const at = y(box, tick)\n    g.line(box.plot.x, at, box.plot.x + box.plot.w, at, { stroke: \"border\", width: 1 })\n    if (data.mode !== \"stream\")\n      g.text(box.plot.x - 8, at + 4, compact(tick) + (data.mode === \"percent\" ? \"%\" : \"\"), {\n        size: 11,\n        align: \"right\",\n        color: \"muted\",\n      })\n  }\n  const every = Math.max(1, Math.ceil((7 * Math.max(...box.labels.map((text) => text.length)) + 12) / box.step))\n  for (let index = 0; index < box.count; index += every)\n    g.text(x(box, index), box.plot.y + box.plot.h + 18, box.labels[index], {\n      size: 11,\n      align: \"center\",\n      color: \"muted\",\n    })\n  // Each band is its top edge forward and its bottom edge back, scaled toward the baseline while it rises in.\n  const scale = (index, value) => y(box, box.base[index] + (value - box.base[index]) * grow)\n  box.bands.forEach((band) => {\n    const top = band.top.map((value, index) => [\"L\", x(box, index), scale(index, value)])\n    const bottom = band.bottom.map((value, index) => [\"L\", x(box, index), scale(index, value)]).reverse()\n    top[0][0] = \"M\"\n    const dim = active && active.series !== band.series\n    if (dim) g.save().alpha(0.4)\n    g.path([...top, ...bottom, [\"Z\"]], { fill: band.color, stroke: \"bg\", width: 1 })\n    if (dim) g.restore()\n  })\n  legend(g, data, state, box)\n  if (active && frame.t >= INTRO) tooltip(g, data, box, active, frame.width)\n  return g.commands\n}\n\n// Geometry shared by draw and update: the plot, the stacked bands of the visible series and the y range.\nfunction layout(data, state, width, height) {\n  const count = Math.max(...data.series.map((series) => series.values.length))\n  const shown = data.series\n    .map((series, index) => ({ series, index }))\n    .filter((item) => !state.hidden.includes(item.index))\n  const totals = []\n  for (let index = 0; index < count; index++)\n    totals.push(shown.reduce((sum, item) => sum + Math.max(0, item.series.values[index] ?? 0), 0))\n  const base = totals.map((total) => (data.mode === \"stream\" ? -total / 2 : 0))\n  const cumulative = [...base]\n  const bands = shown.map((item) => {\n    const bottom = [...cumulative]\n    const top = cumulative.map((value, index) => {\n      const raw = Math.max(0, item.series.values[index] ?? 0)\n      return value + (data.mode === \"percent\" ? (totals[index] ? (raw / totals[index]) * 100 : 0) : raw)\n    })\n    top.forEach((value, index) => (cumulative[index] = value))\n    return { series: item.index, color: color(item.series, item.index), top, bottom }\n  })\n  const peak = Math.max(1, ...totals)\n  const range =\n    data.mode === \"percent\"\n      ? { low: 0, high: 100, ticks: [0, 25, 50, 75, 100] }\n      : data.mode === \"stream\"\n        ? { low: -peak / 2, high: peak / 2, ticks: [-peak / 2, 0, peak / 2] }\n        : nice(peak)\n  const left = data.mode === \"stream\" ? 14 : 14 + 7 * Math.max(...range.ticks.map((tick) => compact(tick).length + 1))\n  const plot = { x: left, y: 34, w: Math.max(1, width - left - 16), h: Math.max(1, height - 34 - 26) }\n  const labels = []\n  for (let index = 0; index < count; index++) labels.push(label(data, index))\n  const legend = []\n  let at = left\n  for (const series of data.series) {\n    legend.push({ x: at, to: at + 20 + 7 * series.label.length })\n    at += 30 + 7 * series.label.length\n  }\n  return { count, plot, base, bands, range, labels, legend, step: plot.w / Math.max(1, count - 1) }\n}\n\nfunction nice(max) {\n  const raw = max / 4\n  const power = Math.pow(10, Math.floor(Math.log10(raw)))\n  const step = power * ([1, 2, 2.5, 5, 10].find((factor) => factor * power >= raw) ?? 10)\n  const high = Math.ceil(max / step) * step\n  const ticks = []\n  for (let tick = 0; tick <= high + step / 2; tick += step) ticks.push(Math.round(tick / step) * step)\n  return { low: 0, high, ticks }\n}\n\nfunction x(box, index) {\n  return box.plot.x + box.step * index\n}\n\nfunction y(box, value) {\n  return box.plot.y + box.plot.h * (1 - (value - box.range.low) / (box.range.high - box.range.low))\n}\n\n// The time index nearest the pointer and the band under it (or the nearest band).\nfunction locate(data, state, box, px, py) {\n  if (\n    px < box.plot.x - 8 ||\n    px > box.plot.x + box.plot.w + 8 ||\n    py < box.plot.y - 4 ||\n    py > box.plot.y + box.plot.h + 8\n  )\n    return null\n  if (box.bands.length === 0) return null\n  const index = Math.max(0, Math.min(box.count - 1, Math.round((px - box.plot.x) / box.step)))\n  const value = box.range.low + (1 - (py - box.plot.y) / box.plot.h) * (box.range.high - box.range.low)\n  const band =\n    box.bands.find((band) => value >= band.bottom[index] && value <= band.top[index]) ??\n    (value > box.bands[box.bands.length - 1].top[index] ? box.bands[box.bands.length - 1] : box.bands[0])\n  return { series: band.series, index }\n}\n\nfunction legend(g, data, state, box) {\n  data.series.forEach((series, index) => {\n    const hidden = state.hidden.includes(index)\n    const fill = color(series, index)\n    const left = box.legend[index].x\n    g.circle(left + 4, 12, 4, hidden ? { stroke: fill, width: 1.5 } : fill)\n    g.text(left + 13, 16, series.label, { size: 12, color: hidden ? \"muted\" : \"text\" })\n  })\n}\n\n// A crosshair and a box listing every visible series at the active time, top band first.\nfunction tooltip(g, data, box, active, width) {\n  const at = x(box, active.index)\n  g.line(at, box.plot.y, at, box.plot.y + box.plot.h, { stroke: \"text\", width: 1 })\n  const rows = [...box.bands].reverse().map((band) => ({\n    band,\n    text: data.series[band.series].label + \"  \" + amount(data.series[band.series].values[active.index] ?? 0, data.unit),\n  }))\n  const w = 34 + 7 * Math.max(box.labels[active.index].length, ...rows.map((row) => row.text.length))\n  const h = 28 + 18 * rows.length\n  const left = at + 12 + w > width - 2 ? at - 12 - w : at + 12\n  const top = box.plot.y + 4\n  g.rrect(left, top, w, h, 8, { fill: \"surface\", stroke: \"border\", width: 1 })\n  g.text(left + 10, top + 17, box.labels[active.index], { size: 11, color: \"muted\" })\n  rows.forEach((row, index) => {\n    const line = top + 36 + 18 * index\n    g.circle(left + 14, line - 4, 4, row.band.color)\n    g.text(left + 24, line, row.text, { size: 12, weight: row.band.series === active.series ? 600 : 400 })\n  })\n}\n\nfunction summary(data) {\n  const kind =\n    data.mode === \"percent\" ? \"Percent stacked area\" : data.mode === \"stream\" ? \"Streamgraph\" : \"Stacked area\"\n  return (\n    kind +\n    \" chart\" +\n    (data.labels ? \" from \" + data.labels[0] + \" to \" + data.labels[data.labels.length - 1] : \"\") +\n    \". \" +\n    data.series\n      .map(\n        (series) =>\n          series.label +\n          \": \" +\n          amount(series.values[0], data.unit) +\n          \" to \" +\n          amount(series.values[series.values.length - 1], data.unit) +\n          \", peak \" +\n          amount(Math.max(...series.values), data.unit),\n      )\n      .join(\"; \")\n  )\n}\n\nfunction label(data, index) {\n  return data.labels?.[index] ?? String(index + 1)\n}\n\nfunction color(series, index) {\n  return series.color ?? PALETTE[index % PALETTE.length]\n}\n\nfunction amount(value, unit) {\n  const text = String(Math.round(value * 100) / 100)\n  if (!unit) return text\n  return unit.length > 1 && /^[a-z]/i.test(unit) ? text + \" \" + unit : text + unit\n}\n\nfunction compact(value) {\n  const size = Math.abs(value)\n  const round = (number) => String(Math.round(number * 10) / 10)\n  if (size >= 1e9) return round(value / 1e9) + \"B\"\n  if (size >= 1e6) return round(value / 1e6) + \"M\"\n  if (size >= 1e4) return round(value / 1e3) + \"k\"\n  return String(Math.round(value * 100) / 100)\n}\n\nfunction ease(p) {\n  const clamped = Math.max(0, Math.min(1, p))\n  return 1 - Math.pow(1 - clamped, 3)\n}\n",
+  "data": {
+   "title": "Storage by tier",
+   "unit": "TB",
+   "choose": true,
+   "labels": [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec"
+   ],
+   "series": [
+    {
+     "label": "Hot",
+     "values": [
+      12,
+      14,
+      15,
+      18,
+      21,
+      22,
+      24,
+      27,
+      26,
+      29,
+      31,
+      34
+     ]
+    },
+    {
+     "label": "Warm",
+     "values": [
+      20,
+      21,
+      23,
+      22,
+      24,
+      27,
+      29,
+      30,
+      33,
+      35,
+      36,
+      38
+     ]
+    },
+    {
+     "label": "Cold",
+     "values": [
+      30,
+      32,
+      35,
+      39,
+      42,
+      44,
+      49,
+      53,
+      58,
+      61,
+      66,
+      70
+     ]
+    }
+   ]
+  }
+ },
+ "boxplot": {
+  "mode": "step",
+  "source": "// Box plots comparing distributions. Each group gives raw `values` (quartiles computed once in `init`, whiskers at the\n// furthest values within 1.5 × IQR, the rest drawn as outliers) or precomputed `stats`. Boxes open out from the\n// median; tap a box to read its statistics. With `choose`, the Choose button submits the selected group.\n\nconst HEIGHT = 260\nconst INTRO = 0.6\nconst PALETTE = [\"accent\", \"#f59e0b\", \"#10b981\", \"#ef4444\", \"#8b5cf6\", \"#06b6d4\", \"#ec4899\", \"#84cc16\"]\n\nfunction init(data) {\n  return {\n    selected: null,\n    stats: data.groups.map((group) =>\n      group.stats ? { ...group.stats, outliers: group.stats.outliers ?? [] } : measure(group.values),\n    ),\n  }\n}\n\nfunction view(state, data) {\n  return ui.column({ gap: 1, align: \"stretch\" }, [\n    ui.text(data.title, { style: \"title\" }),\n    ui.canvas({ id: \"boxplot\", height: HEIGHT, fps: 60, duration: INTRO, alt: summary(state, data) }),\n    ui.text(state.selected === null ? \"Tap a box to read its statistics\" : describe(state, data, state.selected), {\n      style: \"caption\",\n      tone: state.selected === null ? \"muted\" : \"default\",\n    }),\n    data.choose &&\n      ui.row({ gap: 1 }, [\n        ui.button(\"choose\", \"Choose group\", { variant: \"primary\", disabled: state.selected === null }),\n      ]),\n  ])\n}\n\nfunction update(state, event, data) {\n  if (event.id === \"choose\" && state.selected !== null) {\n    const { outliers, ...stats } = state.stats[state.selected]\n    return submit({ label: data.groups[state.selected].label, index: state.selected, ...stats }, state)\n  }\n  if (event.type !== \"pointer\" || event.value.kind !== \"up\") return state\n  const pointer = event.value\n  const hit = locate(data, layout(state, data, pointer.width, pointer.height), pointer.x, pointer.y)\n  return { ...state, selected: hit === state.selected ? null : hit }\n}\n\nfunction draw(state, data, frame) {\n  const g = ui.draw()\n  const box = layout(state, data, frame.width, frame.height)\n  const hover = frame.pointer && !frame.pointer.down ? locate(data, box, frame.pointer.x, frame.pointer.y) : null\n  const active = hover ?? state.selected\n  for (const tick of box.range.ticks) {\n    const at = y(box, tick)\n    g.line(box.plot.x, at, box.plot.x + box.plot.w, at, { stroke: \"border\", width: 1 })\n    g.text(box.plot.x - 8, at + 4, compact(tick), { size: 11, align: \"right\", color: \"muted\" })\n  }\n  const grow = ease(frame.t / INTRO)\n  data.groups.forEach((group, index) => {\n    const stats = state.stats[index]\n    const color = group.color ?? PALETTE[index % PALETTE.length]\n    const cx = box.plot.x + box.slot * (index + 0.5)\n    const half = Math.min(28, box.slot * 0.3)\n    const median = y(box, stats.median)\n    const at = (value) => median + (y(box, value) - median) * grow\n    g.text(cx, box.plot.y + box.plot.h + 18, fit(group.label, box.slot - 4, 11), {\n      size: 11,\n      align: \"center\",\n      weight: index === active ? 600 : 400,\n      color: index === active ? \"text\" : \"muted\",\n    })\n    const dim = active !== null && active !== index\n    if (dim) g.save().alpha(0.45)\n    g.line(cx, at(stats.max), cx, at(stats.q3), { stroke: color, width: 1.5 })\n    g.line(cx, at(stats.q1), cx, at(stats.min), { stroke: color, width: 1.5 })\n    g.line(cx - half / 2, at(stats.max), cx + half / 2, at(stats.max), { stroke: color, width: 1.5 })\n    g.line(cx - half / 2, at(stats.min), cx + half / 2, at(stats.min), { stroke: color, width: 1.5 })\n    g.save()\n      .alpha(dim ? 0.12 : 0.25)\n      .rect(cx - half, at(stats.q3), half * 2, at(stats.q1) - at(stats.q3), color)\n      .restore()\n    g.rect(cx - half, at(stats.q3), half * 2, Math.max(1, at(stats.q1) - at(stats.q3)), {\n      stroke: color,\n      width: index === active ? 2.5 : 1.5,\n    })\n    g.line(cx - half, median, cx + half, median, { stroke: color, width: 3 })\n    if (frame.t >= INTRO)\n      for (const value of stats.outliers.slice(0, 40)) g.circle(cx, y(box, value), 3, { stroke: color, width: 1.5 })\n    if (dim) g.restore()\n  })\n  return g.commands\n}\n\n// Quartiles by linear interpolation; whiskers at the furthest values within 1.5 × IQR of the box.\nfunction measure(values) {\n  const sorted = [...values].sort((a, b) => a - b)\n  const n = sorted.length\n  const quantile = (q) => {\n    const at = (n - 1) * q\n    const low = Math.floor(at)\n    return sorted[low] + (sorted[Math.min(n - 1, low + 1)] - sorted[low]) * (at - low)\n  }\n  const q1 = quantile(0.25)\n  const q3 = quantile(0.75)\n  const fence = 1.5 * (q3 - q1)\n  const inside = sorted.filter((value) => value >= q1 - fence && value <= q3 + fence)\n  const round = (value) => Math.round(value * 1e6) / 1e6\n  return {\n    n,\n    min: inside[0],\n    q1: round(q1),\n    median: round(quantile(0.5)),\n    q3: round(q3),\n    max: inside[inside.length - 1],\n    mean: round(sorted.reduce((sum, value) => sum + value, 0) / n),\n    outliers: sorted.filter((value) => value < q1 - fence || value > q3 + fence),\n  }\n}\n\nfunction layout(state, data, width, height) {\n  const all = state.stats.flatMap((stats) => [stats.min, stats.max, ...stats.outliers])\n  const range = nice(Math.min(...all), Math.max(...all))\n  const left = 14 + 7 * Math.max(...range.ticks.map((tick) => compact(tick).length))\n  const plot = { x: left, y: 12, w: Math.max(1, width - left - 10), h: Math.max(1, height - 12 - 26) }\n  return { plot, range, slot: plot.w / data.groups.length }\n}\n\nfunction nice(min, max) {\n  const span = max - min || Math.abs(max) || 1\n  const raw = span / 4\n  const power = Math.pow(10, Math.floor(Math.log10(raw)))\n  const step = power * ([1, 2, 2.5, 5, 10].find((factor) => factor * power >= raw) ?? 10)\n  const low = Math.floor(min / step) * step\n  const high = Math.max(low + step, Math.ceil(max / step) * step)\n  const ticks = []\n  for (let tick = low; tick <= high + step / 2; tick += step) ticks.push(Math.round(tick / step) * step)\n  return { low, high, ticks }\n}\n\nfunction y(box, value) {\n  return box.plot.y + box.plot.h * (1 - (value - box.range.low) / (box.range.high - box.range.low))\n}\n\nfunction locate(data, box, px, py) {\n  if (px < box.plot.x || px > box.plot.x + box.plot.w || py < 0 || py > box.plot.y + box.plot.h + 24) return null\n  return Math.max(0, Math.min(data.groups.length - 1, Math.floor((px - box.plot.x) / box.slot)))\n}\n\nfunction describe(state, data, index) {\n  const stats = state.stats[index]\n  const unit = data.unit\n  return (\n    data.groups[index].label +\n    \": median \" +\n    amount(stats.median, unit) +\n    \", IQR \" +\n    compact(stats.q1) +\n    \"–\" +\n    amount(stats.q3, unit) +\n    \", whiskers \" +\n    compact(stats.min) +\n    \"–\" +\n    amount(stats.max, unit) +\n    (stats.n !== undefined ? \", n = \" + stats.n : \"\") +\n    (stats.outliers.length\n      ? \", \" + stats.outliers.length + (stats.outliers.length === 1 ? \" outlier\" : \" outliers\")\n      : \"\")\n  )\n}\n\nfunction summary(state, data) {\n  return \"Box plots. \" + data.groups.map((_, index) => describe(state, data, index)).join(\"; \")\n}\n\nfunction amount(value, unit) {\n  const text = compact(value)\n  if (!unit) return text\n  return unit.length > 1 && /^[a-z]/i.test(unit) ? text + \" \" + unit : text + unit\n}\n\nfunction compact(value) {\n  const size = Math.abs(value)\n  const round = (number) => String(Math.round(number * 10) / 10)\n  if (size >= 1e9) return round(value / 1e9) + \"B\"\n  if (size >= 1e6) return round(value / 1e6) + \"M\"\n  if (size >= 1e4) return round(value / 1e3) + \"k\"\n  return String(Math.round(value * 100) / 100)\n}\n\nfunction fit(text, width, size) {\n  const max = Math.max(1, Math.floor(width / (size * 0.58)))\n  return text.length <= max ? text : text.slice(0, Math.max(1, max - 1)) + \"…\"\n}\n\nfunction ease(p) {\n  const clamped = Math.max(0, Math.min(1, p))\n  return 1 - Math.pow(1 - clamped, 3)\n}\n",
+  "data": {
+   "title": "Build times by runner",
+   "unit": "s",
+   "choose": true,
+   "groups": [
+    {
+     "label": "linux",
+     "values": [
+      42,
+      45,
+      47,
+      44,
+      51,
+      49,
+      46,
+      43,
+      48,
+      95,
+      44,
+      46,
+      50
+     ]
+    },
+    {
+     "label": "macos",
+     "values": [
+      61,
+      66,
+      70,
+      64,
+      72,
+      69,
+      75,
+      63,
+      67,
+      71,
+      68
+     ]
+    },
+    {
+     "label": "windows",
+     "values": [
+      80,
+      92,
+      85,
+      101,
+      88,
+      96,
+      90,
+      84,
+      99,
+      140,
+      87
+     ]
+    },
+    {
+     "label": "cached",
+     "stats": {
+      "min": 12,
+      "q1": 15,
+      "median": 17,
+      "q3": 20,
+      "max": 26,
+      "outliers": [
+       41
+      ]
+     }
+    }
+   ]
+  }
+ },
+ "flowchart": {
+  "mode": "step",
+  "source": "// A flowchart: nodes (process, decision, terminal, io) and directed edges, laid out top down in layers. `init` does\n// the layout once (Sugiyama style: reverse cycle edges, longest-path layers, dummy points on long edges, barycenter\n// ordering, then x positions pulled toward neighbors) in slot units, so draws only scale it. Layers fade in; tap a node\n// to highlight its edges. With `choose`, the Choose button submits the selected node.\n\nconst LAYER = 84\n\nfunction init(data) {\n  return { selected: null, ...arrange(data) }\n}\n\nfunction view(state, data) {\n  const picked = state.selected === null ? null : data.nodes[state.selected]\n  return ui.column({ gap: 1, align: \"stretch\" }, [\n    ui.text(data.title, { style: \"title\" }),\n    ui.canvas({\n      id: \"flowchart\",\n      height: state.layers * LAYER - 20,\n      fps: 60,\n      duration: intro(state),\n      alt: summary(data),\n    }),\n    ui.text(picked ? describe(data, state.selected) : \"Tap a step to follow its edges\", {\n      style: \"caption\",\n      tone: picked ? \"default\" : \"muted\",\n    }),\n    data.choose && ui.row({ gap: 1 }, [ui.button(\"choose\", \"Choose step\", { variant: \"primary\", disabled: !picked })]),\n  ])\n}\n\nfunction update(state, event, data) {\n  if (event.id === \"choose\" && state.selected !== null) {\n    const node = data.nodes[state.selected]\n    return submit({ id: node.id, label: node.label ?? node.id }, state)\n  }\n  if (event.type !== \"pointer\" || event.value.kind !== \"up\") return state\n  const pointer = event.value\n  const boxes = place(state, data, pointer.width)\n  const hit = boxes.findIndex(\n    (box) => Math.abs(pointer.x - box.x) <= box.w / 2 + 4 && Math.abs(pointer.y - box.y) <= box.h / 2 + 4,\n  )\n  return { ...state, selected: hit < 0 || hit === state.selected ? null : hit }\n}\n\nfunction draw(state, data, frame) {\n  const g = ui.draw()\n  const boxes = place(state, data, frame.width)\n  const columns = grid(state, frame.width)\n  const hover =\n    frame.pointer && !frame.pointer.down\n      ? boxes.findIndex(\n          (box) => Math.abs(frame.pointer.x - box.x) <= box.w / 2 && Math.abs(frame.pointer.y - box.y) <= box.h / 2,\n        )\n      : -1\n  const active = hover >= 0 ? hover : state.selected\n  const step = intro(state) / Math.max(1, state.layers)\n  for (let layer = 0; layer < state.layers; layer++) {\n    const fade = ease((frame.t - layer * step * 0.8) / (step * 1.6))\n    if (fade <= 0) break\n    g.save().alpha(fade)\n    state.edges.forEach((edge, index) => {\n      const from = data.edges[index]\n      const ends = [state.ids[from.from], state.ids[from.to]]\n      if (Math.max(boxes[ends[0]].layer, boxes[ends[1]].layer) !== layer) return\n      const lit = active !== null && ends.includes(active)\n      connect(g, edge, ends, boxes, columns, from.label, lit, frame.t >= intro(state))\n    })\n    data.nodes.forEach((node, index) => {\n      if (boxes[index].layer === layer) shape(g, node, boxes[index], index === active, index === state.selected)\n    })\n    g.restore()\n  }\n  return g.commands\n}\n\n// Layered layout in slot units: every node and dummy point gets a layer and an x; edges keep their point chains.\nfunction arrange(data) {\n  const ids = Object.fromEntries(data.nodes.map((node, at) => [node.id, at]))\n  for (const edge of data.edges)\n    for (const id of [edge.from, edge.to])\n      if (ids[id] === undefined) throw new Error('Unknown node id \"' + id + '\" in edges')\n  const n = data.nodes.length\n  const pairs = data.edges.map((edge) => [ids[edge.from], ids[edge.to]])\n  // Depth-first from the sources; an edge back onto the stack closes a cycle and is reversed for layering.\n  const seen = new Array(n).fill(0)\n  const back = new Set()\n  const visit = (node) => {\n    seen[node] = 1\n    pairs.forEach(([a, b], edge) => {\n      if (a !== node || a === b) return\n      if (seen[b] === 1) back.add(edge)\n      else if (seen[b] === 0) visit(b)\n    })\n    seen[node] = 2\n  }\n  const sources = data.nodes.map((_, at) => at).filter((at) => !pairs.some(([a, b]) => b === at && a !== b))\n  for (const start of [...sources, ...data.nodes.map((_, at) => at)]) if (seen[start] === 0) visit(start)\n  const dag = pairs.map(([a, b], edge) => (back.has(edge) ? [b, a] : [a, b]))\n  const layer = new Array(n).fill(0)\n  for (let pass = 0; pass < n; pass++)\n    for (const [a, b] of dag) if (a !== b && layer[b] < layer[a] + 1) layer[b] = layer[a] + 1\n  // Items are nodes, then one dummy per layer an edge skips; each edge becomes a chain of items.\n  const items = data.nodes.map((_, at) => ({ layer: layer[at], x: 0 }))\n  const chains = dag.map(([a, b]) => {\n    const chain = [a]\n    for (let at = layer[a] + 1; at < layer[b]; at++) {\n      items.push({ layer: at, x: 0 })\n      chain.push(items.length - 1)\n    }\n    chain.push(b)\n    return chain\n  })\n  const up = items.map(() => [])\n  const down = items.map(() => [])\n  for (const chain of chains)\n    for (let at = 1; at < chain.length; at++) {\n      if (chain[at - 1] === chain[at]) continue\n      down[chain[at - 1]].push(chain[at])\n      up[chain[at]].push(chain[at - 1])\n    }\n  const layers = Math.max(...layer) + 1\n  const rows = []\n  for (let at = 0; at < layers; at++)\n    rows.push(items.map((_, index) => index).filter((index) => items[index].layer === at))\n  // Barycenter ordering, alternating downward and upward sweeps.\n  const position = items.map(() => 0)\n  const number = () => rows.forEach((row) => row.forEach((item, at) => (position[item] = at)))\n  number()\n  for (let sweep = 0; sweep < 8; sweep++) {\n    const downward = sweep % 2 === 0\n    for (const row of downward ? rows : [...rows].reverse()) {\n      const score = (item) => {\n        const near = downward ? up[item] : down[item]\n        return near.length ? near.reduce((sum, other) => sum + position[other], 0) / near.length : position[item]\n      }\n      const scores = new Map(row.map((item) => [item, score(item)]))\n      row.sort((a, b) => scores.get(a) - scores.get(b))\n      row.forEach((item, at) => (position[item] = at))\n    }\n  }\n  // x: start packed and centered, then pull toward neighbors while keeping the order and a minimum gap.\n  rows.forEach((row) => row.forEach((item, at) => (items[item].x = at - (row.length - 1) / 2)))\n  const gap = (a, b) => (a < n && b < n ? 1 : a < n || b < n ? 0.6 : 0.3)\n  for (let pass = 0; pass < 8; pass++) {\n    const downward = pass % 2 === 0\n    for (const row of downward ? rows : [...rows].reverse()) {\n      const desired = row.map((item) => {\n        const near = [...(downward ? up[item] : down[item])]\n        return near.length ? near.reduce((sum, other) => sum + items[other].x, 0) / near.length : items[item].x\n      })\n      const xs = [...desired]\n      for (let at = 1; at < row.length; at++) xs[at] = Math.max(xs[at], xs[at - 1] + gap(row[at - 1], row[at]))\n      const shift = desired.reduce((sum, value, at) => sum + value - xs[at], 0) / row.length\n      row.forEach((item, at) => (items[item].x = xs[at] + shift))\n    }\n  }\n  const min = Math.min(...items.map((item) => item.x))\n  const round = (value) => Math.round((value - min) * 1000) / 1000\n  return {\n    ids,\n    layers,\n    span: Math.max(...items.map((item) => item.x)) - min,\n    nodes: items.slice(0, n).map((item) => ({ x: round(item.x), layer: item.layer })),\n    edges: chains.map((chain, edge) => {\n      const points = chain.map((item) => [round(items[item].x), items[item].layer])\n      return { points: back.has(edge) ? points.reverse() : points, self: pairs[edge][0] === pairs[edge][1] }\n    }),\n  }\n}\n\n// Slot units to pixels: at most 190 px per slot, the whole span centered in the width.\nfunction grid(state, width) {\n  const unit = Math.min(190, (width - 16) / (state.span + 1))\n  const left = (width - unit * (state.span + 1)) / 2\n  return { unit, x: (slot) => left + (slot + 0.5) * unit, y: (layer) => 10 + layer * LAYER + 22 }\n}\n\nfunction place(state, data, width) {\n  const columns = grid(state, width)\n  const unit = columns.unit\n  return data.nodes.map((node, index) => {\n    const lines = wrap(node.label ?? node.id, Math.floor((Math.min(170, unit - 14) - 16) / 6.8))\n    const decision = node.shape === \"decision\"\n    const text = Math.max(...lines.map((line) => line.length)) * 6.8 + 24\n    const w = Math.min(unit - 8, decision ? text * 1.4 + 10 : text)\n    const h = decision ? 54 : lines.length > 1 ? 44 : 34\n    const at = state.nodes[index]\n    return { x: columns.x(at.x), y: columns.y(at.layer), w, h, lines, layer: at.layer }\n  })\n}\n\nfunction shape(g, node, box, active, selected) {\n  const paint = {\n    fill: \"surface\",\n    stroke: selected ? \"accent\" : active ? \"muted\" : (node.color ?? \"border\"),\n    width: selected ? 2 : 1.25,\n  }\n  const left = box.x - box.w / 2\n  const top = box.y - box.h / 2\n  if (node.shape === \"decision\")\n    g.path(\n      [[\"M\", box.x, top], [\"L\", box.x + box.w / 2, box.y], [\"L\", box.x, top + box.h], [\"L\", left, box.y], [\"Z\"]],\n      paint,\n    )\n  else if (node.shape === \"io\")\n    g.path(\n      [\n        [\"M\", left + 8, top],\n        [\"L\", left + box.w, top],\n        [\"L\", left + box.w - 8, top + box.h],\n        [\"L\", left, top + box.h],\n        [\"Z\"],\n      ],\n      paint,\n    )\n  else g.rrect(left, top, box.w, box.h, node.shape === \"terminal\" ? box.h / 2 : 6, paint)\n  box.lines.forEach((line, at) =>\n    g.text(box.x, box.y + 4 + (at - (box.lines.length - 1) / 2) * 15, line, {\n      size: 12,\n      align: \"center\",\n      weight: node.shape === \"terminal\" ? 600 : 400,\n    }),\n  )\n}\n\n// An edge through its points: leave a node from its bottom (or top, going up), curve through dummies, arrive with an arrow.\nfunction connect(g, edge, ends, boxes, columns, label, lit, labels) {\n  const stroke = lit ? \"accent\" : \"muted\"\n  const width = lit ? 2 : 1.25\n  const from = boxes[ends[0]]\n  if (edge.self) {\n    const x = from.x + from.w / 2\n    g.path(\n      [\n        [\"M\", x, from.y - 6],\n        [\"C\", x + 30, from.y - 22, x + 30, from.y + 22, x + 2, from.y + 6],\n      ],\n      { stroke, width },\n    )\n    return\n  }\n  const points = edge.points.map(([x, layer], at) => {\n    const real = at === 0 ? boxes[ends[0]] : at === edge.points.length - 1 ? boxes[ends[1]] : null\n    return real ? { x: real.x, y: real.y, h: real.h } : { x: columns.x(x), y: columns.y(layer), h: 0 }\n  })\n  const start = points[1].y > points[0].y ? 1 : -1\n  let x0 = points[0].x\n  let y0 = points[0].y + (start * points[0].h) / 2\n  const segments = [[\"M\", x0, y0]]\n  for (let at = 1; at < points.length; at++) {\n    const p = points[at]\n    const dir = p.y > points[at - 1].y ? 1 : -1\n    const y1 = p.y - (dir * p.h) / 2 - (at === points.length - 1 ? dir * 2 : 0)\n    const bend = (y1 - y0) / 2\n    segments.push([\"C\", x0, y0 + bend, p.x, y1 - bend, p.x, y1])\n    x0 = p.x\n    y0 = y1\n  }\n  g.path(segments, { stroke, width })\n  const tip = segments[segments.length - 1]\n  const dir = points[points.length - 1].y > points[points.length - 2].y ? 1 : -1\n  const tx = tip[5]\n  const ty = tip[6] + dir * 2\n  g.path([[\"M\", tx, ty], [\"L\", tx - 4.5, ty - dir * 8], [\"L\", tx + 4.5, ty - dir * 8], [\"Z\"]], stroke)\n  if (label && labels) {\n    const first = segments[1]\n    const mx = (segments[0][1] + first[5]) / 2\n    const my = (segments[0][2] + first[6]) / 2\n    const w = 6.4 * label.length + 10\n    g.rrect(mx - w / 2, my - 9, w, 16, 4, \"bg\")\n    g.text(mx, my + 3, label, { size: 11, align: \"center\", color: lit ? \"text\" : \"muted\" })\n  }\n}\n\nfunction intro(state) {\n  return Math.round(Math.min(1.6, 0.3 + 0.15 * state.layers) * 100) / 100\n}\n\n// Splits a label into at most two lines of about `max` characters.\nfunction wrap(label, max) {\n  if (label.length <= max) return [label]\n  const words = label.split(\" \")\n  let first = \"\"\n  while (words.length && (first + \" \" + words[0]).trim().length <= max) first = (first + \" \" + words.shift()).trim()\n  if (!first) first = words.shift()\n  const rest = words.join(\" \")\n  return [fit(first, max), rest ? fit(rest, max) : null].filter(Boolean)\n}\n\nfunction describe(data, index) {\n  const node = data.nodes[index]\n  const name = (id) => data.nodes.find((item) => item.id === id)?.label ?? id\n  const next = data.edges\n    .filter((edge) => edge.from === node.id)\n    .map((edge) => name(edge.to) + (edge.label ? \" (\" + edge.label + \")\" : \"\"))\n  const previous = data.edges.filter((edge) => edge.to === node.id).map((edge) => name(edge.from))\n  return [\n    node.label ?? node.id,\n    next.length ? \"next: \" + next.join(\", \") : \"\",\n    previous.length ? \"from: \" + previous.join(\", \") : \"\",\n  ]\n    .filter(Boolean)\n    .join(\" · \")\n}\n\nfunction summary(data) {\n  const name = (id) => data.nodes.find((item) => item.id === id)?.label ?? id\n  return (\n    \"Flowchart. \" +\n    data.edges\n      .map((edge) => name(edge.from) + \" → \" + (edge.label ? \"[\" + edge.label + \"] \" : \"\") + name(edge.to))\n      .join(\"; \")\n  )\n}\n\nfunction fit(text, max) {\n  return text.length <= max ? text : text.slice(0, Math.max(1, max - 1)) + \"…\"\n}\n\nfunction ease(p) {\n  const clamped = Math.max(0, Math.min(1, p))\n  return 1 - Math.pow(1 - clamped, 3)\n}\n",
+  "data": {
+   "title": "Deploy pipeline",
+   "choose": true,
+   "nodes": [
+    {
+     "id": "push",
+     "label": "Push to main",
+     "shape": "terminal"
+    },
+    {
+     "id": "build",
+     "label": "Build and test"
+    },
+    {
+     "id": "ok",
+     "label": "Tests pass?",
+     "shape": "decision"
+    },
+    {
+     "id": "fix",
+     "label": "Notify author",
+     "shape": "io"
+    },
+    {
+     "id": "stage",
+     "label": "Deploy to staging"
+    },
+    {
+     "id": "smoke",
+     "label": "Smoke tests pass?",
+     "shape": "decision"
+    },
+    {
+     "id": "prod",
+     "label": "Deploy to production"
+    },
+    {
+     "id": "done",
+     "label": "Done",
+     "shape": "terminal"
+    }
+   ],
+   "edges": [
+    {
+     "from": "push",
+     "to": "build"
+    },
+    {
+     "from": "build",
+     "to": "ok"
+    },
+    {
+     "from": "ok",
+     "to": "stage",
+     "label": "yes"
+    },
+    {
+     "from": "ok",
+     "to": "fix",
+     "label": "no"
+    },
+    {
+     "from": "fix",
+     "to": "build",
+     "label": "retry"
+    },
+    {
+     "from": "stage",
+     "to": "smoke"
+    },
+    {
+     "from": "smoke",
+     "to": "prod",
+     "label": "yes"
+    },
+    {
+     "from": "smoke",
+     "to": "fix",
+     "label": "no"
+    },
+    {
+     "from": "prod",
+     "to": "done"
+    }
+   ]
+  }
+ },
+ "funnel": {
+  "mode": "step",
+  "source": "// A conversion funnel: stages as centered bars sized by value, joined by tapering bands, with the conversion from the\n// previous stage on the right. Bars widen in; tap a stage to select it. With `choose`, the Choose button submits it.\n\nconst ROW = 44\nconst INTRO = 0.7\n\nfunction init(data) {\n  return { selected: null }\n}\n\nfunction view(state, data) {\n  return ui.column({ gap: 1, align: \"stretch\" }, [\n    ui.text(data.title, { style: \"title\" }),\n    ui.canvas({ id: \"funnel\", height: data.stages.length * ROW + 4, fps: 60, duration: INTRO, alt: summary(data) }),\n    ui.text(state.selected === null ? \"Tap a stage to see its conversion\" : describe(data, state.selected), {\n      style: \"caption\",\n      tone: state.selected === null ? \"muted\" : \"default\",\n    }),\n    data.choose &&\n      ui.row({ gap: 1 }, [\n        ui.button(\"choose\", \"Choose stage\", { variant: \"primary\", disabled: state.selected === null }),\n      ]),\n  ])\n}\n\nfunction update(state, event, data) {\n  if (event.id === \"choose\" && state.selected !== null) {\n    const stage = data.stages[state.selected]\n    return submit(\n      { label: stage.label, index: state.selected, value: stage.value, ...rates(data, state.selected) },\n      state,\n    )\n  }\n  if (event.type !== \"pointer\" || event.value.kind !== \"up\") return state\n  const index = Math.floor((event.value.y - 2) / ROW)\n  const hit = index >= 0 && index < data.stages.length ? index : null\n  return { ...state, selected: hit === state.selected ? null : hit }\n}\n\nfunction draw(state, data, frame) {\n  const g = ui.draw()\n  const box = layout(data, frame.width)\n  const grow = ease(frame.t / INTRO)\n  const hover = frame.pointer && !frame.pointer.down ? Math.floor((frame.pointer.y - 2) / ROW) : null\n  const active = hover !== null && hover >= 0 && hover < data.stages.length ? hover : state.selected\n  const fill = data.color ?? \"accent\"\n  const half = (index) => (Math.max(0.02, data.stages[index].value / box.max) * box.w * grow) / 2\n  const bar = ROW - 16\n  data.stages.forEach((stage, index) => {\n    const y = 2 + index * ROW\n    if (index > 0) {\n      const above = half(index - 1)\n      const below = half(index)\n      g.save().alpha(0.15)\n      g.path(\n        [\n          [\"M\", box.cx - above, y - 16 + 2],\n          [\"L\", box.cx + above, y - 16 + 2],\n          [\"L\", box.cx + below, y + 8],\n          [\"L\", box.cx - below, y + 8],\n          [\"Z\"],\n        ],\n        fill,\n      )\n      g.restore()\n    }\n    const dim = active !== null && active !== index\n    if (dim) g.save().alpha(0.5)\n    g.rrect(box.cx - half(index), y + 8, half(index) * 2, bar, 6, fill)\n    if (dim) g.restore()\n    g.text(8, y + 8 + bar / 2 - 2, fit(stage.label, box.left - 14, 12), {\n      size: 12,\n      weight: index === active ? 600 : 400,\n    })\n    g.text(8, y + 8 + bar / 2 + 13, amount(stage.value, data.unit), { size: 11, color: \"muted\" })\n    if (half(index) * 2 > 60)\n      g.text(box.cx, y + 8 + bar / 2 + 4, percent(stage.value / data.stages[0].value), {\n        size: 12,\n        weight: 600,\n        align: \"center\",\n        color: \"#ffffff\",\n      })\n    if (index > 0)\n      g.text(frame.width - 8, y + 8 + bar / 2 + 4, percent(stage.value / data.stages[index - 1].value), {\n        size: 12,\n        align: \"right\",\n        color: \"muted\",\n      })\n    if (index === state.selected)\n      g.rrect(box.cx - half(index) - 2, y + 6, half(index) * 2 + 4, bar + 4, 7, { stroke: \"text\", width: 1.5 })\n  })\n  return g.commands\n}\n\nfunction layout(data, width) {\n  const left = Math.min(\n    width * 0.3,\n    Math.max(70, 16 + 6.6 * Math.max(...data.stages.map((stage) => stage.label.length))),\n  )\n  const right = 56\n  const w = Math.max(20, width - left - right)\n  return { left, w, cx: left + w / 2, max: Math.max(...data.stages.map((stage) => stage.value), 1e-9) }\n}\n\nfunction rates(data, index) {\n  const first = data.stages[0].value\n  const previous = data.stages[Math.max(0, index - 1)].value\n  const round = (value) => Math.round(value * 1000) / 1000\n  return {\n    ofFirst: first ? round(data.stages[index].value / first) : 0,\n    ofPrevious: previous ? round(data.stages[index].value / previous) : 0,\n  }\n}\n\nfunction describe(data, index) {\n  const stage = data.stages[index]\n  const rate = rates(data, index)\n  if (index === 0) return stage.label + \": \" + amount(stage.value, data.unit)\n  return (\n    stage.label +\n    \": \" +\n    amount(stage.value, data.unit) +\n    \" · \" +\n    percent(rate.ofPrevious) +\n    \" of \" +\n    data.stages[index - 1].label +\n    \", \" +\n    percent(rate.ofFirst) +\n    \" of \" +\n    data.stages[0].label +\n    \" · drop-off \" +\n    amount(data.stages[index - 1].value - stage.value, data.unit)\n  )\n}\n\nfunction summary(data) {\n  return (\n    \"Funnel. \" +\n    data.stages\n      .map(\n        (stage, index) =>\n          stage.label +\n          \" \" +\n          amount(stage.value, data.unit) +\n          (index ? \" (\" + percent(stage.value / data.stages[index - 1].value) + \" of previous)\" : \"\"),\n      )\n      .join(\", \")\n  )\n}\n\nfunction percent(share) {\n  return (Number.isFinite(share) ? Math.round(share * 1000) / 10 : 0) + \"%\"\n}\n\nfunction amount(value, unit) {\n  const text = String(Math.round(value * 100) / 100).replace(/\\B(?=(\\d{3})+(?!\\d))/g, \",\")\n  if (!unit) return text\n  return unit.length > 1 && /^[a-z]/i.test(unit) ? text + \" \" + unit : text + unit\n}\n\nfunction fit(text, width, size) {\n  const max = Math.max(1, Math.floor(width / (size * 0.58)))\n  return text.length <= max ? text : text.slice(0, Math.max(1, max - 1)) + \"…\"\n}\n\nfunction ease(p) {\n  const clamped = Math.max(0, Math.min(1, p))\n  return 1 - Math.pow(1 - clamped, 3)\n}\n",
+  "data": {
+   "title": "Checkout funnel",
+   "choose": true,
+   "stages": [
+    {
+     "label": "Visited",
+     "value": 12400
+    },
+    {
+     "label": "Added to cart",
+     "value": 4100
+    },
+    {
+     "label": "Checkout",
+     "value": 2300
+    },
+    {
+     "label": "Paid",
+     "value": 1650
+    },
+    {
+     "label": "Repeat",
+     "value": 420
+    }
+   ]
+  }
+ },
+ "gauge": {
+  "mode": "step",
+  "source": "// KPI dials: one to four gauges side by side, each a 270° arc from min to max with optional threshold bands (each band\n// runs up to `to` in a tone) and a target tick. The value arc takes the tone of its band and sweeps in while the\n// number counts up. Tap a gauge to select it. With `choose`, the Choose button submits the selected gauge.\n\nconst HEIGHT = 190\nconst INTRO = 0.9\nconst START = (Math.PI * 3) / 4\nconst SWEEP = (Math.PI * 3) / 2\n\nfunction init(data) {\n  return { selected: null }\n}\n\nfunction view(state, data) {\n  return ui.column({ gap: 1, align: \"stretch\" }, [\n    ui.text(data.title, { style: \"title\" }),\n    ui.canvas({ id: \"gauge\", height: HEIGHT, fps: 60, duration: INTRO, alt: summary(data) }),\n    ui.text(state.selected === null ? \"Tap a gauge for its thresholds\" : describe(data.gauges[state.selected]), {\n      style: \"caption\",\n      tone: state.selected === null ? \"muted\" : \"default\",\n    }),\n    data.choose &&\n      ui.row({ gap: 1 }, [\n        ui.button(\"choose\", \"Choose gauge\", { variant: \"primary\", disabled: state.selected === null }),\n      ]),\n  ])\n}\n\nfunction update(state, event, data) {\n  if (event.id === \"choose\" && state.selected !== null) {\n    const gauge = data.gauges[state.selected]\n    return submit(\n      { label: gauge.label, index: state.selected, value: gauge.value, tone: tone(gauge, gauge.value) },\n      state,\n    )\n  }\n  if (event.type !== \"pointer\" || event.value.kind !== \"up\") return state\n  const index = Math.floor((event.value.x / event.value.width) * data.gauges.length)\n  const hit = index >= 0 && index < data.gauges.length ? index : null\n  return { ...state, selected: hit === state.selected ? null : hit }\n}\n\nfunction draw(state, data, frame) {\n  const g = ui.draw()\n  const cell = frame.width / data.gauges.length\n  const r = Math.max(24, Math.min(cell / 2 - 18, 74))\n  // The dial, its min/max and its label are 1.71 r + 54 px tall; center them vertically.\n  const top = Math.max(10, (frame.height - 1.71 * r - 54) / 2)\n  const grow = ease(frame.t / INTRO)\n  data.gauges.forEach((gauge, index) => {\n    const cx = cell * (index + 0.5)\n    const cy = top + r\n    const min = gauge.min ?? 0\n    const at = (value) => START + SWEEP * Math.max(0, Math.min(1, (value - min) / (gauge.max - min || 1)))\n    if (index === state.selected)\n      g.rrect(cx - cell / 2 + 4, 2, cell - 8, frame.height - 4, 10, { fill: \"surface\", stroke: \"border\", width: 1 })\n    g.path(arc(cx, cy, r, START, START + SWEEP), { stroke: \"border\", width: 10, cap: \"round\" })\n    let from = min\n    g.save().alpha(0.45)\n    for (const band of [...(gauge.bands ?? [])].sort((a, b) => a.to - b.to)) {\n      if (band.to > from)\n        g.path(arc(cx, cy, r + 9, at(from), at(Math.min(band.to, gauge.max))), { stroke: band.tone, width: 3 })\n      from = band.to\n    }\n    g.restore()\n    const shown = min + (gauge.value - min) * grow\n    if (shown > min)\n      g.path(arc(cx, cy, r, START, at(shown)), { stroke: tone(gauge, gauge.value), width: 10, cap: \"round\" })\n    if (gauge.target !== undefined) {\n      const angle = at(gauge.target)\n      g.line(\n        cx + Math.cos(angle) * (r - 9),\n        cy + Math.sin(angle) * (r - 9),\n        cx + Math.cos(angle) * (r + 9),\n        cy + Math.sin(angle) * (r + 9),\n        {\n          stroke: \"text\",\n          width: 2,\n          cap: \"round\",\n        },\n      )\n    }\n    g.text(cx, cy + 8, amount(shown, gauge.unit, gauge.value), {\n      size: Math.min(24, r / 2.6),\n      weight: 700,\n      align: \"center\",\n    })\n    g.text(cx - r * 0.71, cy + r * 0.71 + 16, compact(min), { size: 10, align: \"center\", color: \"muted\" })\n    g.text(cx + r * 0.71, cy + r * 0.71 + 16, compact(gauge.max), { size: 10, align: \"center\", color: \"muted\" })\n    g.text(cx, cy + r * 0.71 + 36, fit(gauge.label, cell - 16, 13), { size: 13, weight: 600, align: \"center\" })\n  })\n  return g.commands\n}\n\n// The band's tone for a value: the first band whose `to` is at or above it (default accent).\nfunction tone(gauge, value) {\n  const band = [...(gauge.bands ?? [])].sort((a, b) => a.to - b.to).find((band) => value <= band.to)\n  return band?.tone ?? \"accent\"\n}\n\nfunction arc(cx, cy, r, from, to) {\n  const segments = [[\"M\", cx + Math.cos(from) * r, cy + Math.sin(from) * r]]\n  const steps = Math.max(1, Math.ceil(Math.abs(to - from) / (Math.PI / 2)))\n  const step = (to - from) / steps\n  const k = (4 / 3) * Math.tan(step / 4)\n  for (let i = 0; i < steps; i++) {\n    const a = from + i * step\n    const b = a + step\n    segments.push([\n      \"C\",\n      cx + r * (Math.cos(a) - k * Math.sin(a)),\n      cy + r * (Math.sin(a) + k * Math.cos(a)),\n      cx + r * (Math.cos(b) + k * Math.sin(b)),\n      cy + r * (Math.sin(b) - k * Math.cos(b)),\n      cx + r * Math.cos(b),\n      cy + r * Math.sin(b),\n    ])\n  }\n  return segments\n}\n\nfunction describe(gauge) {\n  const bands = [...(gauge.bands ?? [])].sort((a, b) => a.to - b.to)\n  const band = bands.findIndex((band) => gauge.value <= band.to)\n  return (\n    gauge.label +\n    \": \" +\n    amount(gauge.value, gauge.unit) +\n    \" of \" +\n    compact(gauge.min ?? 0) +\n    \"–\" +\n    compact(gauge.max) +\n    (band >= 0\n      ? \" · \" +\n        bands[band].tone +\n        \" band (\" +\n        compact(band ? bands[band - 1].to : (gauge.min ?? 0)) +\n        \"–\" +\n        compact(bands[band].to) +\n        \")\"\n      : \"\") +\n    (gauge.target !== undefined ? \" · target \" + amount(gauge.target, gauge.unit) : \"\")\n  )\n}\n\nfunction summary(data) {\n  return \"Gauges. \" + data.gauges.map(describe).join(\"; \")\n}\n\n// While counting up, show as many decimals as the final value has (at most two).\nfunction amount(value, unit, final) {\n  const digits = Math.min(2, (String(final ?? value).split(\".\")[1] ?? \"\").length)\n  const text = (Math.round(value * Math.pow(10, digits)) / Math.pow(10, digits)).toFixed(digits)\n  if (!unit) return text\n  return unit.length > 1 && /^[a-z]/i.test(unit) ? text + \" \" + unit : text + unit\n}\n\nfunction compact(value) {\n  const size = Math.abs(value)\n  if (size >= 1e6) return Math.round(value / 1e5) / 10 + \"M\"\n  if (size >= 1e4) return Math.round(value / 100) / 10 + \"k\"\n  return String(Math.round(value * 100) / 100)\n}\n\nfunction fit(text, width, size) {\n  const max = Math.max(1, Math.floor(width / (size * 0.58)))\n  return text.length <= max ? text : text.slice(0, Math.max(1, max - 1)) + \"…\"\n}\n\nfunction ease(p) {\n  const clamped = Math.max(0, Math.min(1, p))\n  return 1 - Math.pow(1 - clamped, 3)\n}\n",
+  "data": {
+   "title": "Service health",
+   "choose": true,
+   "gauges": [
+    {
+     "label": "CPU",
+     "value": 72,
+     "max": 100,
+     "unit": "%",
+     "bands": [
+      {
+       "to": 60,
+       "tone": "success"
+      },
+      {
+       "to": 85,
+       "tone": "warning"
+      },
+      {
+       "to": 100,
+       "tone": "error"
+      }
+     ]
+    },
+    {
+     "label": "p99 latency",
+     "value": 340,
+     "max": 1000,
+     "unit": "ms",
+     "target": 500,
+     "bands": [
+      {
+       "to": 500,
+       "tone": "success"
+      },
+      {
+       "to": 800,
+       "tone": "warning"
+      },
+      {
+       "to": 1000,
+       "tone": "error"
+      }
+     ]
+    },
+    {
+     "label": "Uptime",
+     "value": 99.95,
+     "min": 99,
+     "max": 100,
+     "unit": "%",
+     "bands": [
+      {
+       "to": 99.5,
+       "tone": "error"
+      },
+      {
+       "to": 99.9,
+       "tone": "warning"
+      },
+      {
+       "to": 100,
+       "tone": "success"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "graph": {
+  "mode": "step",
+  "source": "// A network of nodes and edges. `init` runs a deterministic force layout once (links pull, nodes repel, weak gravity)\n// and keeps a few snapshots of it in unit coordinates; the canvas plays them back so the graph settles in over the\n// intro, then draws only on taps. Tap a node to select it and highlight its neighbors. With `choose`, the Choose button\n// submits the selected node.\n\nconst HEIGHT = 320\nconst INTRO = 1.2\nconst PAD = 22\nconst STEPS = [0, 0.04, 0.1, 0.22, 0.45, 1]\nconst PALETTE = [\"accent\", \"#f59e0b\", \"#10b981\", \"#ef4444\", \"#8b5cf6\", \"#06b6d4\", \"#ec4899\", \"#84cc16\"]\n\nfunction init(data) {\n  return { selected: null, ...settle(data) }\n}\n\nfunction view(state, data) {\n  const picked = state.selected === null ? null : data.nodes[state.selected]\n  return ui.column({ gap: 1, align: \"stretch\" }, [\n    ui.text(data.title, { style: \"title\" }),\n    ui.canvas({ id: \"graph\", height: HEIGHT, fps: 60, duration: INTRO, alt: summary(state, data) }),\n    ui.text(picked ? describe(state, data, state.selected) : \"Tap a node to see its neighbors\", {\n      style: \"caption\",\n      tone: picked ? \"default\" : \"muted\",\n    }),\n    data.choose &&\n      ui.row({ gap: 1 }, [\n        ui.button(\"choose\", picked ? \"Choose \" + name(picked) : \"Choose\", { variant: \"primary\", disabled: !picked }),\n      ]),\n  ])\n}\n\nfunction update(state, event, data) {\n  if (event.id === \"choose\" && state.selected !== null) {\n    const node = data.nodes[state.selected]\n    return submit(\n      { id: node.id, label: name(node), neighbors: neighbors(state, state.selected).map((at) => data.nodes[at].id) },\n      state,\n    )\n  }\n  if (event.type !== \"pointer\" || event.value.kind !== \"up\") return state\n  const pointer = event.value\n  const hit = locate(state, data, positions(state, 1, pointer.width, pointer.height), pointer.x, pointer.y)\n  return { ...state, selected: hit === state.selected ? null : hit }\n}\n\nfunction draw(state, data, frame) {\n  const g = ui.draw()\n  const at = positions(state, ease(frame.t / INTRO), frame.width, frame.height)\n  const hover = frame.pointer && !frame.pointer.down ? locate(state, data, at, frame.pointer.x, frame.pointer.y) : null\n  const active = hover ?? state.selected\n  const near = active === null ? null : new Set([active, ...neighbors(state, active)])\n  const groups = [...new Set(data.nodes.map((node) => node.group ?? \"\"))]\n  const fill = (index) =>\n    data.nodes[index].color ??\n    (groups.length > 1 ? PALETTE[groups.indexOf(data.nodes[index].group ?? \"\") % PALETTE.length] : \"accent\")\n  const touches = (edge) => active !== null && (edge[0] === active || edge[1] === active)\n  for (const lit of [false, true]) {\n    const edges = state.edges.filter((edge) => touches(edge) === lit)\n    if (edges.length === 0) continue\n    g.save().alpha(lit ? 0.9 : active === null ? 0.5 : 0.15)\n    for (const [a, b, weight] of edges) {\n      if (a === b) continue\n      const stroke = lit ? fill(active) : \"muted\"\n      g.line(at[a][0], at[a][1], at[b][0], at[b][1], { stroke, width: (lit ? 1.5 : 1) * weight })\n      if (data.directed) arrow(g, at[a], at[b], radius(state, data, b) + 2, stroke)\n    }\n    g.restore()\n  }\n  if (frame.t >= INTRO)\n    data.edges.forEach((edge, index) => {\n      const [a, b] = state.edges[index]\n      if (!edge.label || a === b || !(touches(state.edges[index]) || (active === null && data.edges.length <= 16)))\n        return\n      g.text((at[a][0] + at[b][0]) / 2, (at[a][1] + at[b][1]) / 2 - 4, edge.label, {\n        size: 10,\n        align: \"center\",\n        color: \"muted\",\n      })\n    })\n  const labelled = new Set(\n    data.nodes.length <= 30\n      ? data.nodes.map((_, index) => index)\n      : [\n          ...state.degree\n            .map((d, i) => [d, i])\n            .sort((a, b) => b[0] - a[0])\n            .slice(0, 8)\n            .map((pair) => pair[1]),\n          ...(near ?? []),\n        ],\n  )\n  data.nodes.forEach((node, index) => {\n    const r = radius(state, data, index)\n    const dim = near && !near.has(index)\n    if (dim) g.save().alpha(0.3)\n    g.circle(at[index][0], at[index][1], r, { fill: fill(index), stroke: \"bg\", width: 1.5 })\n    if (index === active) g.circle(at[index][0], at[index][1], r + 3, { stroke: \"text\", width: 2 })\n    if (labelled.has(index) && frame.t >= INTRO * 0.5)\n      g.text(at[index][0], at[index][1] + r + 12, fit(name(node), 120, 11), {\n        size: 11,\n        align: \"center\",\n        weight: index === active ? 600 : 400,\n        color: dim ? \"muted\" : \"text\",\n      })\n    if (dim) g.restore()\n  })\n  return g.commands\n}\n\n// Velocity-Verlet force simulation in unit space (link length 1), keeping snapshots at the STEPS fractions.\nfunction settle(data) {\n  const index = new Map(data.nodes.map((node, at) => [node.id, at]))\n  for (const edge of data.edges)\n    for (const id of [edge.source, edge.target])\n      if (!index.has(id)) throw new Error('Unknown node id \"' + id + '\" in edges')\n  const n = data.nodes.length\n  const edges = data.edges.map((edge) => [index.get(edge.source), index.get(edge.target), edge.weight ?? 1])\n  const degree = data.nodes.map(() => 0)\n  for (const [a, b] of edges) {\n    degree[a]++\n    degree[b]++\n  }\n  const xs = []\n  const ys = []\n  for (let i = 0; i < n; i++) {\n    const r = 0.5 * Math.sqrt(0.5 + i)\n    xs.push(r * Math.cos(i * 2.39996))\n    ys.push(r * Math.sin(i * 2.39996))\n  }\n  const vx = xs.map(() => 0)\n  const vy = xs.map(() => 0)\n  // About 20k pair updates in all: enough to settle 40 nodes, cheap enough for a 250 ms step.\n  const iterations = Math.max(24, Math.min(160, Math.round(20000 / ((n * n) / 2 + edges.length + 1))))\n  const keep = new Set(STEPS.map((step) => Math.round(step * iterations)))\n  const snapshots = []\n  let alpha = 1\n  const decay = 1 - Math.pow(0.001, 1 / iterations)\n  for (let step = 0; step <= iterations; step++) {\n    if (keep.has(step)) snapshots.push([...xs.map((x, i) => [x, ys[i]])])\n    for (const [a, b] of edges) {\n      if (a === b) continue\n      const dx = xs[b] + vx[b] - xs[a] - vx[a]\n      const dy = ys[b] + vy[b] - ys[a] - vy[a]\n      const d = Math.hypot(dx, dy) || 1e-6\n      const pull = ((d - 1) / d) * alpha * (1 / Math.min(degree[a], degree[b]))\n      const bias = degree[a] / (degree[a] + degree[b])\n      vx[b] -= dx * pull * bias\n      vy[b] -= dy * pull * bias\n      vx[a] += dx * pull * (1 - bias)\n      vy[a] += dy * pull * (1 - bias)\n    }\n    for (let i = 0; i < n; i++)\n      for (let j = i + 1; j < n; j++) {\n        const dx = xs[j] - xs[i]\n        const dy = ys[j] - ys[i]\n        const d2 = Math.max(0.01, dx * dx + dy * dy)\n        const push = (0.6 * alpha) / d2\n        vx[i] -= dx * push\n        vy[i] -= dy * push\n        vx[j] += dx * push\n        vy[j] += dy * push\n      }\n    for (let i = 0; i < n; i++) {\n      vx[i] = (vx[i] - xs[i] * 0.06 * alpha) * 0.6\n      vy[i] = (vy[i] - ys[i] * 0.06 * alpha) * 0.6\n      xs[i] += vx[i]\n      ys[i] += vy[i]\n    }\n    alpha -= alpha * decay\n  }\n  // Fit every snapshot with the final layout's bounds, so early ones start small in the middle and spread out.\n  const last = snapshots[snapshots.length - 1]\n  const minX = Math.min(...last.map((p) => p[0]))\n  const minY = Math.min(...last.map((p) => p[1]))\n  const spanX = Math.max(1e-6, Math.max(...last.map((p) => p[0])) - minX)\n  const spanY = Math.max(1e-6, Math.max(...last.map((p) => p[1])) - minY)\n  const unit = (value, min, span) => Math.round(((value - min) / span) * 1000) / 1000\n  return {\n    frames: snapshots.map((points) => points.map((p) => [unit(p[0], minX, spanX), unit(p[1], minY, spanY)])),\n    edges: edges.map(([a, b, weight]) => [a, b, Math.max(0.5, Math.min(4, weight))]),\n    degree,\n  }\n}\n\n// Pixel positions at intro progress p (0..1), interpolated between snapshots.\nfunction positions(state, p, width, height) {\n  const at = p * (state.frames.length - 1)\n  const from = Math.min(state.frames.length - 1, Math.floor(at))\n  const to = Math.min(state.frames.length - 1, from + 1)\n  const mix = at - from\n  return state.frames[from].map((point, index) => {\n    const end = state.frames[to][index]\n    return [\n      PAD + (point[0] + (end[0] - point[0]) * mix) * (width - 2 * PAD),\n      PAD - 4 + (point[1] + (end[1] - point[1]) * mix) * (height - 2 * PAD - 8),\n    ]\n  })\n}\n\nfunction radius(state, data, index) {\n  const size = data.nodes[index].size\n  if (size !== undefined) return 4 + 10 * Math.sqrt(size / Math.max(...data.nodes.map((node) => node.size ?? 0), 1e-6))\n  return 5 + 1.6 * Math.sqrt(state.degree[index])\n}\n\nfunction neighbors(state, index) {\n  return [...new Set(state.edges.flatMap(([a, b]) => (a === b ? [] : a === index ? [b] : b === index ? [a] : [])))]\n}\n\nfunction locate(state, data, at, px, py) {\n  let best = null\n  let distance = Infinity\n  at.forEach((point, index) => {\n    const d = Math.hypot(point[0] - px, point[1] - py) - radius(state, data, index)\n    if (d < Math.min(distance, 10)) {\n      distance = d\n      best = index\n    }\n  })\n  return best\n}\n\nfunction arrow(g, from, to, inset, color) {\n  const angle = Math.atan2(to[1] - from[1], to[0] - from[0])\n  const tip = [to[0] - Math.cos(angle) * inset, to[1] - Math.sin(angle) * inset]\n  const side = (turn) => [\"L\", tip[0] - Math.cos(angle + turn) * 8, tip[1] - Math.sin(angle + turn) * 8]\n  g.path([[\"M\", tip[0], tip[1]], side(0.4), side(-0.4), [\"Z\"]], color)\n}\n\nfunction describe(state, data, index) {\n  const node = data.nodes[index]\n  const near = neighbors(state, index).map((at) => name(data.nodes[at]))\n  return (\n    name(node) +\n    (node.group ? \" (\" + node.group + \")\" : \"\") +\n    \" · \" +\n    near.length +\n    (near.length === 1 ? \" neighbor\" : \" neighbors\") +\n    (near.length ? \": \" + near.slice(0, 8).join(\", \") + (near.length > 8 ? \", …\" : \"\") : \"\")\n  )\n}\n\nfunction summary(state, data) {\n  const hubs = state.degree\n    .map((degree, index) => [degree, index])\n    .sort((a, b) => b[0] - a[0])\n    .slice(0, 3)\n    .map((pair) => name(data.nodes[pair[1]]) + \" (\" + pair[0] + \")\")\n  return (\n    \"Network of \" + data.nodes.length + \" nodes and \" + data.edges.length + \" edges. Most connected: \" + hubs.join(\", \")\n  )\n}\n\nfunction name(node) {\n  return node.label ?? node.id\n}\n\nfunction fit(text, width, size) {\n  const max = Math.max(1, Math.floor(width / (size * 0.58)))\n  return text.length <= max ? text : text.slice(0, Math.max(1, max - 1)) + \"…\"\n}\n\nfunction ease(p) {\n  const clamped = Math.max(0, Math.min(1, p))\n  return 1 - Math.pow(1 - clamped, 3)\n}\n",
+  "data": {
+   "title": "Service dependencies",
+   "directed": true,
+   "choose": true,
+   "nodes": [
+    {
+     "id": "web",
+     "group": "edge"
+    },
+    {
+     "id": "mobile",
+     "group": "edge"
+    },
+    {
+     "id": "gateway",
+     "group": "edge"
+    },
+    {
+     "id": "auth",
+     "group": "core"
+    },
+    {
+     "id": "users",
+     "group": "core"
+    },
+    {
+     "id": "orders",
+     "group": "core"
+    },
+    {
+     "id": "billing",
+     "group": "core"
+    },
+    {
+     "id": "search",
+     "group": "core"
+    },
+    {
+     "id": "postgres",
+     "group": "data"
+    },
+    {
+     "id": "redis",
+     "group": "data"
+    },
+    {
+     "id": "kafka",
+     "group": "data"
+    },
+    {
+     "id": "elastic",
+     "group": "data"
+    }
+   ],
+   "edges": [
+    {
+     "source": "web",
+     "target": "gateway"
+    },
+    {
+     "source": "mobile",
+     "target": "gateway"
+    },
+    {
+     "source": "gateway",
+     "target": "auth"
+    },
+    {
+     "source": "gateway",
+     "target": "users"
+    },
+    {
+     "source": "gateway",
+     "target": "orders"
+    },
+    {
+     "source": "gateway",
+     "target": "search"
+    },
+    {
+     "source": "auth",
+     "target": "redis"
+    },
+    {
+     "source": "auth",
+     "target": "users"
+    },
+    {
+     "source": "users",
+     "target": "postgres"
+    },
+    {
+     "source": "orders",
+     "target": "postgres"
+    },
+    {
+     "source": "orders",
+     "target": "billing",
+     "label": "charge"
+    },
+    {
+     "source": "orders",
+     "target": "kafka"
+    },
+    {
+     "source": "billing",
+     "target": "kafka"
+    },
+    {
+     "source": "search",
+     "target": "elastic"
+    },
+    {
+     "source": "kafka",
+     "target": "search"
+    }
+   ]
+  }
+ },
  "heatmap": {
   "mode": "step",
   "source": "// A heatmap: a matrix of rows × columns, or a calendar of daily values in week columns (like a contribution graph).\n// Values map to LEVELS shades of one color (two for data with negative and positive values), drawn level by level so\n// a frame stays cheap; a legend shows the scale. Tap a cell to select it. With `choose`, the Choose button submits it.\n\nconst INTRO = 0.6\nconst LEVELS = 6\nconst MONTHS = [\"Jan\", \"Feb\", \"Mar\", \"Apr\", \"May\", \"Jun\", \"Jul\", \"Aug\", \"Sep\", \"Oct\", \"Nov\", \"Dec\"]\nconst WEEKDAYS = [\"Mon\", \"\", \"Wed\", \"\", \"Fri\", \"\", \"\"]\n\n// The calendar grid is laid out once: one cell per day from the Monday before the first date to the last date.\nfunction init(data) {\n  if (data.layout !== \"calendar\") return { selected: null, cells: null }\n  const values = new Map(data.days.map((day) => [days(day.date), day.value]))\n  const keys = [...values.keys()]\n  const first = Math.min(...keys)\n  const start = first - ((first + 3) % 7)\n  const cells = []\n  for (let day = start; day <= Math.max(...keys); day++)\n    cells.push({ day, column: Math.floor((day - start) / 7), row: (day + 3) % 7, value: values.get(day) ?? null })\n  return { selected: null, cells }\n}\n\nfunction view(state, data) {\n  const picked = state.selected === null ? null : cell(state, data, state.selected)\n  return ui.column({ gap: 1, align: \"stretch\" }, [\n    ui.text(data.title, { style: \"title\" }),\n    ui.canvas({ id: \"heatmap\", height: height(state, data), fps: 60, duration: INTRO, alt: summary(state, data) }),\n    ui.text(\n      picked\n        ? picked.name + \": \" + (picked.value === null ? \"no data\" : amount(picked.value, data.unit))\n        : \"Tap a cell to read it\",\n      {\n        style: \"caption\",\n        tone: picked ? \"default\" : \"muted\",\n      },\n    ),\n    data.choose &&\n      ui.row({ gap: 1 }, [\n        ui.button(\"choose\", \"Choose cell\", { variant: \"primary\", disabled: !picked || picked.value === null }),\n      ]),\n  ])\n}\n\nfunction update(state, event, data) {\n  if (event.id === \"choose\" && state.selected !== null) {\n    const picked = cell(state, data, state.selected)\n    return submit(\n      data.layout === \"calendar\"\n        ? { date: picked.name, value: picked.value }\n        : { row: data.rows[picked.row], column: data.columns[picked.column], value: picked.value },\n      state,\n    )\n  }\n  if (event.type !== \"pointer\" || event.value.kind !== \"up\") return state\n  const pointer = event.value\n  const hit = locate(state, data, layout(state, data, pointer.width, pointer.height), pointer.x, pointer.y)\n  return { ...state, selected: hit === state.selected ? null : hit }\n}\n\nfunction draw(state, data, frame) {\n  const g = ui.draw()\n  const box = layout(state, data, frame.width, frame.height)\n  const cells = grid(state, data)\n  const scale = levels(cells, data)\n  const hover = frame.pointer && !frame.pointer.down ? locate(state, data, box, frame.pointer.x, frame.pointer.y) : null\n  labels(g, state, data, box)\n  // Empty cells first, then one save/alpha/restore group per shade.\n  const reveal = (item) => ease((frame.t - (0.35 * item.column) / Math.max(1, box.columns)) / (INTRO - 0.35))\n  const square = (item, paint) => {\n    const grow = reveal(item)\n    if (grow <= 0) return\n    const w = (box.cw - 2) * grow\n    const h = (box.ch - 2) * grow\n    const x = box.x + item.column * box.cw + (box.cw - w) / 2\n    const y = box.y + item.row * box.ch + (box.ch - h) / 2\n    g.rrect(x, y, w, h, Math.min(3, w / 4, h / 4), paint)\n  }\n  const groups = scale.shades.map(() => [])\n  for (const item of cells) {\n    if (item.value === null) square(item, \"surface\")\n    else groups[level(scale, item.value)].push(item)\n  }\n  scale.shades.forEach((shade, index) => {\n    if (groups[index].length === 0) return\n    g.save().alpha(shade.alpha)\n    groups[index].forEach((item) => square(item, shade.color))\n    g.restore()\n  })\n  for (const key of [hover, state.selected]) {\n    if (key === null || frame.t < INTRO) continue\n    const item = cells[key]\n    g.rrect(box.x + item.column * box.cw, box.y + item.row * box.ch, box.cw, box.ch, 3, {\n      stroke: \"text\",\n      width: key === state.selected ? 2 : 1,\n    })\n  }\n  legend(g, data, scale, box, frame.width)\n  return g.commands\n}\n\nfunction height(state, data) {\n  if (data.layout === \"calendar\") return 7 * 14 + 20 + 34\n  return 20 + data.rows.length * Math.max(14, Math.min(32, Math.floor(320 / data.rows.length))) + 34\n}\n\n// The cells of either layout as { column, row, value }; a cell's key is its index here.\nfunction grid(state, data) {\n  if (data.layout === \"calendar\") return state.cells\n  return data.rows.flatMap((_, r) =>\n    data.columns.map((_, c) => ({ column: c, row: r, value: data.values[r]?.[c] ?? null })),\n  )\n}\n\nfunction cell(state, data, key) {\n  const item = grid(state, data)[key]\n  const name = data.layout === \"calendar\" ? format(item.day) : data.rows[item.row] + \" × \" + data.columns[item.column]\n  return { ...item, name }\n}\n\n// Geometry shared by draw and update: matrix cells fill the width; calendar cells are squares.\nfunction layout(state, data, width, height) {\n  const calendar = data.layout === \"calendar\"\n  const rows = calendar ? 7 : data.rows.length\n  const columns = calendar ? state.cells[state.cells.length - 1].column + 1 : data.columns.length\n  const left = calendar ? 34 : Math.min(130, 12 + 6.6 * Math.max(...data.rows.map((row) => row.length)))\n  const top = 20\n  const ch = (height - top - 34) / rows\n  const cw = Math.max(4, Math.min((width - left - 8) / columns, calendar ? ch : 120))\n  return { x: left, y: top, cw, ch: calendar ? cw : ch, rows, columns }\n}\n\nfunction locate(state, data, box, px, py) {\n  const column = Math.floor((px - box.x) / box.cw)\n  const row = Math.floor((py - box.y) / box.ch)\n  if (column < 0 || row < 0 || column >= box.columns || row >= box.rows) return null\n  if (data.layout !== \"calendar\") return row * data.columns.length + column\n  const key = state.cells.findIndex((item) => item.column === column && item.row === row)\n  return key < 0 ? null : key\n}\n\nfunction labels(g, state, data, box) {\n  const size = 11\n  if (data.layout === \"calendar\") {\n    WEEKDAYS.forEach(\n      (name, row) =>\n        name &&\n        g.text(box.x - 6, box.y + row * box.ch + box.ch / 2 + 4, name, { size: 10, align: \"right\", color: \"muted\" }),\n    )\n    // A month is labelled at the week of its 1st; the first partial month only when there is room before the next.\n    const starts = state.cells.filter((item, index) => index === 0 || civil(item.day)[2] === 1)\n    starts.forEach((item, index) => {\n      if (index + 1 < starts.length && starts[index + 1].column - item.column < 3) return\n      g.text(box.x + item.column * box.cw, box.y - 6, MONTHS[civil(item.day)[1] - 1], { size: 10, color: \"muted\" })\n    })\n    return\n  }\n  data.rows.forEach((row, r) =>\n    g.text(box.x - 6, box.y + r * box.ch + box.ch / 2 + 4, fit(row, box.x - 10, size), {\n      size,\n      align: \"right\",\n      color: \"muted\",\n    }),\n  )\n  const every = Math.max(1, Math.ceil((6.6 * Math.max(...data.columns.map((column) => column.length)) + 6) / box.cw))\n  data.columns.forEach((column, c) => {\n    if (c % every === 0)\n      g.text(box.x + c * box.cw + box.cw / 2, box.y - 6, fit(column, box.cw * every - 4, size), {\n        size,\n        align: \"center\",\n        color: \"muted\",\n      })\n  })\n}\n\n// A sequential scale in one color, or a diverging one (blue below zero, red above) when values cross zero.\nfunction levels(cells, data) {\n  const values = cells.flatMap((item) => (item.value === null ? [] : [item.value]))\n  const min = Math.min(...values)\n  const max = Math.max(...values)\n  const diverging = min < 0 && max > 0\n  const shades = []\n  for (let index = 0; index < LEVELS; index++) {\n    const alpha = Math.round((0.18 + (0.82 * index) / (LEVELS - 1)) * 100) / 100\n    if (diverging) {\n      shades.push({\n        alpha,\n        color: data.color ?? \"#ef4444\",\n        low: (max * index) / LEVELS,\n        high: (max * (index + 1)) / LEVELS,\n      })\n      shades.push({ alpha, color: \"#3b82f6\", low: (min * (index + 1)) / LEVELS, high: (min * index) / LEVELS })\n    } else\n      shades.push({\n        alpha,\n        color: data.color ?? \"accent\",\n        low: min + ((max - min) * index) / LEVELS,\n        high: min + ((max - min) * (index + 1)) / LEVELS,\n      })\n  }\n  return { min, max, diverging, shades }\n}\n\nfunction level(scale, value) {\n  if (scale.max === scale.min) return scale.shades.length - 1\n  if (!scale.diverging)\n    return Math.min(LEVELS - 1, Math.floor(((value - scale.min) / (scale.max - scale.min)) * LEVELS))\n  const index = Math.min(LEVELS - 1, Math.floor((value < 0 ? value / scale.min : value / scale.max) * LEVELS))\n  return index * 2 + (value < 0 ? 1 : 0)\n}\n\nfunction legend(g, data, scale, box, width) {\n  const y = box.y + box.rows * box.ch + 14\n  const swatch = 14\n  const order = scale.diverging\n    ? [\n        ...scale.shades.filter((shade) => shade.color === \"#3b82f6\").reverse(),\n        ...scale.shades.filter((shade) => shade.color !== \"#3b82f6\"),\n      ]\n    : scale.shades\n  const right = Math.min(width - 8, box.x + box.columns * box.cw)\n  const maxText = amount(scale.max, data.unit)\n  const left = right - 8 - 7 * maxText.length - order.length * (swatch + 2)\n  g.text(left - 6, y + 11, amount(scale.min, data.unit), { size: 11, align: \"right\", color: \"muted\" })\n  order.forEach((shade, index) => {\n    g.save().alpha(shade.alpha)\n    g.rrect(left + index * (swatch + 2), y, swatch, swatch, 3, shade.color)\n    g.restore()\n  })\n  g.text(left + order.length * (swatch + 2) + 4, y + 11, maxText, { size: 11, color: \"muted\" })\n}\n\n// Days since 1970-01-01 for \"YYYY-MM-DD\" (civil calendar, no time zones).\nfunction days(date) {\n  const [y, m, d] = date.slice(0, 10).split(\"-\").map(Number)\n  const year = m <= 2 ? y - 1 : y\n  const era = Math.floor(year / 400)\n  const yoe = year - era * 400\n  const doy = Math.floor((153 * (m + (m > 2 ? -3 : 9)) + 2) / 5) + d - 1\n  return era * 146097 + (yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + doy) - 719468\n}\n\nfunction civil(day) {\n  const z = day + 719468\n  const era = Math.floor(z / 146097)\n  const doe = z - era * 146097\n  const yoe = Math.floor((doe - Math.floor(doe / 1460) + Math.floor(doe / 36524) - Math.floor(doe / 146096)) / 365)\n  const doy = doe - (365 * yoe + Math.floor(yoe / 4) - Math.floor(yoe / 100))\n  const mp = Math.floor((5 * doy + 2) / 153)\n  const d = doy - Math.floor((153 * mp + 2) / 5) + 1\n  const m = mp < 10 ? mp + 3 : mp - 9\n  return [yoe + era * 400 + (m <= 2 ? 1 : 0), m, d]\n}\n\nfunction format(day) {\n  const [y, m, d] = civil(day)\n  return y + \"-\" + String(m).padStart(2, \"0\") + \"-\" + String(d).padStart(2, \"0\")\n}\n\nfunction summary(state, data) {\n  const values = grid(state, data).flatMap((item, key) => (item.value === null ? [] : [{ ...item, key }]))\n  const top = [...values]\n    .sort((a, b) => b.value - a.value)\n    .slice(0, 3)\n    .map((item) => cell(state, data, item.key))\n  return (\n    (data.layout === \"calendar\"\n      ? \"Calendar heatmap of \" + values.length + \" days\"\n      : \"Heatmap of \" + data.rows.length + \" rows by \" + data.columns.length + \" columns\") +\n    \", values \" +\n    amount(Math.min(...values.map((item) => item.value)), data.unit) +\n    \" to \" +\n    amount(Math.max(...values.map((item) => item.value)), data.unit) +\n    \". Highest: \" +\n    top.map((item) => item.name + \" \" + amount(item.value, data.unit)).join(\", \")\n  )\n}\n\nfunction amount(value, unit) {\n  const text = String(Math.round(value * 100) / 100)\n  if (!unit) return text\n  return unit.length > 1 && /^[a-z]/i.test(unit) ? text + \" \" + unit : text + unit\n}\n\nfunction fit(text, width, size) {\n  const max = Math.max(1, Math.floor(width / (size * 0.58)))\n  return text.length <= max ? text : text.slice(0, Math.max(1, max - 1)) + \"…\"\n}\n\nfunction ease(p) {\n  const clamped = Math.max(0, Math.min(1, p))\n  return 1 - Math.pow(1 - clamped, 3)\n}\n",
@@ -99,184 +728,6 @@ export const fixtures = {
      8,
      7
     ]
-   ]
-  }
- },
- "funnel": {
-  "mode": "step",
-  "source": "// A conversion funnel: stages as centered bars sized by value, joined by tapering bands, with the conversion from the\n// previous stage on the right. Bars widen in; tap a stage to select it. With `choose`, the Choose button submits it.\n\nconst ROW = 44\nconst INTRO = 0.7\n\nfunction init(data) {\n  return { selected: null }\n}\n\nfunction view(state, data) {\n  return ui.column({ gap: 1, align: \"stretch\" }, [\n    ui.text(data.title, { style: \"title\" }),\n    ui.canvas({ id: \"funnel\", height: data.stages.length * ROW + 4, fps: 60, duration: INTRO, alt: summary(data) }),\n    ui.text(state.selected === null ? \"Tap a stage to see its conversion\" : describe(data, state.selected), {\n      style: \"caption\",\n      tone: state.selected === null ? \"muted\" : \"default\",\n    }),\n    data.choose &&\n      ui.row({ gap: 1 }, [\n        ui.button(\"choose\", \"Choose stage\", { variant: \"primary\", disabled: state.selected === null }),\n      ]),\n  ])\n}\n\nfunction update(state, event, data) {\n  if (event.id === \"choose\" && state.selected !== null) {\n    const stage = data.stages[state.selected]\n    return submit(\n      { label: stage.label, index: state.selected, value: stage.value, ...rates(data, state.selected) },\n      state,\n    )\n  }\n  if (event.type !== \"pointer\" || event.value.kind !== \"up\") return state\n  const index = Math.floor((event.value.y - 2) / ROW)\n  const hit = index >= 0 && index < data.stages.length ? index : null\n  return { ...state, selected: hit === state.selected ? null : hit }\n}\n\nfunction draw(state, data, frame) {\n  const g = ui.draw()\n  const box = layout(data, frame.width)\n  const grow = ease(frame.t / INTRO)\n  const hover = frame.pointer && !frame.pointer.down ? Math.floor((frame.pointer.y - 2) / ROW) : null\n  const active = hover !== null && hover >= 0 && hover < data.stages.length ? hover : state.selected\n  const fill = data.color ?? \"accent\"\n  const half = (index) => (Math.max(0.02, data.stages[index].value / box.max) * box.w * grow) / 2\n  const bar = ROW - 16\n  data.stages.forEach((stage, index) => {\n    const y = 2 + index * ROW\n    if (index > 0) {\n      const above = half(index - 1)\n      const below = half(index)\n      g.save().alpha(0.15)\n      g.path(\n        [\n          [\"M\", box.cx - above, y - 16 + 2],\n          [\"L\", box.cx + above, y - 16 + 2],\n          [\"L\", box.cx + below, y + 8],\n          [\"L\", box.cx - below, y + 8],\n          [\"Z\"],\n        ],\n        fill,\n      )\n      g.restore()\n    }\n    const dim = active !== null && active !== index\n    if (dim) g.save().alpha(0.5)\n    g.rrect(box.cx - half(index), y + 8, half(index) * 2, bar, 6, fill)\n    if (dim) g.restore()\n    g.text(8, y + 8 + bar / 2 - 2, fit(stage.label, box.left - 14, 12), {\n      size: 12,\n      weight: index === active ? 600 : 400,\n    })\n    g.text(8, y + 8 + bar / 2 + 13, amount(stage.value, data.unit), { size: 11, color: \"muted\" })\n    if (half(index) * 2 > 60)\n      g.text(box.cx, y + 8 + bar / 2 + 4, percent(stage.value / data.stages[0].value), {\n        size: 12,\n        weight: 600,\n        align: \"center\",\n        color: \"#ffffff\",\n      })\n    if (index > 0)\n      g.text(frame.width - 8, y + 8 + bar / 2 + 4, percent(stage.value / data.stages[index - 1].value), {\n        size: 12,\n        align: \"right\",\n        color: \"muted\",\n      })\n    if (index === state.selected)\n      g.rrect(box.cx - half(index) - 2, y + 6, half(index) * 2 + 4, bar + 4, 7, { stroke: \"text\", width: 1.5 })\n  })\n  return g.commands\n}\n\nfunction layout(data, width) {\n  const left = Math.min(\n    width * 0.3,\n    Math.max(70, 16 + 6.6 * Math.max(...data.stages.map((stage) => stage.label.length))),\n  )\n  const right = 56\n  const w = Math.max(20, width - left - right)\n  return { left, w, cx: left + w / 2, max: Math.max(...data.stages.map((stage) => stage.value), 1e-9) }\n}\n\nfunction rates(data, index) {\n  const first = data.stages[0].value\n  const previous = data.stages[Math.max(0, index - 1)].value\n  const round = (value) => Math.round(value * 1000) / 1000\n  return {\n    ofFirst: first ? round(data.stages[index].value / first) : 0,\n    ofPrevious: previous ? round(data.stages[index].value / previous) : 0,\n  }\n}\n\nfunction describe(data, index) {\n  const stage = data.stages[index]\n  const rate = rates(data, index)\n  if (index === 0) return stage.label + \": \" + amount(stage.value, data.unit)\n  return (\n    stage.label +\n    \": \" +\n    amount(stage.value, data.unit) +\n    \" · \" +\n    percent(rate.ofPrevious) +\n    \" of \" +\n    data.stages[index - 1].label +\n    \", \" +\n    percent(rate.ofFirst) +\n    \" of \" +\n    data.stages[0].label +\n    \" · drop-off \" +\n    amount(data.stages[index - 1].value - stage.value, data.unit)\n  )\n}\n\nfunction summary(data) {\n  return (\n    \"Funnel. \" +\n    data.stages\n      .map(\n        (stage, index) =>\n          stage.label +\n          \" \" +\n          amount(stage.value, data.unit) +\n          (index ? \" (\" + percent(stage.value / data.stages[index - 1].value) + \" of previous)\" : \"\"),\n      )\n      .join(\", \")\n  )\n}\n\nfunction percent(share) {\n  return (Number.isFinite(share) ? Math.round(share * 1000) / 10 : 0) + \"%\"\n}\n\nfunction amount(value, unit) {\n  const text = String(Math.round(value * 100) / 100).replace(/\\B(?=(\\d{3})+(?!\\d))/g, \",\")\n  if (!unit) return text\n  return unit.length > 1 && /^[a-z]/i.test(unit) ? text + \" \" + unit : text + unit\n}\n\nfunction fit(text, width, size) {\n  const max = Math.max(1, Math.floor(width / (size * 0.58)))\n  return text.length <= max ? text : text.slice(0, Math.max(1, max - 1)) + \"…\"\n}\n\nfunction ease(p) {\n  const clamped = Math.max(0, Math.min(1, p))\n  return 1 - Math.pow(1 - clamped, 3)\n}\n",
-  "data": {
-   "title": "Checkout funnel",
-   "choose": true,
-   "stages": [
-    {
-     "label": "Visited",
-     "value": 12400
-    },
-    {
-     "label": "Added to cart",
-     "value": 4100
-    },
-    {
-     "label": "Checkout",
-     "value": 2300
-    },
-    {
-     "label": "Paid",
-     "value": 1650
-    },
-    {
-     "label": "Repeat",
-     "value": 420
-    }
-   ]
-  }
- },
- "flowchart": {
-  "mode": "step",
-  "source": "// A flowchart: nodes (process, decision, terminal, io) and directed edges, laid out top down in layers. `init` does\n// the layout once (Sugiyama style: reverse cycle edges, longest-path layers, dummy points on long edges, barycenter\n// ordering, then x positions pulled toward neighbors) in slot units, so draws only scale it. Layers fade in; tap a node\n// to highlight its edges. With `choose`, the Choose button submits the selected node.\n\nconst LAYER = 84\n\nfunction init(data) {\n  return { selected: null, ...arrange(data) }\n}\n\nfunction view(state, data) {\n  const picked = state.selected === null ? null : data.nodes[state.selected]\n  return ui.column({ gap: 1, align: \"stretch\" }, [\n    ui.text(data.title, { style: \"title\" }),\n    ui.canvas({\n      id: \"flowchart\",\n      height: state.layers * LAYER - 20,\n      fps: 60,\n      duration: intro(state),\n      alt: summary(data),\n    }),\n    ui.text(picked ? describe(data, state.selected) : \"Tap a step to follow its edges\", {\n      style: \"caption\",\n      tone: picked ? \"default\" : \"muted\",\n    }),\n    data.choose && ui.row({ gap: 1 }, [ui.button(\"choose\", \"Choose step\", { variant: \"primary\", disabled: !picked })]),\n  ])\n}\n\nfunction update(state, event, data) {\n  if (event.id === \"choose\" && state.selected !== null) {\n    const node = data.nodes[state.selected]\n    return submit({ id: node.id, label: node.label ?? node.id }, state)\n  }\n  if (event.type !== \"pointer\" || event.value.kind !== \"up\") return state\n  const pointer = event.value\n  const boxes = place(state, data, pointer.width)\n  const hit = boxes.findIndex(\n    (box) => Math.abs(pointer.x - box.x) <= box.w / 2 + 4 && Math.abs(pointer.y - box.y) <= box.h / 2 + 4,\n  )\n  return { ...state, selected: hit < 0 || hit === state.selected ? null : hit }\n}\n\nfunction draw(state, data, frame) {\n  const g = ui.draw()\n  const boxes = place(state, data, frame.width)\n  const columns = grid(state, frame.width)\n  const hover =\n    frame.pointer && !frame.pointer.down\n      ? boxes.findIndex(\n          (box) => Math.abs(frame.pointer.x - box.x) <= box.w / 2 && Math.abs(frame.pointer.y - box.y) <= box.h / 2,\n        )\n      : -1\n  const active = hover >= 0 ? hover : state.selected\n  const step = intro(state) / Math.max(1, state.layers)\n  for (let layer = 0; layer < state.layers; layer++) {\n    const fade = ease((frame.t - layer * step * 0.8) / (step * 1.6))\n    if (fade <= 0) break\n    g.save().alpha(fade)\n    state.edges.forEach((edge, index) => {\n      const from = data.edges[index]\n      const ends = [state.ids[from.from], state.ids[from.to]]\n      if (Math.max(boxes[ends[0]].layer, boxes[ends[1]].layer) !== layer) return\n      const lit = active !== null && ends.includes(active)\n      connect(g, edge, ends, boxes, columns, from.label, lit, frame.t >= intro(state))\n    })\n    data.nodes.forEach((node, index) => {\n      if (boxes[index].layer === layer) shape(g, node, boxes[index], index === active, index === state.selected)\n    })\n    g.restore()\n  }\n  return g.commands\n}\n\n// Layered layout in slot units: every node and dummy point gets a layer and an x; edges keep their point chains.\nfunction arrange(data) {\n  const ids = Object.fromEntries(data.nodes.map((node, at) => [node.id, at]))\n  for (const edge of data.edges)\n    for (const id of [edge.from, edge.to])\n      if (ids[id] === undefined) throw new Error('Unknown node id \"' + id + '\" in edges')\n  const n = data.nodes.length\n  const pairs = data.edges.map((edge) => [ids[edge.from], ids[edge.to]])\n  // Depth-first from the sources; an edge back onto the stack closes a cycle and is reversed for layering.\n  const seen = new Array(n).fill(0)\n  const back = new Set()\n  const visit = (node) => {\n    seen[node] = 1\n    pairs.forEach(([a, b], edge) => {\n      if (a !== node || a === b) return\n      if (seen[b] === 1) back.add(edge)\n      else if (seen[b] === 0) visit(b)\n    })\n    seen[node] = 2\n  }\n  const sources = data.nodes.map((_, at) => at).filter((at) => !pairs.some(([a, b]) => b === at && a !== b))\n  for (const start of [...sources, ...data.nodes.map((_, at) => at)]) if (seen[start] === 0) visit(start)\n  const dag = pairs.map(([a, b], edge) => (back.has(edge) ? [b, a] : [a, b]))\n  const layer = new Array(n).fill(0)\n  for (let pass = 0; pass < n; pass++)\n    for (const [a, b] of dag) if (a !== b && layer[b] < layer[a] + 1) layer[b] = layer[a] + 1\n  // Items are nodes, then one dummy per layer an edge skips; each edge becomes a chain of items.\n  const items = data.nodes.map((_, at) => ({ layer: layer[at], x: 0 }))\n  const chains = dag.map(([a, b]) => {\n    const chain = [a]\n    for (let at = layer[a] + 1; at < layer[b]; at++) {\n      items.push({ layer: at, x: 0 })\n      chain.push(items.length - 1)\n    }\n    chain.push(b)\n    return chain\n  })\n  const up = items.map(() => [])\n  const down = items.map(() => [])\n  for (const chain of chains)\n    for (let at = 1; at < chain.length; at++) {\n      if (chain[at - 1] === chain[at]) continue\n      down[chain[at - 1]].push(chain[at])\n      up[chain[at]].push(chain[at - 1])\n    }\n  const layers = Math.max(...layer) + 1\n  const rows = []\n  for (let at = 0; at < layers; at++)\n    rows.push(items.map((_, index) => index).filter((index) => items[index].layer === at))\n  // Barycenter ordering, alternating downward and upward sweeps.\n  const position = items.map(() => 0)\n  const number = () => rows.forEach((row) => row.forEach((item, at) => (position[item] = at)))\n  number()\n  for (let sweep = 0; sweep < 8; sweep++) {\n    const downward = sweep % 2 === 0\n    for (const row of downward ? rows : [...rows].reverse()) {\n      const score = (item) => {\n        const near = downward ? up[item] : down[item]\n        return near.length ? near.reduce((sum, other) => sum + position[other], 0) / near.length : position[item]\n      }\n      const scores = new Map(row.map((item) => [item, score(item)]))\n      row.sort((a, b) => scores.get(a) - scores.get(b))\n      row.forEach((item, at) => (position[item] = at))\n    }\n  }\n  // x: start packed and centered, then pull toward neighbors while keeping the order and a minimum gap.\n  rows.forEach((row) => row.forEach((item, at) => (items[item].x = at - (row.length - 1) / 2)))\n  const gap = (a, b) => (a < n && b < n ? 1 : a < n || b < n ? 0.6 : 0.3)\n  for (let pass = 0; pass < 8; pass++) {\n    const downward = pass % 2 === 0\n    for (const row of downward ? rows : [...rows].reverse()) {\n      const desired = row.map((item) => {\n        const near = [...(downward ? up[item] : down[item])]\n        return near.length ? near.reduce((sum, other) => sum + items[other].x, 0) / near.length : items[item].x\n      })\n      const xs = [...desired]\n      for (let at = 1; at < row.length; at++) xs[at] = Math.max(xs[at], xs[at - 1] + gap(row[at - 1], row[at]))\n      const shift = desired.reduce((sum, value, at) => sum + value - xs[at], 0) / row.length\n      row.forEach((item, at) => (items[item].x = xs[at] + shift))\n    }\n  }\n  const min = Math.min(...items.map((item) => item.x))\n  const round = (value) => Math.round((value - min) * 1000) / 1000\n  return {\n    ids,\n    layers,\n    span: Math.max(...items.map((item) => item.x)) - min,\n    nodes: items.slice(0, n).map((item) => ({ x: round(item.x), layer: item.layer })),\n    edges: chains.map((chain, edge) => {\n      const points = chain.map((item) => [round(items[item].x), items[item].layer])\n      return { points: back.has(edge) ? points.reverse() : points, self: pairs[edge][0] === pairs[edge][1] }\n    }),\n  }\n}\n\n// Slot units to pixels: at most 190 px per slot, the whole span centered in the width.\nfunction grid(state, width) {\n  const unit = Math.min(190, (width - 16) / (state.span + 1))\n  const left = (width - unit * (state.span + 1)) / 2\n  return { unit, x: (slot) => left + (slot + 0.5) * unit, y: (layer) => 10 + layer * LAYER + 22 }\n}\n\nfunction place(state, data, width) {\n  const columns = grid(state, width)\n  const unit = columns.unit\n  return data.nodes.map((node, index) => {\n    const lines = wrap(node.label ?? node.id, Math.floor((Math.min(170, unit - 14) - 16) / 6.8))\n    const decision = node.shape === \"decision\"\n    const text = Math.max(...lines.map((line) => line.length)) * 6.8 + 24\n    const w = Math.min(unit - 8, decision ? text * 1.4 + 10 : text)\n    const h = decision ? 54 : lines.length > 1 ? 44 : 34\n    const at = state.nodes[index]\n    return { x: columns.x(at.x), y: columns.y(at.layer), w, h, lines, layer: at.layer }\n  })\n}\n\nfunction shape(g, node, box, active, selected) {\n  const paint = {\n    fill: \"surface\",\n    stroke: selected ? \"accent\" : active ? \"muted\" : (node.color ?? \"border\"),\n    width: selected ? 2 : 1.25,\n  }\n  const left = box.x - box.w / 2\n  const top = box.y - box.h / 2\n  if (node.shape === \"decision\")\n    g.path(\n      [[\"M\", box.x, top], [\"L\", box.x + box.w / 2, box.y], [\"L\", box.x, top + box.h], [\"L\", left, box.y], [\"Z\"]],\n      paint,\n    )\n  else if (node.shape === \"io\")\n    g.path(\n      [\n        [\"M\", left + 8, top],\n        [\"L\", left + box.w, top],\n        [\"L\", left + box.w - 8, top + box.h],\n        [\"L\", left, top + box.h],\n        [\"Z\"],\n      ],\n      paint,\n    )\n  else g.rrect(left, top, box.w, box.h, node.shape === \"terminal\" ? box.h / 2 : 6, paint)\n  box.lines.forEach((line, at) =>\n    g.text(box.x, box.y + 4 + (at - (box.lines.length - 1) / 2) * 15, line, {\n      size: 12,\n      align: \"center\",\n      weight: node.shape === \"terminal\" ? 600 : 400,\n    }),\n  )\n}\n\n// An edge through its points: leave a node from its bottom (or top, going up), curve through dummies, arrive with an arrow.\nfunction connect(g, edge, ends, boxes, columns, label, lit, labels) {\n  const stroke = lit ? \"accent\" : \"muted\"\n  const width = lit ? 2 : 1.25\n  const from = boxes[ends[0]]\n  if (edge.self) {\n    const x = from.x + from.w / 2\n    g.path(\n      [\n        [\"M\", x, from.y - 6],\n        [\"C\", x + 30, from.y - 22, x + 30, from.y + 22, x + 2, from.y + 6],\n      ],\n      { stroke, width },\n    )\n    return\n  }\n  const points = edge.points.map(([x, layer], at) => {\n    const real = at === 0 ? boxes[ends[0]] : at === edge.points.length - 1 ? boxes[ends[1]] : null\n    return real ? { x: real.x, y: real.y, h: real.h } : { x: columns.x(x), y: columns.y(layer), h: 0 }\n  })\n  const start = points[1].y > points[0].y ? 1 : -1\n  let x0 = points[0].x\n  let y0 = points[0].y + (start * points[0].h) / 2\n  const segments = [[\"M\", x0, y0]]\n  for (let at = 1; at < points.length; at++) {\n    const p = points[at]\n    const dir = p.y > points[at - 1].y ? 1 : -1\n    const y1 = p.y - (dir * p.h) / 2 - (at === points.length - 1 ? dir * 2 : 0)\n    const bend = (y1 - y0) / 2\n    segments.push([\"C\", x0, y0 + bend, p.x, y1 - bend, p.x, y1])\n    x0 = p.x\n    y0 = y1\n  }\n  g.path(segments, { stroke, width })\n  const tip = segments[segments.length - 1]\n  const dir = points[points.length - 1].y > points[points.length - 2].y ? 1 : -1\n  const tx = tip[5]\n  const ty = tip[6] + dir * 2\n  g.path([[\"M\", tx, ty], [\"L\", tx - 4.5, ty - dir * 8], [\"L\", tx + 4.5, ty - dir * 8], [\"Z\"]], stroke)\n  if (label && labels) {\n    const first = segments[1]\n    const mx = (segments[0][1] + first[5]) / 2\n    const my = (segments[0][2] + first[6]) / 2\n    const w = 6.4 * label.length + 10\n    g.rrect(mx - w / 2, my - 9, w, 16, 4, \"bg\")\n    g.text(mx, my + 3, label, { size: 11, align: \"center\", color: lit ? \"text\" : \"muted\" })\n  }\n}\n\nfunction intro(state) {\n  return Math.round(Math.min(1.6, 0.3 + 0.15 * state.layers) * 100) / 100\n}\n\n// Splits a label into at most two lines of about `max` characters.\nfunction wrap(label, max) {\n  if (label.length <= max) return [label]\n  const words = label.split(\" \")\n  let first = \"\"\n  while (words.length && (first + \" \" + words[0]).trim().length <= max) first = (first + \" \" + words.shift()).trim()\n  if (!first) first = words.shift()\n  const rest = words.join(\" \")\n  return [fit(first, max), rest ? fit(rest, max) : null].filter(Boolean)\n}\n\nfunction describe(data, index) {\n  const node = data.nodes[index]\n  const name = (id) => data.nodes.find((item) => item.id === id)?.label ?? id\n  const next = data.edges\n    .filter((edge) => edge.from === node.id)\n    .map((edge) => name(edge.to) + (edge.label ? \" (\" + edge.label + \")\" : \"\"))\n  const previous = data.edges.filter((edge) => edge.to === node.id).map((edge) => name(edge.from))\n  return [\n    node.label ?? node.id,\n    next.length ? \"next: \" + next.join(\", \") : \"\",\n    previous.length ? \"from: \" + previous.join(\", \") : \"\",\n  ]\n    .filter(Boolean)\n    .join(\" · \")\n}\n\nfunction summary(data) {\n  const name = (id) => data.nodes.find((item) => item.id === id)?.label ?? id\n  return (\n    \"Flowchart. \" +\n    data.edges\n      .map((edge) => name(edge.from) + \" → \" + (edge.label ? \"[\" + edge.label + \"] \" : \"\") + name(edge.to))\n      .join(\"; \")\n  )\n}\n\nfunction fit(text, max) {\n  return text.length <= max ? text : text.slice(0, Math.max(1, max - 1)) + \"…\"\n}\n\nfunction ease(p) {\n  const clamped = Math.max(0, Math.min(1, p))\n  return 1 - Math.pow(1 - clamped, 3)\n}\n",
-  "data": {
-   "title": "Deploy pipeline",
-   "choose": true,
-   "nodes": [
-    {
-     "id": "push",
-     "label": "Push to main",
-     "shape": "terminal"
-    },
-    {
-     "id": "build",
-     "label": "Build and test"
-    },
-    {
-     "id": "ok",
-     "label": "Tests pass?",
-     "shape": "decision"
-    },
-    {
-     "id": "fix",
-     "label": "Notify author",
-     "shape": "io"
-    },
-    {
-     "id": "stage",
-     "label": "Deploy to staging"
-    },
-    {
-     "id": "smoke",
-     "label": "Smoke tests pass?",
-     "shape": "decision"
-    },
-    {
-     "id": "prod",
-     "label": "Deploy to production"
-    },
-    {
-     "id": "done",
-     "label": "Done",
-     "shape": "terminal"
-    }
-   ],
-   "edges": [
-    {
-     "from": "push",
-     "to": "build"
-    },
-    {
-     "from": "build",
-     "to": "ok"
-    },
-    {
-     "from": "ok",
-     "to": "stage",
-     "label": "yes"
-    },
-    {
-     "from": "ok",
-     "to": "fix",
-     "label": "no"
-    },
-    {
-     "from": "fix",
-     "to": "build",
-     "label": "retry"
-    },
-    {
-     "from": "stage",
-     "to": "smoke"
-    },
-    {
-     "from": "smoke",
-     "to": "prod",
-     "label": "yes"
-    },
-    {
-     "from": "smoke",
-     "to": "fix",
-     "label": "no"
-    },
-    {
-     "from": "prod",
-     "to": "done"
-    }
-   ]
-  }
- },
- "backdrop": {
-  "mode": "step",
-  "source": "// An animated shader banner with a title and text. widget.values[0] is (speed, accent red, green, blue); colors are\n// sRGB. Pressing the banner lights it up around the pointer.\n\nconst ACCENTS = { plasma: \"#8b5cf6\", aurora: \"#2dd4bf\", waves: \"#3b82f6\" }\n\nconst COMMON = `\nfn hash(p: vec2f) -> f32 {\n  let q = fract(p * vec2f(123.34, 456.21));\n  let r = q + dot(q, q + 45.32);\n  return fract(r.x * r.y);\n}\n\nfn noise(p: vec2f) -> f32 {\n  let i = floor(p);\n  let f = fract(p);\n  let u = f * f * (3.0 - 2.0 * f);\n  let a = hash(i);\n  let b = hash(i + vec2f(1.0, 0.0));\n  let c = hash(i + vec2f(0.0, 1.0));\n  let d = hash(i + vec2f(1.0, 1.0));\n  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);\n}\n\nfn fbm(start: vec2f) -> f32 {\n  var p = start;\n  var amplitude = 0.5;\n  var sum = 0.0;\n  for (var i = 0; i < 5; i++) {\n    sum += amplitude * noise(p);\n    p = p * 2.03 + vec2f(1.7, 9.2);\n    amplitude *= 0.5;\n  }\n  return sum;\n}\n\nfn touch(frag: vec2f, color: vec3f) -> vec3f {\n  if (widget.pointer.z < 0.5) {\n    return color;\n  }\n  let d = distance(frag, widget.pointer.xy) / widget.resolution.y;\n  return color + widget.values[0].yzw * 0.35 * exp(-d * d * 30.0);\n}\n\nfn vignette(frag: vec2f) -> f32 {\n  let uv = frag / widget.resolution;\n  let edge = uv * (1.0 - uv);\n  return clamp(pow(edge.x * edge.y * 16.0, 0.18), 0.0, 1.0);\n}\n`\n\nconst PRESETS = {\n  plasma:\n    COMMON +\n    `\nfn shade(frag: vec2f) -> vec4f {\n  let res = widget.resolution;\n  let p = (frag - 0.5 * res) / res.y * 3.0;\n  let t = widget.time * widget.values[0].x;\n  let accent = widget.values[0].yzw;\n  var v = sin(p.x * 1.3 + t);\n  v += sin((p.y + t) * 0.7);\n  v += sin((p.x + p.y + t) * 0.6);\n  let c = p + vec2f(sin(t * 0.33), cos(t * 0.5)) * 1.5;\n  v += sin(sqrt(dot(c, c) + 1.0) * 1.8 - t);\n  let glow = 0.5 + 0.5 * sin(v * 1.4);\n  let hue = 0.5 + 0.5 * sin(v * 0.9 + 2.0);\n  let deep = accent * 0.18 + vec3f(0.02, 0.02, 0.06);\n  let warm = mix(accent, vec3f(1.0, 0.42, 0.72), 0.5);\n  let cool = mix(accent, vec3f(0.2, 0.85, 1.0), 0.5);\n  var color = mix(deep, mix(cool, warm, hue), glow * glow);\n  color = touch(frag, color * (0.6 + 0.4 * vignette(frag)));\n  return vec4f(clamp(color, vec3f(0.0), vec3f(1.0)), 1.0);\n}\n`,\n  aurora:\n    COMMON +\n    `\nfn shade(frag: vec2f) -> vec4f {\n  let res = widget.resolution;\n  let uv = frag / res;\n  let aspect = res.x / res.y;\n  let t = widget.time * widget.values[0].x;\n  let accent = widget.values[0].yzw;\n  var color = mix(vec3f(0.03, 0.06, 0.14), vec3f(0.005, 0.01, 0.04), uv.y);\n  for (var i = 0; i < 3; i++) {\n    let layer = f32(i);\n    let x = uv.x * aspect * (1.1 + layer * 0.45) + t * (0.04 + layer * 0.02);\n    let center = 0.42 + 0.14 * layer + 0.2 * (fbm(vec2f(x * 0.7, layer * 3.1 + t * 0.08)) - 0.5);\n    let d = uv.y - center;\n    let falloff = select(exp(-d * d * 14.0), exp(-d * d * 900.0), d > 0.0);\n    let rays = fbm(vec2f(x * 9.0, t * 0.25 + layer));\n    let glow = falloff * (0.35 + 0.9 * rays * rays);\n    let tint = mix(accent, vec3f(0.35, 1.0, 0.55), 0.35 + 0.25 * layer);\n    color += tint * glow * (0.75 - layer * 0.18);\n  }\n  let size = 14.0 * widget.scale;\n  let cell = floor(frag / size);\n  let spot = (cell + 0.2 + 0.6 * vec2f(hash(cell + 3.1), hash(cell + 8.7))) * size;\n  let twinkle = 0.65 + 0.35 * sin(t * 2.0 + hash(cell) * 40.0);\n  let star = step(0.82, hash(cell)) * smoothstep(1.3 * widget.scale, 0.0, distance(frag, spot)) * twinkle;\n  color += vec3f(star) * smoothstep(0.75, 0.0, uv.y);\n  color = touch(frag, color * (0.6 + 0.4 * vignette(frag)));\n  return vec4f(clamp(color, vec3f(0.0), vec3f(1.0)), 1.0);\n}\n`,\n  waves:\n    COMMON +\n    `\nfn shade(frag: vec2f) -> vec4f {\n  let res = widget.resolution;\n  let uv = frag / res;\n  let aspect = res.x / res.y;\n  let t = widget.time * widget.values[0].x;\n  let accent = widget.values[0].yzw;\n  let edge = 1.5 / res.y;\n  var color = mix(accent * 0.35 + vec3f(0.04, 0.05, 0.1), vec3f(0.02, 0.03, 0.07), uv.y);\n  for (var i = 0; i < 5; i++) {\n    let layer = f32(i);\n    let x = uv.x * aspect;\n    let h = 0.3 + layer * 0.13\n      + 0.045 * sin(x * (2.2 + layer * 0.6) + t * (0.5 + layer * 0.22) + layer * 1.7)\n      + 0.02 * sin(x * (5.3 - layer * 0.4) - t * (0.9 + layer * 0.1) + layer);\n    let body = mix(accent, vec3f(0.02, 0.04, 0.12), 0.35 + layer * 0.14) * (0.75 + 0.25 * (uv.y - h) / (1.0 - h));\n    color = mix(color, body, smoothstep(h - edge, h + edge, uv.y));\n    color += accent * 0.35 * exp(-abs(uv.y - h) * res.y * 0.08) * (1.0 - layer * 0.15);\n  }\n  color = touch(frag, color * (0.65 + 0.35 * vignette(frag)));\n  return vec4f(clamp(color, vec3f(0.0), vec3f(1.0)), 1.0);\n}\n`,\n}\n\nfunction init(data) {\n  return { speed: 1 }\n}\n\nfunction view(state, data) {\n  return ui.column({ gap: 2, align: \"stretch\" }, [\n    ui.shader(PRESETS[data.preset], {\n      id: \"backdrop\",\n      height: 200,\n      values: [state.speed, ...rgb(data.accent ?? ACCENTS[data.preset])],\n      fps: state.speed > 0 ? 60 : 0,\n      alt: \"Animated \" + data.preset + \" backdrop\",\n    }),\n    ui.text(data.title, { style: \"title\" }),\n    data.text && ui.markdown(data.text),\n    ui.slider(\"speed\", { label: \"Speed\", value: state.speed, min: 0, max: 2, step: 0.1 }),\n  ])\n}\n\nfunction update(state, event) {\n  if (event.id !== \"speed\") return state\n  return { speed: Math.round(Math.min(2, Math.max(0, Number(event.value) || 0)) * 10) / 10 }\n}\n\n// \"#rgb\" or \"#rrggbb\" to three 0..1 floats.\nfunction rgb(hex) {\n  const digits = hex.length === 4 ? hex.slice(1).replace(/./g, (digit) => digit + digit) : hex.slice(1, 7)\n  return [0, 2, 4].map((at) => parseInt(digits.slice(at, at + 2), 16) / 255)\n}\n",
-  "data": {
-   "title": "Release 2.0 is out",
-   "preset": "aurora",
-   "text": "Thanks to everyone who tested the **beta**. Drag the slider to change the speed."
-  }
- },
- "chart": {
-  "mode": "step",
-  "source": "// A bar or line chart drawn on a canvas. It animates in, then redraws only for pointer input: press (or drag) to read a\n// value; with `choose`, tapping a bar or point submits it.\n\nconst HEIGHT = 240\nconst INTRO = 0.65\nconst PALETTE = [\"accent\", \"#f59e0b\", \"#10b981\", \"#ef4444\", \"#8b5cf6\", \"#06b6d4\"]\n\nfunction init(data) {\n  return { active: null, down: false }\n}\n\nfunction view(state, data) {\n  const active = state.active && point(data, state.active)\n  return ui.column({ gap: 1, align: \"stretch\" }, [\n    ui.text(data.title, { style: \"title\" }),\n    ui.canvas({\n      id: \"chart\",\n      height: HEIGHT,\n      fps: 60,\n      duration: state.down ? undefined : INTRO,\n      alt: summary(data),\n    }),\n    ui.text(\n      active\n        ? active.label + \" · \" + active.series + \": \" + amount(active.value, data.unit)\n        : data.choose\n          ? \"Tap a \" + (data.kind === \"line\" ? \"point\" : \"bar\") + \" to choose it\"\n          : \"Press a \" + (data.kind === \"line\" ? \"point\" : \"bar\") + \" to read its value\",\n      { style: \"caption\", tone: active ? \"default\" : \"muted\" },\n    ),\n  ])\n}\n\nfunction update(state, event, data) {\n  if (event.type !== \"pointer\") return state\n  const pointer = event.value\n  const hit = locate(data, layout(data, pointer.width, pointer.height), pointer.x, pointer.y)\n  if (pointer.kind !== \"up\") return { active: hit ?? state.active, down: true }\n  if (data.choose && hit) {\n    const picked = point(data, hit)\n    return submit({ series: picked.series, index: hit.index, value: picked.value }, { active: hit, down: false })\n  }\n  return { active: hit, down: false }\n}\n\nfunction draw(state, data, frame) {\n  const g = ui.draw()\n  const box = layout(data, frame.width, frame.height)\n  const hover = frame.pointer && !frame.pointer.down ? locate(data, box, frame.pointer.x, frame.pointer.y) : null\n  const active = state.down || !hover ? state.active : hover\n  axes(g, data, box)\n  if (data.kind === \"line\") lines(g, data, box, frame.t, active)\n  else bars(g, data, box, frame.t, active)\n  if (data.series.length > 1) legend(g, data, box)\n  if (active && frame.t >= INTRO) tooltip(g, data, box, active, frame.width)\n  return g.commands\n}\n\n// Geometry shared by draw and update: the plot area, the value range and the slots of each index.\nfunction layout(data, width, height) {\n  const count = Math.max(1, ...data.series.map((series) => series.values.length))\n  const values = data.series.flatMap((series) => series.values)\n  const range = nice(Math.min(0, ...values), Math.max(0, ...values))\n  const left = 12 + 7 * Math.max(...range.ticks.map((tick) => compact(tick).length))\n  const top = data.series.length > 1 ? 30 : 14\n  const right = data.kind === \"line\" ? 20 : 12\n  const plot = { x: left, y: top, w: Math.max(1, width - left - right), h: Math.max(1, height - top - 26) }\n  const labels = []\n  for (let index = 0; index < count; index++) labels.push(label(data, index))\n  return { count, range, plot, slot: plot.w / count, labels }\n}\n\n// Rounds the range out to 1, 2, 2.5 or 5 times a power of ten, with 3 to 5 gridlines.\nfunction nice(min, max) {\n  const span = max - min || Math.abs(max) || 1\n  const raw = span / 4\n  const power = Math.pow(10, Math.floor(Math.log10(raw)))\n  const step = power * ([1, 2, 2.5, 5, 10].find((factor) => factor * power >= raw) ?? 10)\n  const low = Math.floor(min / step) * step\n  const high = Math.max(low + step, Math.ceil(max / step) * step)\n  const ticks = []\n  for (let tick = low; tick <= high + step / 2; tick += step) ticks.push(Math.round(tick / step) * step)\n  return { low, high, ticks }\n}\n\nfunction y(box, value) {\n  return box.plot.y + box.plot.h * (1 - (value - box.range.low) / (box.range.high - box.range.low))\n}\n\nfunction x(data, box, index) {\n  if (data.kind !== \"line\") return box.plot.x + box.slot * (index + 0.5)\n  return box.plot.x + (box.count === 1 ? box.plot.w / 2 : (box.plot.w * index) / (box.count - 1))\n}\n\nfunction bar(data, box, series, index) {\n  const group = Math.min(box.slot * 0.72, 28 * data.series.length + 4 * (data.series.length - 1))\n  const width = (group - 4 * (data.series.length - 1)) / data.series.length\n  return { x: x(data, box, index) - group / 2 + series * (width + 4), w: width }\n}\n\nfunction locate(data, box, px, py) {\n  if (\n    px < box.plot.x - 8 ||\n    px > box.plot.x + box.plot.w + 8 ||\n    py < box.plot.y - 20 ||\n    py > box.plot.y + box.plot.h + 8\n  )\n    return null\n  const index =\n    data.kind === \"line\"\n      ? Math.round(((px - box.plot.x) / box.plot.w) * Math.max(1, box.count - 1))\n      : Math.floor((px - box.plot.x) / box.slot)\n  const clamped = Math.max(0, Math.min(box.count - 1, index))\n  const candidates = data.series\n    .map((series, at) => ({ series: at, value: series.values[clamped] }))\n    .filter((candidate) => typeof candidate.value === \"number\")\n  if (candidates.length === 0) return null\n  const nearest = (score) =>\n    candidates.reduce((best, candidate) => (score(candidate) < score(best) ? candidate : best)).series\n  if (data.kind === \"line\") return { series: nearest((c) => Math.abs(y(box, c.value) - py)), index: clamped }\n  return {\n    series: nearest((c) => {\n      const span = bar(data, box, c.series, clamped)\n      return Math.abs(span.x + span.w / 2 - px)\n    }),\n    index: clamped,\n  }\n}\n\nfunction axes(g, data, box) {\n  const right = box.plot.x + box.plot.w\n  for (const tick of box.range.ticks) {\n    const at = y(box, tick)\n    g.line(box.plot.x, at, right, at, { stroke: \"border\", width: tick === 0 ? 1.5 : 1 })\n    g.text(box.plot.x - 8, at + 4, compact(tick), { size: 11, align: \"right\", color: \"muted\" })\n  }\n  const widest = Math.max(...box.labels.map((text) => text.length))\n  const every = Math.max(1, Math.ceil((7 * widest + 12) / (box.plot.w / box.count)))\n  for (let index = 0; index < box.count; index += every)\n    g.text(x(data, box, index), box.plot.y + box.plot.h + 18, box.labels[index], {\n      size: 11,\n      align: \"center\",\n      color: \"muted\",\n    })\n}\n\nfunction bars(g, data, box, t, active) {\n  const base = y(box, Math.max(box.range.low, 0))\n  data.series.forEach((series, at) => {\n    const fill = color(series, at)\n    series.values.forEach((value, index) => {\n      const grow = ease((t - (0.2 * index) / Math.max(1, box.count - 1)) / (INTRO - 0.2))\n      if (grow <= 0) return\n      const span = bar(data, box, at, index)\n      const top = base + (y(box, value) - base) * grow\n      const dim = active && (active.series !== at || active.index !== index)\n      if (dim) g.save().alpha(0.45)\n      g.rrect(span.x, Math.min(top, base), span.w, Math.max(1, Math.abs(base - top)), Math.min(4, span.w / 2), fill)\n      if (dim) g.restore()\n    })\n  })\n}\n\nfunction lines(g, data, box, t, active) {\n  const progress = ease(t / INTRO) * Math.max(1, box.count - 1)\n  const base = y(box, Math.max(box.range.low, 0))\n  if (active) g.line(x(data, box, active.index), box.plot.y, x(data, box, active.index), base, \"border\")\n  data.series.forEach((series, at) => {\n    const stroke = color(series, at)\n    const points = series.values\n      .map((value, index) => [x(data, box, index), y(box, value)])\n      .filter((_, index) => index <= Math.ceil(progress))\n    if (points.length === 0) return\n    const last = Math.min(progress, series.values.length - 1)\n    const whole = Math.floor(last)\n    if (whole < points.length - 1) {\n      const from = points[whole]\n      const to = points[whole + 1]\n      points[whole + 1] = [from[0] + (to[0] - from[0]) * (last - whole), from[1] + (to[1] - from[1]) * (last - whole)]\n    }\n    const segments = points.map((point, index) => [index === 0 ? \"M\" : \"L\", point[0], point[1]])\n    const end = points[points.length - 1]\n    if (data.series.length === 1 && points.length > 1)\n      g.save()\n        .alpha(0.12)\n        .path([...segments, [\"L\", end[0], base], [\"L\", points[0][0], base], [\"Z\"]], stroke)\n        .restore()\n    g.path(segments, { stroke, width: 2.5, cap: \"round\" })\n    points.forEach((point, index) => {\n      if (index > last) return\n      const on = active && active.series === at && active.index === index\n      g.circle(point[0], point[1], on ? 5.5 : 3, { fill: on ? stroke : \"bg\", stroke, width: 2 })\n    })\n  })\n}\n\nfunction legend(g, data, box) {\n  data.series.reduce((left, series, at) => {\n    g.circle(left + 4, 12, 4, color(series, at))\n    g.text(left + 13, 16, series.label, { size: 12, color: \"muted\" })\n    return left + 30 + 7 * series.label.length\n  }, box.plot.x)\n}\n\nfunction tooltip(g, data, box, active, width) {\n  const picked = point(data, active)\n  const title = picked.label\n  const value = amount(picked.value, data.unit)\n  const w = 20 + 7 * Math.max(title.length, value.length)\n  const span = bar(data, box, active.series, active.index)\n  const anchor = data.kind === \"line\" ? x(data, box, active.index) : span.x + span.w / 2\n  const left = Math.max(2, Math.min(width - w - 2, anchor - w / 2))\n  const top = Math.max(2, y(box, Math.max(picked.value, 0)) - 54)\n  g.rrect(left, top, w, 44, 8, { fill: \"surface\", stroke: \"border\", width: 1 })\n  g.text(left + 10, top + 17, title, { size: 11, color: \"muted\" })\n  g.text(left + 10, top + 35, value, { size: 13, weight: 600, color: color(data.series[active.series], active.series) })\n}\n\nfunction point(data, active) {\n  const series = data.series[active.series]\n  return { series: series.label, label: label(data, active.index), value: series.values[active.index] }\n}\n\nfunction summary(data) {\n  const kind = data.kind === \"line\" ? \"Line chart\" : \"Bar chart\"\n  const series = data.series.map(\n    (series) =>\n      series.label +\n      \": \" +\n      series.values\n        .map((value, index) => (data.labels?.[index] ? data.labels[index] + \" \" : \"\") + amount(value, data.unit))\n        .join(\", \"),\n  )\n  return kind + \". \" + series.join(\"; \")\n}\n\nfunction label(data, index) {\n  return data.labels?.[index] ?? String(index + 1)\n}\n\nfunction color(series, index) {\n  return series.color ?? PALETTE[index % PALETTE.length]\n}\n\nfunction amount(value, unit) {\n  const text = String(Math.round(value * 100) / 100)\n  if (!unit) return text\n  return unit.length > 1 && /^[a-z]/i.test(unit) ? text + \" \" + unit : text + unit\n}\n\nfunction compact(value) {\n  const size = Math.abs(value)\n  const round = (number) => String(Math.round(number * 10) / 10)\n  if (size >= 1e9) return round(value / 1e9) + \"B\"\n  if (size >= 1e6) return round(value / 1e6) + \"M\"\n  if (size >= 1e4) return round(value / 1e3) + \"k\"\n  return String(Math.round(value * 100) / 100)\n}\n\nfunction ease(p) {\n  const clamped = Math.max(0, Math.min(1, p))\n  return 1 - Math.pow(1 - clamped, 3)\n}\n",
-  "data": {
-   "title": "Build time by week",
-   "kind": "bar",
-   "unit": "s",
-   "choose": true,
-   "labels": [
-    "W1",
-    "W2",
-    "W3",
-    "W4",
-    "W5",
-    "W6",
-    "W7",
-    "W8"
-   ],
-   "series": [
-    {
-     "label": "Linux",
-     "values": [
-      312,
-      298,
-      305,
-      280,
-      266,
-      240,
-      236,
-      221
-     ]
-    },
-    {
-     "label": "macOS",
-     "values": [
-      402,
-      395,
-      380,
-      371,
-      350,
-      344,
-      330,
-      318
-     ],
-     "color": "#f59e0b"
-    }
    ]
   }
  },
@@ -532,377 +983,74 @@ export const fixtures = {
    ]
   }
  },
- "timeline": {
+ "pie": {
   "mode": "step",
-  "source": "// A Gantt timeline: tasks with a start and an end (no end: a milestone), optionally in groups and with progress.\n// Dates are \"YYYY-MM-DD\" (an end date is inclusive) or \"YYYY-MM-DDTHH:MM\"; plain numbers work too (week 1, 2...).\n// `today` draws a marker (programs can't read the clock). Bars grow in; tap a bar to select it. With `choose`, the\n// Choose button submits the selected task.\n\nconst ROW = 26\nconst TOP = 26\nconst INTRO = 0.7\nconst MONTHS = [\"Jan\", \"Feb\", \"Mar\", \"Apr\", \"May\", \"Jun\", \"Jul\", \"Aug\", \"Sep\", \"Oct\", \"Nov\", \"Dec\"]\nconst PALETTE = [\"accent\", \"#f59e0b\", \"#10b981\", \"#ef4444\", \"#8b5cf6\", \"#06b6d4\", \"#ec4899\", \"#84cc16\"]\n\n// Rows (group headers, then their tasks) and the time range are computed once.\nfunction init(data) {\n  const groups = [...new Set(data.tasks.map((task) => task.group ?? \"\"))]\n  const rows = groups.flatMap((group) => [\n    ...(group ? [{ group }] : []),\n    ...data.tasks.flatMap((task, index) => ((task.group ?? \"\") === group ? [{ task: index }] : [])),\n  ])\n  const spans = data.tasks.map((task) => span(task))\n  const today = data.today === undefined ? null : time(data.today, false)\n  const low = Math.min(...spans.map((item) => item.start), today ?? Infinity)\n  const high = Math.max(...spans.map((item) => item.end), today ?? -Infinity)\n  const pad = (high - low || 1) * 0.03\n  const dates = typeof data.tasks[0].start === \"string\"\n  return { selected: null, rows, spans, groups, dates, today, low: low - pad, high: high + pad }\n}\n\nfunction view(state, data) {\n  return ui.column({ gap: 1, align: \"stretch\" }, [\n    ui.text(data.title, { style: \"title\" }),\n    ui.canvas({\n      id: \"timeline\",\n      height: TOP + state.rows.length * ROW + 6,\n      fps: 60,\n      duration: INTRO,\n      alt: summary(state, data),\n    }),\n    ui.text(state.selected === null ? \"Tap a bar to see its dates\" : describe(state, data, state.selected), {\n      style: \"caption\",\n      tone: state.selected === null ? \"muted\" : \"default\",\n    }),\n    data.choose &&\n      ui.row({ gap: 1 }, [\n        ui.button(\"choose\", \"Choose task\", { variant: \"primary\", disabled: state.selected === null }),\n      ]),\n  ])\n}\n\nfunction update(state, event, data) {\n  if (event.id === \"choose\" && state.selected !== null) {\n    const task = data.tasks[state.selected]\n    return submit(\n      { label: task.label, index: state.selected, start: task.start, end: task.end ?? task.start, group: task.group },\n      state,\n    )\n  }\n  if (event.type !== \"pointer\" || event.value.kind !== \"up\") return state\n  const pointer = event.value\n  const row = state.rows[Math.floor((pointer.y - TOP) / ROW)]\n  const hit = pointer.y >= TOP && row && row.task !== undefined ? row.task : null\n  return { ...state, selected: hit === state.selected ? null : hit }\n}\n\nfunction draw(state, data, frame) {\n  const g = ui.draw()\n  const box = layout(state, data, frame.width)\n  const bottom = TOP + state.rows.length * ROW\n  const today = state.today === null ? null : x(box, state.today)\n  for (const tick of ticks(state, box)) {\n    g.line(tick.x, TOP - 4, tick.x, bottom, { stroke: \"border\", width: 1 })\n    if (today === null || tick.x + 50 < today - 22 || tick.x > today + 22)\n      g.text(tick.x + 3, TOP - 10, tick.label, { size: 11, color: \"muted\" })\n  }\n  const hoverRow = frame.pointer && !frame.pointer.down ? Math.floor((frame.pointer.y - TOP) / ROW) : -1\n  state.rows.forEach((row, at) => {\n    const y = TOP + at * ROW\n    if (row.group !== undefined) {\n      const items = state.spans.filter((_, index) => (data.tasks[index].group ?? \"\") === row.group)\n      const from = x(box, Math.min(...items.map((item) => item.start)))\n      const to = x(box, Math.max(...items.map((item) => item.end)))\n      g.text(8, y + 17, fit(row.group, box.left - 14, 12), { size: 12, weight: 600 })\n      g.save()\n        .alpha(0.5)\n        .rrect(from, y + 11, Math.max(2, to - from), 4, 2, \"muted\")\n        .restore()\n      return\n    }\n    const task = data.tasks[row.task]\n    const item = state.spans[row.task]\n    const active = row.task === state.selected || at === hoverRow\n    if (active) g.save().alpha(0.08).rect(0, y, frame.width, ROW, \"text\").restore()\n    g.text(state.groups.length > 1 || state.groups[0] ? 18 : 8, y + 17, fit(task.label, box.left - 24, 12), {\n      size: 12,\n      weight: row.task === state.selected ? 600 : 400,\n      color: active ? \"text\" : \"muted\",\n    })\n    const fill = task.color ?? PALETTE[state.groups.indexOf(task.group ?? \"\") % PALETTE.length]\n    const grow = ease((frame.t - (0.3 * at) / state.rows.length) / (INTRO - 0.3))\n    if (grow <= 0) return\n    const from = x(box, item.start)\n    if (task.end === undefined) {\n      const s = 7 * grow\n      g.path(\n        [\n          [\"M\", from, y + ROW / 2 - s],\n          [\"L\", from + s, y + ROW / 2],\n          [\"L\", from, y + ROW / 2 + s],\n          [\"L\", from - s, y + ROW / 2],\n          [\"Z\"],\n        ],\n        fill,\n      )\n      return\n    }\n    const w = Math.max(3, (x(box, item.end) - from) * grow)\n    const progress = task.progress ?? 1\n    if (progress < 1)\n      g.save()\n        .alpha(0.35)\n        .rrect(from, y + 5, w, ROW - 10, 4, fill)\n        .restore()\n    if (progress > 0) g.rrect(from, y + 5, Math.max(3, w * progress), ROW - 10, 4, fill)\n    if (row.task === state.selected) g.rrect(from - 1.5, y + 3.5, w + 3, ROW - 7, 5, { stroke: \"text\", width: 1.5 })\n  })\n  if (today !== null && frame.t >= INTRO * 0.5) {\n    g.line(today, TOP - 4, today, bottom, { stroke: \"error\", width: 1.5 })\n    g.rrect(today - 20, 4, 40, 14, 4, \"error\")\n    g.text(today, 15, \"Today\", { size: 10, weight: 600, align: \"center\", color: \"#ffffff\" })\n  }\n  return g.commands\n}\n\nfunction layout(state, data, width) {\n  const longest = Math.max(\n    ...data.tasks.map((task) => task.label.length + 2),\n    ...state.groups.map((group) => group.length),\n  )\n  const left = Math.min(width * 0.38, 180, Math.max(80, 16 + 6.6 * longest))\n  return { left, w: Math.max(1, width - left - 12), low: state.low, high: state.high }\n}\n\nfunction x(box, value) {\n  return box.left + (box.w * (value - box.low)) / (box.high - box.low)\n}\n\n// Tick marks for the axis: hours, days, weeks, months or years for dates; nice steps for plain numbers.\nfunction ticks(state, box) {\n  const perDay = box.w / (state.high - state.low)\n  const out = []\n  if (!state.dates) {\n    const raw = 64 / perDay\n    const power = Math.pow(10, Math.floor(Math.log10(raw)))\n    const step = power * ([1, 2, 5, 10].find((factor) => factor * power >= raw) ?? 10)\n    for (let value = Math.ceil(state.low / step) * step; value <= state.high; value += step)\n      out.push({ x: x(box, value), label: String(Math.round(value * 100) / 100) })\n    return out\n  }\n  const step = [1 / 24, 3 / 24, 6 / 24, 12 / 24, 1, 2, 7, 14].find((days) => days * perDay >= 64)\n  if (step !== undefined) {\n    const first = step >= 7 ? Math.ceil((state.low + 3) / 7) * 7 - 3 : Math.ceil(state.low / step) * step\n    for (let value = first; value <= state.high; value += step)\n      out.push({\n        x: x(box, value),\n        label: step < 1 ? String(Math.round((value % 1) * 24)).padStart(2, \"0\") + \":00\" : short(value),\n      })\n    return out\n  }\n  const months = [1, 3, 12].find((count) => count * 30.4 * perDay >= 64) ?? 12\n  let [year, month] = civil(Math.floor(state.low))\n  month = Math.ceil(month / months) * months - months + 1\n  for (let value = days(year, month, 1); value <= state.high; ) {\n    if (value >= state.low)\n      out.push({\n        x: x(box, value),\n        label: months === 12 ? String(year) : month === 1 ? MONTHS[0] + \" \" + year : MONTHS[month - 1],\n      })\n    month += months\n    if (month > 12) {\n      month -= 12\n      year++\n    }\n    value = days(year, month, 1)\n  }\n  return out\n}\n\n// A task's start and end as numbers (days since 1970 for dates). A date-only end includes that day.\nfunction span(task) {\n  const start = time(task.start, false)\n  return { start, end: task.end === undefined ? start : Math.max(start, time(task.end, true)) }\n}\n\nfunction time(value, end) {\n  if (typeof value === \"number\") return value\n  const [date, clock] = value.split(\"T\")\n  const [y, m, d] = date.split(\"-\").map(Number)\n  const [hours, minutes] = clock ? clock.split(\":\").map(Number) : [0, 0]\n  return days(y, m, d) + (clock ? (hours + (minutes || 0) / 60) / 24 : end ? 1 : 0)\n}\n\n// Days since 1970-01-01 in the civil calendar, and back.\nfunction days(y, m, d) {\n  const year = m <= 2 ? y - 1 : y\n  const era = Math.floor(year / 400)\n  const yoe = year - era * 400\n  const doy = Math.floor((153 * (m + (m > 2 ? -3 : 9)) + 2) / 5) + d - 1\n  return era * 146097 + yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + doy - 719468\n}\n\nfunction civil(day) {\n  const z = day + 719468\n  const era = Math.floor(z / 146097)\n  const doe = z - era * 146097\n  const yoe = Math.floor((doe - Math.floor(doe / 1460) + Math.floor(doe / 36524) - Math.floor(doe / 146096)) / 365)\n  const doy = doe - (365 * yoe + Math.floor(yoe / 4) - Math.floor(yoe / 100))\n  const mp = Math.floor((5 * doy + 2) / 153)\n  const m = mp < 10 ? mp + 3 : mp - 9\n  return [yoe + era * 400 + (m <= 2 ? 1 : 0), m, doy - Math.floor((153 * mp + 2) / 5) + 1]\n}\n\nfunction short(day) {\n  const [, m, d] = civil(Math.floor(day))\n  return MONTHS[m - 1] + \" \" + d\n}\n\nfunction when(state, value) {\n  return state.dates ? short(value) : String(Math.round(value * 100) / 100)\n}\n\nfunction describe(state, data, index) {\n  const task = data.tasks[index]\n  const item = state.spans[index]\n  const length = item.end - item.start\n  const dates =\n    task.end === undefined\n      ? when(state, item.start) + \" (milestone)\"\n      : when(state, item.start) +\n        \" – \" +\n        when(state, state.dates && typeof task.end === \"string\" && !task.end.includes(\"T\") ? item.end - 1 : item.end) +\n        (state.dates ? \" (\" + Math.round(length * 10) / 10 + (length === 1 ? \" day)\" : \" days)\") : \"\")\n  return [\n    task.label,\n    dates,\n    task.progress !== undefined ? Math.round(task.progress * 100) + \"% done\" : \"\",\n    task.group ?? \"\",\n  ]\n    .filter(Boolean)\n    .join(\" · \")\n}\n\nfunction summary(state, data) {\n  return (\n    \"Timeline of \" +\n    data.tasks.length +\n    \" tasks\" +\n    (state.today !== null ? \", today \" + when(state, state.today) : \"\") +\n    \". \" +\n    data.tasks.map((_, index) => describe(state, data, index)).join(\"; \")\n  )\n}\n\nfunction fit(text, width, size) {\n  const max = Math.max(1, Math.floor(width / (size * 0.58)))\n  return text.length <= max ? text : text.slice(0, Math.max(1, max - 1)) + \"…\"\n}\n\nfunction ease(p) {\n  const clamped = Math.max(0, Math.min(1, p))\n  return 1 - Math.pow(1 - clamped, 3)\n}\n",
+  "source": "// A pie or donut chart. Slices sweep in; tap a slice to select it (it pulls out) and tap a legend entry to hide or\n// show its slice. With `choose`, the Choose button submits the selected slice.\n\nconst HEIGHT = 240\nconst INTRO = 0.7\nconst START = -Math.PI / 2\nconst ROW = 20\nconst PALETTE = [\"accent\", \"#f59e0b\", \"#10b981\", \"#ef4444\", \"#8b5cf6\", \"#06b6d4\", \"#ec4899\", \"#84cc16\"]\n\nfunction init(data) {\n  return { selected: null, hidden: [] }\n}\n\nfunction view(state, data) {\n  const picked = state.selected === null ? null : data.slices[state.selected]\n  return ui.column({ gap: 1, align: \"stretch\" }, [\n    ui.text(data.title, { style: \"title\" }),\n    ui.canvas({ id: \"pie\", height: HEIGHT, fps: 60, duration: INTRO, alt: summary(data) }),\n    ui.text(\n      picked\n        ? picked.label +\n            \": \" +\n            amount(picked.value, data.unit) +\n            \" (\" +\n            percent(picked.value / total(data, state)) +\n            \")\"\n        : \"Tap a slice to select it, or a legend entry to hide it\",\n      { style: \"caption\", tone: picked ? \"default\" : \"muted\" },\n    ),\n    data.choose &&\n      ui.row({ gap: 1 }, [\n        ui.button(\"choose\", picked ? \"Choose \" + picked.label : \"Choose\", { variant: \"primary\", disabled: !picked }),\n      ]),\n  ])\n}\n\nfunction update(state, event, data) {\n  if (event.id === \"choose\" && state.selected !== null) {\n    const slice = data.slices[state.selected]\n    const share = Math.round((slice.value / total(data, state)) * 1000) / 1000\n    return submit({ label: slice.label, index: state.selected, value: slice.value, share }, state)\n  }\n  if (event.type !== \"pointer\" || event.value.kind !== \"up\") return state\n  const pointer = event.value\n  const hit = locate(layout(data, state, pointer.width, pointer.height), pointer.x, pointer.y)\n  if (!hit) return { ...state, selected: null }\n  if (hit.kind === \"legend\") {\n    const hidden = state.hidden.includes(hit.index)\n      ? state.hidden.filter((index) => index !== hit.index)\n      : [...state.hidden, hit.index]\n    return { hidden, selected: state.selected === hit.index ? null : state.selected }\n  }\n  return { ...state, selected: state.selected === hit.index ? null : hit.index }\n}\n\nfunction draw(state, data, frame) {\n  const g = ui.draw()\n  const box = layout(data, state, frame.width, frame.height)\n  const hover = frame.pointer && !frame.pointer.down ? locate(box, frame.pointer.x, frame.pointer.y) : null\n  const active = hover && hover.kind === \"slice\" ? hover.index : state.selected\n  const end = START + ease(frame.t / INTRO) * Math.PI * 2\n  if (box.slices.length === 0) g.circle(box.cx, box.cy, box.r, { stroke: \"border\", width: 1.5 })\n  for (const slice of box.slices) {\n    const to = Math.min(slice.to, end)\n    if (to <= slice.from) continue\n    const mid = (slice.from + slice.to) / 2\n    const out = slice.index === active ? 8 : 0\n    const cx = box.cx + Math.cos(mid) * out\n    const cy = box.cy + Math.sin(mid) * out\n    g.path(wedge(cx, cy, box.r, box.inner, slice.from, to), { fill: slice.color, stroke: \"bg\", width: 2 })\n    if (to === slice.to && slice.to - slice.from > 0.35 && box.r > 60) {\n      const at = box.inner ? (box.r + box.inner) / 2 : box.r * 0.66\n      g.text(cx + Math.cos(mid) * at, cy + Math.sin(mid) * at + 4, percent(slice.share), {\n        size: 11,\n        weight: 600,\n        align: \"center\",\n        color: \"#ffffff\",\n      })\n    }\n  }\n  if (box.inner) {\n    const picked = active === null ? null : box.slices.find((slice) => slice.index === active)\n    g.text(box.cx, box.cy - 2, picked ? fit(data.slices[active].label, box.inner * 1.6, 11) : \"Total\", {\n      size: 11,\n      align: \"center\",\n      color: \"muted\",\n    })\n    g.text(box.cx, box.cy + 16, picked ? percent(picked.share) : compact(box.total), {\n      size: 16,\n      weight: 600,\n      align: \"center\",\n    })\n  }\n  legend(g, data, state, box, active)\n  return g.commands\n}\n\n// Geometry shared by draw and update: the pie on the left, the legend on the right.\nfunction layout(data, state, width, height) {\n  const legendWidth = Math.min(210, Math.max(110, width * 0.38))\n  const r = Math.max(20, Math.min(height / 2 - 14, (width - legendWidth) / 2 - 18))\n  const sum = total(data, state)\n  const slices = []\n  let from = START\n  data.slices.forEach((slice, index) => {\n    if (state.hidden.includes(index) || slice.value <= 0 || sum <= 0) return\n    const to = from + (slice.value / sum) * Math.PI * 2\n    slices.push({ index, from, to, share: slice.value / sum, color: color(slice, index) })\n    from = to\n  })\n  return {\n    cx: (width - legendWidth) / 2,\n    cy: height / 2,\n    r,\n    inner: data.donut ? r * 0.58 : 0,\n    total: sum,\n    slices,\n    legend: {\n      x: width - legendWidth + 6,\n      y: height / 2 - (data.slices.length * ROW) / 2,\n      w: legendWidth - 12,\n      rows: data.slices.length,\n    },\n  }\n}\n\nfunction locate(box, px, py) {\n  const legend = box.legend\n  if (px >= legend.x - 4 && py >= legend.y && py < legend.y + legend.rows * ROW)\n    return { kind: \"legend\", index: Math.floor((py - legend.y) / ROW) }\n  const distance = Math.hypot(px - box.cx, py - box.cy)\n  if (distance > box.r + 10 || distance < box.inner) return null\n  let angle = Math.atan2(py - box.cy, px - box.cx)\n  if (angle < START) angle += Math.PI * 2\n  const slice = box.slices.find((slice) => angle >= slice.from && angle < slice.to)\n  return slice ? { kind: \"slice\", index: slice.index } : null\n}\n\nfunction legend(g, data, state, box, active) {\n  data.slices.forEach((slice, index) => {\n    const y = box.legend.y + index * ROW + ROW / 2\n    const hidden = state.hidden.includes(index)\n    const fill = color(slice, index)\n    g.circle(box.legend.x + 5, y, 5, hidden ? { stroke: fill, width: 1.5 } : fill)\n    const share = box.slices.find((item) => item.index === index)\n    const right = share ? percent(share.share) : \"\"\n    g.text(box.legend.x + 16, y + 4, fit(slice.label, box.legend.w - 22 - 7 * right.length, 12), {\n      size: 12,\n      weight: index === active ? 600 : 400,\n      color: hidden ? \"muted\" : \"text\",\n    })\n    if (right) g.text(box.legend.x + box.legend.w, y + 4, right, { size: 12, align: \"right\", color: \"muted\" })\n  })\n}\n\n// A slice as a path: arcs are cubic Béziers of at most a quarter turn each.\nfunction wedge(cx, cy, r, inner, from, to) {\n  const segments = [[\"M\", cx + Math.cos(from) * r, cy + Math.sin(from) * r]]\n  arc(segments, cx, cy, r, from, to)\n  if (inner > 0) {\n    segments.push([\"L\", cx + Math.cos(to) * inner, cy + Math.sin(to) * inner])\n    arc(segments, cx, cy, inner, to, from)\n  } else segments.push([\"L\", cx, cy])\n  segments.push([\"Z\"])\n  return segments\n}\n\nfunction arc(segments, cx, cy, r, from, to) {\n  const steps = Math.max(1, Math.ceil(Math.abs(to - from) / (Math.PI / 2)))\n  const step = (to - from) / steps\n  const k = (4 / 3) * Math.tan(step / 4)\n  for (let i = 0; i < steps; i++) {\n    const a = from + i * step\n    const b = a + step\n    segments.push([\n      \"C\",\n      cx + r * (Math.cos(a) - k * Math.sin(a)),\n      cy + r * (Math.sin(a) + k * Math.cos(a)),\n      cx + r * (Math.cos(b) + k * Math.sin(b)),\n      cy + r * (Math.sin(b) - k * Math.cos(b)),\n      cx + r * Math.cos(b),\n      cy + r * Math.sin(b),\n    ])\n  }\n}\n\nfunction total(data, state) {\n  return data.slices.reduce((sum, slice, index) => (state.hidden.includes(index) ? sum : sum + slice.value), 0)\n}\n\nfunction summary(data) {\n  const sum = data.slices.reduce((total, slice) => total + slice.value, 0)\n  return (\n    (data.donut ? \"Donut\" : \"Pie\") +\n    \" chart. \" +\n    data.slices\n      .map((slice) => slice.label + \" \" + amount(slice.value, data.unit) + \" (\" + percent(slice.value / sum) + \")\")\n      .join(\", \")\n  )\n}\n\nfunction color(slice, index) {\n  return slice.color ?? PALETTE[index % PALETTE.length]\n}\n\nfunction percent(share) {\n  return (Number.isFinite(share) ? Math.round(share * 1000) / 10 : 0) + \"%\"\n}\n\nfunction amount(value, unit) {\n  const text = String(Math.round(value * 100) / 100)\n  if (!unit) return text\n  return unit.length > 1 && /^[a-z]/i.test(unit) ? text + \" \" + unit : text + unit\n}\n\nfunction compact(value) {\n  const size = Math.abs(value)\n  const round = (number) => String(Math.round(number * 10) / 10)\n  if (size >= 1e9) return round(value / 1e9) + \"B\"\n  if (size >= 1e6) return round(value / 1e6) + \"M\"\n  if (size >= 1e4) return round(value / 1e3) + \"k\"\n  return String(Math.round(value * 100) / 100)\n}\n\n// Truncates text to about `width` pixels at font `size`.\nfunction fit(text, width, size) {\n  const max = Math.max(1, Math.floor(width / (size * 0.58)))\n  return text.length <= max ? text : text.slice(0, Math.max(1, max - 1)) + \"…\"\n}\n\nfunction ease(p) {\n  const clamped = Math.max(0, Math.min(1, p))\n  return 1 - Math.pow(1 - clamped, 3)\n}\n",
   "data": {
-   "title": "Q2 launch plan",
-   "today": "2026-04-20",
+   "title": "Traffic by source",
+   "donut": true,
+   "unit": "k",
    "choose": true,
-   "tasks": [
+   "slices": [
     {
-     "label": "Research",
-     "start": "2026-04-01",
-     "end": "2026-04-10",
-     "group": "Design",
-     "progress": 1
+     "label": "Search",
+     "value": 48
     },
     {
-     "label": "Wireframes",
-     "start": "2026-04-08",
-     "end": "2026-04-21",
-     "group": "Design",
-     "progress": 0.8
+     "label": "Direct",
+     "value": 27
     },
     {
-     "label": "Visual design",
-     "start": "2026-04-18",
-     "end": "2026-05-02",
-     "group": "Design",
-     "progress": 0.3
+     "label": "Social",
+     "value": 14
     },
     {
-     "label": "API",
-     "start": "2026-04-13",
-     "end": "2026-05-08",
-     "group": "Build",
-     "progress": 0.4
+     "label": "Referral",
+     "value": 8
     },
     {
-     "label": "Client",
-     "start": "2026-04-27",
-     "end": "2026-05-22",
-     "group": "Build",
-     "progress": 0
-    },
-    {
-     "label": "Beta",
-     "start": "2026-05-25",
-     "group": "Build"
-    },
-    {
-     "label": "Launch prep",
-     "start": "2026-05-18",
-     "end": "2026-06-05",
-     "group": "Go to market"
-    }
-   ]
-  }
- },
- "treemap": {
-  "mode": "step",
-  "source": "// A squarified treemap of a hierarchy: each item's area is its value (a parent's value defaults to the sum of its\n// children). Two levels show at a time. Tap a block with children to drill into it, tap a leaf to select it, and use\n// Back to go up. With `choose`, the Choose button submits the selected node.\n\nconst HEIGHT = 280\nconst INTRO = 0.6\nconst HEADER = 18\n// Leaves room for the outlines under the spec's 2,000 commands per frame.\nconst BUDGET = 1900\nconst PALETTE = [\"accent\", \"#f59e0b\", \"#10b981\", \"#ef4444\", \"#8b5cf6\", \"#06b6d4\", \"#ec4899\", \"#84cc16\"]\n\nfunction init(data) {\n  return { path: [], selected: null }\n}\n\nfunction view(state, data) {\n  const node = focus(data, state.path)\n  const picked = state.selected === null ? null : node.children[state.selected]\n  return ui.column({ gap: 1, align: \"stretch\" }, [\n    ui.text(data.title, { style: \"title\" }),\n    state.path.length > 0 &&\n      ui.row({ gap: 1, align: \"center\" }, [\n        ui.button(\"back\", \"Back\", { variant: \"secondary\" }),\n        ui.text(trail(data, state.path).join(\" › \"), { style: \"caption\", tone: \"muted\" }),\n      ]),\n    ui.canvas({ id: \"treemap\", height: HEIGHT, fps: 60, duration: INTRO, alt: summary(data, node) }),\n    ui.text(\n      picked\n        ? picked.label +\n            \": \" +\n            amount(total(picked), data.unit) +\n            \" (\" +\n            share(total(picked), total(node)) +\n            \" of \" +\n            node.label +\n            \")\"\n        : \"Tap a block with children to drill in, or a leaf to select it\",\n      { style: \"caption\", tone: picked ? \"default\" : \"muted\" },\n    ),\n    data.choose &&\n      ui.row({ gap: 1 }, [\n        ui.button(\"choose\", picked ? \"Choose \" + picked.label : \"Choose\", { variant: \"primary\", disabled: !picked }),\n      ]),\n  ])\n}\n\nfunction update(state, event, data) {\n  if (event.id === \"back\") return { path: state.path.slice(0, -1), selected: state.path[state.path.length - 1] }\n  if (event.id === \"choose\" && state.selected !== null) {\n    const picked = focus(data, state.path).children[state.selected]\n    return submit(\n      { label: picked.label, value: total(picked), path: [...trail(data, state.path).slice(1), picked.label] },\n      state,\n    )\n  }\n  if (event.type !== \"pointer\" || event.value.kind !== \"up\") return state\n  const pointer = event.value\n  const hit = locate(layout(data, state, pointer.width, pointer.height), pointer.x, pointer.y)\n  if (!hit) return { ...state, selected: null }\n  const child = focus(data, state.path).children[hit.index]\n  if (child.children) return { path: [...state.path, hit.index], selected: hit.inner }\n  return { ...state, selected: state.selected === hit.index ? null : hit.index }\n}\n\nfunction draw(state, data, frame) {\n  const g = ui.draw()\n  const blocks = layout(data, state, frame.width, frame.height)\n  const hover = frame.pointer && !frame.pointer.down ? locate(blocks, frame.pointer.x, frame.pointer.y) : null\n  blocks.forEach((block, order) => {\n    const grow = ease((frame.t - (0.3 * order) / blocks.length) / (INTRO - 0.3))\n    if (grow <= 0) return\n    const r = scaled(block.rect, grow)\n    if (block.inner.length === 0) {\n      g.rect(r.x, r.y, r.w, r.h, { fill: block.color, stroke: \"bg\", width: 2 })\n      caption(g, r, block.node.label, amount(total(block.node), data.unit), \"#ffffff\")\n    } else {\n      g.save().alpha(0.22).rect(r.x, r.y, r.w, r.h, block.color).restore()\n      g.rect(r.x, r.y, r.w, r.h, { stroke: \"bg\", width: 2 })\n      if (r.w > 30)\n        g.text(r.x + 6, r.y + 13, fit(block.node.label + \"  \" + amount(total(block.node), data.unit), r.w - 10, 11), {\n          size: 11,\n          weight: 600,\n        })\n      for (const inner of block.inner) {\n        if (g.commands.length > BUDGET) break\n        const ir = scaled(inner.rect, grow)\n        g.rect(ir.x, ir.y, ir.w, ir.h, { fill: block.color, stroke: \"bg\", width: 1.5 })\n        caption(g, ir, inner.node.label, \"\", \"#ffffff\")\n      }\n    }\n  })\n  if (frame.t >= INTRO)\n    for (const [index, width] of [\n      [hover && hover.index, 1],\n      [state.selected, 2.5],\n    ]) {\n      const block = index === null ? null : blocks.find((item) => item.index === index)\n      if (block)\n        g.rect(block.rect.x + 1, block.rect.y + 1, block.rect.w - 2, block.rect.h - 2, { stroke: \"text\", width })\n    }\n  return g.commands\n}\n\n// The children of the focused node, squarified, each with its own children squarified inside below a header.\nfunction layout(data, state, width, height) {\n  const node = focus(data, state.path)\n  const items = node.children\n    .map((child, index) => ({ node: child, index, value: total(child) }))\n    .filter((item) => item.value > 0)\n  return squarify(items, { x: 0, y: 0, w: width, h: height }).map((placed, order) => {\n    const child = placed.item.node\n    const room = {\n      x: placed.rect.x + 3,\n      y: placed.rect.y + HEADER,\n      w: placed.rect.w - 6,\n      h: placed.rect.h - HEADER - 3,\n    }\n    const inner =\n      child.children && room.w > 40 && room.h > 24\n        ? squarify(\n            child.children\n              .map((grand, index) => ({ node: grand, index, value: total(grand) }))\n              .filter((item) => item.value > 0),\n            room,\n          ).map((cell) => ({ node: cell.item.node, index: cell.item.index, rect: cell.rect }))\n        : []\n    return {\n      node: child,\n      index: placed.item.index,\n      rect: placed.rect,\n      inner,\n      color: child.color ?? PALETTE[placed.item.index % PALETTE.length],\n    }\n  })\n}\n\n// Squarified treemap (Bruls et al.): fill rows along the short side while they make the cells squarer.\nfunction squarify(items, rect) {\n  const sorted = [...items].sort((a, b) => b.value - a.value)\n  const sum = sorted.reduce((total, item) => total + item.value, 0)\n  const out = []\n  if (sum <= 0) return out\n  const scale = (rect.w * rect.h) / sum\n  let { x, y, w, h } = rect\n  let start = 0\n  while (start < sorted.length) {\n    const short = Math.min(w, h)\n    let end = start + 1\n    let area = sorted[start].value * scale\n    let worst = ratio(sorted[start].value * scale, sorted[start].value * scale, area, short)\n    while (end < sorted.length) {\n      const next = area + sorted[end].value * scale\n      const score = ratio(sorted[start].value * scale, sorted[end].value * scale, next, short)\n      if (score > worst) break\n      area = next\n      worst = score\n      end++\n    }\n    const thick = area / short\n    let offset = 0\n    for (let index = start; index < end; index++) {\n      const length = (sorted[index].value * scale) / thick\n      out.push({\n        item: sorted[index],\n        rect: w >= h ? { x, y: y + offset, w: thick, h: length } : { x: x + offset, y, w: length, h: thick },\n      })\n      offset += length\n    }\n    if (w >= h) {\n      x += thick\n      w -= thick\n    } else {\n      y += thick\n      h -= thick\n    }\n    start = end\n  }\n  return out\n}\n\n// The worst aspect ratio of a row with the given largest and smallest cell areas and total area.\nfunction ratio(largest, smallest, area, short) {\n  return Math.max((short * short * largest) / (area * area), (area * area) / (short * short * smallest))\n}\n\nfunction locate(blocks, px, py) {\n  const inside = (r) => px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h\n  const block = blocks.find((item) => inside(item.rect))\n  if (!block) return null\n  const inner = block.inner.find((item) => inside(item.rect))\n  return { index: block.index, inner: inner ? inner.index : null }\n}\n\nfunction caption(g, r, label, value, color) {\n  if (r.w < 36 || r.h < 18) return\n  g.text(r.x + 6, r.y + 15, fit(label, r.w - 10, 12), { size: 12, weight: 600, color })\n  if (value && r.h > 36) g.text(r.x + 6, r.y + 31, fit(value, r.w - 10, 11), { size: 11, color })\n}\n\nfunction scaled(r, grow) {\n  return { x: r.x + (r.w * (1 - grow)) / 2, y: r.y + (r.h * (1 - grow)) / 2, w: r.w * grow, h: r.h * grow }\n}\n\nfunction focus(data, path) {\n  return path.reduce((node, index) => node.children[index], { label: data.rootLabel ?? \"All\", children: data.items })\n}\n\nfunction trail(data, path) {\n  const labels = [data.rootLabel ?? \"All\"]\n  path.reduce(\n    (node, index) => {\n      labels.push(node.children[index].label)\n      return node.children[index]\n    },\n    { children: data.items },\n  )\n  return labels\n}\n\nfunction total(node) {\n  return node.value ?? (node.children ? node.children.reduce((sum, child) => sum + total(child), 0) : 0)\n}\n\nfunction summary(data, node) {\n  const sum = total(node)\n  return (\n    \"Treemap of \" +\n    node.label +\n    \" (\" +\n    amount(sum, data.unit) +\n    \"): \" +\n    node.children\n      .map((child) => ({ label: child.label, value: total(child) }))\n      .sort((a, b) => b.value - a.value)\n      .map((child) => child.label + \" \" + amount(child.value, data.unit) + \" (\" + share(child.value, sum) + \")\")\n      .join(\", \")\n  )\n}\n\nfunction share(part, whole) {\n  return (whole > 0 ? Math.round((part / whole) * 1000) / 10 : 0) + \"%\"\n}\n\nfunction amount(value, unit) {\n  const size = Math.abs(value)\n  const text =\n    size >= 1e6\n      ? Math.round(value / 1e5) / 10 + \"M\"\n      : size >= 1e4\n        ? Math.round(value / 100) / 10 + \"k\"\n        : String(Math.round(value * 100) / 100)\n  if (!unit) return text\n  return unit.length > 1 && /^[a-z]/i.test(unit) ? text + \" \" + unit : text + unit\n}\n\nfunction fit(text, width, size) {\n  const max = Math.max(1, Math.floor(width / (size * 0.58)))\n  return text.length <= max ? text : text.slice(0, Math.max(1, max - 1)) + \"…\"\n}\n\nfunction ease(p) {\n  const clamped = Math.max(0, Math.min(1, p))\n  return 1 - Math.pow(1 - clamped, 3)\n}\n",
-  "data": {
-   "title": "Disk usage",
-   "rootLabel": "repo",
-   "unit": "MB",
-   "choose": true,
-   "items": [
-    {
-     "label": "packages",
-     "children": [
-      {
-       "label": "core",
-       "value": 42
-      },
-      {
-       "label": "tui",
-       "value": 31
-      },
-      {
-       "label": "app",
-       "value": 27
-      },
-      {
-       "label": "widget",
-       "value": 6
-      },
-      {
-       "label": "sdk",
-       "value": 12
-      }
-     ]
-    },
-    {
-     "label": "node_modules",
-     "children": [
-      {
-       "label": "effect",
-       "value": 38
-      },
-      {
-       "label": "typescript",
-       "value": 64
-      },
-      {
-       "label": "other",
-       "value": 120
-      }
-     ]
-    },
-    {
-     "label": "docs",
-     "value": 18
-    },
-    {
-     "label": "assets",
-     "children": [
-      {
-       "label": "images",
-       "value": 22
-      },
-      {
-       "label": "fonts",
-       "value": 9
-      }
-     ]
-    },
-    {
-     "label": "scripts",
+     "label": "Email",
      "value": 3
     }
    ]
   }
  },
- "tree": {
+ "radar": {
   "mode": "step",
-  "source": "// A hierarchy as a tidy tree: \"right\" grows left to right (deep trees, file trees), \"down\" grows top down (org charts).\n// Leaves get one slot each and parents center over their children. Tap a node's +/− knob to collapse or expand it,\n// tap a node to select it (tap it again to toggle it). With `choose`, the Choose button submits the selected node.\n\nconst ROW = 36\nconst LEVEL = 70\n// A fully expanded large tree stops drawing nodes here, under the spec's 2,000 commands per frame.\nconst BUDGET = 1900\nconst PALETTE = [\"accent\", \"#f59e0b\", \"#10b981\", \"#ef4444\", \"#8b5cf6\", \"#06b6d4\", \"#ec4899\", \"#84cc16\"]\n\n// Large trees start collapsed below `expand` levels (default: all open up to 40 nodes, else 2 levels).\nfunction init(data) {\n  const collapsed = []\n  const count = (node) => 1 + (node.children ?? []).reduce((sum, child) => sum + count(child), 0)\n  const expand = data.expand ?? (count(data.root) > 40 ? 2 : Infinity)\n  const close = (node, key, depth) => {\n    if (!node.children) return\n    if (depth >= expand) collapsed.push(key)\n    else node.children.forEach((child, index) => close(child, join(key, index), depth + 1))\n  }\n  close(data.root, \"\", 0)\n  return { collapsed, selected: null }\n}\n\nfunction view(state, data) {\n  const tree = layout(data, state)\n  const picked = state.selected === null ? null : tree.items.find((item) => item.key === state.selected)\n  return ui.column({ gap: 1, align: \"stretch\" }, [\n    ui.text(data.title, { style: \"title\" }),\n    ui.canvas({\n      id: \"tree\",\n      height: data.orientation === \"down\" ? tree.depth * LEVEL + 8 : Math.max(60, tree.leaves * ROW + 8),\n      fps: 60,\n      duration: intro(tree),\n      alt: summary(data),\n    }),\n    ui.text(picked ? describe(data, picked) : \"Tap a node to select it; tap its +/− to collapse or expand it\", {\n      style: \"caption\",\n      tone: picked ? \"default\" : \"muted\",\n    }),\n    data.choose &&\n      ui.row({ gap: 1 }, [\n        ui.button(\"choose\", picked ? \"Choose \" + picked.node.label : \"Choose\", {\n          variant: \"primary\",\n          disabled: !picked,\n        }),\n      ]),\n  ])\n}\n\nfunction update(state, event, data) {\n  if (event.id === \"choose\" && state.selected !== null) {\n    const picked = layout(data, state).items.find((item) => item.key === state.selected)\n    return submit({ label: picked.node.label, path: trail(data, picked.key), note: picked.node.note }, state)\n  }\n  if (event.type !== \"pointer\" || event.value.kind !== \"up\") return state\n  const pointer = event.value\n  const tree = layout(data, state)\n  const hit = locate(data, tree, place(data, tree, pointer.width), pointer.x, pointer.y)\n  if (!hit) return { ...state, selected: null }\n  const toggle = hit.knob || (hit.item.key === state.selected && hit.item.node.children)\n  const collapsed = !toggle\n    ? state.collapsed\n    : state.collapsed.includes(hit.item.key)\n      ? state.collapsed.filter((key) => key !== hit.item.key)\n      : [...state.collapsed, hit.item.key]\n  return { collapsed, selected: hit.knob ? state.selected : hit.item.key }\n}\n\nfunction draw(state, data, frame) {\n  const g = ui.draw()\n  const tree = layout(data, state)\n  const at = place(data, tree, frame.width)\n  const hover = frame.pointer && !frame.pointer.down ? locate(data, tree, at, frame.pointer.x, frame.pointer.y) : null\n  const down = data.orientation === \"down\"\n  // One alpha group per depth, so levels fade in one after another.\n  for (let depth = 0; depth < tree.depth; depth++) {\n    const fade = ease((frame.t - depth * 0.12) / 0.35)\n    if (fade <= 0) break\n    g.save().alpha(fade)\n    tree.items.forEach((item, index) => {\n      if (item.depth !== depth || g.commands.length > BUDGET) return\n      const box = at[index]\n      if (item.parent >= 0) {\n        const from = at[item.parent]\n        if (down) {\n          const mid = (from.y + from.h + box.y) / 2\n          g.path(\n            [\n              [\"M\", from.x + from.w / 2, from.y + from.h],\n              [\"C\", from.x + from.w / 2, mid, box.x + box.w / 2, mid, box.x + box.w / 2, box.y],\n            ],\n            { stroke: \"border\", width: 1.5 },\n          )\n        } else {\n          const mid = (from.x + from.w + box.x) / 2\n          g.path(\n            [\n              [\"M\", from.x + from.w, from.y + from.h / 2],\n              [\"C\", mid, from.y + from.h / 2, mid, box.y + box.h / 2, box.x, box.y + box.h / 2],\n            ],\n            { stroke: \"border\", width: 1.5 },\n          )\n        }\n      }\n      const selected = item.key === state.selected\n      const hovered = hover && hover.item.key === item.key\n      const accent = item.node.color ?? PALETTE[(item.branch < 0 ? 0 : item.branch) % PALETTE.length]\n      g.rrect(box.x, box.y, box.w, box.h, 6, {\n        fill: \"surface\",\n        stroke: selected ? accent : hovered ? \"muted\" : \"border\",\n        width: selected ? 2 : 1,\n      })\n      g.rrect(box.x, box.y, 4, box.h, 2, accent)\n      const lines = item.node.note && box.h > 30\n      g.text(box.x + 11, box.y + (lines ? 15 : box.h / 2 + 4), fit(item.node.label, box.w - 16, 12), {\n        size: 12,\n        weight: depth === 0 || selected ? 600 : 400,\n      })\n      if (lines) g.text(box.x + 11, box.y + 30, fit(item.node.note, box.w - 16, 11), { size: 11, color: \"muted\" })\n      if (item.node.children) {\n        const knob = knobAt(data, box)\n        const closed = state.collapsed.includes(item.key)\n        g.circle(knob.x, knob.y, 7, { fill: closed ? accent : \"bg\", stroke: closed ? accent : \"border\", width: 1 })\n        g.text(knob.x, knob.y + 4, closed ? \"+\" : \"−\", {\n          size: 11,\n          weight: 600,\n          align: \"center\",\n          color: closed ? \"#ffffff\" : \"muted\",\n        })\n      }\n    })\n    g.restore()\n  }\n  return g.commands\n}\n\n// The visible tree in slots: each item has a depth, a breadth slot, its parent's index and its top-level branch.\nfunction layout(data, state) {\n  const items = []\n  let leaves = 0\n  let depth = 0\n  const walk = (node, key, level, parent, branch) => {\n    const index = items.length\n    items.push({ key, node, depth: level, parent, branch, slot: 0 })\n    depth = Math.max(depth, level + 1)\n    if (node.children && !state.collapsed.includes(key)) {\n      const slots = node.children.map((child, at) =>\n        walk(child, join(key, at), level + 1, index, level === 0 ? at : branch),\n      )\n      items[index].slot = (slots[0] + slots[slots.length - 1]) / 2\n    } else items[index].slot = leaves++\n    return items[index].slot\n  }\n  walk(data.root, \"\", 0, -1, -1)\n  return { items, leaves, depth }\n}\n\n// Pixel boxes for the layout at a canvas width; notes show only in the taller \"down\" boxes.\nfunction place(data, tree, width) {\n  if (data.orientation === \"down\") {\n    const slot = (width - 16) / tree.leaves\n    const w = Math.max(40, Math.min(150, slot - 10))\n    const h = tree.items.some((item) => item.node.note) ? 40 : 28\n    return tree.items.map((item) => ({ x: 8 + (item.slot + 0.5) * slot - w / 2, y: 6 + item.depth * LEVEL, w, h }))\n  }\n  const column = (width - 16) / tree.depth\n  const w = Math.max(50, Math.min(170, column - 28))\n  const h = 26\n  return tree.items.map((item) => ({ x: 8 + item.depth * column, y: 4 + item.slot * ROW + (ROW - h) / 2, w, h }))\n}\n\nfunction knobAt(data, box) {\n  return data.orientation === \"down\"\n    ? { x: box.x + box.w / 2, y: box.y + box.h }\n    : { x: box.x + box.w, y: box.y + box.h / 2 }\n}\n\nfunction locate(data, tree, at, px, py) {\n  for (let index = tree.items.length - 1; index >= 0; index--) {\n    const box = at[index]\n    const item = tree.items[index]\n    if (item.node.children) {\n      const knob = knobAt(data, box)\n      if (Math.hypot(px - knob.x, py - knob.y) <= 11) return { item, knob: true }\n    }\n    if (px >= box.x && px <= box.x + box.w && py >= box.y && py <= box.y + box.h) return { item, knob: false }\n  }\n  return null\n}\n\nfunction intro(tree) {\n  return Math.round((0.35 + 0.12 * (tree.depth - 1)) * 100) / 100\n}\n\nfunction join(key, index) {\n  return key === \"\" ? String(index) : key + \".\" + index\n}\n\nfunction trail(data, key) {\n  const labels = [data.root.label]\n  if (key === \"\") return labels\n  key.split(\".\").reduce((node, index) => {\n    labels.push(node.children[Number(index)].label)\n    return node.children[Number(index)]\n  }, data.root)\n  return labels\n}\n\nfunction describe(data, item) {\n  const count = (node) => (node.children ?? []).reduce((sum, child) => sum + 1 + count(child), 0)\n  const below = count(item.node)\n  return (\n    trail(data, item.key).join(\" › \") +\n    (item.node.note ? \" · \" + item.node.note : \"\") +\n    (below ? \" · \" + below + (below === 1 ? \" node below\" : \" nodes below\") : \"\")\n  )\n}\n\nfunction summary(data) {\n  const lines = []\n  const walk = (node, depth) => {\n    if (lines.length < 60) lines.push(\"  \".repeat(depth) + node.label + (node.note ? \" (\" + node.note + \")\" : \"\"))\n    node.children?.forEach((child) => walk(child, depth + 1))\n  }\n  walk(data.root, 0)\n  return \"Tree:\\n\" + lines.join(\"\\n\")\n}\n\nfunction fit(text, width, size) {\n  const max = Math.max(1, Math.floor(width / (size * 0.58)))\n  return text.length <= max ? text : text.slice(0, Math.max(1, max - 1)) + \"…\"\n}\n\nfunction ease(p) {\n  const clamped = Math.max(0, Math.min(1, p))\n  return 1 - Math.pow(1 - clamped, 3)\n}\n",
+  "source": "// A radar (spider) chart: one polygon per series over 3 to 12 axes on a shared scale. Polygons grow in; tap near an\n// axis to compare every series on it, tap a legend entry to hide a series. With `choose`, the Choose button submits the\n// selected axis with each series' value.\n\nconst HEIGHT = 300\nconst INTRO = 0.7\nconst RINGS = 4\nconst PALETTE = [\"accent\", \"#f59e0b\", \"#10b981\", \"#ef4444\", \"#8b5cf6\", \"#06b6d4\"]\n\nfunction init(data) {\n  return { selected: null, hidden: [] }\n}\n\nfunction view(state, data) {\n  return ui.column({ gap: 1, align: \"stretch\" }, [\n    ui.text(data.title, { style: \"title\" }),\n    ui.canvas({ id: \"radar\", height: HEIGHT, fps: 60, duration: INTRO, alt: summary(data) }),\n    ui.text(\n      state.selected === null\n        ? \"Tap an axis to compare the series; tap a legend entry to hide one\"\n        : describe(state, data, state.selected),\n      {\n        style: \"caption\",\n        tone: state.selected === null ? \"muted\" : \"default\",\n      },\n    ),\n    data.choose &&\n      ui.row({ gap: 1 }, [\n        ui.button(\"choose\", \"Choose axis\", { variant: \"primary\", disabled: state.selected === null }),\n      ]),\n  ])\n}\n\nfunction update(state, event, data) {\n  if (event.id === \"choose\" && state.selected !== null)\n    return submit(\n      {\n        axis: data.axes[state.selected],\n        index: state.selected,\n        values: Object.fromEntries(data.series.map((series) => [series.label, series.values[state.selected]])),\n      },\n      state,\n    )\n  if (event.type !== \"pointer\" || event.value.kind !== \"up\") return state\n  const pointer = event.value\n  const box = layout(data, pointer.width, pointer.height)\n  const entry = box.legend.findIndex(\n    (item) => pointer.y >= item.y - 9 && pointer.y <= item.y + 9 && pointer.x <= box.legendRight,\n  )\n  if (entry >= 0) {\n    const hidden = state.hidden.includes(entry)\n      ? state.hidden.filter((index) => index !== entry)\n      : [...state.hidden, entry]\n    return hidden.length === data.series.length ? state : { ...state, hidden }\n  }\n  const hit = axisAt(data, box, pointer.x, pointer.y)\n  return { ...state, selected: hit === state.selected ? null : hit }\n}\n\nfunction draw(state, data, frame) {\n  const g = ui.draw()\n  const box = layout(data, frame.width, frame.height)\n  const n = data.axes.length\n  const hover = frame.pointer && !frame.pointer.down ? axisAt(data, box, frame.pointer.x, frame.pointer.y) : null\n  const active = hover ?? state.selected\n  for (let ring = 1; ring <= RINGS; ring++) {\n    const r = (box.r * ring) / RINGS\n    g.path([...data.axes.map((_, index) => [index === 0 ? \"M\" : \"L\", ...point(box, index, n, r)]), [\"Z\"]], {\n      stroke: \"border\",\n      width: 1,\n    })\n  }\n  g.text(box.cx + 4, box.cy - box.r - 4 + 12, compact(box.max), { size: 10, color: \"muted\" })\n  data.axes.forEach((axis, index) => {\n    const [x, y] = point(box, index, n, box.r)\n    g.line(box.cx, box.cy, x, y, { stroke: index === active ? \"text\" : \"border\", width: index === active ? 1.5 : 1 })\n    const [lx, ly] = point(box, index, n, box.r + 14)\n    const align = Math.abs(lx - box.cx) < 8 ? \"center\" : lx > box.cx ? \"left\" : \"right\"\n    g.text(lx, ly + 4, fit(axis, 110, 11), {\n      size: 11,\n      align,\n      weight: index === active ? 600 : 400,\n      color: index === active ? \"text\" : \"muted\",\n    })\n  })\n  const grow = ease(frame.t / INTRO)\n  data.series.forEach((series, at) => {\n    if (state.hidden.includes(at)) return\n    const color = series.color ?? PALETTE[at % PALETTE.length]\n    const points = series.values\n      .slice(0, n)\n      .map((value, index) => point(box, index, n, (box.r * Math.max(0, value) * grow) / box.max))\n    const segments = [...points.map((p, index) => [index === 0 ? \"M\" : \"L\", p[0], p[1]]), [\"Z\"]]\n    g.save().alpha(0.18).path(segments, color).restore()\n    g.path(segments, { stroke: color, width: 2 })\n    points.forEach((p, index) => g.circle(p[0], p[1], index === active ? 4.5 : 2.5, color))\n  })\n  data.series.forEach((series, at) => {\n    const item = box.legend[at]\n    const hidden = state.hidden.includes(at)\n    const color = series.color ?? PALETTE[at % PALETTE.length]\n    g.circle(8 + 4, item.y, 4, hidden ? { stroke: color, width: 1.5 } : color)\n    g.text(8 + 13, item.y + 4, fit(series.label, box.legendRight - 26, 12), {\n      size: 12,\n      color: hidden ? \"muted\" : \"text\",\n    })\n  })\n  return g.commands\n}\n\n// Geometry shared by draw and update: the center and radius, the scale's max and the legend rows on the left.\nfunction layout(data, width, height) {\n  const legendRight =\n    data.series.length > 1 ? Math.min(140, 30 + 7 * Math.max(...data.series.map((series) => series.label.length))) : 0\n  const r = Math.max(30, Math.min(height / 2 - 30, (width - legendRight) / 2 - 70))\n  const top = data.max ?? Math.max(...data.series.flatMap((series) => series.values))\n  const legend = data.series.length > 1 ? data.series.map((_, index) => ({ y: 14 + index * 20 })) : []\n  return {\n    cx: legendRight + (width - legendRight) / 2,\n    cy: height / 2,\n    r,\n    max: data.max ?? nice(top),\n    legend,\n    legendRight,\n  }\n}\n\nfunction nice(max) {\n  if (max <= 0) return 1\n  const power = Math.pow(10, Math.floor(Math.log10(max)))\n  return power * ([1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10].find((factor) => factor * power >= max) ?? 10)\n}\n\n// Axis 0 points up; the rest follow clockwise.\nfunction point(box, index, n, r) {\n  const angle = -Math.PI / 2 + (index * Math.PI * 2) / n\n  return [box.cx + Math.cos(angle) * r, box.cy + Math.sin(angle) * r]\n}\n\nfunction axisAt(data, box, px, py) {\n  const distance = Math.hypot(px - box.cx, py - box.cy)\n  if (distance > box.r + 40 || distance < 8) return null\n  const n = data.axes.length\n  const angle = Math.atan2(py - box.cy, px - box.cx) + Math.PI / 2\n  return ((Math.round((angle / (Math.PI * 2)) * n) % n) + n) % n\n}\n\nfunction describe(state, data, index) {\n  return (\n    data.axes[index] +\n    \": \" +\n    data.series\n      .filter((_, at) => !state.hidden.includes(at))\n      .map((series) => series.label + \" \" + amount(series.values[index], data.unit))\n      .join(\", \")\n  )\n}\n\nfunction summary(data) {\n  return (\n    \"Radar chart over \" +\n    data.axes.join(\", \") +\n    \". \" +\n    data.series\n      .map((series) => series.label + \": \" + series.values.map((value) => amount(value, data.unit)).join(\", \"))\n      .join(\"; \")\n  )\n}\n\nfunction amount(value, unit) {\n  const text = String(Math.round((value ?? 0) * 100) / 100)\n  if (!unit) return text\n  return unit.length > 1 && /^[a-z]/i.test(unit) ? text + \" \" + unit : text + unit\n}\n\nfunction compact(value) {\n  return String(Math.round(value * 100) / 100)\n}\n\nfunction fit(text, width, size) {\n  const max = Math.max(1, Math.floor(width / (size * 0.58)))\n  return text.length <= max ? text : text.slice(0, Math.max(1, max - 1)) + \"…\"\n}\n\nfunction ease(p) {\n  const clamped = Math.max(0, Math.min(1, p))\n  return 1 - Math.pow(1 - clamped, 3)\n}\n",
   "data": {
-   "title": "Team",
-   "orientation": "down",
+   "title": "Model comparison",
    "choose": true,
-   "root": {
-    "label": "Ada",
-    "note": "CEO",
-    "children": [
-     {
-      "label": "Grace",
-      "note": "CTO",
-      "children": [
-       {
-        "label": "Linus",
-        "note": "Platform"
-       },
-       {
-        "label": "Margaret",
-        "note": "Apps"
-       },
-       {
-        "label": "Ken",
-        "note": "Infra"
-       }
-      ]
-     },
-     {
-      "label": "Barbara",
-      "note": "COO",
-      "children": [
-       {
-        "label": "Frances",
-        "note": "Ops"
-       },
-       {
-        "label": "Radia",
-        "note": "Support"
-       }
-      ]
-     },
-     {
-      "label": "Edsger",
-      "note": "CFO"
-     }
-    ]
-   }
-  }
- },
- "sequence": {
-  "mode": "step",
-  "source": "// A sequence diagram: participants as columns with lifelines and messages between them, top to bottom in order.\n// Kinds: \"sync\" (solid, filled arrow), \"async\" (solid, open arrow) and \"reply\" (dashed, open arrow); a message to\n// itself loops back. Messages play in one after another; tap one to select it. With `choose`, the Choose button submits it.\n\nconst HEAD = 34\nconst ROW = 36\n\nfunction init(data) {\n  for (const message of data.messages) [message.from, message.to].forEach((name) => participant(data, name))\n  return { selected: null }\n}\n\nfunction view(state, data) {\n  const picked = state.selected === null ? null : data.messages[state.selected]\n  return ui.column({ gap: 1, align: \"stretch\" }, [\n    ui.text(data.title, { style: \"title\" }),\n    ui.canvas({\n      id: \"sequence\",\n      height: HEAD + 14 + data.messages.length * ROW + 8,\n      fps: 60,\n      duration: intro(data),\n      alt: summary(data),\n    }),\n    ui.text(picked ? describe(data, state.selected) : \"Tap a message to select it\", {\n      style: \"caption\",\n      tone: picked ? \"default\" : \"muted\",\n    }),\n    data.choose &&\n      ui.row({ gap: 1 }, [ui.button(\"choose\", \"Choose message\", { variant: \"primary\", disabled: !picked })]),\n  ])\n}\n\nfunction update(state, event, data) {\n  if (event.id === \"choose\" && state.selected !== null) {\n    const message = data.messages[state.selected]\n    return submit({ index: state.selected, from: message.from, to: message.to, label: message.label }, state)\n  }\n  if (event.type !== \"pointer\" || event.value.kind !== \"up\") return state\n  const hit = locate(data, event.value.y)\n  return { ...state, selected: hit === state.selected ? null : hit }\n}\n\nfunction draw(state, data, frame) {\n  const g = ui.draw()\n  const columns = layout(data, frame.width)\n  const bottom = frame.height - 4\n  const hover = frame.pointer && !frame.pointer.down ? locate(data, frame.pointer.y) : null\n  columns.forEach((column) => {\n    g.path(dashes(column.x, HEAD, column.x, bottom, 4, 4), { stroke: \"border\", width: 1 })\n    g.rrect(column.x - column.w / 2, 2, column.w, HEAD - 6, 6, { fill: \"surface\", stroke: \"border\", width: 1 })\n    g.text(column.x, HEAD / 2 + 3, column.label, { size: 12, weight: 600, align: \"center\" })\n  })\n  const step = (intro(data) - 0.5) / Math.max(1, data.messages.length - 1)\n  data.messages.forEach((message, index) => {\n    const grow = ease((frame.t - 0.2 - index * step) / 0.3)\n    if (grow <= 0) return\n    const y = HEAD + 14 + index * ROW + ROW / 2 + 6\n    const from = columns[participant(data, message.from)].x\n    const to = columns[participant(data, message.to)].x\n    const active = index === state.selected || index === hover\n    if (index === state.selected)\n      g.save()\n        .alpha(0.08)\n        .rect(0, y - ROW + 8, frame.width, ROW, \"text\")\n        .restore()\n    const stroke = active ? \"accent\" : message.kind === \"reply\" ? \"muted\" : \"text\"\n    const width = active ? 2 : 1.25\n    const kind = message.kind ?? \"sync\"\n    g.save().alpha(grow)\n    if (from === to) {\n      const loop = Math.min(36, frame.width - from - 8)\n      g.path(\n        [\n          [\"M\", from, y - 8],\n          [\"L\", from + loop, y - 8],\n          [\"L\", from + loop, y + 6],\n          [\"L\", from + 2, y + 6],\n        ],\n        { stroke, width },\n      )\n      head(g, from + 2, y + 6, -1, stroke, kind)\n      g.text(from + loop + 6, y + 2, fit(number(data, index) + message.label, frame.width - from - loop - 10, 12), {\n        size: 12,\n        color: active ? \"text\" : \"muted\",\n      })\n    } else {\n      const dir = to > from ? 1 : -1\n      const end = from + (to - from) * grow\n      if (kind === \"reply\") g.path(dashes(from, y, end - dir * 2, y, 6, 4), { stroke, width })\n      else g.line(from, y, end - dir * 2, y, { stroke, width })\n      if (grow >= 1) head(g, to, y, dir, stroke, kind)\n      g.text((from + to) / 2, y - 6, fit(number(data, index) + message.label, Math.abs(to - from) - 12, 12), {\n        size: 12,\n        align: \"center\",\n        weight: active ? 600 : 400,\n        color: active ? \"text\" : kind === \"reply\" ? \"muted\" : \"text\",\n      })\n    }\n    g.restore()\n  })\n  return g.commands\n}\n\nfunction layout(data, width) {\n  const slot = (width - 8) / data.participants.length\n  return data.participants.map((name, index) => ({\n    label: fit(name, slot - 20, 12),\n    x: 4 + slot * (index + 0.5),\n    w: Math.min(slot - 10, 7.2 * name.length + 22),\n  }))\n}\n\nfunction participant(data, name) {\n  const index = data.participants.indexOf(name)\n  if (index < 0) throw new Error('Unknown participant \"' + name + '\" in messages')\n  return index\n}\n\nfunction locate(data, y) {\n  const index = Math.floor((y - HEAD - 14) / ROW)\n  return index >= 0 && index < data.messages.length ? index : null\n}\n\n// One path of dash segments: a single draw command however long the line is.\nfunction dashes(x1, y1, x2, y2, on, off) {\n  const length = Math.hypot(x2 - x1, y2 - y1)\n  const dx = (x2 - x1) / (length || 1)\n  const dy = (y2 - y1) / (length || 1)\n  const segments = []\n  for (let at = 0; at < length; at += on + off) {\n    const stop = Math.min(length, at + on)\n    segments.push([\"M\", x1 + dx * at, y1 + dy * at], [\"L\", x1 + dx * stop, y1 + dy * stop])\n  }\n  return segments\n}\n\nfunction head(g, x, y, dir, stroke, kind) {\n  if (kind === \"sync\") g.path([[\"M\", x, y], [\"L\", x - dir * 9, y - 4.5], [\"L\", x - dir * 9, y + 4.5], [\"Z\"]], stroke)\n  else\n    g.path(\n      [\n        [\"M\", x - dir * 9, y - 5],\n        [\"L\", x, y],\n        [\"L\", x - dir * 9, y + 5],\n      ],\n      { stroke, width: 1.5 },\n    )\n}\n\nfunction intro(data) {\n  return Math.round(Math.min(2.4, 0.5 + 0.12 * data.messages.length) * 100) / 100\n}\n\nfunction number(data, index) {\n  return data.numbered ? index + 1 + \". \" : \"\"\n}\n\nfunction describe(data, index) {\n  const message = data.messages[index]\n  return (\n    index +\n    1 +\n    \". \" +\n    message.from +\n    \" → \" +\n    message.to +\n    \": \" +\n    message.label +\n    (message.kind && message.kind !== \"sync\" ? \" (\" + message.kind + \")\" : \"\")\n  )\n}\n\nfunction summary(data) {\n  return (\n    \"Sequence diagram between \" +\n    data.participants.join(\", \") +\n    \". \" +\n    data.messages.map((_, index) => describe(data, index)).join(\"; \")\n  )\n}\n\nfunction fit(text, width, size) {\n  const max = Math.max(1, Math.floor(width / (size * 0.58)))\n  return text.length <= max ? text : text.slice(0, Math.max(1, max - 1)) + \"…\"\n}\n\nfunction ease(p) {\n  const clamped = Math.max(0, Math.min(1, p))\n  return 1 - Math.pow(1 - clamped, 3)\n}\n",
-  "data": {
-   "title": "Login",
-   "numbered": true,
-   "choose": true,
-   "participants": [
-    "Browser",
-    "API",
-    "Auth",
-    "DB"
-   ],
-   "messages": [
-    {
-     "from": "Browser",
-     "to": "API",
-     "label": "POST /login"
-    },
-    {
-     "from": "API",
-     "to": "Auth",
-     "label": "verify(credentials)"
-    },
-    {
-     "from": "Auth",
-     "to": "DB",
-     "label": "SELECT user"
-    },
-    {
-     "from": "DB",
-     "to": "Auth",
-     "label": "row",
-     "kind": "reply"
-    },
-    {
-     "from": "Auth",
-     "to": "Auth",
-     "label": "check hash"
-    },
-    {
-     "from": "Auth",
-     "to": "API",
-     "label": "token",
-     "kind": "reply"
-    },
-    {
-     "from": "API",
-     "to": "DB",
-     "label": "INSERT session",
-     "kind": "async"
-    },
-    {
-     "from": "API",
-     "to": "Browser",
-     "label": "200 + cookie",
-     "kind": "reply"
-    }
-   ]
-  }
- },
- "form": {
-  "mode": "step",
-  "source": "function init(data) {\n  return { values: Object.fromEntries(data.fields.map((field) => [field.key, initial(field)])) }\n}\n\nfunction initial(field) {\n  if (field.default !== undefined) return field.default\n  if (field.type === \"number\") return field.min\n  if (field.type === \"boolean\") return false\n  if (field.type === \"select\") return field.multiple ? [] : (field.options[0]?.value ?? \"\")\n  return \"\"\n}\n\nfunction view(state, data) {\n  return ui.column({ gap: 2 }, [\n    ui.text(data.title, { style: \"title\" }),\n    data.description && ui.markdown(data.description),\n    ui.column(\n      { gap: 2, align: \"stretch\" },\n      data.fields.map((field) => input(field, state.values[field.key])),\n    ),\n    ui.row({ gap: 1 }, [ui.button(\"submit\", data.submitLabel || \"Submit\", { variant: \"primary\" })]),\n  ])\n}\n\nfunction input(field, value) {\n  const id = \"field:\" + field.key\n  if (field.type === \"number\")\n    return ui.slider(id, { label: field.label, value, min: field.min, max: field.max, step: field.step })\n  if (field.type === \"boolean\") return ui.checkbox(id, field.label, value)\n  if (field.type === \"select\")\n    return ui.select(id, field.options, { label: field.label, value, multiple: field.multiple === true })\n  return ui.input(id, value, {\n    label: field.label,\n    placeholder: field.placeholder,\n    multiline: field.multiline === true,\n  })\n}\n\nfunction update(state, event, data) {\n  if (event.id === \"submit\") return submit(state.values, state)\n  const field = data.fields.find((field) => \"field:\" + field.key === event.id)\n  if (!field) return state\n  return { ...state, values: { ...state.values, [field.key]: coerce(field, event.value) } }\n}\n\nfunction coerce(field, value) {\n  if (field.type === \"number\") return Math.min(field.max, Math.max(field.min, Number(value)))\n  if (field.type === \"boolean\") return value === true\n  if (field.type === \"select\" && field.multiple) return [value ?? []].flat().map(String)\n  return String(value ?? \"\")\n}\n",
-  "data": {
-   "title": "Deploy settings",
-   "description": "Pick how the **staging** deploy should run. You can change these later in `deploy.toml`.",
-   "submitLabel": "Deploy",
-   "fields": [
-    {
-     "key": "name",
-     "type": "text",
-     "label": "Release name",
-     "placeholder": "v1.2.0"
-    },
-    {
-     "key": "replicas",
-     "type": "number",
-     "label": "Replicas",
-     "min": 1,
-     "max": 8,
-     "default": 2
-    },
-    {
-     "key": "canary",
-     "type": "boolean",
-     "label": "Canary rollout",
-     "default": true
-    },
-    {
-     "key": "region",
-     "type": "select",
-     "label": "Region",
-     "options": [
-      {
-       "value": "us-east",
-       "label": "US East"
-      },
-      {
-       "value": "eu-west",
-       "label": "EU West"
-      },
-      {
-       "value": "ap-south",
-       "label": "Asia Pacific"
-      }
-     ]
-    },
-    {
-     "key": "notes",
-     "type": "text",
-     "label": "Notes",
-     "multiline": true
-    }
-   ]
-  }
- },
- "area": {
-  "mode": "step",
-  "source": "// A stacked area chart over time: \"stacked\" sums the series, \"percent\" shows each one's share and \"stream\" centers the\n// stack around a middle baseline. Bands rise in; press or drag to read every series at a point in time and tap a\n// legend entry to hide a series. With `choose`, the Choose button submits the selected series at that time.\n\nconst HEIGHT = 260\nconst INTRO = 0.7\nconst PALETTE = [\"accent\", \"#f59e0b\", \"#10b981\", \"#ef4444\", \"#8b5cf6\", \"#06b6d4\", \"#ec4899\", \"#84cc16\"]\n\nfunction init(data) {\n  return { active: null, down: false, hidden: [] }\n}\n\nfunction view(state, data) {\n  const active = state.active\n  return ui.column({ gap: 1, align: \"stretch\" }, [\n    ui.text(data.title, { style: \"title\" }),\n    ui.canvas({ id: \"area\", height: HEIGHT, fps: 60, duration: state.down ? undefined : INTRO, alt: summary(data) }),\n    ui.text(\n      active\n        ? label(data, active.index) +\n            \" · \" +\n            data.series[active.series].label +\n            \": \" +\n            amount(data.series[active.series].values[active.index], data.unit)\n        : \"Press to read the values at a point in time; tap a legend entry to hide a series\",\n      { style: \"caption\", tone: active ? \"default\" : \"muted\" },\n    ),\n    data.choose && ui.row({ gap: 1 }, [ui.button(\"choose\", \"Choose\", { variant: \"primary\", disabled: !active })]),\n  ])\n}\n\nfunction update(state, event, data) {\n  if (event.id === \"choose\" && state.active) {\n    const series = data.series[state.active.series]\n    return submit(\n      {\n        series: series.label,\n        index: state.active.index,\n        label: label(data, state.active.index),\n        value: series.values[state.active.index],\n      },\n      state,\n    )\n  }\n  if (event.type !== \"pointer\") return state\n  const pointer = event.value\n  const box = layout(data, state, pointer.width, pointer.height)\n  const entry = box.legend.findIndex(\n    (item) => pointer.y < box.plot.y - 6 && pointer.x >= item.x - 4 && pointer.x <= item.to,\n  )\n  if (entry >= 0) {\n    if (pointer.kind !== \"up\") return state\n    const hidden = state.hidden.includes(entry)\n      ? state.hidden.filter((index) => index !== entry)\n      : [...state.hidden, entry]\n    if (hidden.length === data.series.length) return state\n    return { active: null, down: false, hidden }\n  }\n  const hit = locate(data, state, box, pointer.x, pointer.y)\n  if (pointer.kind !== \"up\") return { ...state, active: hit ?? state.active, down: true }\n  return { ...state, active: hit, down: false }\n}\n\nfunction draw(state, data, frame) {\n  const g = ui.draw()\n  const box = layout(data, state, frame.width, frame.height)\n  const hover = frame.pointer && !frame.pointer.down ? locate(data, state, box, frame.pointer.x, frame.pointer.y) : null\n  const active = state.down || !hover ? state.active : hover\n  const grow = ease(frame.t / INTRO)\n  for (const tick of box.range.ticks) {\n    const at = y(box, tick)\n    g.line(box.plot.x, at, box.plot.x + box.plot.w, at, { stroke: \"border\", width: 1 })\n    if (data.mode !== \"stream\")\n      g.text(box.plot.x - 8, at + 4, compact(tick) + (data.mode === \"percent\" ? \"%\" : \"\"), {\n        size: 11,\n        align: \"right\",\n        color: \"muted\",\n      })\n  }\n  const every = Math.max(1, Math.ceil((7 * Math.max(...box.labels.map((text) => text.length)) + 12) / box.step))\n  for (let index = 0; index < box.count; index += every)\n    g.text(x(box, index), box.plot.y + box.plot.h + 18, box.labels[index], {\n      size: 11,\n      align: \"center\",\n      color: \"muted\",\n    })\n  // Each band is its top edge forward and its bottom edge back, scaled toward the baseline while it rises in.\n  const scale = (index, value) => y(box, box.base[index] + (value - box.base[index]) * grow)\n  box.bands.forEach((band) => {\n    const top = band.top.map((value, index) => [\"L\", x(box, index), scale(index, value)])\n    const bottom = band.bottom.map((value, index) => [\"L\", x(box, index), scale(index, value)]).reverse()\n    top[0][0] = \"M\"\n    const dim = active && active.series !== band.series\n    if (dim) g.save().alpha(0.4)\n    g.path([...top, ...bottom, [\"Z\"]], { fill: band.color, stroke: \"bg\", width: 1 })\n    if (dim) g.restore()\n  })\n  legend(g, data, state, box)\n  if (active && frame.t >= INTRO) tooltip(g, data, box, active, frame.width)\n  return g.commands\n}\n\n// Geometry shared by draw and update: the plot, the stacked bands of the visible series and the y range.\nfunction layout(data, state, width, height) {\n  const count = Math.max(...data.series.map((series) => series.values.length))\n  const shown = data.series\n    .map((series, index) => ({ series, index }))\n    .filter((item) => !state.hidden.includes(item.index))\n  const totals = []\n  for (let index = 0; index < count; index++)\n    totals.push(shown.reduce((sum, item) => sum + Math.max(0, item.series.values[index] ?? 0), 0))\n  const base = totals.map((total) => (data.mode === \"stream\" ? -total / 2 : 0))\n  const cumulative = [...base]\n  const bands = shown.map((item) => {\n    const bottom = [...cumulative]\n    const top = cumulative.map((value, index) => {\n      const raw = Math.max(0, item.series.values[index] ?? 0)\n      return value + (data.mode === \"percent\" ? (totals[index] ? (raw / totals[index]) * 100 : 0) : raw)\n    })\n    top.forEach((value, index) => (cumulative[index] = value))\n    return { series: item.index, color: color(item.series, item.index), top, bottom }\n  })\n  const peak = Math.max(1, ...totals)\n  const range =\n    data.mode === \"percent\"\n      ? { low: 0, high: 100, ticks: [0, 25, 50, 75, 100] }\n      : data.mode === \"stream\"\n        ? { low: -peak / 2, high: peak / 2, ticks: [-peak / 2, 0, peak / 2] }\n        : nice(peak)\n  const left = data.mode === \"stream\" ? 14 : 14 + 7 * Math.max(...range.ticks.map((tick) => compact(tick).length + 1))\n  const plot = { x: left, y: 34, w: Math.max(1, width - left - 16), h: Math.max(1, height - 34 - 26) }\n  const labels = []\n  for (let index = 0; index < count; index++) labels.push(label(data, index))\n  const legend = []\n  let at = left\n  for (const series of data.series) {\n    legend.push({ x: at, to: at + 20 + 7 * series.label.length })\n    at += 30 + 7 * series.label.length\n  }\n  return { count, plot, base, bands, range, labels, legend, step: plot.w / Math.max(1, count - 1) }\n}\n\nfunction nice(max) {\n  const raw = max / 4\n  const power = Math.pow(10, Math.floor(Math.log10(raw)))\n  const step = power * ([1, 2, 2.5, 5, 10].find((factor) => factor * power >= raw) ?? 10)\n  const high = Math.ceil(max / step) * step\n  const ticks = []\n  for (let tick = 0; tick <= high + step / 2; tick += step) ticks.push(Math.round(tick / step) * step)\n  return { low: 0, high, ticks }\n}\n\nfunction x(box, index) {\n  return box.plot.x + box.step * index\n}\n\nfunction y(box, value) {\n  return box.plot.y + box.plot.h * (1 - (value - box.range.low) / (box.range.high - box.range.low))\n}\n\n// The time index nearest the pointer and the band under it (or the nearest band).\nfunction locate(data, state, box, px, py) {\n  if (\n    px < box.plot.x - 8 ||\n    px > box.plot.x + box.plot.w + 8 ||\n    py < box.plot.y - 4 ||\n    py > box.plot.y + box.plot.h + 8\n  )\n    return null\n  if (box.bands.length === 0) return null\n  const index = Math.max(0, Math.min(box.count - 1, Math.round((px - box.plot.x) / box.step)))\n  const value = box.range.low + (1 - (py - box.plot.y) / box.plot.h) * (box.range.high - box.range.low)\n  const band =\n    box.bands.find((band) => value >= band.bottom[index] && value <= band.top[index]) ??\n    (value > box.bands[box.bands.length - 1].top[index] ? box.bands[box.bands.length - 1] : box.bands[0])\n  return { series: band.series, index }\n}\n\nfunction legend(g, data, state, box) {\n  data.series.forEach((series, index) => {\n    const hidden = state.hidden.includes(index)\n    const fill = color(series, index)\n    const left = box.legend[index].x\n    g.circle(left + 4, 12, 4, hidden ? { stroke: fill, width: 1.5 } : fill)\n    g.text(left + 13, 16, series.label, { size: 12, color: hidden ? \"muted\" : \"text\" })\n  })\n}\n\n// A crosshair and a box listing every visible series at the active time, top band first.\nfunction tooltip(g, data, box, active, width) {\n  const at = x(box, active.index)\n  g.line(at, box.plot.y, at, box.plot.y + box.plot.h, { stroke: \"text\", width: 1 })\n  const rows = [...box.bands].reverse().map((band) => ({\n    band,\n    text: data.series[band.series].label + \"  \" + amount(data.series[band.series].values[active.index] ?? 0, data.unit),\n  }))\n  const w = 34 + 7 * Math.max(box.labels[active.index].length, ...rows.map((row) => row.text.length))\n  const h = 28 + 18 * rows.length\n  const left = at + 12 + w > width - 2 ? at - 12 - w : at + 12\n  const top = box.plot.y + 4\n  g.rrect(left, top, w, h, 8, { fill: \"surface\", stroke: \"border\", width: 1 })\n  g.text(left + 10, top + 17, box.labels[active.index], { size: 11, color: \"muted\" })\n  rows.forEach((row, index) => {\n    const line = top + 36 + 18 * index\n    g.circle(left + 14, line - 4, 4, row.band.color)\n    g.text(left + 24, line, row.text, { size: 12, weight: row.band.series === active.series ? 600 : 400 })\n  })\n}\n\nfunction summary(data) {\n  const kind =\n    data.mode === \"percent\" ? \"Percent stacked area\" : data.mode === \"stream\" ? \"Streamgraph\" : \"Stacked area\"\n  return (\n    kind +\n    \" chart\" +\n    (data.labels ? \" from \" + data.labels[0] + \" to \" + data.labels[data.labels.length - 1] : \"\") +\n    \". \" +\n    data.series\n      .map(\n        (series) =>\n          series.label +\n          \": \" +\n          amount(series.values[0], data.unit) +\n          \" to \" +\n          amount(series.values[series.values.length - 1], data.unit) +\n          \", peak \" +\n          amount(Math.max(...series.values), data.unit),\n      )\n      .join(\"; \")\n  )\n}\n\nfunction label(data, index) {\n  return data.labels?.[index] ?? String(index + 1)\n}\n\nfunction color(series, index) {\n  return series.color ?? PALETTE[index % PALETTE.length]\n}\n\nfunction amount(value, unit) {\n  const text = String(Math.round(value * 100) / 100)\n  if (!unit) return text\n  return unit.length > 1 && /^[a-z]/i.test(unit) ? text + \" \" + unit : text + unit\n}\n\nfunction compact(value) {\n  const size = Math.abs(value)\n  const round = (number) => String(Math.round(number * 10) / 10)\n  if (size >= 1e9) return round(value / 1e9) + \"B\"\n  if (size >= 1e6) return round(value / 1e6) + \"M\"\n  if (size >= 1e4) return round(value / 1e3) + \"k\"\n  return String(Math.round(value * 100) / 100)\n}\n\nfunction ease(p) {\n  const clamped = Math.max(0, Math.min(1, p))\n  return 1 - Math.pow(1 - clamped, 3)\n}\n",
-  "data": {
-   "title": "Storage by tier",
-   "unit": "TB",
-   "choose": true,
-   "labels": [
-    "Jan",
-    "Feb",
-    "Mar",
-    "Apr",
-    "May",
-    "Jun",
-    "Jul",
-    "Aug",
-    "Sep",
-    "Oct",
-    "Nov",
-    "Dec"
+   "max": 10,
+   "axes": [
+    "Speed",
+    "Accuracy",
+    "Cost",
+    "Context",
+    "Tools",
+    "Vision"
    ],
    "series": [
     {
-     "label": "Hot",
+     "label": "Model A",
      "values": [
-      12,
-      14,
-      15,
-      18,
-      21,
-      22,
-      24,
-      27,
-      26,
-      29,
-      31,
-      34
+      8,
+      7,
+      6,
+      9,
+      7,
+      5
      ]
     },
     {
-     "label": "Warm",
+     "label": "Model B",
      "values": [
-      20,
-      21,
-      23,
-      22,
-      24,
-      27,
-      29,
-      30,
-      33,
-      35,
-      36,
-      38
-     ]
-    },
-    {
-     "label": "Cold",
-     "values": [
-      30,
-      32,
-      35,
-      39,
-      42,
-      44,
-      49,
-      53,
-      58,
-      61,
-      66,
-      70
+      5,
+      9,
+      4,
+      7,
+      9,
+      8
      ]
     }
    ]
@@ -989,12 +1137,140 @@ export const fixtures = {
    ]
   }
  },
- "minigame": {
-  "mode": "live",
-  "source": "// \"Tap the dots\", a live template: dots pop up on a timer and shrink until they vanish; tapping one scores more the\n// smaller it is. The loop waits for whichever comes first, a tap or the next display frame, and draws only on frames.\n\nconst HEIGHT = 320\nconst HUD = 44\nconst COLORS = [\"#f43f5e\", \"#f59e0b\", \"#10b981\", \"#3b82f6\", \"#8b5cf6\", \"#ec4899\", \"#06b6d4\"]\nconst POP_MS = 420\n\nasync function main(data) {\n  const seconds = data.seconds ?? 20\n  const best = { score: 0 }\n  while (true) {\n    const score = await play(data, seconds)\n    const record = score > best.score && best.score > 0\n    best.score = Math.max(best.score, score)\n    widget.render(\n      ui.column({ gap: 2 }, [\n        ui.text(data.title, { style: \"title\" }),\n        ui.text(score + (score === 1 ? \" point\" : \" points\"), { style: \"title\", tone: \"accent\" }),\n        ui.text(\n          \"in \" + seconds + \" seconds\" + (record ? \" · new best!\" : best.score > score ? \" · best \" + best.score : \"\"),\n          { style: \"caption\", tone: record ? \"success\" : \"muted\" },\n        ),\n        ui.row({ gap: 1 }, [\n          ui.button(\"submit\", \"Submit score\", { variant: \"primary\" }),\n          ui.button(\"again\", \"Play again\", { variant: \"secondary\" }),\n        ]),\n      ]),\n    )\n    while (true) {\n      const event = await widget.event()\n      if (event.id === \"submit\") return widget.submit({ score, seconds })\n      if (event.id === \"again\") break\n    }\n  }\n}\n\nasync function play(data, seconds) {\n  widget.render(\n    ui.column({ gap: 1, align: \"stretch\" }, [\n      ui.text(data.title, { style: \"title\" }),\n      ui.canvas({ id: \"board\", height: HEIGHT, alt: \"Tap the dots: a game for touch or mouse\" }),\n      ui.text(\"Tap the dots before they vanish. Smaller dots score more.\", { style: \"caption\", tone: \"muted\" }),\n    ]),\n  )\n  const game = { dots: [], pops: [], score: 0, start: 0, spawn: 0, width: 0, height: HEIGHT }\n  resize(game, await widget.frame())\n  widget.draw(\"board\", ready(game, seconds))\n  while (true) {\n    const event = await widget.event()\n    if (event.type !== \"pointer\" || event.value.kind !== \"down\") continue\n    resize(game, event.value)\n    break\n  }\n  game.start = widget.now()\n  game.spawn = game.start\n  const length = seconds * 1000\n  const end = game.start + length\n  while (true) {\n    const next = await widget.next({ frame: true, timeout: end - widget.now() })\n    const now = widget.now()\n    if (now >= end) break\n    if (next.type === \"event\") tap(game, next.event, now)\n    if (next.type !== \"frame\") continue\n    resize(game, next.frame)\n    advance(game, now, (now - game.start) / length)\n    widget.draw(\"board\", paint(game, now, end - now, length))\n  }\n  return game.score\n}\n\nfunction resize(game, size) {\n  game.width = size.width\n  game.height = size.height\n}\n\nfunction ready(game, seconds) {\n  const g = ui.draw()\n  const cx = game.width / 2\n  const cy = game.height / 2\n  g.circle(cx - 70, cy - 54, 18, COLORS[0])\n    .circle(cx + 64, cy - 40, 11, COLORS[3])\n    .circle(cx + 20, cy + 70, 26, COLORS[2])\n  g.text(cx, cy + 6, \"Tap to start\", { size: 24, weight: 700, align: \"center\" })\n  g.text(cx, cy + 30, seconds + \" seconds · smaller dots score more\", { size: 13, align: \"center\", color: \"muted\" })\n  return g\n}\n\n// Spawns on a timer that speeds up as the round goes on, and drops dots and pops that are over.\nfunction advance(game, now, progress) {\n  if (now - game.spawn > 1500) game.spawn = now\n  while (game.spawn <= now) {\n    if (game.dots.length < 7) game.dots.push(dot(game, game.spawn, progress))\n    game.spawn += 620 - 280 * progress\n  }\n  game.dots = game.dots.filter((dot) => now < dot.born + dot.life)\n  game.pops = game.pops.filter((pop) => now < pop.at + POP_MS)\n}\n\n// A new dot where it overlaps the others least (best of a few random tries).\nfunction dot(game, born, progress) {\n  const r = 22 + Math.random() * 18\n  const place = () => ({\n    x: r + 8 + Math.random() * Math.max(1, game.width - 2 * r - 16),\n    y: HUD + r + 4 + Math.random() * Math.max(1, game.height - HUD - 2 * r - 12),\n  })\n  const clearance = (spot) =>\n    game.dots.reduce((least, other) => Math.min(least, Math.hypot(other.x - spot.x, other.y - spot.y) - other.r), 1e9)\n  const spot = [place(), place(), place(), place(), place()].reduce((best, spot) =>\n    clearance(spot) > clearance(best) ? spot : best,\n  )\n  return {\n    x: spot.x,\n    y: spot.y,\n    r,\n    born,\n    life: 1900 - 700 * progress,\n    color: COLORS[Math.floor(Math.random() * COLORS.length)],\n  }\n}\n\n// Pops in over 140 ms, then shrinks linearly to nothing.\nfunction radius(dot, now) {\n  const age = now - dot.born\n  const grow = Math.min(1, age / 140)\n  return dot.r * (1 - Math.pow(1 - grow, 3)) * Math.max(0, 1 - age / dot.life)\n}\n\nfunction tap(game, event, now) {\n  if (event.type !== \"pointer\" || event.value.kind !== \"down\") return\n  const x = event.value.x\n  const y = event.value.y\n  const hit = game.dots\n    .map((dot) => ({ dot, r: radius(dot, now), d: Math.hypot(dot.x - x, dot.y - y) }))\n    .filter((candidate) => candidate.d <= candidate.r + 6)\n    .sort((a, b) => a.d - b.d)[0]\n  if (!hit) {\n    game.pops.push({ x, y, r: 6, at: now, color: \"#888888\", points: 0 })\n    return\n  }\n  const points = hit.r < 14 ? 3 : hit.r < 24 ? 2 : 1\n  game.score += points\n  game.dots = game.dots.filter((dot) => dot !== hit.dot)\n  game.pops.push({ x: hit.dot.x, y: hit.dot.y, r: hit.r, at: now, color: hit.dot.color, points })\n}\n\nfunction paint(game, now, left, length) {\n  const g = ui.draw()\n  const bar = game.width - 24\n  g.text(12, 26, String(game.score), { size: 22, weight: 700 })\n  g.text(game.width - 12, 26, Math.ceil(left / 1000) + \"s\", {\n    size: 15,\n    weight: 600,\n    align: \"right\",\n    color: left < 5000 ? \"warning\" : \"muted\",\n  })\n  g.rrect(12, 34, bar, 4, 2, \"border\")\n  g.rrect(12, 34, Math.max(0, (bar * left) / length), 4, 2, left < 5000 ? \"warning\" : \"accent\")\n  for (const dot of game.dots) {\n    g.circle(dot.x, dot.y, dot.r, { stroke: dot.color + \"40\", width: 1.5 })\n    g.circle(dot.x, dot.y, Math.max(0.5, radius(dot, now)), dot.color)\n  }\n  for (const pop of game.pops) {\n    const p = (now - pop.at) / POP_MS\n    const fade = hex(1 - p)\n    g.circle(pop.x, pop.y, pop.r + 22 * p, { stroke: pop.color + fade, width: 3 * (1 - p) + 0.5 })\n    if (pop.points > 0)\n      g.text(pop.x, pop.y - 6 - 26 * p, \"+\" + pop.points, {\n        size: 16 + 2 * pop.points,\n        weight: 700,\n        color: pop.color + fade,\n      })\n  }\n  return g\n}\n\nfunction hex(alpha) {\n  const value = Math.max(0, Math.min(255, Math.round(alpha * 255)))\n  return \"0123456789abcdef\"[value >> 4] + \"0123456789abcdef\"[value & 15]\n}\n",
+ "scatter": {
+  "mode": "step",
+  "source": "// A scatter or bubble chart: points (x, y, optional size) in one or more series, with optional least-squares trend\n// lines. Points pop in; press or drag to read the nearest point, tap a legend entry to hide its series. With `choose`,\n// the Choose button submits the selected point.\n\nconst HEIGHT = 260\nconst INTRO = 0.7\nconst PALETTE = [\"accent\", \"#f59e0b\", \"#10b981\", \"#ef4444\", \"#8b5cf6\", \"#06b6d4\"]\n\nfunction init(data) {\n  return { active: null, down: false, hidden: [] }\n}\n\nfunction view(state, data) {\n  const picked = state.active && data.series[state.active.series].points[state.active.index]\n  return ui.column({ gap: 1, align: \"stretch\" }, [\n    ui.text(data.title, { style: \"title\" }),\n    ui.canvas({\n      id: \"scatter\",\n      height: HEIGHT,\n      fps: 60,\n      duration: state.down ? undefined : INTRO,\n      alt: summary(data),\n    }),\n    ui.text(picked ? describe(data, state.active) : \"Press a point to read it; tap a legend entry to hide a series\", {\n      style: \"caption\",\n      tone: picked ? \"default\" : \"muted\",\n    }),\n    data.choose && ui.row({ gap: 1 }, [ui.button(\"choose\", \"Choose point\", { variant: \"primary\", disabled: !picked })]),\n  ])\n}\n\nfunction update(state, event, data) {\n  if (event.id === \"choose\" && state.active) {\n    const point = data.series[state.active.series].points[state.active.index]\n    return submit({ series: data.series[state.active.series].label, index: state.active.index, ...point }, state)\n  }\n  if (event.type !== \"pointer\") return state\n  const pointer = event.value\n  const box = layout(data, state, pointer.width, pointer.height)\n  const entry = legendAt(box, pointer.x, pointer.y)\n  if (entry !== null) {\n    if (pointer.kind !== \"up\") return state\n    const hidden = state.hidden.includes(entry)\n      ? state.hidden.filter((index) => index !== entry)\n      : [...state.hidden, entry]\n    return { active: state.active && state.active.series === entry ? null : state.active, down: false, hidden }\n  }\n  const hit = nearest(data, state, box, pointer.x, pointer.y)\n  if (pointer.kind !== \"up\") return { ...state, active: hit ?? state.active, down: true }\n  return { ...state, active: hit, down: false }\n}\n\nfunction draw(state, data, frame) {\n  const g = ui.draw()\n  const box = layout(data, state, frame.width, frame.height)\n  const hover =\n    frame.pointer && !frame.pointer.down ? nearest(data, state, box, frame.pointer.x, frame.pointer.y) : null\n  const active = state.down || !hover ? state.active : hover\n  axes(g, data, box)\n  const count = data.series.reduce((sum, series) => sum + series.points.length, 0)\n  let order = 0\n  data.series.forEach((series, at) => {\n    if (state.hidden.includes(at)) return void (order += series.points.length)\n    const fill = color(series, at)\n    if (data.trend && series.points.length > 1) trend(g, series, box, fill, frame.t)\n    g.save().alpha(box.bubbles ? 0.55 : 0.85)\n    series.points.forEach((point, index) => {\n      const grow = ease((frame.t - (0.4 * order++) / Math.max(1, count)) / (INTRO - 0.4))\n      if (grow > 0) g.circle(px(box, point.x), py(box, point.y), radius(box, point) * grow, fill)\n    })\n    g.restore()\n  })\n  if (data.series.length > 1) legend(g, data, state, box)\n  if (active && frame.t >= INTRO) tooltip(g, data, box, active, frame.width)\n  return g.commands\n}\n\n// Geometry shared by draw and update: the plot area, both ranges and the bubble scale.\nfunction layout(data, state, width, height) {\n  const shown = data.series.filter((_, at) => !state.hidden.includes(at))\n  const points = (shown.length ? shown : data.series).flatMap((series) => series.points)\n  const xs = nice(Math.min(...points.map((point) => point.x)), Math.max(...points.map((point) => point.x)))\n  const ys = nice(Math.min(...points.map((point) => point.y)), Math.max(...points.map((point) => point.y)))\n  const sizes = data.series.flatMap((series) => series.points.map((point) => point.size ?? 0))\n  const left = 14 + 7 * Math.max(...ys.ticks.map((tick) => compact(tick).length))\n  const top = data.series.length > 1 || data.yLabel ? 34 : 14\n  const plot = { x: left, y: top, w: Math.max(1, width - left - 16), h: Math.max(1, height - top - 40) }\n  const legend = []\n  let at = data.yLabel ? left + 14 + 7 * data.yLabel.length : left\n  if (data.series.length > 1)\n    for (const series of data.series) {\n      legend.push({ x: at, to: at + 20 + 7 * series.label.length })\n      at += 30 + 7 * series.label.length\n    }\n  return { plot, xs, ys, bubbles: Math.max(...sizes) > 0, maxSize: Math.max(1, ...sizes), legend }\n}\n\nfunction px(box, value) {\n  return box.plot.x + (box.plot.w * (value - box.xs.low)) / (box.xs.high - box.xs.low)\n}\n\nfunction py(box, value) {\n  return box.plot.y + box.plot.h * (1 - (value - box.ys.low) / (box.ys.high - box.ys.low))\n}\n\nfunction radius(box, point) {\n  return box.bubbles ? 3 + 15 * Math.sqrt((point.size ?? 0) / box.maxSize) : 4\n}\n\n// The nearest visible point within 24 px of the pointer.\nfunction nearest(data, state, box, x, y) {\n  let best = null\n  let distance = 24\n  data.series.forEach((series, at) => {\n    if (state.hidden.includes(at)) return\n    series.points.forEach((point, index) => {\n      const d = Math.hypot(px(box, point.x) - x, py(box, point.y) - y) - (box.bubbles ? radius(box, point) : 0)\n      if (d < distance) {\n        distance = d\n        best = { series: at, index }\n      }\n    })\n  })\n  return best\n}\n\n// Rounds the range out to 1, 2, 2.5 or 5 times a power of ten, with 3 to 6 gridlines.\nfunction nice(min, max) {\n  const span = max - min || Math.abs(max) || 1\n  const raw = span / 4\n  const power = Math.pow(10, Math.floor(Math.log10(raw)))\n  const step = power * ([1, 2, 2.5, 5, 10].find((factor) => factor * power >= raw) ?? 10)\n  const low = Math.floor(min / step) * step\n  const high = Math.max(low + step, Math.ceil(max / step) * step)\n  const ticks = []\n  for (let tick = low; tick <= high + step / 2; tick += step) ticks.push(Math.round(tick / step) * step)\n  return { low, high, ticks }\n}\n\nfunction axes(g, data, box) {\n  const bottom = box.plot.y + box.plot.h\n  for (const tick of box.ys.ticks) {\n    const at = py(box, tick)\n    g.line(box.plot.x, at, box.plot.x + box.plot.w, at, { stroke: \"border\", width: 1 })\n    g.text(box.plot.x - 8, at + 4, compact(tick), { size: 11, align: \"right\", color: \"muted\" })\n  }\n  for (const tick of box.xs.ticks) {\n    const at = px(box, tick)\n    g.line(at, box.plot.y, at, bottom, { stroke: \"border\", width: 1 })\n    g.text(at, bottom + 16, compact(tick), { size: 11, align: \"center\", color: \"muted\" })\n  }\n  if (data.xLabel)\n    g.text(box.plot.x + box.plot.w, bottom + 32, data.xLabel, { size: 11, align: \"right\", color: \"muted\" })\n  if (data.yLabel) g.text(box.plot.x - 8, box.plot.y - 10, data.yLabel, { size: 11, color: \"muted\" })\n}\n\n// Least squares over the visible range of x, drawn left to right during the intro.\nfunction trend(g, series, box, stroke, t) {\n  const n = series.points.length\n  const mx = series.points.reduce((sum, point) => sum + point.x, 0) / n\n  const my = series.points.reduce((sum, point) => sum + point.y, 0) / n\n  const sxx = series.points.reduce((sum, point) => sum + (point.x - mx) * (point.x - mx), 0)\n  if (sxx === 0) return\n  const slope = series.points.reduce((sum, point) => sum + (point.x - mx) * (point.y - my), 0) / sxx\n  const xs = series.points.map((point) => point.x)\n  const from = Math.min(...xs)\n  const to = from + (Math.max(...xs) - from) * ease(t / INTRO)\n  const at = (x) => [px(box, x), py(box, my + slope * (x - mx))]\n  const [x1, y1] = at(from)\n  const [x2, y2] = at(to)\n  g.line(x1, y1, x2, y2, { stroke, width: 2, cap: \"round\" })\n}\n\nfunction legend(g, data, state, box) {\n  const top = box.plot.y - 22\n  data.series.forEach((series, at) => {\n    const hidden = state.hidden.includes(at)\n    const fill = color(series, at)\n    const left = box.legend[at].x\n    g.circle(left + 4, top, 4, hidden ? { stroke: fill, width: 1.5 } : fill)\n    g.text(left + 13, top + 4, series.label, { size: 12, color: hidden ? \"muted\" : \"text\" })\n  })\n}\n\nfunction legendAt(box, x, y) {\n  if (box.legend.length === 0 || y > box.plot.y - 8) return null\n  const index = box.legend.findIndex((entry) => x >= entry.x - 4 && x <= entry.to)\n  return index < 0 ? null : index\n}\n\nfunction tooltip(g, data, box, active, width) {\n  const series = data.series[active.series]\n  const point = series.points[active.index]\n  const title = point.label ?? series.label\n  const value =\n    compact(point.x) + \", \" + compact(point.y) + (point.size !== undefined ? \" · \" + compact(point.size) : \"\")\n  const w = 20 + 7 * Math.max(title.length, value.length)\n  const x = px(box, point.x)\n  const y = py(box, point.y)\n  g.circle(x, y, radius(box, point) + 2, { stroke: \"text\", width: 2 })\n  const left = Math.max(2, Math.min(width - w - 2, x - w / 2))\n  const top = y - radius(box, point) - 52 < 2 ? y + radius(box, point) + 8 : y - radius(box, point) - 52\n  g.rrect(left, top, w, 44, 8, { fill: \"surface\", stroke: \"border\", width: 1 })\n  g.text(left + 10, top + 17, title, { size: 11, color: \"muted\" })\n  g.text(left + 10, top + 35, value, { size: 13, weight: 600, color: color(series, active.series) })\n}\n\nfunction describe(data, active) {\n  const series = data.series[active.series]\n  const point = series.points[active.index]\n  const name = point.label ? point.label + \" (\" + series.label + \")\" : series.label\n  const axes = (data.xLabel ?? \"x\") + \" \" + compact(point.x) + \", \" + (data.yLabel ?? \"y\") + \" \" + compact(point.y)\n  return name + \" · \" + axes + (point.size !== undefined ? \", size \" + compact(point.size) : \"\")\n}\n\nfunction summary(data) {\n  return (\n    \"Scatter chart\" +\n    (data.xLabel || data.yLabel ? \" of \" + (data.yLabel ?? \"y\") + \" against \" + (data.xLabel ?? \"x\") : \"\") +\n    \". \" +\n    data.series\n      .map(\n        (series) =>\n          series.label +\n          \": \" +\n          series.points.length +\n          \" points, x \" +\n          compact(Math.min(...series.points.map((point) => point.x))) +\n          \" to \" +\n          compact(Math.max(...series.points.map((point) => point.x))) +\n          \", y \" +\n          compact(Math.min(...series.points.map((point) => point.y))) +\n          \" to \" +\n          compact(Math.max(...series.points.map((point) => point.y))),\n      )\n      .join(\"; \")\n  )\n}\n\nfunction color(series, index) {\n  return series.color ?? PALETTE[index % PALETTE.length]\n}\n\nfunction compact(value) {\n  const size = Math.abs(value)\n  const round = (number) => String(Math.round(number * 10) / 10)\n  if (size >= 1e9) return round(value / 1e9) + \"B\"\n  if (size >= 1e6) return round(value / 1e6) + \"M\"\n  if (size >= 1e4) return round(value / 1e3) + \"k\"\n  return String(Math.round(value * 100) / 100)\n}\n\nfunction ease(p) {\n  const clamped = Math.max(0, Math.min(1, p))\n  return 1 - Math.pow(1 - clamped, 3)\n}\n",
   "data": {
-   "title": "Tap the dots",
-   "seconds": 15
+   "title": "Bundle size vs. load time",
+   "xLabel": "KB",
+   "yLabel": "ms",
+   "trend": true,
+   "choose": true,
+   "series": [
+    {
+     "label": "Web",
+     "points": [
+      {
+       "x": 120,
+       "y": 340,
+       "label": "home"
+      },
+      {
+       "x": 210,
+       "y": 420
+      },
+      {
+       "x": 260,
+       "y": 510,
+       "label": "editor"
+      },
+      {
+       "x": 90,
+       "y": 280
+      },
+      {
+       "x": 330,
+       "y": 610
+      },
+      {
+       "x": 180,
+       "y": 380
+      },
+      {
+       "x": 400,
+       "y": 700,
+       "label": "admin"
+      }
+     ]
+    },
+    {
+     "label": "Mobile",
+     "points": [
+      {
+       "x": 80,
+       "y": 420
+      },
+      {
+       "x": 150,
+       "y": 560
+      },
+      {
+       "x": 220,
+       "y": 690
+      },
+      {
+       "x": 60,
+       "y": 380
+      },
+      {
+       "x": 300,
+       "y": 820,
+       "label": "checkout"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "sequence": {
+  "mode": "step",
+  "source": "// A sequence diagram: participants as columns with lifelines and messages between them, top to bottom in order.\n// Kinds: \"sync\" (solid, filled arrow), \"async\" (solid, open arrow) and \"reply\" (dashed, open arrow); a message to\n// itself loops back. Messages play in one after another; tap one to select it. With `choose`, the Choose button submits it.\n\nconst HEAD = 34\nconst ROW = 36\n\nfunction init(data) {\n  for (const message of data.messages) [message.from, message.to].forEach((name) => participant(data, name))\n  return { selected: null }\n}\n\nfunction view(state, data) {\n  const picked = state.selected === null ? null : data.messages[state.selected]\n  return ui.column({ gap: 1, align: \"stretch\" }, [\n    ui.text(data.title, { style: \"title\" }),\n    ui.canvas({\n      id: \"sequence\",\n      height: HEAD + 14 + data.messages.length * ROW + 8,\n      fps: 60,\n      duration: intro(data),\n      alt: summary(data),\n    }),\n    ui.text(picked ? describe(data, state.selected) : \"Tap a message to select it\", {\n      style: \"caption\",\n      tone: picked ? \"default\" : \"muted\",\n    }),\n    data.choose &&\n      ui.row({ gap: 1 }, [ui.button(\"choose\", \"Choose message\", { variant: \"primary\", disabled: !picked })]),\n  ])\n}\n\nfunction update(state, event, data) {\n  if (event.id === \"choose\" && state.selected !== null) {\n    const message = data.messages[state.selected]\n    return submit({ index: state.selected, from: message.from, to: message.to, label: message.label }, state)\n  }\n  if (event.type !== \"pointer\" || event.value.kind !== \"up\") return state\n  const hit = locate(data, event.value.y)\n  return { ...state, selected: hit === state.selected ? null : hit }\n}\n\nfunction draw(state, data, frame) {\n  const g = ui.draw()\n  const columns = layout(data, frame.width)\n  const bottom = frame.height - 4\n  const hover = frame.pointer && !frame.pointer.down ? locate(data, frame.pointer.y) : null\n  columns.forEach((column) => {\n    g.path(dashes(column.x, HEAD, column.x, bottom, 4, 4), { stroke: \"border\", width: 1 })\n    g.rrect(column.x - column.w / 2, 2, column.w, HEAD - 6, 6, { fill: \"surface\", stroke: \"border\", width: 1 })\n    g.text(column.x, HEAD / 2 + 3, column.label, { size: 12, weight: 600, align: \"center\" })\n  })\n  const step = (intro(data) - 0.5) / Math.max(1, data.messages.length - 1)\n  data.messages.forEach((message, index) => {\n    const grow = ease((frame.t - 0.2 - index * step) / 0.3)\n    if (grow <= 0) return\n    const y = HEAD + 14 + index * ROW + ROW / 2 + 6\n    const from = columns[participant(data, message.from)].x\n    const to = columns[participant(data, message.to)].x\n    const active = index === state.selected || index === hover\n    if (index === state.selected)\n      g.save()\n        .alpha(0.08)\n        .rect(0, y - ROW + 8, frame.width, ROW, \"text\")\n        .restore()\n    const stroke = active ? \"accent\" : message.kind === \"reply\" ? \"muted\" : \"text\"\n    const width = active ? 2 : 1.25\n    const kind = message.kind ?? \"sync\"\n    g.save().alpha(grow)\n    if (from === to) {\n      const loop = Math.min(36, frame.width - from - 8)\n      g.path(\n        [\n          [\"M\", from, y - 8],\n          [\"L\", from + loop, y - 8],\n          [\"L\", from + loop, y + 6],\n          [\"L\", from + 2, y + 6],\n        ],\n        { stroke, width },\n      )\n      head(g, from + 2, y + 6, -1, stroke, kind)\n      g.text(from + loop + 6, y + 2, fit(number(data, index) + message.label, frame.width - from - loop - 10, 12), {\n        size: 12,\n        color: active ? \"text\" : \"muted\",\n      })\n    } else {\n      const dir = to > from ? 1 : -1\n      const end = from + (to - from) * grow\n      if (kind === \"reply\") g.path(dashes(from, y, end - dir * 2, y, 6, 4), { stroke, width })\n      else g.line(from, y, end - dir * 2, y, { stroke, width })\n      if (grow >= 1) head(g, to, y, dir, stroke, kind)\n      g.text((from + to) / 2, y - 6, fit(number(data, index) + message.label, Math.abs(to - from) - 12, 12), {\n        size: 12,\n        align: \"center\",\n        weight: active ? 600 : 400,\n        color: active ? \"text\" : kind === \"reply\" ? \"muted\" : \"text\",\n      })\n    }\n    g.restore()\n  })\n  return g.commands\n}\n\nfunction layout(data, width) {\n  const slot = (width - 8) / data.participants.length\n  return data.participants.map((name, index) => ({\n    label: fit(name, slot - 20, 12),\n    x: 4 + slot * (index + 0.5),\n    w: Math.min(slot - 10, 7.2 * name.length + 22),\n  }))\n}\n\nfunction participant(data, name) {\n  const index = data.participants.indexOf(name)\n  if (index < 0) throw new Error('Unknown participant \"' + name + '\" in messages')\n  return index\n}\n\nfunction locate(data, y) {\n  const index = Math.floor((y - HEAD - 14) / ROW)\n  return index >= 0 && index < data.messages.length ? index : null\n}\n\n// One path of dash segments: a single draw command however long the line is.\nfunction dashes(x1, y1, x2, y2, on, off) {\n  const length = Math.hypot(x2 - x1, y2 - y1)\n  const dx = (x2 - x1) / (length || 1)\n  const dy = (y2 - y1) / (length || 1)\n  const segments = []\n  for (let at = 0; at < length; at += on + off) {\n    const stop = Math.min(length, at + on)\n    segments.push([\"M\", x1 + dx * at, y1 + dy * at], [\"L\", x1 + dx * stop, y1 + dy * stop])\n  }\n  return segments\n}\n\nfunction head(g, x, y, dir, stroke, kind) {\n  if (kind === \"sync\") g.path([[\"M\", x, y], [\"L\", x - dir * 9, y - 4.5], [\"L\", x - dir * 9, y + 4.5], [\"Z\"]], stroke)\n  else\n    g.path(\n      [\n        [\"M\", x - dir * 9, y - 5],\n        [\"L\", x, y],\n        [\"L\", x - dir * 9, y + 5],\n      ],\n      { stroke, width: 1.5 },\n    )\n}\n\nfunction intro(data) {\n  return Math.round(Math.min(2.4, 0.5 + 0.12 * data.messages.length) * 100) / 100\n}\n\nfunction number(data, index) {\n  return data.numbered ? index + 1 + \". \" : \"\"\n}\n\nfunction describe(data, index) {\n  const message = data.messages[index]\n  return (\n    index +\n    1 +\n    \". \" +\n    message.from +\n    \" → \" +\n    message.to +\n    \": \" +\n    message.label +\n    (message.kind && message.kind !== \"sync\" ? \" (\" + message.kind + \")\" : \"\")\n  )\n}\n\nfunction summary(data) {\n  return (\n    \"Sequence diagram between \" +\n    data.participants.join(\", \") +\n    \". \" +\n    data.messages.map((_, index) => describe(data, index)).join(\"; \")\n  )\n}\n\nfunction fit(text, width, size) {\n  const max = Math.max(1, Math.floor(width / (size * 0.58)))\n  return text.length <= max ? text : text.slice(0, Math.max(1, max - 1)) + \"…\"\n}\n\nfunction ease(p) {\n  const clamped = Math.max(0, Math.min(1, p))\n  return 1 - Math.pow(1 - clamped, 3)\n}\n",
+  "data": {
+   "title": "Login",
+   "numbered": true,
+   "choose": true,
+   "participants": [
+    "Browser",
+    "API",
+    "Auth",
+    "DB"
+   ],
+   "messages": [
+    {
+     "from": "Browser",
+     "to": "API",
+     "label": "POST /login"
+    },
+    {
+     "from": "API",
+     "to": "Auth",
+     "label": "verify(credentials)"
+    },
+    {
+     "from": "Auth",
+     "to": "DB",
+     "label": "SELECT user"
+    },
+    {
+     "from": "DB",
+     "to": "Auth",
+     "label": "row",
+     "kind": "reply"
+    },
+    {
+     "from": "Auth",
+     "to": "Auth",
+     "label": "check hash"
+    },
+    {
+     "from": "Auth",
+     "to": "API",
+     "label": "token",
+     "kind": "reply"
+    },
+    {
+     "from": "API",
+     "to": "DB",
+     "label": "INSERT session",
+     "kind": "async"
+    },
+    {
+     "from": "API",
+     "to": "Browser",
+     "label": "200 + cookie",
+     "kind": "reply"
+    }
+   ]
   }
  },
  "table": {
@@ -1093,468 +1369,192 @@ export const fixtures = {
    ]
   }
  },
- "scatter": {
+ "timeline": {
   "mode": "step",
-  "source": "// A scatter or bubble chart: points (x, y, optional size) in one or more series, with optional least-squares trend\n// lines. Points pop in; press or drag to read the nearest point, tap a legend entry to hide its series. With `choose`,\n// the Choose button submits the selected point.\n\nconst HEIGHT = 260\nconst INTRO = 0.7\nconst PALETTE = [\"accent\", \"#f59e0b\", \"#10b981\", \"#ef4444\", \"#8b5cf6\", \"#06b6d4\"]\n\nfunction init(data) {\n  return { active: null, down: false, hidden: [] }\n}\n\nfunction view(state, data) {\n  const picked = state.active && data.series[state.active.series].points[state.active.index]\n  return ui.column({ gap: 1, align: \"stretch\" }, [\n    ui.text(data.title, { style: \"title\" }),\n    ui.canvas({\n      id: \"scatter\",\n      height: HEIGHT,\n      fps: 60,\n      duration: state.down ? undefined : INTRO,\n      alt: summary(data),\n    }),\n    ui.text(picked ? describe(data, state.active) : \"Press a point to read it; tap a legend entry to hide a series\", {\n      style: \"caption\",\n      tone: picked ? \"default\" : \"muted\",\n    }),\n    data.choose && ui.row({ gap: 1 }, [ui.button(\"choose\", \"Choose point\", { variant: \"primary\", disabled: !picked })]),\n  ])\n}\n\nfunction update(state, event, data) {\n  if (event.id === \"choose\" && state.active) {\n    const point = data.series[state.active.series].points[state.active.index]\n    return submit({ series: data.series[state.active.series].label, index: state.active.index, ...point }, state)\n  }\n  if (event.type !== \"pointer\") return state\n  const pointer = event.value\n  const box = layout(data, state, pointer.width, pointer.height)\n  const entry = legendAt(box, pointer.x, pointer.y)\n  if (entry !== null) {\n    if (pointer.kind !== \"up\") return state\n    const hidden = state.hidden.includes(entry)\n      ? state.hidden.filter((index) => index !== entry)\n      : [...state.hidden, entry]\n    return { active: state.active && state.active.series === entry ? null : state.active, down: false, hidden }\n  }\n  const hit = nearest(data, state, box, pointer.x, pointer.y)\n  if (pointer.kind !== \"up\") return { ...state, active: hit ?? state.active, down: true }\n  return { ...state, active: hit, down: false }\n}\n\nfunction draw(state, data, frame) {\n  const g = ui.draw()\n  const box = layout(data, state, frame.width, frame.height)\n  const hover =\n    frame.pointer && !frame.pointer.down ? nearest(data, state, box, frame.pointer.x, frame.pointer.y) : null\n  const active = state.down || !hover ? state.active : hover\n  axes(g, data, box)\n  const count = data.series.reduce((sum, series) => sum + series.points.length, 0)\n  let order = 0\n  data.series.forEach((series, at) => {\n    if (state.hidden.includes(at)) return void (order += series.points.length)\n    const fill = color(series, at)\n    if (data.trend && series.points.length > 1) trend(g, series, box, fill, frame.t)\n    g.save().alpha(box.bubbles ? 0.55 : 0.85)\n    series.points.forEach((point, index) => {\n      const grow = ease((frame.t - (0.4 * order++) / Math.max(1, count)) / (INTRO - 0.4))\n      if (grow > 0) g.circle(px(box, point.x), py(box, point.y), radius(box, point) * grow, fill)\n    })\n    g.restore()\n  })\n  if (data.series.length > 1) legend(g, data, state, box)\n  if (active && frame.t >= INTRO) tooltip(g, data, box, active, frame.width)\n  return g.commands\n}\n\n// Geometry shared by draw and update: the plot area, both ranges and the bubble scale.\nfunction layout(data, state, width, height) {\n  const shown = data.series.filter((_, at) => !state.hidden.includes(at))\n  const points = (shown.length ? shown : data.series).flatMap((series) => series.points)\n  const xs = nice(Math.min(...points.map((point) => point.x)), Math.max(...points.map((point) => point.x)))\n  const ys = nice(Math.min(...points.map((point) => point.y)), Math.max(...points.map((point) => point.y)))\n  const sizes = data.series.flatMap((series) => series.points.map((point) => point.size ?? 0))\n  const left = 14 + 7 * Math.max(...ys.ticks.map((tick) => compact(tick).length))\n  const top = data.series.length > 1 || data.yLabel ? 34 : 14\n  const plot = { x: left, y: top, w: Math.max(1, width - left - 16), h: Math.max(1, height - top - 40) }\n  const legend = []\n  let at = data.yLabel ? left + 14 + 7 * data.yLabel.length : left\n  if (data.series.length > 1)\n    for (const series of data.series) {\n      legend.push({ x: at, to: at + 20 + 7 * series.label.length })\n      at += 30 + 7 * series.label.length\n    }\n  return { plot, xs, ys, bubbles: Math.max(...sizes) > 0, maxSize: Math.max(1, ...sizes), legend }\n}\n\nfunction px(box, value) {\n  return box.plot.x + (box.plot.w * (value - box.xs.low)) / (box.xs.high - box.xs.low)\n}\n\nfunction py(box, value) {\n  return box.plot.y + box.plot.h * (1 - (value - box.ys.low) / (box.ys.high - box.ys.low))\n}\n\nfunction radius(box, point) {\n  return box.bubbles ? 3 + 15 * Math.sqrt((point.size ?? 0) / box.maxSize) : 4\n}\n\n// The nearest visible point within 24 px of the pointer.\nfunction nearest(data, state, box, x, y) {\n  let best = null\n  let distance = 24\n  data.series.forEach((series, at) => {\n    if (state.hidden.includes(at)) return\n    series.points.forEach((point, index) => {\n      const d = Math.hypot(px(box, point.x) - x, py(box, point.y) - y) - (box.bubbles ? radius(box, point) : 0)\n      if (d < distance) {\n        distance = d\n        best = { series: at, index }\n      }\n    })\n  })\n  return best\n}\n\n// Rounds the range out to 1, 2, 2.5 or 5 times a power of ten, with 3 to 6 gridlines.\nfunction nice(min, max) {\n  const span = max - min || Math.abs(max) || 1\n  const raw = span / 4\n  const power = Math.pow(10, Math.floor(Math.log10(raw)))\n  const step = power * ([1, 2, 2.5, 5, 10].find((factor) => factor * power >= raw) ?? 10)\n  const low = Math.floor(min / step) * step\n  const high = Math.max(low + step, Math.ceil(max / step) * step)\n  const ticks = []\n  for (let tick = low; tick <= high + step / 2; tick += step) ticks.push(Math.round(tick / step) * step)\n  return { low, high, ticks }\n}\n\nfunction axes(g, data, box) {\n  const bottom = box.plot.y + box.plot.h\n  for (const tick of box.ys.ticks) {\n    const at = py(box, tick)\n    g.line(box.plot.x, at, box.plot.x + box.plot.w, at, { stroke: \"border\", width: 1 })\n    g.text(box.plot.x - 8, at + 4, compact(tick), { size: 11, align: \"right\", color: \"muted\" })\n  }\n  for (const tick of box.xs.ticks) {\n    const at = px(box, tick)\n    g.line(at, box.plot.y, at, bottom, { stroke: \"border\", width: 1 })\n    g.text(at, bottom + 16, compact(tick), { size: 11, align: \"center\", color: \"muted\" })\n  }\n  if (data.xLabel)\n    g.text(box.plot.x + box.plot.w, bottom + 32, data.xLabel, { size: 11, align: \"right\", color: \"muted\" })\n  if (data.yLabel) g.text(box.plot.x - 8, box.plot.y - 10, data.yLabel, { size: 11, color: \"muted\" })\n}\n\n// Least squares over the visible range of x, drawn left to right during the intro.\nfunction trend(g, series, box, stroke, t) {\n  const n = series.points.length\n  const mx = series.points.reduce((sum, point) => sum + point.x, 0) / n\n  const my = series.points.reduce((sum, point) => sum + point.y, 0) / n\n  const sxx = series.points.reduce((sum, point) => sum + (point.x - mx) * (point.x - mx), 0)\n  if (sxx === 0) return\n  const slope = series.points.reduce((sum, point) => sum + (point.x - mx) * (point.y - my), 0) / sxx\n  const xs = series.points.map((point) => point.x)\n  const from = Math.min(...xs)\n  const to = from + (Math.max(...xs) - from) * ease(t / INTRO)\n  const at = (x) => [px(box, x), py(box, my + slope * (x - mx))]\n  const [x1, y1] = at(from)\n  const [x2, y2] = at(to)\n  g.line(x1, y1, x2, y2, { stroke, width: 2, cap: \"round\" })\n}\n\nfunction legend(g, data, state, box) {\n  const top = box.plot.y - 22\n  data.series.forEach((series, at) => {\n    const hidden = state.hidden.includes(at)\n    const fill = color(series, at)\n    const left = box.legend[at].x\n    g.circle(left + 4, top, 4, hidden ? { stroke: fill, width: 1.5 } : fill)\n    g.text(left + 13, top + 4, series.label, { size: 12, color: hidden ? \"muted\" : \"text\" })\n  })\n}\n\nfunction legendAt(box, x, y) {\n  if (box.legend.length === 0 || y > box.plot.y - 8) return null\n  const index = box.legend.findIndex((entry) => x >= entry.x - 4 && x <= entry.to)\n  return index < 0 ? null : index\n}\n\nfunction tooltip(g, data, box, active, width) {\n  const series = data.series[active.series]\n  const point = series.points[active.index]\n  const title = point.label ?? series.label\n  const value =\n    compact(point.x) + \", \" + compact(point.y) + (point.size !== undefined ? \" · \" + compact(point.size) : \"\")\n  const w = 20 + 7 * Math.max(title.length, value.length)\n  const x = px(box, point.x)\n  const y = py(box, point.y)\n  g.circle(x, y, radius(box, point) + 2, { stroke: \"text\", width: 2 })\n  const left = Math.max(2, Math.min(width - w - 2, x - w / 2))\n  const top = y - radius(box, point) - 52 < 2 ? y + radius(box, point) + 8 : y - radius(box, point) - 52\n  g.rrect(left, top, w, 44, 8, { fill: \"surface\", stroke: \"border\", width: 1 })\n  g.text(left + 10, top + 17, title, { size: 11, color: \"muted\" })\n  g.text(left + 10, top + 35, value, { size: 13, weight: 600, color: color(series, active.series) })\n}\n\nfunction describe(data, active) {\n  const series = data.series[active.series]\n  const point = series.points[active.index]\n  const name = point.label ? point.label + \" (\" + series.label + \")\" : series.label\n  const axes = (data.xLabel ?? \"x\") + \" \" + compact(point.x) + \", \" + (data.yLabel ?? \"y\") + \" \" + compact(point.y)\n  return name + \" · \" + axes + (point.size !== undefined ? \", size \" + compact(point.size) : \"\")\n}\n\nfunction summary(data) {\n  return (\n    \"Scatter chart\" +\n    (data.xLabel || data.yLabel ? \" of \" + (data.yLabel ?? \"y\") + \" against \" + (data.xLabel ?? \"x\") : \"\") +\n    \". \" +\n    data.series\n      .map(\n        (series) =>\n          series.label +\n          \": \" +\n          series.points.length +\n          \" points, x \" +\n          compact(Math.min(...series.points.map((point) => point.x))) +\n          \" to \" +\n          compact(Math.max(...series.points.map((point) => point.x))) +\n          \", y \" +\n          compact(Math.min(...series.points.map((point) => point.y))) +\n          \" to \" +\n          compact(Math.max(...series.points.map((point) => point.y))),\n      )\n      .join(\"; \")\n  )\n}\n\nfunction color(series, index) {\n  return series.color ?? PALETTE[index % PALETTE.length]\n}\n\nfunction compact(value) {\n  const size = Math.abs(value)\n  const round = (number) => String(Math.round(number * 10) / 10)\n  if (size >= 1e9) return round(value / 1e9) + \"B\"\n  if (size >= 1e6) return round(value / 1e6) + \"M\"\n  if (size >= 1e4) return round(value / 1e3) + \"k\"\n  return String(Math.round(value * 100) / 100)\n}\n\nfunction ease(p) {\n  const clamped = Math.max(0, Math.min(1, p))\n  return 1 - Math.pow(1 - clamped, 3)\n}\n",
+  "source": "// A Gantt timeline: tasks with a start and an end (no end: a milestone), optionally in groups and with progress.\n// Dates are \"YYYY-MM-DD\" (an end date is inclusive) or \"YYYY-MM-DDTHH:MM\"; plain numbers work too (week 1, 2...).\n// `today` draws a marker (programs can't read the clock). Bars grow in; tap a bar to select it. With `choose`, the\n// Choose button submits the selected task.\n\nconst ROW = 26\nconst TOP = 26\nconst INTRO = 0.7\nconst MONTHS = [\"Jan\", \"Feb\", \"Mar\", \"Apr\", \"May\", \"Jun\", \"Jul\", \"Aug\", \"Sep\", \"Oct\", \"Nov\", \"Dec\"]\nconst PALETTE = [\"accent\", \"#f59e0b\", \"#10b981\", \"#ef4444\", \"#8b5cf6\", \"#06b6d4\", \"#ec4899\", \"#84cc16\"]\n\n// Rows (group headers, then their tasks) and the time range are computed once.\nfunction init(data) {\n  const groups = [...new Set(data.tasks.map((task) => task.group ?? \"\"))]\n  const rows = groups.flatMap((group) => [\n    ...(group ? [{ group }] : []),\n    ...data.tasks.flatMap((task, index) => ((task.group ?? \"\") === group ? [{ task: index }] : [])),\n  ])\n  const spans = data.tasks.map((task) => span(task))\n  const today = data.today === undefined ? null : time(data.today, false)\n  const low = Math.min(...spans.map((item) => item.start), today ?? Infinity)\n  const high = Math.max(...spans.map((item) => item.end), today ?? -Infinity)\n  const pad = (high - low || 1) * 0.03\n  const dates = typeof data.tasks[0].start === \"string\"\n  return { selected: null, rows, spans, groups, dates, today, low: low - pad, high: high + pad }\n}\n\nfunction view(state, data) {\n  return ui.column({ gap: 1, align: \"stretch\" }, [\n    ui.text(data.title, { style: \"title\" }),\n    ui.canvas({\n      id: \"timeline\",\n      height: TOP + state.rows.length * ROW + 6,\n      fps: 60,\n      duration: INTRO,\n      alt: summary(state, data),\n    }),\n    ui.text(state.selected === null ? \"Tap a bar to see its dates\" : describe(state, data, state.selected), {\n      style: \"caption\",\n      tone: state.selected === null ? \"muted\" : \"default\",\n    }),\n    data.choose &&\n      ui.row({ gap: 1 }, [\n        ui.button(\"choose\", \"Choose task\", { variant: \"primary\", disabled: state.selected === null }),\n      ]),\n  ])\n}\n\nfunction update(state, event, data) {\n  if (event.id === \"choose\" && state.selected !== null) {\n    const task = data.tasks[state.selected]\n    return submit(\n      { label: task.label, index: state.selected, start: task.start, end: task.end ?? task.start, group: task.group },\n      state,\n    )\n  }\n  if (event.type !== \"pointer\" || event.value.kind !== \"up\") return state\n  const pointer = event.value\n  const row = state.rows[Math.floor((pointer.y - TOP) / ROW)]\n  const hit = pointer.y >= TOP && row && row.task !== undefined ? row.task : null\n  return { ...state, selected: hit === state.selected ? null : hit }\n}\n\nfunction draw(state, data, frame) {\n  const g = ui.draw()\n  const box = layout(state, data, frame.width)\n  const bottom = TOP + state.rows.length * ROW\n  const today = state.today === null ? null : x(box, state.today)\n  for (const tick of ticks(state, box)) {\n    g.line(tick.x, TOP - 4, tick.x, bottom, { stroke: \"border\", width: 1 })\n    if (today === null || tick.x + 50 < today - 22 || tick.x > today + 22)\n      g.text(tick.x + 3, TOP - 10, tick.label, { size: 11, color: \"muted\" })\n  }\n  const hoverRow = frame.pointer && !frame.pointer.down ? Math.floor((frame.pointer.y - TOP) / ROW) : -1\n  state.rows.forEach((row, at) => {\n    const y = TOP + at * ROW\n    if (row.group !== undefined) {\n      const items = state.spans.filter((_, index) => (data.tasks[index].group ?? \"\") === row.group)\n      const from = x(box, Math.min(...items.map((item) => item.start)))\n      const to = x(box, Math.max(...items.map((item) => item.end)))\n      g.text(8, y + 17, fit(row.group, box.left - 14, 12), { size: 12, weight: 600 })\n      g.save()\n        .alpha(0.5)\n        .rrect(from, y + 11, Math.max(2, to - from), 4, 2, \"muted\")\n        .restore()\n      return\n    }\n    const task = data.tasks[row.task]\n    const item = state.spans[row.task]\n    const active = row.task === state.selected || at === hoverRow\n    if (active) g.save().alpha(0.08).rect(0, y, frame.width, ROW, \"text\").restore()\n    g.text(state.groups.length > 1 || state.groups[0] ? 18 : 8, y + 17, fit(task.label, box.left - 24, 12), {\n      size: 12,\n      weight: row.task === state.selected ? 600 : 400,\n      color: active ? \"text\" : \"muted\",\n    })\n    const fill = task.color ?? PALETTE[state.groups.indexOf(task.group ?? \"\") % PALETTE.length]\n    const grow = ease((frame.t - (0.3 * at) / state.rows.length) / (INTRO - 0.3))\n    if (grow <= 0) return\n    const from = x(box, item.start)\n    if (task.end === undefined) {\n      const s = 7 * grow\n      g.path(\n        [\n          [\"M\", from, y + ROW / 2 - s],\n          [\"L\", from + s, y + ROW / 2],\n          [\"L\", from, y + ROW / 2 + s],\n          [\"L\", from - s, y + ROW / 2],\n          [\"Z\"],\n        ],\n        fill,\n      )\n      return\n    }\n    const w = Math.max(3, (x(box, item.end) - from) * grow)\n    const progress = task.progress ?? 1\n    if (progress < 1)\n      g.save()\n        .alpha(0.35)\n        .rrect(from, y + 5, w, ROW - 10, 4, fill)\n        .restore()\n    if (progress > 0) g.rrect(from, y + 5, Math.max(3, w * progress), ROW - 10, 4, fill)\n    if (row.task === state.selected) g.rrect(from - 1.5, y + 3.5, w + 3, ROW - 7, 5, { stroke: \"text\", width: 1.5 })\n  })\n  if (today !== null && frame.t >= INTRO * 0.5) {\n    g.line(today, TOP - 4, today, bottom, { stroke: \"error\", width: 1.5 })\n    g.rrect(today - 20, 4, 40, 14, 4, \"error\")\n    g.text(today, 15, \"Today\", { size: 10, weight: 600, align: \"center\", color: \"#ffffff\" })\n  }\n  return g.commands\n}\n\nfunction layout(state, data, width) {\n  const longest = Math.max(\n    ...data.tasks.map((task) => task.label.length + 2),\n    ...state.groups.map((group) => group.length),\n  )\n  const left = Math.min(width * 0.38, 180, Math.max(80, 16 + 6.6 * longest))\n  return { left, w: Math.max(1, width - left - 12), low: state.low, high: state.high }\n}\n\nfunction x(box, value) {\n  return box.left + (box.w * (value - box.low)) / (box.high - box.low)\n}\n\n// Tick marks for the axis: hours, days, weeks, months or years for dates; nice steps for plain numbers.\nfunction ticks(state, box) {\n  const perDay = box.w / (state.high - state.low)\n  const out = []\n  if (!state.dates) {\n    const raw = 64 / perDay\n    const power = Math.pow(10, Math.floor(Math.log10(raw)))\n    const step = power * ([1, 2, 5, 10].find((factor) => factor * power >= raw) ?? 10)\n    for (let value = Math.ceil(state.low / step) * step; value <= state.high; value += step)\n      out.push({ x: x(box, value), label: String(Math.round(value * 100) / 100) })\n    return out\n  }\n  const step = [1 / 24, 3 / 24, 6 / 24, 12 / 24, 1, 2, 7, 14].find((days) => days * perDay >= 64)\n  if (step !== undefined) {\n    const first = step >= 7 ? Math.ceil((state.low + 3) / 7) * 7 - 3 : Math.ceil(state.low / step) * step\n    for (let value = first; value <= state.high; value += step)\n      out.push({\n        x: x(box, value),\n        label: step < 1 ? String(Math.round((value % 1) * 24)).padStart(2, \"0\") + \":00\" : short(value),\n      })\n    return out\n  }\n  const months = [1, 3, 12].find((count) => count * 30.4 * perDay >= 64) ?? 12\n  let [year, month] = civil(Math.floor(state.low))\n  month = Math.ceil(month / months) * months - months + 1\n  for (let value = days(year, month, 1); value <= state.high; ) {\n    if (value >= state.low)\n      out.push({\n        x: x(box, value),\n        label: months === 12 ? String(year) : month === 1 ? MONTHS[0] + \" \" + year : MONTHS[month - 1],\n      })\n    month += months\n    if (month > 12) {\n      month -= 12\n      year++\n    }\n    value = days(year, month, 1)\n  }\n  return out\n}\n\n// A task's start and end as numbers (days since 1970 for dates). A date-only end includes that day.\nfunction span(task) {\n  const start = time(task.start, false)\n  return { start, end: task.end === undefined ? start : Math.max(start, time(task.end, true)) }\n}\n\nfunction time(value, end) {\n  if (typeof value === \"number\") return value\n  const [date, clock] = value.split(\"T\")\n  const [y, m, d] = date.split(\"-\").map(Number)\n  const [hours, minutes] = clock ? clock.split(\":\").map(Number) : [0, 0]\n  return days(y, m, d) + (clock ? (hours + (minutes || 0) / 60) / 24 : end ? 1 : 0)\n}\n\n// Days since 1970-01-01 in the civil calendar, and back.\nfunction days(y, m, d) {\n  const year = m <= 2 ? y - 1 : y\n  const era = Math.floor(year / 400)\n  const yoe = year - era * 400\n  const doy = Math.floor((153 * (m + (m > 2 ? -3 : 9)) + 2) / 5) + d - 1\n  return era * 146097 + yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + doy - 719468\n}\n\nfunction civil(day) {\n  const z = day + 719468\n  const era = Math.floor(z / 146097)\n  const doe = z - era * 146097\n  const yoe = Math.floor((doe - Math.floor(doe / 1460) + Math.floor(doe / 36524) - Math.floor(doe / 146096)) / 365)\n  const doy = doe - (365 * yoe + Math.floor(yoe / 4) - Math.floor(yoe / 100))\n  const mp = Math.floor((5 * doy + 2) / 153)\n  const m = mp < 10 ? mp + 3 : mp - 9\n  return [yoe + era * 400 + (m <= 2 ? 1 : 0), m, doy - Math.floor((153 * mp + 2) / 5) + 1]\n}\n\nfunction short(day) {\n  const [, m, d] = civil(Math.floor(day))\n  return MONTHS[m - 1] + \" \" + d\n}\n\nfunction when(state, value) {\n  return state.dates ? short(value) : String(Math.round(value * 100) / 100)\n}\n\nfunction describe(state, data, index) {\n  const task = data.tasks[index]\n  const item = state.spans[index]\n  const length = item.end - item.start\n  const dates =\n    task.end === undefined\n      ? when(state, item.start) + \" (milestone)\"\n      : when(state, item.start) +\n        \" – \" +\n        when(state, state.dates && typeof task.end === \"string\" && !task.end.includes(\"T\") ? item.end - 1 : item.end) +\n        (state.dates ? \" (\" + Math.round(length * 10) / 10 + (length === 1 ? \" day)\" : \" days)\") : \"\")\n  return [\n    task.label,\n    dates,\n    task.progress !== undefined ? Math.round(task.progress * 100) + \"% done\" : \"\",\n    task.group ?? \"\",\n  ]\n    .filter(Boolean)\n    .join(\" · \")\n}\n\nfunction summary(state, data) {\n  return (\n    \"Timeline of \" +\n    data.tasks.length +\n    \" tasks\" +\n    (state.today !== null ? \", today \" + when(state, state.today) : \"\") +\n    \". \" +\n    data.tasks.map((_, index) => describe(state, data, index)).join(\"; \")\n  )\n}\n\nfunction fit(text, width, size) {\n  const max = Math.max(1, Math.floor(width / (size * 0.58)))\n  return text.length <= max ? text : text.slice(0, Math.max(1, max - 1)) + \"…\"\n}\n\nfunction ease(p) {\n  const clamped = Math.max(0, Math.min(1, p))\n  return 1 - Math.pow(1 - clamped, 3)\n}\n",
   "data": {
-   "title": "Bundle size vs. load time",
-   "xLabel": "KB",
-   "yLabel": "ms",
-   "trend": true,
+   "title": "Q2 launch plan",
+   "today": "2026-04-20",
    "choose": true,
-   "series": [
+   "tasks": [
     {
-     "label": "Web",
-     "points": [
-      {
-       "x": 120,
-       "y": 340,
-       "label": "home"
-      },
-      {
-       "x": 210,
-       "y": 420
-      },
-      {
-       "x": 260,
-       "y": 510,
-       "label": "editor"
-      },
-      {
-       "x": 90,
-       "y": 280
-      },
-      {
-       "x": 330,
-       "y": 610
-      },
-      {
-       "x": 180,
-       "y": 380
-      },
-      {
-       "x": 400,
-       "y": 700,
-       "label": "admin"
-      }
-     ]
+     "label": "Research",
+     "start": "2026-04-01",
+     "end": "2026-04-10",
+     "group": "Design",
+     "progress": 1
     },
     {
-     "label": "Mobile",
-     "points": [
-      {
-       "x": 80,
-       "y": 420
-      },
-      {
-       "x": 150,
-       "y": 560
-      },
-      {
-       "x": 220,
-       "y": 690
-      },
-      {
-       "x": 60,
-       "y": 380
-      },
-      {
-       "x": 300,
-       "y": 820,
-       "label": "checkout"
-      }
-     ]
+     "label": "Wireframes",
+     "start": "2026-04-08",
+     "end": "2026-04-21",
+     "group": "Design",
+     "progress": 0.8
+    },
+    {
+     "label": "Visual design",
+     "start": "2026-04-18",
+     "end": "2026-05-02",
+     "group": "Design",
+     "progress": 0.3
+    },
+    {
+     "label": "API",
+     "start": "2026-04-13",
+     "end": "2026-05-08",
+     "group": "Build",
+     "progress": 0.4
+    },
+    {
+     "label": "Client",
+     "start": "2026-04-27",
+     "end": "2026-05-22",
+     "group": "Build",
+     "progress": 0
+    },
+    {
+     "label": "Beta",
+     "start": "2026-05-25",
+     "group": "Build"
+    },
+    {
+     "label": "Launch prep",
+     "start": "2026-05-18",
+     "end": "2026-06-05",
+     "group": "Go to market"
     }
    ]
   }
  },
- "graph": {
+ "tree": {
   "mode": "step",
-  "source": "// A network of nodes and edges. `init` runs a deterministic force layout once (links pull, nodes repel, weak gravity)\n// and keeps a few snapshots of it in unit coordinates; the canvas plays them back so the graph settles in over the\n// intro, then draws only on taps. Tap a node to select it and highlight its neighbors. With `choose`, the Choose button\n// submits the selected node.\n\nconst HEIGHT = 320\nconst INTRO = 1.2\nconst PAD = 22\nconst STEPS = [0, 0.04, 0.1, 0.22, 0.45, 1]\nconst PALETTE = [\"accent\", \"#f59e0b\", \"#10b981\", \"#ef4444\", \"#8b5cf6\", \"#06b6d4\", \"#ec4899\", \"#84cc16\"]\n\nfunction init(data) {\n  return { selected: null, ...settle(data) }\n}\n\nfunction view(state, data) {\n  const picked = state.selected === null ? null : data.nodes[state.selected]\n  return ui.column({ gap: 1, align: \"stretch\" }, [\n    ui.text(data.title, { style: \"title\" }),\n    ui.canvas({ id: \"graph\", height: HEIGHT, fps: 60, duration: INTRO, alt: summary(state, data) }),\n    ui.text(picked ? describe(state, data, state.selected) : \"Tap a node to see its neighbors\", {\n      style: \"caption\",\n      tone: picked ? \"default\" : \"muted\",\n    }),\n    data.choose &&\n      ui.row({ gap: 1 }, [\n        ui.button(\"choose\", picked ? \"Choose \" + name(picked) : \"Choose\", { variant: \"primary\", disabled: !picked }),\n      ]),\n  ])\n}\n\nfunction update(state, event, data) {\n  if (event.id === \"choose\" && state.selected !== null) {\n    const node = data.nodes[state.selected]\n    return submit(\n      { id: node.id, label: name(node), neighbors: neighbors(state, state.selected).map((at) => data.nodes[at].id) },\n      state,\n    )\n  }\n  if (event.type !== \"pointer\" || event.value.kind !== \"up\") return state\n  const pointer = event.value\n  const hit = locate(state, data, positions(state, 1, pointer.width, pointer.height), pointer.x, pointer.y)\n  return { ...state, selected: hit === state.selected ? null : hit }\n}\n\nfunction draw(state, data, frame) {\n  const g = ui.draw()\n  const at = positions(state, ease(frame.t / INTRO), frame.width, frame.height)\n  const hover = frame.pointer && !frame.pointer.down ? locate(state, data, at, frame.pointer.x, frame.pointer.y) : null\n  const active = hover ?? state.selected\n  const near = active === null ? null : new Set([active, ...neighbors(state, active)])\n  const groups = [...new Set(data.nodes.map((node) => node.group ?? \"\"))]\n  const fill = (index) =>\n    data.nodes[index].color ??\n    (groups.length > 1 ? PALETTE[groups.indexOf(data.nodes[index].group ?? \"\") % PALETTE.length] : \"accent\")\n  const touches = (edge) => active !== null && (edge[0] === active || edge[1] === active)\n  for (const lit of [false, true]) {\n    const edges = state.edges.filter((edge) => touches(edge) === lit)\n    if (edges.length === 0) continue\n    g.save().alpha(lit ? 0.9 : active === null ? 0.5 : 0.15)\n    for (const [a, b, weight] of edges) {\n      if (a === b) continue\n      const stroke = lit ? fill(active) : \"muted\"\n      g.line(at[a][0], at[a][1], at[b][0], at[b][1], { stroke, width: (lit ? 1.5 : 1) * weight })\n      if (data.directed) arrow(g, at[a], at[b], radius(state, data, b) + 2, stroke)\n    }\n    g.restore()\n  }\n  if (frame.t >= INTRO)\n    data.edges.forEach((edge, index) => {\n      const [a, b] = state.edges[index]\n      if (!edge.label || a === b || !(touches(state.edges[index]) || (active === null && data.edges.length <= 16)))\n        return\n      g.text((at[a][0] + at[b][0]) / 2, (at[a][1] + at[b][1]) / 2 - 4, edge.label, {\n        size: 10,\n        align: \"center\",\n        color: \"muted\",\n      })\n    })\n  const labelled = new Set(\n    data.nodes.length <= 30\n      ? data.nodes.map((_, index) => index)\n      : [\n          ...state.degree\n            .map((d, i) => [d, i])\n            .sort((a, b) => b[0] - a[0])\n            .slice(0, 8)\n            .map((pair) => pair[1]),\n          ...(near ?? []),\n        ],\n  )\n  data.nodes.forEach((node, index) => {\n    const r = radius(state, data, index)\n    const dim = near && !near.has(index)\n    if (dim) g.save().alpha(0.3)\n    g.circle(at[index][0], at[index][1], r, { fill: fill(index), stroke: \"bg\", width: 1.5 })\n    if (index === active) g.circle(at[index][0], at[index][1], r + 3, { stroke: \"text\", width: 2 })\n    if (labelled.has(index) && frame.t >= INTRO * 0.5)\n      g.text(at[index][0], at[index][1] + r + 12, fit(name(node), 120, 11), {\n        size: 11,\n        align: \"center\",\n        weight: index === active ? 600 : 400,\n        color: dim ? \"muted\" : \"text\",\n      })\n    if (dim) g.restore()\n  })\n  return g.commands\n}\n\n// Velocity-Verlet force simulation in unit space (link length 1), keeping snapshots at the STEPS fractions.\nfunction settle(data) {\n  const index = new Map(data.nodes.map((node, at) => [node.id, at]))\n  for (const edge of data.edges)\n    for (const id of [edge.source, edge.target])\n      if (!index.has(id)) throw new Error('Unknown node id \"' + id + '\" in edges')\n  const n = data.nodes.length\n  const edges = data.edges.map((edge) => [index.get(edge.source), index.get(edge.target), edge.weight ?? 1])\n  const degree = data.nodes.map(() => 0)\n  for (const [a, b] of edges) {\n    degree[a]++\n    degree[b]++\n  }\n  const xs = []\n  const ys = []\n  for (let i = 0; i < n; i++) {\n    const r = 0.5 * Math.sqrt(0.5 + i)\n    xs.push(r * Math.cos(i * 2.39996))\n    ys.push(r * Math.sin(i * 2.39996))\n  }\n  const vx = xs.map(() => 0)\n  const vy = xs.map(() => 0)\n  // About 20k pair updates in all: enough to settle 40 nodes, cheap enough for a 250 ms step.\n  const iterations = Math.max(24, Math.min(160, Math.round(20000 / ((n * n) / 2 + edges.length + 1))))\n  const keep = new Set(STEPS.map((step) => Math.round(step * iterations)))\n  const snapshots = []\n  let alpha = 1\n  const decay = 1 - Math.pow(0.001, 1 / iterations)\n  for (let step = 0; step <= iterations; step++) {\n    if (keep.has(step)) snapshots.push([...xs.map((x, i) => [x, ys[i]])])\n    for (const [a, b] of edges) {\n      if (a === b) continue\n      const dx = xs[b] + vx[b] - xs[a] - vx[a]\n      const dy = ys[b] + vy[b] - ys[a] - vy[a]\n      const d = Math.hypot(dx, dy) || 1e-6\n      const pull = ((d - 1) / d) * alpha * (1 / Math.min(degree[a], degree[b]))\n      const bias = degree[a] / (degree[a] + degree[b])\n      vx[b] -= dx * pull * bias\n      vy[b] -= dy * pull * bias\n      vx[a] += dx * pull * (1 - bias)\n      vy[a] += dy * pull * (1 - bias)\n    }\n    for (let i = 0; i < n; i++)\n      for (let j = i + 1; j < n; j++) {\n        const dx = xs[j] - xs[i]\n        const dy = ys[j] - ys[i]\n        const d2 = Math.max(0.01, dx * dx + dy * dy)\n        const push = (0.6 * alpha) / d2\n        vx[i] -= dx * push\n        vy[i] -= dy * push\n        vx[j] += dx * push\n        vy[j] += dy * push\n      }\n    for (let i = 0; i < n; i++) {\n      vx[i] = (vx[i] - xs[i] * 0.06 * alpha) * 0.6\n      vy[i] = (vy[i] - ys[i] * 0.06 * alpha) * 0.6\n      xs[i] += vx[i]\n      ys[i] += vy[i]\n    }\n    alpha -= alpha * decay\n  }\n  // Fit every snapshot with the final layout's bounds, so early ones start small in the middle and spread out.\n  const last = snapshots[snapshots.length - 1]\n  const minX = Math.min(...last.map((p) => p[0]))\n  const minY = Math.min(...last.map((p) => p[1]))\n  const spanX = Math.max(1e-6, Math.max(...last.map((p) => p[0])) - minX)\n  const spanY = Math.max(1e-6, Math.max(...last.map((p) => p[1])) - minY)\n  const unit = (value, min, span) => Math.round(((value - min) / span) * 1000) / 1000\n  return {\n    frames: snapshots.map((points) => points.map((p) => [unit(p[0], minX, spanX), unit(p[1], minY, spanY)])),\n    edges: edges.map(([a, b, weight]) => [a, b, Math.max(0.5, Math.min(4, weight))]),\n    degree,\n  }\n}\n\n// Pixel positions at intro progress p (0..1), interpolated between snapshots.\nfunction positions(state, p, width, height) {\n  const at = p * (state.frames.length - 1)\n  const from = Math.min(state.frames.length - 1, Math.floor(at))\n  const to = Math.min(state.frames.length - 1, from + 1)\n  const mix = at - from\n  return state.frames[from].map((point, index) => {\n    const end = state.frames[to][index]\n    return [\n      PAD + (point[0] + (end[0] - point[0]) * mix) * (width - 2 * PAD),\n      PAD - 4 + (point[1] + (end[1] - point[1]) * mix) * (height - 2 * PAD - 8),\n    ]\n  })\n}\n\nfunction radius(state, data, index) {\n  const size = data.nodes[index].size\n  if (size !== undefined) return 4 + 10 * Math.sqrt(size / Math.max(...data.nodes.map((node) => node.size ?? 0), 1e-6))\n  return 5 + 1.6 * Math.sqrt(state.degree[index])\n}\n\nfunction neighbors(state, index) {\n  return [...new Set(state.edges.flatMap(([a, b]) => (a === b ? [] : a === index ? [b] : b === index ? [a] : [])))]\n}\n\nfunction locate(state, data, at, px, py) {\n  let best = null\n  let distance = Infinity\n  at.forEach((point, index) => {\n    const d = Math.hypot(point[0] - px, point[1] - py) - radius(state, data, index)\n    if (d < Math.min(distance, 10)) {\n      distance = d\n      best = index\n    }\n  })\n  return best\n}\n\nfunction arrow(g, from, to, inset, color) {\n  const angle = Math.atan2(to[1] - from[1], to[0] - from[0])\n  const tip = [to[0] - Math.cos(angle) * inset, to[1] - Math.sin(angle) * inset]\n  const side = (turn) => [\"L\", tip[0] - Math.cos(angle + turn) * 8, tip[1] - Math.sin(angle + turn) * 8]\n  g.path([[\"M\", tip[0], tip[1]], side(0.4), side(-0.4), [\"Z\"]], color)\n}\n\nfunction describe(state, data, index) {\n  const node = data.nodes[index]\n  const near = neighbors(state, index).map((at) => name(data.nodes[at]))\n  return (\n    name(node) +\n    (node.group ? \" (\" + node.group + \")\" : \"\") +\n    \" · \" +\n    near.length +\n    (near.length === 1 ? \" neighbor\" : \" neighbors\") +\n    (near.length ? \": \" + near.slice(0, 8).join(\", \") + (near.length > 8 ? \", …\" : \"\") : \"\")\n  )\n}\n\nfunction summary(state, data) {\n  const hubs = state.degree\n    .map((degree, index) => [degree, index])\n    .sort((a, b) => b[0] - a[0])\n    .slice(0, 3)\n    .map((pair) => name(data.nodes[pair[1]]) + \" (\" + pair[0] + \")\")\n  return (\n    \"Network of \" + data.nodes.length + \" nodes and \" + data.edges.length + \" edges. Most connected: \" + hubs.join(\", \")\n  )\n}\n\nfunction name(node) {\n  return node.label ?? node.id\n}\n\nfunction fit(text, width, size) {\n  const max = Math.max(1, Math.floor(width / (size * 0.58)))\n  return text.length <= max ? text : text.slice(0, Math.max(1, max - 1)) + \"…\"\n}\n\nfunction ease(p) {\n  const clamped = Math.max(0, Math.min(1, p))\n  return 1 - Math.pow(1 - clamped, 3)\n}\n",
+  "source": "// A hierarchy as a tidy tree: \"right\" grows left to right (deep trees, file trees), \"down\" grows top down (org charts).\n// Leaves get one slot each and parents center over their children. Tap a node's +/− knob to collapse or expand it,\n// tap a node to select it (tap it again to toggle it). With `choose`, the Choose button submits the selected node.\n\nconst ROW = 36\nconst LEVEL = 70\n// A fully expanded large tree stops drawing nodes here, under the spec's 2,000 commands per frame.\nconst BUDGET = 1900\nconst PALETTE = [\"accent\", \"#f59e0b\", \"#10b981\", \"#ef4444\", \"#8b5cf6\", \"#06b6d4\", \"#ec4899\", \"#84cc16\"]\n\n// Large trees start collapsed below `expand` levels (default: all open up to 40 nodes, else 2 levels).\nfunction init(data) {\n  const collapsed = []\n  const count = (node) => 1 + (node.children ?? []).reduce((sum, child) => sum + count(child), 0)\n  const expand = data.expand ?? (count(data.root) > 40 ? 2 : Infinity)\n  const close = (node, key, depth) => {\n    if (!node.children) return\n    if (depth >= expand) collapsed.push(key)\n    else node.children.forEach((child, index) => close(child, join(key, index), depth + 1))\n  }\n  close(data.root, \"\", 0)\n  return { collapsed, selected: null }\n}\n\nfunction view(state, data) {\n  const tree = layout(data, state)\n  const picked = state.selected === null ? null : tree.items.find((item) => item.key === state.selected)\n  return ui.column({ gap: 1, align: \"stretch\" }, [\n    ui.text(data.title, { style: \"title\" }),\n    ui.canvas({\n      id: \"tree\",\n      height: data.orientation === \"down\" ? tree.depth * LEVEL + 8 : Math.max(60, tree.leaves * ROW + 8),\n      fps: 60,\n      duration: intro(tree),\n      alt: summary(data),\n    }),\n    ui.text(picked ? describe(data, picked) : \"Tap a node to select it; tap its +/− to collapse or expand it\", {\n      style: \"caption\",\n      tone: picked ? \"default\" : \"muted\",\n    }),\n    data.choose &&\n      ui.row({ gap: 1 }, [\n        ui.button(\"choose\", picked ? \"Choose \" + picked.node.label : \"Choose\", {\n          variant: \"primary\",\n          disabled: !picked,\n        }),\n      ]),\n  ])\n}\n\nfunction update(state, event, data) {\n  if (event.id === \"choose\" && state.selected !== null) {\n    const picked = layout(data, state).items.find((item) => item.key === state.selected)\n    return submit({ label: picked.node.label, path: trail(data, picked.key), note: picked.node.note }, state)\n  }\n  if (event.type !== \"pointer\" || event.value.kind !== \"up\") return state\n  const pointer = event.value\n  const tree = layout(data, state)\n  const hit = locate(data, tree, place(data, tree, pointer.width), pointer.x, pointer.y)\n  if (!hit) return { ...state, selected: null }\n  const toggle = hit.knob || (hit.item.key === state.selected && hit.item.node.children)\n  const collapsed = !toggle\n    ? state.collapsed\n    : state.collapsed.includes(hit.item.key)\n      ? state.collapsed.filter((key) => key !== hit.item.key)\n      : [...state.collapsed, hit.item.key]\n  return { collapsed, selected: hit.knob ? state.selected : hit.item.key }\n}\n\nfunction draw(state, data, frame) {\n  const g = ui.draw()\n  const tree = layout(data, state)\n  const at = place(data, tree, frame.width)\n  const hover = frame.pointer && !frame.pointer.down ? locate(data, tree, at, frame.pointer.x, frame.pointer.y) : null\n  const down = data.orientation === \"down\"\n  // One alpha group per depth, so levels fade in one after another.\n  for (let depth = 0; depth < tree.depth; depth++) {\n    const fade = ease((frame.t - depth * 0.12) / 0.35)\n    if (fade <= 0) break\n    g.save().alpha(fade)\n    tree.items.forEach((item, index) => {\n      if (item.depth !== depth || g.commands.length > BUDGET) return\n      const box = at[index]\n      if (item.parent >= 0) {\n        const from = at[item.parent]\n        if (down) {\n          const mid = (from.y + from.h + box.y) / 2\n          g.path(\n            [\n              [\"M\", from.x + from.w / 2, from.y + from.h],\n              [\"C\", from.x + from.w / 2, mid, box.x + box.w / 2, mid, box.x + box.w / 2, box.y],\n            ],\n            { stroke: \"border\", width: 1.5 },\n          )\n        } else {\n          const mid = (from.x + from.w + box.x) / 2\n          g.path(\n            [\n              [\"M\", from.x + from.w, from.y + from.h / 2],\n              [\"C\", mid, from.y + from.h / 2, mid, box.y + box.h / 2, box.x, box.y + box.h / 2],\n            ],\n            { stroke: \"border\", width: 1.5 },\n          )\n        }\n      }\n      const selected = item.key === state.selected\n      const hovered = hover && hover.item.key === item.key\n      const accent = item.node.color ?? PALETTE[(item.branch < 0 ? 0 : item.branch) % PALETTE.length]\n      g.rrect(box.x, box.y, box.w, box.h, 6, {\n        fill: \"surface\",\n        stroke: selected ? accent : hovered ? \"muted\" : \"border\",\n        width: selected ? 2 : 1,\n      })\n      g.rrect(box.x, box.y, 4, box.h, 2, accent)\n      const lines = item.node.note && box.h > 30\n      g.text(box.x + 11, box.y + (lines ? 15 : box.h / 2 + 4), fit(item.node.label, box.w - 16, 12), {\n        size: 12,\n        weight: depth === 0 || selected ? 600 : 400,\n      })\n      if (lines) g.text(box.x + 11, box.y + 30, fit(item.node.note, box.w - 16, 11), { size: 11, color: \"muted\" })\n      if (item.node.children) {\n        const knob = knobAt(data, box)\n        const closed = state.collapsed.includes(item.key)\n        g.circle(knob.x, knob.y, 7, { fill: closed ? accent : \"bg\", stroke: closed ? accent : \"border\", width: 1 })\n        g.text(knob.x, knob.y + 4, closed ? \"+\" : \"−\", {\n          size: 11,\n          weight: 600,\n          align: \"center\",\n          color: closed ? \"#ffffff\" : \"muted\",\n        })\n      }\n    })\n    g.restore()\n  }\n  return g.commands\n}\n\n// The visible tree in slots: each item has a depth, a breadth slot, its parent's index and its top-level branch.\nfunction layout(data, state) {\n  const items = []\n  let leaves = 0\n  let depth = 0\n  const walk = (node, key, level, parent, branch) => {\n    const index = items.length\n    items.push({ key, node, depth: level, parent, branch, slot: 0 })\n    depth = Math.max(depth, level + 1)\n    if (node.children && !state.collapsed.includes(key)) {\n      const slots = node.children.map((child, at) =>\n        walk(child, join(key, at), level + 1, index, level === 0 ? at : branch),\n      )\n      items[index].slot = (slots[0] + slots[slots.length - 1]) / 2\n    } else items[index].slot = leaves++\n    return items[index].slot\n  }\n  walk(data.root, \"\", 0, -1, -1)\n  return { items, leaves, depth }\n}\n\n// Pixel boxes for the layout at a canvas width; notes show only in the taller \"down\" boxes.\nfunction place(data, tree, width) {\n  if (data.orientation === \"down\") {\n    const slot = (width - 16) / tree.leaves\n    const w = Math.max(40, Math.min(150, slot - 10))\n    const h = tree.items.some((item) => item.node.note) ? 40 : 28\n    return tree.items.map((item) => ({ x: 8 + (item.slot + 0.5) * slot - w / 2, y: 6 + item.depth * LEVEL, w, h }))\n  }\n  const column = (width - 16) / tree.depth\n  const w = Math.max(50, Math.min(170, column - 28))\n  const h = 26\n  return tree.items.map((item) => ({ x: 8 + item.depth * column, y: 4 + item.slot * ROW + (ROW - h) / 2, w, h }))\n}\n\nfunction knobAt(data, box) {\n  return data.orientation === \"down\"\n    ? { x: box.x + box.w / 2, y: box.y + box.h }\n    : { x: box.x + box.w, y: box.y + box.h / 2 }\n}\n\nfunction locate(data, tree, at, px, py) {\n  for (let index = tree.items.length - 1; index >= 0; index--) {\n    const box = at[index]\n    const item = tree.items[index]\n    if (item.node.children) {\n      const knob = knobAt(data, box)\n      if (Math.hypot(px - knob.x, py - knob.y) <= 11) return { item, knob: true }\n    }\n    if (px >= box.x && px <= box.x + box.w && py >= box.y && py <= box.y + box.h) return { item, knob: false }\n  }\n  return null\n}\n\nfunction intro(tree) {\n  return Math.round((0.35 + 0.12 * (tree.depth - 1)) * 100) / 100\n}\n\nfunction join(key, index) {\n  return key === \"\" ? String(index) : key + \".\" + index\n}\n\nfunction trail(data, key) {\n  const labels = [data.root.label]\n  if (key === \"\") return labels\n  key.split(\".\").reduce((node, index) => {\n    labels.push(node.children[Number(index)].label)\n    return node.children[Number(index)]\n  }, data.root)\n  return labels\n}\n\nfunction describe(data, item) {\n  const count = (node) => (node.children ?? []).reduce((sum, child) => sum + 1 + count(child), 0)\n  const below = count(item.node)\n  return (\n    trail(data, item.key).join(\" › \") +\n    (item.node.note ? \" · \" + item.node.note : \"\") +\n    (below ? \" · \" + below + (below === 1 ? \" node below\" : \" nodes below\") : \"\")\n  )\n}\n\nfunction summary(data) {\n  const lines = []\n  const walk = (node, depth) => {\n    if (lines.length < 60) lines.push(\"  \".repeat(depth) + node.label + (node.note ? \" (\" + node.note + \")\" : \"\"))\n    node.children?.forEach((child) => walk(child, depth + 1))\n  }\n  walk(data.root, 0)\n  return \"Tree:\\n\" + lines.join(\"\\n\")\n}\n\nfunction fit(text, width, size) {\n  const max = Math.max(1, Math.floor(width / (size * 0.58)))\n  return text.length <= max ? text : text.slice(0, Math.max(1, max - 1)) + \"…\"\n}\n\nfunction ease(p) {\n  const clamped = Math.max(0, Math.min(1, p))\n  return 1 - Math.pow(1 - clamped, 3)\n}\n",
   "data": {
-   "title": "Service dependencies",
-   "directed": true,
+   "title": "Team",
+   "orientation": "down",
    "choose": true,
-   "nodes": [
-    {
-     "id": "web",
-     "group": "edge"
-    },
-    {
-     "id": "mobile",
-     "group": "edge"
-    },
-    {
-     "id": "gateway",
-     "group": "edge"
-    },
-    {
-     "id": "auth",
-     "group": "core"
-    },
-    {
-     "id": "users",
-     "group": "core"
-    },
-    {
-     "id": "orders",
-     "group": "core"
-    },
-    {
-     "id": "billing",
-     "group": "core"
-    },
-    {
-     "id": "search",
-     "group": "core"
-    },
-    {
-     "id": "postgres",
-     "group": "data"
-    },
-    {
-     "id": "redis",
-     "group": "data"
-    },
-    {
-     "id": "kafka",
-     "group": "data"
-    },
-    {
-     "id": "elastic",
-     "group": "data"
-    }
-   ],
-   "edges": [
-    {
-     "source": "web",
-     "target": "gateway"
-    },
-    {
-     "source": "mobile",
-     "target": "gateway"
-    },
-    {
-     "source": "gateway",
-     "target": "auth"
-    },
-    {
-     "source": "gateway",
-     "target": "users"
-    },
-    {
-     "source": "gateway",
-     "target": "orders"
-    },
-    {
-     "source": "gateway",
-     "target": "search"
-    },
-    {
-     "source": "auth",
-     "target": "redis"
-    },
-    {
-     "source": "auth",
-     "target": "users"
-    },
-    {
-     "source": "users",
-     "target": "postgres"
-    },
-    {
-     "source": "orders",
-     "target": "postgres"
-    },
-    {
-     "source": "orders",
-     "target": "billing",
-     "label": "charge"
-    },
-    {
-     "source": "orders",
-     "target": "kafka"
-    },
-    {
-     "source": "billing",
-     "target": "kafka"
-    },
-    {
-     "source": "search",
-     "target": "elastic"
-    },
-    {
-     "source": "kafka",
-     "target": "search"
-    }
-   ]
-  }
- },
- "gauge": {
-  "mode": "step",
-  "source": "// KPI dials: one to four gauges side by side, each a 270° arc from min to max with optional threshold bands (each band\n// runs up to `to` in a tone) and a target tick. The value arc takes the tone of its band and sweeps in while the\n// number counts up. Tap a gauge to select it. With `choose`, the Choose button submits the selected gauge.\n\nconst HEIGHT = 190\nconst INTRO = 0.9\nconst START = (Math.PI * 3) / 4\nconst SWEEP = (Math.PI * 3) / 2\n\nfunction init(data) {\n  return { selected: null }\n}\n\nfunction view(state, data) {\n  return ui.column({ gap: 1, align: \"stretch\" }, [\n    ui.text(data.title, { style: \"title\" }),\n    ui.canvas({ id: \"gauge\", height: HEIGHT, fps: 60, duration: INTRO, alt: summary(data) }),\n    ui.text(state.selected === null ? \"Tap a gauge for its thresholds\" : describe(data.gauges[state.selected]), {\n      style: \"caption\",\n      tone: state.selected === null ? \"muted\" : \"default\",\n    }),\n    data.choose &&\n      ui.row({ gap: 1 }, [\n        ui.button(\"choose\", \"Choose gauge\", { variant: \"primary\", disabled: state.selected === null }),\n      ]),\n  ])\n}\n\nfunction update(state, event, data) {\n  if (event.id === \"choose\" && state.selected !== null) {\n    const gauge = data.gauges[state.selected]\n    return submit(\n      { label: gauge.label, index: state.selected, value: gauge.value, tone: tone(gauge, gauge.value) },\n      state,\n    )\n  }\n  if (event.type !== \"pointer\" || event.value.kind !== \"up\") return state\n  const index = Math.floor((event.value.x / event.value.width) * data.gauges.length)\n  const hit = index >= 0 && index < data.gauges.length ? index : null\n  return { ...state, selected: hit === state.selected ? null : hit }\n}\n\nfunction draw(state, data, frame) {\n  const g = ui.draw()\n  const cell = frame.width / data.gauges.length\n  const r = Math.max(24, Math.min(cell / 2 - 18, 74))\n  // The dial, its min/max and its label are 1.71 r + 54 px tall; center them vertically.\n  const top = Math.max(10, (frame.height - 1.71 * r - 54) / 2)\n  const grow = ease(frame.t / INTRO)\n  data.gauges.forEach((gauge, index) => {\n    const cx = cell * (index + 0.5)\n    const cy = top + r\n    const min = gauge.min ?? 0\n    const at = (value) => START + SWEEP * Math.max(0, Math.min(1, (value - min) / (gauge.max - min || 1)))\n    if (index === state.selected)\n      g.rrect(cx - cell / 2 + 4, 2, cell - 8, frame.height - 4, 10, { fill: \"surface\", stroke: \"border\", width: 1 })\n    g.path(arc(cx, cy, r, START, START + SWEEP), { stroke: \"border\", width: 10, cap: \"round\" })\n    let from = min\n    g.save().alpha(0.45)\n    for (const band of [...(gauge.bands ?? [])].sort((a, b) => a.to - b.to)) {\n      if (band.to > from)\n        g.path(arc(cx, cy, r + 9, at(from), at(Math.min(band.to, gauge.max))), { stroke: band.tone, width: 3 })\n      from = band.to\n    }\n    g.restore()\n    const shown = min + (gauge.value - min) * grow\n    if (shown > min)\n      g.path(arc(cx, cy, r, START, at(shown)), { stroke: tone(gauge, gauge.value), width: 10, cap: \"round\" })\n    if (gauge.target !== undefined) {\n      const angle = at(gauge.target)\n      g.line(\n        cx + Math.cos(angle) * (r - 9),\n        cy + Math.sin(angle) * (r - 9),\n        cx + Math.cos(angle) * (r + 9),\n        cy + Math.sin(angle) * (r + 9),\n        {\n          stroke: \"text\",\n          width: 2,\n          cap: \"round\",\n        },\n      )\n    }\n    g.text(cx, cy + 8, amount(shown, gauge.unit, gauge.value), {\n      size: Math.min(24, r / 2.6),\n      weight: 700,\n      align: \"center\",\n    })\n    g.text(cx - r * 0.71, cy + r * 0.71 + 16, compact(min), { size: 10, align: \"center\", color: \"muted\" })\n    g.text(cx + r * 0.71, cy + r * 0.71 + 16, compact(gauge.max), { size: 10, align: \"center\", color: \"muted\" })\n    g.text(cx, cy + r * 0.71 + 36, fit(gauge.label, cell - 16, 13), { size: 13, weight: 600, align: \"center\" })\n  })\n  return g.commands\n}\n\n// The band's tone for a value: the first band whose `to` is at or above it (default accent).\nfunction tone(gauge, value) {\n  const band = [...(gauge.bands ?? [])].sort((a, b) => a.to - b.to).find((band) => value <= band.to)\n  return band?.tone ?? \"accent\"\n}\n\nfunction arc(cx, cy, r, from, to) {\n  const segments = [[\"M\", cx + Math.cos(from) * r, cy + Math.sin(from) * r]]\n  const steps = Math.max(1, Math.ceil(Math.abs(to - from) / (Math.PI / 2)))\n  const step = (to - from) / steps\n  const k = (4 / 3) * Math.tan(step / 4)\n  for (let i = 0; i < steps; i++) {\n    const a = from + i * step\n    const b = a + step\n    segments.push([\n      \"C\",\n      cx + r * (Math.cos(a) - k * Math.sin(a)),\n      cy + r * (Math.sin(a) + k * Math.cos(a)),\n      cx + r * (Math.cos(b) + k * Math.sin(b)),\n      cy + r * (Math.sin(b) - k * Math.cos(b)),\n      cx + r * Math.cos(b),\n      cy + r * Math.sin(b),\n    ])\n  }\n  return segments\n}\n\nfunction describe(gauge) {\n  const bands = [...(gauge.bands ?? [])].sort((a, b) => a.to - b.to)\n  const band = bands.findIndex((band) => gauge.value <= band.to)\n  return (\n    gauge.label +\n    \": \" +\n    amount(gauge.value, gauge.unit) +\n    \" of \" +\n    compact(gauge.min ?? 0) +\n    \"–\" +\n    compact(gauge.max) +\n    (band >= 0\n      ? \" · \" +\n        bands[band].tone +\n        \" band (\" +\n        compact(band ? bands[band - 1].to : (gauge.min ?? 0)) +\n        \"–\" +\n        compact(bands[band].to) +\n        \")\"\n      : \"\") +\n    (gauge.target !== undefined ? \" · target \" + amount(gauge.target, gauge.unit) : \"\")\n  )\n}\n\nfunction summary(data) {\n  return \"Gauges. \" + data.gauges.map(describe).join(\"; \")\n}\n\n// While counting up, show as many decimals as the final value has (at most two).\nfunction amount(value, unit, final) {\n  const digits = Math.min(2, (String(final ?? value).split(\".\")[1] ?? \"\").length)\n  const text = (Math.round(value * Math.pow(10, digits)) / Math.pow(10, digits)).toFixed(digits)\n  if (!unit) return text\n  return unit.length > 1 && /^[a-z]/i.test(unit) ? text + \" \" + unit : text + unit\n}\n\nfunction compact(value) {\n  const size = Math.abs(value)\n  if (size >= 1e6) return Math.round(value / 1e5) / 10 + \"M\"\n  if (size >= 1e4) return Math.round(value / 100) / 10 + \"k\"\n  return String(Math.round(value * 100) / 100)\n}\n\nfunction fit(text, width, size) {\n  const max = Math.max(1, Math.floor(width / (size * 0.58)))\n  return text.length <= max ? text : text.slice(0, Math.max(1, max - 1)) + \"…\"\n}\n\nfunction ease(p) {\n  const clamped = Math.max(0, Math.min(1, p))\n  return 1 - Math.pow(1 - clamped, 3)\n}\n",
-  "data": {
-   "title": "Service health",
-   "choose": true,
-   "gauges": [
-    {
-     "label": "CPU",
-     "value": 72,
-     "max": 100,
-     "unit": "%",
-     "bands": [
-      {
-       "to": 60,
-       "tone": "success"
-      },
-      {
-       "to": 85,
-       "tone": "warning"
-      },
-      {
-       "to": 100,
-       "tone": "error"
-      }
-     ]
-    },
-    {
-     "label": "p99 latency",
-     "value": 340,
-     "max": 1000,
-     "unit": "ms",
-     "target": 500,
-     "bands": [
-      {
-       "to": 500,
-       "tone": "success"
-      },
-      {
-       "to": 800,
-       "tone": "warning"
-      },
-      {
-       "to": 1000,
-       "tone": "error"
-      }
-     ]
-    },
-    {
-     "label": "Uptime",
-     "value": 99.95,
-     "min": 99,
-     "max": 100,
-     "unit": "%",
-     "bands": [
-      {
-       "to": 99.5,
-       "tone": "error"
-      },
-      {
-       "to": 99.9,
-       "tone": "warning"
-      },
-      {
-       "to": 100,
-       "tone": "success"
-      }
-     ]
-    }
-   ]
-  }
- },
- "pie": {
-  "mode": "step",
-  "source": "// A pie or donut chart. Slices sweep in; tap a slice to select it (it pulls out) and tap a legend entry to hide or\n// show its slice. With `choose`, the Choose button submits the selected slice.\n\nconst HEIGHT = 240\nconst INTRO = 0.7\nconst START = -Math.PI / 2\nconst ROW = 20\nconst PALETTE = [\"accent\", \"#f59e0b\", \"#10b981\", \"#ef4444\", \"#8b5cf6\", \"#06b6d4\", \"#ec4899\", \"#84cc16\"]\n\nfunction init(data) {\n  return { selected: null, hidden: [] }\n}\n\nfunction view(state, data) {\n  const picked = state.selected === null ? null : data.slices[state.selected]\n  return ui.column({ gap: 1, align: \"stretch\" }, [\n    ui.text(data.title, { style: \"title\" }),\n    ui.canvas({ id: \"pie\", height: HEIGHT, fps: 60, duration: INTRO, alt: summary(data) }),\n    ui.text(\n      picked\n        ? picked.label +\n            \": \" +\n            amount(picked.value, data.unit) +\n            \" (\" +\n            percent(picked.value / total(data, state)) +\n            \")\"\n        : \"Tap a slice to select it, or a legend entry to hide it\",\n      { style: \"caption\", tone: picked ? \"default\" : \"muted\" },\n    ),\n    data.choose &&\n      ui.row({ gap: 1 }, [\n        ui.button(\"choose\", picked ? \"Choose \" + picked.label : \"Choose\", { variant: \"primary\", disabled: !picked }),\n      ]),\n  ])\n}\n\nfunction update(state, event, data) {\n  if (event.id === \"choose\" && state.selected !== null) {\n    const slice = data.slices[state.selected]\n    const share = Math.round((slice.value / total(data, state)) * 1000) / 1000\n    return submit({ label: slice.label, index: state.selected, value: slice.value, share }, state)\n  }\n  if (event.type !== \"pointer\" || event.value.kind !== \"up\") return state\n  const pointer = event.value\n  const hit = locate(layout(data, state, pointer.width, pointer.height), pointer.x, pointer.y)\n  if (!hit) return { ...state, selected: null }\n  if (hit.kind === \"legend\") {\n    const hidden = state.hidden.includes(hit.index)\n      ? state.hidden.filter((index) => index !== hit.index)\n      : [...state.hidden, hit.index]\n    return { hidden, selected: state.selected === hit.index ? null : state.selected }\n  }\n  return { ...state, selected: state.selected === hit.index ? null : hit.index }\n}\n\nfunction draw(state, data, frame) {\n  const g = ui.draw()\n  const box = layout(data, state, frame.width, frame.height)\n  const hover = frame.pointer && !frame.pointer.down ? locate(box, frame.pointer.x, frame.pointer.y) : null\n  const active = hover && hover.kind === \"slice\" ? hover.index : state.selected\n  const end = START + ease(frame.t / INTRO) * Math.PI * 2\n  if (box.slices.length === 0) g.circle(box.cx, box.cy, box.r, { stroke: \"border\", width: 1.5 })\n  for (const slice of box.slices) {\n    const to = Math.min(slice.to, end)\n    if (to <= slice.from) continue\n    const mid = (slice.from + slice.to) / 2\n    const out = slice.index === active ? 8 : 0\n    const cx = box.cx + Math.cos(mid) * out\n    const cy = box.cy + Math.sin(mid) * out\n    g.path(wedge(cx, cy, box.r, box.inner, slice.from, to), { fill: slice.color, stroke: \"bg\", width: 2 })\n    if (to === slice.to && slice.to - slice.from > 0.35 && box.r > 60) {\n      const at = box.inner ? (box.r + box.inner) / 2 : box.r * 0.66\n      g.text(cx + Math.cos(mid) * at, cy + Math.sin(mid) * at + 4, percent(slice.share), {\n        size: 11,\n        weight: 600,\n        align: \"center\",\n        color: \"#ffffff\",\n      })\n    }\n  }\n  if (box.inner) {\n    const picked = active === null ? null : box.slices.find((slice) => slice.index === active)\n    g.text(box.cx, box.cy - 2, picked ? fit(data.slices[active].label, box.inner * 1.6, 11) : \"Total\", {\n      size: 11,\n      align: \"center\",\n      color: \"muted\",\n    })\n    g.text(box.cx, box.cy + 16, picked ? percent(picked.share) : compact(box.total), {\n      size: 16,\n      weight: 600,\n      align: \"center\",\n    })\n  }\n  legend(g, data, state, box, active)\n  return g.commands\n}\n\n// Geometry shared by draw and update: the pie on the left, the legend on the right.\nfunction layout(data, state, width, height) {\n  const legendWidth = Math.min(210, Math.max(110, width * 0.38))\n  const r = Math.max(20, Math.min(height / 2 - 14, (width - legendWidth) / 2 - 18))\n  const sum = total(data, state)\n  const slices = []\n  let from = START\n  data.slices.forEach((slice, index) => {\n    if (state.hidden.includes(index) || slice.value <= 0 || sum <= 0) return\n    const to = from + (slice.value / sum) * Math.PI * 2\n    slices.push({ index, from, to, share: slice.value / sum, color: color(slice, index) })\n    from = to\n  })\n  return {\n    cx: (width - legendWidth) / 2,\n    cy: height / 2,\n    r,\n    inner: data.donut ? r * 0.58 : 0,\n    total: sum,\n    slices,\n    legend: {\n      x: width - legendWidth + 6,\n      y: height / 2 - (data.slices.length * ROW) / 2,\n      w: legendWidth - 12,\n      rows: data.slices.length,\n    },\n  }\n}\n\nfunction locate(box, px, py) {\n  const legend = box.legend\n  if (px >= legend.x - 4 && py >= legend.y && py < legend.y + legend.rows * ROW)\n    return { kind: \"legend\", index: Math.floor((py - legend.y) / ROW) }\n  const distance = Math.hypot(px - box.cx, py - box.cy)\n  if (distance > box.r + 10 || distance < box.inner) return null\n  let angle = Math.atan2(py - box.cy, px - box.cx)\n  if (angle < START) angle += Math.PI * 2\n  const slice = box.slices.find((slice) => angle >= slice.from && angle < slice.to)\n  return slice ? { kind: \"slice\", index: slice.index } : null\n}\n\nfunction legend(g, data, state, box, active) {\n  data.slices.forEach((slice, index) => {\n    const y = box.legend.y + index * ROW + ROW / 2\n    const hidden = state.hidden.includes(index)\n    const fill = color(slice, index)\n    g.circle(box.legend.x + 5, y, 5, hidden ? { stroke: fill, width: 1.5 } : fill)\n    const share = box.slices.find((item) => item.index === index)\n    const right = share ? percent(share.share) : \"\"\n    g.text(box.legend.x + 16, y + 4, fit(slice.label, box.legend.w - 22 - 7 * right.length, 12), {\n      size: 12,\n      weight: index === active ? 600 : 400,\n      color: hidden ? \"muted\" : \"text\",\n    })\n    if (right) g.text(box.legend.x + box.legend.w, y + 4, right, { size: 12, align: \"right\", color: \"muted\" })\n  })\n}\n\n// A slice as a path: arcs are cubic Béziers of at most a quarter turn each.\nfunction wedge(cx, cy, r, inner, from, to) {\n  const segments = [[\"M\", cx + Math.cos(from) * r, cy + Math.sin(from) * r]]\n  arc(segments, cx, cy, r, from, to)\n  if (inner > 0) {\n    segments.push([\"L\", cx + Math.cos(to) * inner, cy + Math.sin(to) * inner])\n    arc(segments, cx, cy, inner, to, from)\n  } else segments.push([\"L\", cx, cy])\n  segments.push([\"Z\"])\n  return segments\n}\n\nfunction arc(segments, cx, cy, r, from, to) {\n  const steps = Math.max(1, Math.ceil(Math.abs(to - from) / (Math.PI / 2)))\n  const step = (to - from) / steps\n  const k = (4 / 3) * Math.tan(step / 4)\n  for (let i = 0; i < steps; i++) {\n    const a = from + i * step\n    const b = a + step\n    segments.push([\n      \"C\",\n      cx + r * (Math.cos(a) - k * Math.sin(a)),\n      cy + r * (Math.sin(a) + k * Math.cos(a)),\n      cx + r * (Math.cos(b) + k * Math.sin(b)),\n      cy + r * (Math.sin(b) - k * Math.cos(b)),\n      cx + r * Math.cos(b),\n      cy + r * Math.sin(b),\n    ])\n  }\n}\n\nfunction total(data, state) {\n  return data.slices.reduce((sum, slice, index) => (state.hidden.includes(index) ? sum : sum + slice.value), 0)\n}\n\nfunction summary(data) {\n  const sum = data.slices.reduce((total, slice) => total + slice.value, 0)\n  return (\n    (data.donut ? \"Donut\" : \"Pie\") +\n    \" chart. \" +\n    data.slices\n      .map((slice) => slice.label + \" \" + amount(slice.value, data.unit) + \" (\" + percent(slice.value / sum) + \")\")\n      .join(\", \")\n  )\n}\n\nfunction color(slice, index) {\n  return slice.color ?? PALETTE[index % PALETTE.length]\n}\n\nfunction percent(share) {\n  return (Number.isFinite(share) ? Math.round(share * 1000) / 10 : 0) + \"%\"\n}\n\nfunction amount(value, unit) {\n  const text = String(Math.round(value * 100) / 100)\n  if (!unit) return text\n  return unit.length > 1 && /^[a-z]/i.test(unit) ? text + \" \" + unit : text + unit\n}\n\nfunction compact(value) {\n  const size = Math.abs(value)\n  const round = (number) => String(Math.round(number * 10) / 10)\n  if (size >= 1e9) return round(value / 1e9) + \"B\"\n  if (size >= 1e6) return round(value / 1e6) + \"M\"\n  if (size >= 1e4) return round(value / 1e3) + \"k\"\n  return String(Math.round(value * 100) / 100)\n}\n\n// Truncates text to about `width` pixels at font `size`.\nfunction fit(text, width, size) {\n  const max = Math.max(1, Math.floor(width / (size * 0.58)))\n  return text.length <= max ? text : text.slice(0, Math.max(1, max - 1)) + \"…\"\n}\n\nfunction ease(p) {\n  const clamped = Math.max(0, Math.min(1, p))\n  return 1 - Math.pow(1 - clamped, 3)\n}\n",
-  "data": {
-   "title": "Traffic by source",
-   "donut": true,
-   "unit": "k",
-   "choose": true,
-   "slices": [
-    {
-     "label": "Search",
-     "value": 48
-    },
-    {
-     "label": "Direct",
-     "value": 27
-    },
-    {
-     "label": "Social",
-     "value": 14
-    },
-    {
-     "label": "Referral",
-     "value": 8
-    },
-    {
-     "label": "Email",
-     "value": 3
-    }
-   ]
-  }
- },
- "suggestions": {
-  "mode": "step",
-  "source": "function init(data) {\n  return { picked: null, note: \"\" }\n}\n\nfunction view(state, data) {\n  return ui.column({ gap: 2 }, [\n    ui.text(data.title, { style: \"title\" }),\n    ui.row(\n      { gap: 2, align: \"start\", wrap: true },\n      data.options.map((option, index) =>\n        ui.card({ id: \"option:\" + index, selected: state.picked === index }, [\n          option.images.length === 1\n            ? ui.image(option.images[0], { alt: option.label, aspect: 4 / 3 })\n            : ui.carousel(\n                {},\n                option.images.map((src, page) =>\n                  ui.image(src, {\n                    alt: option.label + \" (\" + (page + 1) + \"/\" + option.images.length + \")\",\n                    aspect: 4 / 3,\n                  }),\n                ),\n              ),\n          ui.row({ gap: 1, align: \"center\", wrap: true }, [\n            ui.text(option.label, { style: \"body\" }),\n            option.recommended && ui.text(\"(Recommended)\", { style: \"caption\", tone: \"accent\" }),\n          ]),\n          option.note && ui.text(option.note, { style: \"caption\", tone: \"muted\" }),\n        ]),\n      ),\n    ),\n    data.allowNote !== false && ui.input(\"note\", state.note, { label: \"Note\", placeholder: \"Add a note (optional)\" }),\n    ui.row({ gap: 1, align: \"center\" }, [\n      ui.button(\"choose\", \"Choose\", { variant: \"primary\", disabled: state.picked === null }),\n      ui.button(\"dismiss\", \"Dismiss\", { variant: \"secondary\" }),\n    ]),\n  ])\n}\n\nfunction update(state, event, data) {\n  if (event.id.startsWith(\"option:\")) return { ...state, picked: Number(event.id.slice(\"option:\".length)) }\n  if (event.id === \"note\") return { ...state, note: String(event.value ?? \"\") }\n  if (event.id === \"dismiss\") return dismiss(state)\n  if (event.id !== \"choose\" || state.picked === null) return state\n  const note = data.allowNote === false ? \"\" : state.note.trim()\n  const choice = { choice: data.options[state.picked].label, index: state.picked }\n  return submit(note ? { ...choice, note } : choice, state)\n}\n",
-  "data": {
-   "title": "Which landing page direction should we build?",
-   "options": [
-    {
-     "label": "Bold gradient",
-     "note": "Big hero, product shots below",
-     "images": [
-      "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2NDAiIGhlaWdodD0iNDgwIiB2aWV3Qm94PSIwIDAgNjQwIDQ4MCI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJnIiB4MT0iMCIgeTE9IjAiIHgyPSIxIiB5Mj0iMSI+PHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjN2MzYWVkIi8+PHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjZGIyNzc3Ii8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9IjY0MCIgaGVpZ2h0PSI0ODAiIGZpbGw9InVybCgjZykiLz48Y2lyY2xlIGN4PSI0NzAiIGN5PSIxNTAiIHI9IjcwIiBmaWxsPSIjZmZmIiBmaWxsLW9wYWNpdHk9Ii4yNSIvPjxwYXRoIGQ9Ik0wIDM4MCBMMTgwIDI1MCBMMzIwIDM2MCBMNDUwIDI4MCBMNjQwIDQwMCBMNjQwIDQ4MCBMMCA0ODBaIiBmaWxsPSIjMDAwIiBmaWxsLW9wYWNpdHk9Ii4yIi8+PHRleHQgeD0iNDAiIHk9IjQ0MCIgZm9udC1mYW1pbHk9InNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iNDAiIGZvbnQtd2VpZ2h0PSI2MDAiIGZpbGw9IiNmZmYiPkhlcm88L3RleHQ+PC9zdmc+",
-      "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2NDAiIGhlaWdodD0iNDgwIiB2aWV3Qm94PSIwIDAgNjQwIDQ4MCI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJnIiB4MT0iMCIgeTE9IjAiIHgyPSIxIiB5Mj0iMSI+PHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjMjU2M2ViIi8+PHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjN2MzYWVkIi8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9IjY0MCIgaGVpZ2h0PSI0ODAiIGZpbGw9InVybCgjZykiLz48Y2lyY2xlIGN4PSI0NzAiIGN5PSIxNTAiIHI9IjcwIiBmaWxsPSIjZmZmIiBmaWxsLW9wYWNpdHk9Ii4yNSIvPjxwYXRoIGQ9Ik0wIDM4MCBMMTgwIDI1MCBMMzIwIDM2MCBMNDUwIDI4MCBMNjQwIDQwMCBMNjQwIDQ4MCBMMCA0ODBaIiBmaWxsPSIjMDAwIiBmaWxsLW9wYWNpdHk9Ii4yIi8+PHRleHQgeD0iNDAiIHk9IjQ0MCIgZm9udC1mYW1pbHk9InNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iNDAiIGZvbnQtd2VpZ2h0PSI2MDAiIGZpbGw9IiNmZmYiPkZlYXR1cmVzPC90ZXh0Pjwvc3ZnPg=="
-     ],
-     "recommended": true
-    },
-    {
-     "label": "Minimal",
-     "note": "Text-first, one screenshot",
-     "images": [
-      "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2NDAiIGhlaWdodD0iNDgwIiB2aWV3Qm94PSIwIDAgNjQwIDQ4MCI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJnIiB4MT0iMCIgeTE9IjAiIHgyPSIxIiB5Mj0iMSI+PHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjMzM0MTU1Ii8+PHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjNjQ3NDhiIi8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9IjY0MCIgaGVpZ2h0PSI0ODAiIGZpbGw9InVybCgjZykiLz48Y2lyY2xlIGN4PSI0NzAiIGN5PSIxNTAiIHI9IjcwIiBmaWxsPSIjZmZmIiBmaWxsLW9wYWNpdHk9Ii4yNSIvPjxwYXRoIGQ9Ik0wIDM4MCBMMTgwIDI1MCBMMzIwIDM2MCBMNDUwIDI4MCBMNjQwIDQwMCBMNjQwIDQ4MCBMMCA0ODBaIiBmaWxsPSIjMDAwIiBmaWxsLW9wYWNpdHk9Ii4yIi8+PHRleHQgeD0iNDAiIHk9IjQ0MCIgZm9udC1mYW1pbHk9InNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iNDAiIGZvbnQtd2VpZ2h0PSI2MDAiIGZpbGw9IiNmZmYiPk1pbmltYWw8L3RleHQ+PC9zdmc+"
-     ]
-    },
-    {
-     "label": "Playful",
-     "images": [
-      "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2NDAiIGhlaWdodD0iNDgwIiB2aWV3Qm94PSIwIDAgNjQwIDQ4MCI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJnIiB4MT0iMCIgeTE9IjAiIHgyPSIxIiB5Mj0iMSI+PHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjZjU5ZTBiIi8+PHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjZWY0NDQ0Ii8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9IjY0MCIgaGVpZ2h0PSI0ODAiIGZpbGw9InVybCgjZykiLz48Y2lyY2xlIGN4PSI0NzAiIGN5PSIxNTAiIHI9IjcwIiBmaWxsPSIjZmZmIiBmaWxsLW9wYWNpdHk9Ii4yNSIvPjxwYXRoIGQ9Ik0wIDM4MCBMMTgwIDI1MCBMMzIwIDM2MCBMNDUwIDI4MCBMNjQwIDQwMCBMNjQwIDQ4MCBMMCA0ODBaIiBmaWxsPSIjMDAwIiBmaWxsLW9wYWNpdHk9Ii4yIi8+PHRleHQgeD0iNDAiIHk9IjQ0MCIgZm9udC1mYW1pbHk9InNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iNDAiIGZvbnQtd2VpZ2h0PSI2MDAiIGZpbGw9IiNmZmYiPlBsYXlmdWw8L3RleHQ+PC9zdmc+",
-      "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2NDAiIGhlaWdodD0iNDgwIiB2aWV3Qm94PSIwIDAgNjQwIDQ4MCI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJnIiB4MT0iMCIgeTE9IjAiIHgyPSIxIiB5Mj0iMSI+PHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjMTBiOTgxIi8+PHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjMDZiNmQ0Ii8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9IjY0MCIgaGVpZ2h0PSI0ODAiIGZpbGw9InVybCgjZykiLz48Y2lyY2xlIGN4PSI0NzAiIGN5PSIxNTAiIHI9IjcwIiBmaWxsPSIjZmZmIiBmaWxsLW9wYWNpdHk9Ii4yNSIvPjxwYXRoIGQ9Ik0wIDM4MCBMMTgwIDI1MCBMMzIwIDM2MCBMNDUwIDI4MCBMNjQwIDQwMCBMNjQwIDQ4MCBMMCA0ODBaIiBmaWxsPSIjMDAwIiBmaWxsLW9wYWNpdHk9Ii4yIi8+PHRleHQgeD0iNDAiIHk9IjQ0MCIgZm9udC1mYW1pbHk9InNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iNDAiIGZvbnQtd2VpZ2h0PSI2MDAiIGZpbGw9IiNmZmYiPk1hc2NvdDwvdGV4dD48L3N2Zz4=",
-      "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2NDAiIGhlaWdodD0iNDgwIiB2aWV3Qm94PSIwIDAgNjQwIDQ4MCI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJnIiB4MT0iMCIgeTE9IjAiIHgyPSIxIiB5Mj0iMSI+PHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjMGVhNWU5Ii8+PHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjNjM2NmYxIi8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9IjY0MCIgaGVpZ2h0PSI0ODAiIGZpbGw9InVybCgjZykiLz48Y2lyY2xlIGN4PSI0NzAiIGN5PSIxNTAiIHI9IjcwIiBmaWxsPSIjZmZmIiBmaWxsLW9wYWNpdHk9Ii4yNSIvPjxwYXRoIGQ9Ik0wIDM4MCBMMTgwIDI1MCBMMzIwIDM2MCBMNDUwIDI4MCBMNjQwIDQwMCBMNjQwIDQ4MCBMMCA0ODBaIiBmaWxsPSIjMDAwIiBmaWxsLW9wYWNpdHk9Ii4yIi8+PHRleHQgeD0iNDAiIHk9IjQ0MCIgZm9udC1mYW1pbHk9InNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iNDAiIGZvbnQtd2VpZ2h0PSI2MDAiIGZpbGw9IiNmZmYiPkZvb3RlcjwvdGV4dD48L3N2Zz4="
-     ]
-    }
-   ]
-  }
- },
- "confirm": {
-  "mode": "step",
-  "source": "function view(state, data) {\n  return ui.column({ gap: 2 }, [\n    ui.text(data.title, { style: \"title\" }),\n    ui.markdown(data.message),\n    ui.row({ gap: 1, align: \"center\" }, [\n      ui.button(\"confirm\", data.confirmLabel || \"Confirm\", { variant: data.danger ? \"danger\" : \"primary\" }),\n      ui.button(\"cancel\", data.cancelLabel || \"Cancel\", { variant: \"secondary\" }),\n    ]),\n  ])\n}\n\nfunction update(state, event) {\n  if (event.id === \"confirm\") return submit({ confirmed: true }, state)\n  if (event.id === \"cancel\") return submit({ confirmed: false }, state)\n  return state\n}\n",
-  "data": {
-   "title": "Delete the staging database?",
-   "message": "This drops **all tables** in `staging`. It can't be undone.",
-   "confirmLabel": "Delete",
-   "danger": true
-  }
- },
- "radar": {
-  "mode": "step",
-  "source": "// A radar (spider) chart: one polygon per series over 3 to 12 axes on a shared scale. Polygons grow in; tap near an\n// axis to compare every series on it, tap a legend entry to hide a series. With `choose`, the Choose button submits the\n// selected axis with each series' value.\n\nconst HEIGHT = 300\nconst INTRO = 0.7\nconst RINGS = 4\nconst PALETTE = [\"accent\", \"#f59e0b\", \"#10b981\", \"#ef4444\", \"#8b5cf6\", \"#06b6d4\"]\n\nfunction init(data) {\n  return { selected: null, hidden: [] }\n}\n\nfunction view(state, data) {\n  return ui.column({ gap: 1, align: \"stretch\" }, [\n    ui.text(data.title, { style: \"title\" }),\n    ui.canvas({ id: \"radar\", height: HEIGHT, fps: 60, duration: INTRO, alt: summary(data) }),\n    ui.text(\n      state.selected === null\n        ? \"Tap an axis to compare the series; tap a legend entry to hide one\"\n        : describe(state, data, state.selected),\n      {\n        style: \"caption\",\n        tone: state.selected === null ? \"muted\" : \"default\",\n      },\n    ),\n    data.choose &&\n      ui.row({ gap: 1 }, [\n        ui.button(\"choose\", \"Choose axis\", { variant: \"primary\", disabled: state.selected === null }),\n      ]),\n  ])\n}\n\nfunction update(state, event, data) {\n  if (event.id === \"choose\" && state.selected !== null)\n    return submit(\n      {\n        axis: data.axes[state.selected],\n        index: state.selected,\n        values: Object.fromEntries(data.series.map((series) => [series.label, series.values[state.selected]])),\n      },\n      state,\n    )\n  if (event.type !== \"pointer\" || event.value.kind !== \"up\") return state\n  const pointer = event.value\n  const box = layout(data, pointer.width, pointer.height)\n  const entry = box.legend.findIndex(\n    (item) => pointer.y >= item.y - 9 && pointer.y <= item.y + 9 && pointer.x <= box.legendRight,\n  )\n  if (entry >= 0) {\n    const hidden = state.hidden.includes(entry)\n      ? state.hidden.filter((index) => index !== entry)\n      : [...state.hidden, entry]\n    return hidden.length === data.series.length ? state : { ...state, hidden }\n  }\n  const hit = axisAt(data, box, pointer.x, pointer.y)\n  return { ...state, selected: hit === state.selected ? null : hit }\n}\n\nfunction draw(state, data, frame) {\n  const g = ui.draw()\n  const box = layout(data, frame.width, frame.height)\n  const n = data.axes.length\n  const hover = frame.pointer && !frame.pointer.down ? axisAt(data, box, frame.pointer.x, frame.pointer.y) : null\n  const active = hover ?? state.selected\n  for (let ring = 1; ring <= RINGS; ring++) {\n    const r = (box.r * ring) / RINGS\n    g.path([...data.axes.map((_, index) => [index === 0 ? \"M\" : \"L\", ...point(box, index, n, r)]), [\"Z\"]], {\n      stroke: \"border\",\n      width: 1,\n    })\n  }\n  g.text(box.cx + 4, box.cy - box.r - 4 + 12, compact(box.max), { size: 10, color: \"muted\" })\n  data.axes.forEach((axis, index) => {\n    const [x, y] = point(box, index, n, box.r)\n    g.line(box.cx, box.cy, x, y, { stroke: index === active ? \"text\" : \"border\", width: index === active ? 1.5 : 1 })\n    const [lx, ly] = point(box, index, n, box.r + 14)\n    const align = Math.abs(lx - box.cx) < 8 ? \"center\" : lx > box.cx ? \"left\" : \"right\"\n    g.text(lx, ly + 4, fit(axis, 110, 11), {\n      size: 11,\n      align,\n      weight: index === active ? 600 : 400,\n      color: index === active ? \"text\" : \"muted\",\n    })\n  })\n  const grow = ease(frame.t / INTRO)\n  data.series.forEach((series, at) => {\n    if (state.hidden.includes(at)) return\n    const color = series.color ?? PALETTE[at % PALETTE.length]\n    const points = series.values\n      .slice(0, n)\n      .map((value, index) => point(box, index, n, (box.r * Math.max(0, value) * grow) / box.max))\n    const segments = [...points.map((p, index) => [index === 0 ? \"M\" : \"L\", p[0], p[1]]), [\"Z\"]]\n    g.save().alpha(0.18).path(segments, color).restore()\n    g.path(segments, { stroke: color, width: 2 })\n    points.forEach((p, index) => g.circle(p[0], p[1], index === active ? 4.5 : 2.5, color))\n  })\n  data.series.forEach((series, at) => {\n    const item = box.legend[at]\n    const hidden = state.hidden.includes(at)\n    const color = series.color ?? PALETTE[at % PALETTE.length]\n    g.circle(8 + 4, item.y, 4, hidden ? { stroke: color, width: 1.5 } : color)\n    g.text(8 + 13, item.y + 4, fit(series.label, box.legendRight - 26, 12), {\n      size: 12,\n      color: hidden ? \"muted\" : \"text\",\n    })\n  })\n  return g.commands\n}\n\n// Geometry shared by draw and update: the center and radius, the scale's max and the legend rows on the left.\nfunction layout(data, width, height) {\n  const legendRight =\n    data.series.length > 1 ? Math.min(140, 30 + 7 * Math.max(...data.series.map((series) => series.label.length))) : 0\n  const r = Math.max(30, Math.min(height / 2 - 30, (width - legendRight) / 2 - 70))\n  const top = data.max ?? Math.max(...data.series.flatMap((series) => series.values))\n  const legend = data.series.length > 1 ? data.series.map((_, index) => ({ y: 14 + index * 20 })) : []\n  return {\n    cx: legendRight + (width - legendRight) / 2,\n    cy: height / 2,\n    r,\n    max: data.max ?? nice(top),\n    legend,\n    legendRight,\n  }\n}\n\nfunction nice(max) {\n  if (max <= 0) return 1\n  const power = Math.pow(10, Math.floor(Math.log10(max)))\n  return power * ([1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10].find((factor) => factor * power >= max) ?? 10)\n}\n\n// Axis 0 points up; the rest follow clockwise.\nfunction point(box, index, n, r) {\n  const angle = -Math.PI / 2 + (index * Math.PI * 2) / n\n  return [box.cx + Math.cos(angle) * r, box.cy + Math.sin(angle) * r]\n}\n\nfunction axisAt(data, box, px, py) {\n  const distance = Math.hypot(px - box.cx, py - box.cy)\n  if (distance > box.r + 40 || distance < 8) return null\n  const n = data.axes.length\n  const angle = Math.atan2(py - box.cy, px - box.cx) + Math.PI / 2\n  return ((Math.round((angle / (Math.PI * 2)) * n) % n) + n) % n\n}\n\nfunction describe(state, data, index) {\n  return (\n    data.axes[index] +\n    \": \" +\n    data.series\n      .filter((_, at) => !state.hidden.includes(at))\n      .map((series) => series.label + \" \" + amount(series.values[index], data.unit))\n      .join(\", \")\n  )\n}\n\nfunction summary(data) {\n  return (\n    \"Radar chart over \" +\n    data.axes.join(\", \") +\n    \". \" +\n    data.series\n      .map((series) => series.label + \": \" + series.values.map((value) => amount(value, data.unit)).join(\", \"))\n      .join(\"; \")\n  )\n}\n\nfunction amount(value, unit) {\n  const text = String(Math.round((value ?? 0) * 100) / 100)\n  if (!unit) return text\n  return unit.length > 1 && /^[a-z]/i.test(unit) ? text + \" \" + unit : text + unit\n}\n\nfunction compact(value) {\n  return String(Math.round(value * 100) / 100)\n}\n\nfunction fit(text, width, size) {\n  const max = Math.max(1, Math.floor(width / (size * 0.58)))\n  return text.length <= max ? text : text.slice(0, Math.max(1, max - 1)) + \"…\"\n}\n\nfunction ease(p) {\n  const clamped = Math.max(0, Math.min(1, p))\n  return 1 - Math.pow(1 - clamped, 3)\n}\n",
-  "data": {
-   "title": "Model comparison",
-   "choose": true,
-   "max": 10,
-   "axes": [
-    "Speed",
-    "Accuracy",
-    "Cost",
-    "Context",
-    "Tools",
-    "Vision"
-   ],
-   "series": [
-    {
-     "label": "Model A",
-     "values": [
-      8,
-      7,
-      6,
-      9,
-      7,
-      5
-     ]
-    },
-    {
-     "label": "Model B",
-     "values": [
-      5,
-      9,
-      4,
-      7,
-      9,
-      8
-     ]
-    }
-   ]
-  }
- },
- "boxplot": {
-  "mode": "step",
-  "source": "// Box plots comparing distributions. Each group gives raw `values` (quartiles computed once in `init`, whiskers at the\n// furthest values within 1.5 × IQR, the rest drawn as outliers) or precomputed `stats`. Boxes open out from the\n// median; tap a box to read its statistics. With `choose`, the Choose button submits the selected group.\n\nconst HEIGHT = 260\nconst INTRO = 0.6\nconst PALETTE = [\"accent\", \"#f59e0b\", \"#10b981\", \"#ef4444\", \"#8b5cf6\", \"#06b6d4\", \"#ec4899\", \"#84cc16\"]\n\nfunction init(data) {\n  return {\n    selected: null,\n    stats: data.groups.map((group) =>\n      group.stats ? { ...group.stats, outliers: group.stats.outliers ?? [] } : measure(group.values),\n    ),\n  }\n}\n\nfunction view(state, data) {\n  return ui.column({ gap: 1, align: \"stretch\" }, [\n    ui.text(data.title, { style: \"title\" }),\n    ui.canvas({ id: \"boxplot\", height: HEIGHT, fps: 60, duration: INTRO, alt: summary(state, data) }),\n    ui.text(state.selected === null ? \"Tap a box to read its statistics\" : describe(state, data, state.selected), {\n      style: \"caption\",\n      tone: state.selected === null ? \"muted\" : \"default\",\n    }),\n    data.choose &&\n      ui.row({ gap: 1 }, [\n        ui.button(\"choose\", \"Choose group\", { variant: \"primary\", disabled: state.selected === null }),\n      ]),\n  ])\n}\n\nfunction update(state, event, data) {\n  if (event.id === \"choose\" && state.selected !== null) {\n    const { outliers, ...stats } = state.stats[state.selected]\n    return submit({ label: data.groups[state.selected].label, index: state.selected, ...stats }, state)\n  }\n  if (event.type !== \"pointer\" || event.value.kind !== \"up\") return state\n  const pointer = event.value\n  const hit = locate(data, layout(state, data, pointer.width, pointer.height), pointer.x, pointer.y)\n  return { ...state, selected: hit === state.selected ? null : hit }\n}\n\nfunction draw(state, data, frame) {\n  const g = ui.draw()\n  const box = layout(state, data, frame.width, frame.height)\n  const hover = frame.pointer && !frame.pointer.down ? locate(data, box, frame.pointer.x, frame.pointer.y) : null\n  const active = hover ?? state.selected\n  for (const tick of box.range.ticks) {\n    const at = y(box, tick)\n    g.line(box.plot.x, at, box.plot.x + box.plot.w, at, { stroke: \"border\", width: 1 })\n    g.text(box.plot.x - 8, at + 4, compact(tick), { size: 11, align: \"right\", color: \"muted\" })\n  }\n  const grow = ease(frame.t / INTRO)\n  data.groups.forEach((group, index) => {\n    const stats = state.stats[index]\n    const color = group.color ?? PALETTE[index % PALETTE.length]\n    const cx = box.plot.x + box.slot * (index + 0.5)\n    const half = Math.min(28, box.slot * 0.3)\n    const median = y(box, stats.median)\n    const at = (value) => median + (y(box, value) - median) * grow\n    g.text(cx, box.plot.y + box.plot.h + 18, fit(group.label, box.slot - 4, 11), {\n      size: 11,\n      align: \"center\",\n      weight: index === active ? 600 : 400,\n      color: index === active ? \"text\" : \"muted\",\n    })\n    const dim = active !== null && active !== index\n    if (dim) g.save().alpha(0.45)\n    g.line(cx, at(stats.max), cx, at(stats.q3), { stroke: color, width: 1.5 })\n    g.line(cx, at(stats.q1), cx, at(stats.min), { stroke: color, width: 1.5 })\n    g.line(cx - half / 2, at(stats.max), cx + half / 2, at(stats.max), { stroke: color, width: 1.5 })\n    g.line(cx - half / 2, at(stats.min), cx + half / 2, at(stats.min), { stroke: color, width: 1.5 })\n    g.save()\n      .alpha(dim ? 0.12 : 0.25)\n      .rect(cx - half, at(stats.q3), half * 2, at(stats.q1) - at(stats.q3), color)\n      .restore()\n    g.rect(cx - half, at(stats.q3), half * 2, Math.max(1, at(stats.q1) - at(stats.q3)), {\n      stroke: color,\n      width: index === active ? 2.5 : 1.5,\n    })\n    g.line(cx - half, median, cx + half, median, { stroke: color, width: 3 })\n    if (frame.t >= INTRO)\n      for (const value of stats.outliers.slice(0, 40)) g.circle(cx, y(box, value), 3, { stroke: color, width: 1.5 })\n    if (dim) g.restore()\n  })\n  return g.commands\n}\n\n// Quartiles by linear interpolation; whiskers at the furthest values within 1.5 × IQR of the box.\nfunction measure(values) {\n  const sorted = [...values].sort((a, b) => a - b)\n  const n = sorted.length\n  const quantile = (q) => {\n    const at = (n - 1) * q\n    const low = Math.floor(at)\n    return sorted[low] + (sorted[Math.min(n - 1, low + 1)] - sorted[low]) * (at - low)\n  }\n  const q1 = quantile(0.25)\n  const q3 = quantile(0.75)\n  const fence = 1.5 * (q3 - q1)\n  const inside = sorted.filter((value) => value >= q1 - fence && value <= q3 + fence)\n  const round = (value) => Math.round(value * 1e6) / 1e6\n  return {\n    n,\n    min: inside[0],\n    q1: round(q1),\n    median: round(quantile(0.5)),\n    q3: round(q3),\n    max: inside[inside.length - 1],\n    mean: round(sorted.reduce((sum, value) => sum + value, 0) / n),\n    outliers: sorted.filter((value) => value < q1 - fence || value > q3 + fence),\n  }\n}\n\nfunction layout(state, data, width, height) {\n  const all = state.stats.flatMap((stats) => [stats.min, stats.max, ...stats.outliers])\n  const range = nice(Math.min(...all), Math.max(...all))\n  const left = 14 + 7 * Math.max(...range.ticks.map((tick) => compact(tick).length))\n  const plot = { x: left, y: 12, w: Math.max(1, width - left - 10), h: Math.max(1, height - 12 - 26) }\n  return { plot, range, slot: plot.w / data.groups.length }\n}\n\nfunction nice(min, max) {\n  const span = max - min || Math.abs(max) || 1\n  const raw = span / 4\n  const power = Math.pow(10, Math.floor(Math.log10(raw)))\n  const step = power * ([1, 2, 2.5, 5, 10].find((factor) => factor * power >= raw) ?? 10)\n  const low = Math.floor(min / step) * step\n  const high = Math.max(low + step, Math.ceil(max / step) * step)\n  const ticks = []\n  for (let tick = low; tick <= high + step / 2; tick += step) ticks.push(Math.round(tick / step) * step)\n  return { low, high, ticks }\n}\n\nfunction y(box, value) {\n  return box.plot.y + box.plot.h * (1 - (value - box.range.low) / (box.range.high - box.range.low))\n}\n\nfunction locate(data, box, px, py) {\n  if (px < box.plot.x || px > box.plot.x + box.plot.w || py < 0 || py > box.plot.y + box.plot.h + 24) return null\n  return Math.max(0, Math.min(data.groups.length - 1, Math.floor((px - box.plot.x) / box.slot)))\n}\n\nfunction describe(state, data, index) {\n  const stats = state.stats[index]\n  const unit = data.unit\n  return (\n    data.groups[index].label +\n    \": median \" +\n    amount(stats.median, unit) +\n    \", IQR \" +\n    compact(stats.q1) +\n    \"–\" +\n    amount(stats.q3, unit) +\n    \", whiskers \" +\n    compact(stats.min) +\n    \"–\" +\n    amount(stats.max, unit) +\n    (stats.n !== undefined ? \", n = \" + stats.n : \"\") +\n    (stats.outliers.length\n      ? \", \" + stats.outliers.length + (stats.outliers.length === 1 ? \" outlier\" : \" outliers\")\n      : \"\")\n  )\n}\n\nfunction summary(state, data) {\n  return \"Box plots. \" + data.groups.map((_, index) => describe(state, data, index)).join(\"; \")\n}\n\nfunction amount(value, unit) {\n  const text = compact(value)\n  if (!unit) return text\n  return unit.length > 1 && /^[a-z]/i.test(unit) ? text + \" \" + unit : text + unit\n}\n\nfunction compact(value) {\n  const size = Math.abs(value)\n  const round = (number) => String(Math.round(number * 10) / 10)\n  if (size >= 1e9) return round(value / 1e9) + \"B\"\n  if (size >= 1e6) return round(value / 1e6) + \"M\"\n  if (size >= 1e4) return round(value / 1e3) + \"k\"\n  return String(Math.round(value * 100) / 100)\n}\n\nfunction fit(text, width, size) {\n  const max = Math.max(1, Math.floor(width / (size * 0.58)))\n  return text.length <= max ? text : text.slice(0, Math.max(1, max - 1)) + \"…\"\n}\n\nfunction ease(p) {\n  const clamped = Math.max(0, Math.min(1, p))\n  return 1 - Math.pow(1 - clamped, 3)\n}\n",
-  "data": {
-   "title": "Build times by runner",
-   "unit": "s",
-   "choose": true,
-   "groups": [
-    {
-     "label": "linux",
-     "values": [
-      42,
-      45,
-      47,
-      44,
-      51,
-      49,
-      46,
-      43,
-      48,
-      95,
-      44,
-      46,
-      50
-     ]
-    },
-    {
-     "label": "macos",
-     "values": [
-      61,
-      66,
-      70,
-      64,
-      72,
-      69,
-      75,
-      63,
-      67,
-      71,
-      68
-     ]
-    },
-    {
-     "label": "windows",
-     "values": [
-      80,
-      92,
-      85,
-      101,
-      88,
-      96,
-      90,
-      84,
-      99,
-      140,
-      87
-     ]
-    },
-    {
-     "label": "cached",
-     "stats": {
-      "min": 12,
-      "q1": 15,
-      "median": 17,
-      "q3": 20,
-      "max": 26,
-      "outliers": [
-       41
+   "root": {
+    "label": "Ada",
+    "note": "CEO",
+    "children": [
+     {
+      "label": "Grace",
+      "note": "CTO",
+      "children": [
+       {
+        "label": "Linus",
+        "note": "Platform"
+       },
+       {
+        "label": "Margaret",
+        "note": "Apps"
+       },
+       {
+        "label": "Ken",
+        "note": "Infra"
+       }
       ]
+     },
+     {
+      "label": "Barbara",
+      "note": "COO",
+      "children": [
+       {
+        "label": "Frances",
+        "note": "Ops"
+       },
+       {
+        "label": "Radia",
+        "note": "Support"
+       }
+      ]
+     },
+     {
+      "label": "Edsger",
+      "note": "CFO"
      }
+    ]
+   }
+  }
+ },
+ "treemap": {
+  "mode": "step",
+  "source": "// A squarified treemap of a hierarchy: each item's area is its value (a parent's value defaults to the sum of its\n// children). Two levels show at a time. Tap a block with children to drill into it, tap a leaf to select it, and use\n// Back to go up. With `choose`, the Choose button submits the selected node.\n\nconst HEIGHT = 280\nconst INTRO = 0.6\nconst HEADER = 18\n// Leaves room for the outlines under the spec's 2,000 commands per frame.\nconst BUDGET = 1900\nconst PALETTE = [\"accent\", \"#f59e0b\", \"#10b981\", \"#ef4444\", \"#8b5cf6\", \"#06b6d4\", \"#ec4899\", \"#84cc16\"]\n\nfunction init(data) {\n  return { path: [], selected: null }\n}\n\nfunction view(state, data) {\n  const node = focus(data, state.path)\n  const picked = state.selected === null ? null : node.children[state.selected]\n  return ui.column({ gap: 1, align: \"stretch\" }, [\n    ui.text(data.title, { style: \"title\" }),\n    state.path.length > 0 &&\n      ui.row({ gap: 1, align: \"center\" }, [\n        ui.button(\"back\", \"Back\", { variant: \"secondary\" }),\n        ui.text(trail(data, state.path).join(\" › \"), { style: \"caption\", tone: \"muted\" }),\n      ]),\n    ui.canvas({ id: \"treemap\", height: HEIGHT, fps: 60, duration: INTRO, alt: summary(data, node) }),\n    ui.text(\n      picked\n        ? picked.label +\n            \": \" +\n            amount(total(picked), data.unit) +\n            \" (\" +\n            share(total(picked), total(node)) +\n            \" of \" +\n            node.label +\n            \")\"\n        : \"Tap a block with children to drill in, or a leaf to select it\",\n      { style: \"caption\", tone: picked ? \"default\" : \"muted\" },\n    ),\n    data.choose &&\n      ui.row({ gap: 1 }, [\n        ui.button(\"choose\", picked ? \"Choose \" + picked.label : \"Choose\", { variant: \"primary\", disabled: !picked }),\n      ]),\n  ])\n}\n\nfunction update(state, event, data) {\n  if (event.id === \"back\") return { path: state.path.slice(0, -1), selected: state.path[state.path.length - 1] }\n  if (event.id === \"choose\" && state.selected !== null) {\n    const picked = focus(data, state.path).children[state.selected]\n    return submit(\n      { label: picked.label, value: total(picked), path: [...trail(data, state.path).slice(1), picked.label] },\n      state,\n    )\n  }\n  if (event.type !== \"pointer\" || event.value.kind !== \"up\") return state\n  const pointer = event.value\n  const hit = locate(layout(data, state, pointer.width, pointer.height), pointer.x, pointer.y)\n  if (!hit) return { ...state, selected: null }\n  const child = focus(data, state.path).children[hit.index]\n  if (child.children) return { path: [...state.path, hit.index], selected: hit.inner }\n  return { ...state, selected: state.selected === hit.index ? null : hit.index }\n}\n\nfunction draw(state, data, frame) {\n  const g = ui.draw()\n  const blocks = layout(data, state, frame.width, frame.height)\n  const hover = frame.pointer && !frame.pointer.down ? locate(blocks, frame.pointer.x, frame.pointer.y) : null\n  blocks.forEach((block, order) => {\n    const grow = ease((frame.t - (0.3 * order) / blocks.length) / (INTRO - 0.3))\n    if (grow <= 0) return\n    const r = scaled(block.rect, grow)\n    if (block.inner.length === 0) {\n      g.rect(r.x, r.y, r.w, r.h, { fill: block.color, stroke: \"bg\", width: 2 })\n      caption(g, r, block.node.label, amount(total(block.node), data.unit), \"#ffffff\")\n    } else {\n      g.save().alpha(0.22).rect(r.x, r.y, r.w, r.h, block.color).restore()\n      g.rect(r.x, r.y, r.w, r.h, { stroke: \"bg\", width: 2 })\n      if (r.w > 30)\n        g.text(r.x + 6, r.y + 13, fit(block.node.label + \"  \" + amount(total(block.node), data.unit), r.w - 10, 11), {\n          size: 11,\n          weight: 600,\n        })\n      for (const inner of block.inner) {\n        if (g.commands.length > BUDGET) break\n        const ir = scaled(inner.rect, grow)\n        g.rect(ir.x, ir.y, ir.w, ir.h, { fill: block.color, stroke: \"bg\", width: 1.5 })\n        caption(g, ir, inner.node.label, \"\", \"#ffffff\")\n      }\n    }\n  })\n  if (frame.t >= INTRO)\n    for (const [index, width] of [\n      [hover && hover.index, 1],\n      [state.selected, 2.5],\n    ]) {\n      const block = index === null ? null : blocks.find((item) => item.index === index)\n      if (block)\n        g.rect(block.rect.x + 1, block.rect.y + 1, block.rect.w - 2, block.rect.h - 2, { stroke: \"text\", width })\n    }\n  return g.commands\n}\n\n// The children of the focused node, squarified, each with its own children squarified inside below a header.\nfunction layout(data, state, width, height) {\n  const node = focus(data, state.path)\n  const items = node.children\n    .map((child, index) => ({ node: child, index, value: total(child) }))\n    .filter((item) => item.value > 0)\n  return squarify(items, { x: 0, y: 0, w: width, h: height }).map((placed, order) => {\n    const child = placed.item.node\n    const room = {\n      x: placed.rect.x + 3,\n      y: placed.rect.y + HEADER,\n      w: placed.rect.w - 6,\n      h: placed.rect.h - HEADER - 3,\n    }\n    const inner =\n      child.children && room.w > 40 && room.h > 24\n        ? squarify(\n            child.children\n              .map((grand, index) => ({ node: grand, index, value: total(grand) }))\n              .filter((item) => item.value > 0),\n            room,\n          ).map((cell) => ({ node: cell.item.node, index: cell.item.index, rect: cell.rect }))\n        : []\n    return {\n      node: child,\n      index: placed.item.index,\n      rect: placed.rect,\n      inner,\n      color: child.color ?? PALETTE[placed.item.index % PALETTE.length],\n    }\n  })\n}\n\n// Squarified treemap (Bruls et al.): fill rows along the short side while they make the cells squarer.\nfunction squarify(items, rect) {\n  const sorted = [...items].sort((a, b) => b.value - a.value)\n  const sum = sorted.reduce((total, item) => total + item.value, 0)\n  const out = []\n  if (sum <= 0) return out\n  const scale = (rect.w * rect.h) / sum\n  let { x, y, w, h } = rect\n  let start = 0\n  while (start < sorted.length) {\n    const short = Math.min(w, h)\n    let end = start + 1\n    let area = sorted[start].value * scale\n    let worst = ratio(sorted[start].value * scale, sorted[start].value * scale, area, short)\n    while (end < sorted.length) {\n      const next = area + sorted[end].value * scale\n      const score = ratio(sorted[start].value * scale, sorted[end].value * scale, next, short)\n      if (score > worst) break\n      area = next\n      worst = score\n      end++\n    }\n    const thick = area / short\n    let offset = 0\n    for (let index = start; index < end; index++) {\n      const length = (sorted[index].value * scale) / thick\n      out.push({\n        item: sorted[index],\n        rect: w >= h ? { x, y: y + offset, w: thick, h: length } : { x: x + offset, y, w: length, h: thick },\n      })\n      offset += length\n    }\n    if (w >= h) {\n      x += thick\n      w -= thick\n    } else {\n      y += thick\n      h -= thick\n    }\n    start = end\n  }\n  return out\n}\n\n// The worst aspect ratio of a row with the given largest and smallest cell areas and total area.\nfunction ratio(largest, smallest, area, short) {\n  return Math.max((short * short * largest) / (area * area), (area * area) / (short * short * smallest))\n}\n\nfunction locate(blocks, px, py) {\n  const inside = (r) => px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h\n  const block = blocks.find((item) => inside(item.rect))\n  if (!block) return null\n  const inner = block.inner.find((item) => inside(item.rect))\n  return { index: block.index, inner: inner ? inner.index : null }\n}\n\nfunction caption(g, r, label, value, color) {\n  if (r.w < 36 || r.h < 18) return\n  g.text(r.x + 6, r.y + 15, fit(label, r.w - 10, 12), { size: 12, weight: 600, color })\n  if (value && r.h > 36) g.text(r.x + 6, r.y + 31, fit(value, r.w - 10, 11), { size: 11, color })\n}\n\nfunction scaled(r, grow) {\n  return { x: r.x + (r.w * (1 - grow)) / 2, y: r.y + (r.h * (1 - grow)) / 2, w: r.w * grow, h: r.h * grow }\n}\n\nfunction focus(data, path) {\n  return path.reduce((node, index) => node.children[index], { label: data.rootLabel ?? \"All\", children: data.items })\n}\n\nfunction trail(data, path) {\n  const labels = [data.rootLabel ?? \"All\"]\n  path.reduce(\n    (node, index) => {\n      labels.push(node.children[index].label)\n      return node.children[index]\n    },\n    { children: data.items },\n  )\n  return labels\n}\n\nfunction total(node) {\n  return node.value ?? (node.children ? node.children.reduce((sum, child) => sum + total(child), 0) : 0)\n}\n\nfunction summary(data, node) {\n  const sum = total(node)\n  return (\n    \"Treemap of \" +\n    node.label +\n    \" (\" +\n    amount(sum, data.unit) +\n    \"): \" +\n    node.children\n      .map((child) => ({ label: child.label, value: total(child) }))\n      .sort((a, b) => b.value - a.value)\n      .map((child) => child.label + \" \" + amount(child.value, data.unit) + \" (\" + share(child.value, sum) + \")\")\n      .join(\", \")\n  )\n}\n\nfunction share(part, whole) {\n  return (whole > 0 ? Math.round((part / whole) * 1000) / 10 : 0) + \"%\"\n}\n\nfunction amount(value, unit) {\n  const size = Math.abs(value)\n  const text =\n    size >= 1e6\n      ? Math.round(value / 1e5) / 10 + \"M\"\n      : size >= 1e4\n        ? Math.round(value / 100) / 10 + \"k\"\n        : String(Math.round(value * 100) / 100)\n  if (!unit) return text\n  return unit.length > 1 && /^[a-z]/i.test(unit) ? text + \" \" + unit : text + unit\n}\n\nfunction fit(text, width, size) {\n  const max = Math.max(1, Math.floor(width / (size * 0.58)))\n  return text.length <= max ? text : text.slice(0, Math.max(1, max - 1)) + \"…\"\n}\n\nfunction ease(p) {\n  const clamped = Math.max(0, Math.min(1, p))\n  return 1 - Math.pow(1 - clamped, 3)\n}\n",
+  "data": {
+   "title": "Disk usage",
+   "rootLabel": "repo",
+   "unit": "MB",
+   "choose": true,
+   "items": [
+    {
+     "label": "packages",
+     "children": [
+      {
+       "label": "core",
+       "value": 42
+      },
+      {
+       "label": "tui",
+       "value": 31
+      },
+      {
+       "label": "app",
+       "value": 27
+      },
+      {
+       "label": "widget",
+       "value": 6
+      },
+      {
+       "label": "sdk",
+       "value": 12
+      }
+     ]
+    },
+    {
+     "label": "node_modules",
+     "children": [
+      {
+       "label": "effect",
+       "value": 38
+      },
+      {
+       "label": "typescript",
+       "value": 64
+      },
+      {
+       "label": "other",
+       "value": 120
+      }
+     ]
+    },
+    {
+     "label": "docs",
+     "value": 18
+    },
+    {
+     "label": "assets",
+     "children": [
+      {
+       "label": "images",
+       "value": 22
+      },
+      {
+       "label": "fonts",
+       "value": 9
+      }
+     ]
+    },
+    {
+     "label": "scripts",
+     "value": 3
     }
    ]
   }
  },
  "fetch-demo": {
   "mode": "live",
-  "source": "async function main(data) {\n  const show = (lines, tone) => widget.render(ui.column({ gap: 2 }, [\n    ui.text(data.title, { style: \"title\" }),\n    ...lines.map((l) => ui.text(l, { style: \"code\", tone })),\n    ui.row({ gap: 1 }, [ui.button(\"again\", \"Fetch again\", { variant: \"primary\" }), ui.button(\"local\", \"Try http://localhost\"), ui.button(\"other\", \"Try example.com\")]),\n  ]))\n  show([\"press a button\"])\n  let url = \"https://api.github.com/zen\"\n  while (true) {\n    try {\n      const r = await widget.fetch(url, { headers: { Accept: \"text/plain\" } })\n      show([\"GET \" + url, \"status \" + r.status, (await r.text()).slice(0, 120)], \"success\")\n    } catch (e) {\n      show([\"GET \" + url, e.kind + \": \" + e.message], \"error\")\n    }\n    const ev = await widget.event()\n    url = ev.id === \"local\" ? \"http://localhost/x\" : ev.id === \"other\" ? \"https://example.com/\" : \"https://api.github.com/zen\"\n  }\n}",
+  "source": "async function main(data) {\n  const show = (lines, tone) => widget.render(ui.column({ gap: 2, fullscreen: false }, [\n    ui.text(data.title, { style: \"title\" }),\n    ...lines.map((l) => ui.text(l, { style: \"code\", tone })),\n    ui.row({ gap: 1 }, [ui.button(\"again\", \"Fetch again\", { variant: \"primary\" }), ui.button(\"local\", \"Try http://localhost\"), ui.button(\"other\", \"Try example.com\")]),\n  ]))\n  show([\"press a button\"])\n  let url = \"https://api.github.com/zen\"\n  while (true) {\n    try {\n      const r = await widget.fetch(url)\n      show([\"GET \" + url, \"status \" + r.status, (await r.text()).slice(0, 120)], \"success\")\n    } catch (e) {\n      show([\"GET \" + url, e.kind + \": \" + e.message], \"error\")\n    }\n    const ev = await widget.event()\n    url = ev.id === \"local\" ? \"http://localhost/x\" : ev.id === \"other\" ? \"https://example.com/\" : \"https://api.github.com/zen\"\n  }\n}",
   "data": {
    "title": "GitHub status"
   },
@@ -1564,6 +1564,20 @@ export const fixtures = {
      "api.github.com"
     ]
    }
+  }
+ },
+ "clock-demo": {
+  "mode": "live",
+  "source": "async function main(data) {\n  let resumed = 0\n  let paused = 0\n  while (true) {\n    widget.render(ui.column({ gap: 1 }, [\n      ui.text(data.title, { style: \"title\" }),\n      ui.text(\"running \" + (widget.now() / 1000).toFixed(1) + \" s\", { style: \"code\" }),\n      ui.text(\"resumed \" + resumed + \"x, paused \" + paused + \" ms in all\", { style: \"caption\", tone: \"muted\" }),\n    ]))\n    const next = await widget.next({ timeout: 100 })\n    if (next.type === \"resumed\") { resumed++; paused += next.pausedMs }\n  }\n}",
+  "data": {
+   "title": "Running time"
+  }
+ },
+ "shader-demo": {
+  "mode": "live",
+  "source": "const WGSL = `fn shade(frag: vec2f) -> vec4f {\n  let uv = frag / widget.resolution;\n  let d = distance(uv, widget.values[0].yz);\n  let glow = exp(-d * d * 40.0) * (0.6 + 0.6 * widget.values[0].w);\n  let base = vec3f(0.08, 0.1, 0.16) + vec3f(0.2, 0.1, 0.4) * (0.5 + 0.5 * sin(widget.values[0].x * 2.0 + uv.x * 6.0));\n  return vec4f(base + vec3f(0.3, 0.6, 1.0) * glow, 1.0);\n}`\n\nasync function main(data) {\n  const s = { down: 0, move: 0, up: 0, x: 0.5, y: 0.5, pressed: 0, frames: 0 }\n  while (true) {\n    widget.render(ui.column({ gap: 1 }, [\n      ui.text(data.title, { style: \"title\" }),\n      ui.shader(WGSL, { id: \"orb\", height: 160, fps: 0, values: [widget.now() / 1000, s.x, s.y, s.pressed], alt: \"A glowing orb that follows the pointer\" }),\n      ui.text(\"frames \" + s.frames + \" · down \" + s.down + \" · move \" + s.move + \" · up \" + s.up, { style: \"caption\", tone: \"muted\" }),\n    ]))\n    const next = await widget.next({ frame: true })\n    if (next.type === \"frame\") s.frames++\n    if (next.type === \"event\" && next.event.type === \"pointer\") {\n      const v = next.event.value\n      s[v.kind]++\n      s.x = v.x / v.width\n      s.y = v.y / v.height\n      s.pressed = v.kind === \"up\" ? 0 : 1\n    }\n  }\n}",
+  "data": {
+   "title": "Shader driven by a live program"
   }
  },
  "runaway-demo": {

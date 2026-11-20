@@ -3,6 +3,7 @@ export const CSS: string = /* css */ `
 :host { display: block; position: relative; contain: content; }
 :host([hidden]) { display: none; }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 .pw-root {
   position: relative; font: 14px/1.45 var(--pw-font); color: var(--pw-text); -webkit-font-smoothing: antialiased;
   min-width: 0;

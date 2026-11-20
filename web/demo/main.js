@@ -38,6 +38,23 @@ const record = (name, m) => {
   })
 }
 
+/** Mounts `name` once more (off screen is fine: it's visible at the top) and resolves with its time to first view. */
+demo.mount = (name) =>
+  new Promise((resolve) => {
+    const f = fixtures[name]
+    const slot = document.createElement("div")
+    slot.className = "slot"
+    section.prepend(slot)
+    const w = host.mount(slot, {
+      program: prelude + "\n" + f.source,
+      data: f.data,
+      mode: f.mode,
+      theme,
+      onMetrics: (m) => m.kind === "init" && resolve(m.ms),
+    })
+    demo.extra = [...(demo.extra ?? []), w]
+  })
+
 const select = document.getElementById("only")
 const section = document.getElementById("widgets")
 for (const [name, f] of Object.entries(fixtures)) {

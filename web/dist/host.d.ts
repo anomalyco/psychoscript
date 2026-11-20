@@ -119,6 +119,7 @@ export declare class WidgetHost {
     private module;
     private shader;
     private stepWorker;
+    private liveWorkers;
     readonly ticker: Ticker;
     readonly images: Images;
     private observer;
@@ -134,6 +135,14 @@ export declare class WidgetHost {
     shaderModule(): Promise<WebAssembly.Module>;
     steps(): WorkerHandle;
     live(): WorkerHandle;
+    ended(worker: WorkerHandle): void;
+    /** Each running worker's WebAssembly memory (the interpreter's heap and code data), compiled programs and widgets. */
+    stats(): Promise<{
+        kind: "step" | "live";
+        wasmBytes: number;
+        programs: number;
+        widgets: number;
+    }[]>;
     translate(wgsl: string): Promise<{
         code: string;
         block: string;
