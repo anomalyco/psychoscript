@@ -210,6 +210,10 @@ Math.floor)` is `"3"`). A detached method loses its receiver, as in JS: `values.
       Promise combinators, `AggregateError`, and `Math.sumPrecise`. Mapper/grouping callbacks interleave with iterator
       steps; synchronous consumers preserve yielded promise objects rather than awaiting them. Async generators are
       rejected by every synchronous consumer.
+- [x] Replacing `Array.prototype[Symbol.iterator]`, the built-in iterators' `next` (assignment, `defineProperty`, an
+      accessor or `delete`), or giving an array its own `[Symbol.iterator]`, is honoured by every consumer above and
+      by `for...of` and `yield*`: from then on, for the rest of the run (across suspend and resume), arrays are
+      iterated through the iterator protocol instead of directly.
 - [x] Synchronous iterator acquisition and result validation follow `IteratorClose` boundaries: consumer errors and
       intentional early stops invoke `return()`, acquisition/`next()` failures do not, and an original consumer error
       wins over a cleanup failure. A generator's `return()` is an intentional stop, so a `return()` that throws or
@@ -703,8 +707,17 @@ Host functions a host opts in through `Host.fn`, `Host.durableFn`, and `Host.nam
 - [x] Error `name`/`message`, error inheritance through `instanceof`, and plain-data serialization. `message` is an own
       non-enumerable property and `name` is inherited, as in JS, so `Object.keys(err)` is `[]` for a plain error. The
       result boundary still emits `{ name, message, ...own enumerable }`, so a field such as `code` crosses. `cause` is
-      non-enumerable: a host Error carries it, and this JSON form does not. Errors have no `stack`; the diagnostic
-      carries a 1-based line and column in the submitted source instead.
+      non-enumerable: a host Error carries it, and this JSON form does not. An uncaught error's diagnostic
+      carries a 1-based line and column in the submitted source.
+- [x] Every Error has an own non-enumerable string `stack` in V8's format: `name: message`, then
+      `    at fn (<program>:line:col)` lines. As in V8, the frames are taken when the error is made and the header when
+      `stack` is first read, so a subclass constructor that sets `this.name` shows in it; the value is then fixed until
+      assigned. The header reads `name` and `message` as data: a program getter there is not run and reads as
+      `undefined`, as in Bun (Node runs it). `stack` is a data property, as in Bun (Node's is an accessor).
+      `new Error()` lists up to 10 program frames, innermost first (built-in frames are skipped, and top-level code is
+      a bare `at <program>:line:col`); a built-in or host function failure has at most one line at the expression that
+      raised it or the `await` that observed it. A host Error's own `stack` never crosses, so no host path appears.
+- [ ] `Error.captureStackTrace`, `Error.stackTraceLimit`, and `at async` frames across an `await`.
 - [x] `instanceof` against any constructor with a `prototype`, including every built-in and `Function`.
 - [x] Derived error constructors extend `Error` itself: `Object.getPrototypeOf(TypeError) === Error`, so
       `TypeError.isError` is inherited, and `TypeError.prototype` inherits from `Error.prototype`.

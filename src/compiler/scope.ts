@@ -1,4 +1,5 @@
 import type {
+  CallExpression,
   AnyNode,
   ArrowFunctionExpression,
   BlockStatement,
@@ -19,6 +20,12 @@ import type {
 } from "acorn"
 import type { Source } from "../runtime/source.js"
 import { CodeFlags } from "../opcodes.js"
+
+/**
+ * The `super(...args)` of each default derived constructor: it passes its arguments on as they are, without iterating
+ * them, so an overridden array iterator is not observable (ES2022).
+ */
+export const defaultSuperCalls = new WeakSet<CallExpression>()
 
 type FunctionNode = Program | FunctionDeclaration | FunctionExpression | ArrowFunctionExpression
 
@@ -567,17 +574,15 @@ export const analyzeScopes = (source: Source, internal = false): ScopeAnalysis =
   function defaultConstructor(node: ClassNode): FunctionExpression {
     const at = { start: node.start, end: node.end }
     const args = { type: "Identifier", name: "args", ...at }
-    const superCall = {
-      type: "ExpressionStatement",
-      expression: {
-        type: "CallExpression",
-        callee: { type: "Super", ...at },
-        arguments: [{ type: "SpreadElement", argument: args, ...at }],
-        optional: false,
-        ...at,
-      },
+    const call = {
+      type: "CallExpression",
+      callee: { type: "Super", ...at },
+      arguments: [{ type: "SpreadElement", argument: args, ...at }],
+      optional: false,
       ...at,
-    }
+    } as CallExpression
+    defaultSuperCalls.add(call)
+    const superCall = { type: "ExpressionStatement", expression: call, ...at }
     return {
       type: "FunctionExpression",
       id: null,
