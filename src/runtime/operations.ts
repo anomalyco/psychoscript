@@ -23,6 +23,7 @@ import {
   keys,
   Obj,
   parseArrayIndex,
+  Bytes,
   Position,
   PromiseObj,
   set,
@@ -230,7 +231,13 @@ export const isThenable = (value: Value): boolean => {
 
 /** A built-in iterator over `value` that needs no program code to start: an iterator object, a string, a collection. */
 export const builtinCursor = (builtins: Builtins, value: Value): Cursor | undefined => {
-  if (value instanceof IteratorObj) return value.cursor
+  if (value instanceof IteratorObj) {
+    // A built-in iterator over an array is stepped by its `next` once a program has replaced it.
+    const cursor = value.cursor
+    if (builtins.Array.guard!.protector.intact || !(cursor instanceof Position)) return cursor
+    const source = cursor.source
+    return source instanceof Arr || source instanceof Bytes || Array.isArray(source) ? undefined : cursor
+  }
   if (typeof value === "string") return new Position(value, "values", builtins.Array)
   return value instanceof Obj ? value.iterator(builtins) : undefined
 }

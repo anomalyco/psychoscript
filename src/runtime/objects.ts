@@ -95,6 +95,21 @@ export const changed = (target: Obj): void => {
   if (target.intrinsic > 0) target.intrinsic = -target.intrinsic
 }
 
+/**
+ * The array-iteration protector: true while no program has changed `Array.prototype[Symbol.iterator]` or the built-in
+ * iterators' `next`, so arrays may be iterated directly instead of through the iterator protocol. Once cleared it
+ * stays cleared for the run.
+ */
+export class Protector {
+  intact = true
+}
+
+/** Clears a guarded object's protector when `name` is the key it guards. */
+const guard = (target: Obj, name: PropertyKey): void => {
+  const guarded = target.guard
+  if (guarded !== undefined && guarded.key === name) guarded.protector.intact = false
+}
+
 /** Ordinary assignment: writable, enumerable, configurable. */
 export const data: Attributes = { writable: true, enumerable: true, configurable: true }
 /** Built-in methods and `constructor`: writable and configurable but hidden from enumeration. */
@@ -122,6 +137,8 @@ export class Obj {
   intrinsic = 0
   /** Whether a program accessor was ever defined here: the bulk readers' cue to take their slow paths. */
   hasProgramAccessors = false
+  /** Only on `Array.prototype` and the built-in iterators' prototype: the key whose change clears the protector. */
+  declare guard?: { readonly key: PropertyKey; readonly protector: Protector }
   constructor(public proto: Obj | null) {
     if (making !== undefined) making.push(this)
   }
@@ -228,6 +245,13 @@ export class Arr extends Obj {
     })
   }
   override iterator(builtins: Builtins) {
+    // Iterated directly only while nothing could make the iterator protocol answer differently.
+    if (
+      !builtins.Array.guard!.protector.intact ||
+      this.proto !== builtins.Array ||
+      (this.props.size !== 0 && this.props.has(IteratorSymbol))
+    )
+      return undefined
     return new Position(this, "values", builtins.Array)
   }
 }
@@ -336,7 +360,7 @@ export class Arguments extends Obj {
   }
   override iterator(builtins: Builtins) {
     // With program accessors, its own `[Symbol.iterator]` (the prelude's `argumentsValues`) reads it in program code.
-    if (this.hasProgramAccessors) return undefined
+    if (this.hasProgramAccessors || !builtins.Array.guard!.protector.intact) return undefined
     return new Position(
       keys(this).map((key) => get(this, key)),
       "values",
@@ -804,6 +828,7 @@ export class Bytes extends Wrapper {
     return new Uint8Array(this.bytes)
   }
   override iterator(builtins: Builtins) {
+    if (!builtins.Array.guard!.protector.intact) return undefined
     return new Position(this, "values", builtins.Array)
   }
   /** New bytes of this one's kind, as `slice`, `subarray`, `map` and `filter` make them (a Buffer's are a Buffer). */
@@ -1064,6 +1089,7 @@ export const set = (target: Obj, key: PropertyKey, value: Value): boolean | Call
       if (written !== undefined) return written
     }
     changed(target)
+    guard(target, name)
     slot.value = value
     return true
   }
@@ -1073,6 +1099,7 @@ export const set = (target: Obj, key: PropertyKey, value: Value): boolean | Call
   }
   rejectAddition(target, name)
   changed(target)
+  guard(target, name)
   target.props.set(name, { value, ...data })
   return true
 }
@@ -1088,6 +1115,7 @@ export const define = (target: Obj, key: PropertyKey, value: Value, attrs: Attri
   const name = canonical(key)
   if (isIndexed(target) && writeElement(target, name, value) !== undefined) return
   changed(target)
+  guard(target, name)
   target.props.set(name, { value, ...attrs })
 }
 
@@ -1095,6 +1123,7 @@ export const define = (target: Obj, key: PropertyKey, value: Value, attrs: Attri
 export const defineAccessor = (target: Obj, key: PropertyKey, get: Getter | undefined, set?: Setter): void => {
   changed(target)
   const name = canonical(key)
+  guard(target, name)
   target.props.set(name, { get, set, enumerable: false, configurable: true })
   if (making === undefined) return
   const label = typeof name === "symbol" ? `[${name.description}]` : name
@@ -1136,6 +1165,7 @@ export const defineAccessorHalf = (
       : { get: undefined, set: undefined, enumerable, configurable: true }
   slot[half] = fn
   changed(target)
+  guard(target, name)
   target.hasProgramAccessors = true
   target.props.set(name, slot)
 }
@@ -1171,6 +1201,7 @@ export const defineOwnProperty = (target: Obj, key: PropertyKey, desc: Descripto
   const slot = current === undefined ? created(desc) : applied(current, desc)
   if (isProgramAccessor(slot)) target.hasProgramAccessors = true
   changed(target)
+  guard(target, name)
   target.props.set(name, slot)
   return true
 }
@@ -1283,6 +1314,7 @@ export const remove = (target: Obj, key: PropertyKey): boolean => {
   if (slot === undefined) return true
   if (!slot.configurable) return false
   changed(target)
+  guard(target, name)
   target.props.delete(name)
   return true
 }
