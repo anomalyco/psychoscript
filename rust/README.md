@@ -44,6 +44,7 @@ them pass:
 
 ```sh
 bun conformance/generate.ts && bun conformance/host.ts && bun conformance/boundary.ts && bun conformance/streaming.ts
+bun conformance/date-locale.ts # the Date locale matrix, its expected output and its differences from ICU4X
 ```
 
 ## Parity
@@ -67,8 +68,11 @@ Known differences:
 - A getter that native code reads (iterator `next`/`done`/`value`, spread, `Object.assign`/`entries`, `valueOf` and
   `toString`, a Set-like argument's `size`/`has`/`keys`) runs to completion inline: unlike the reference, it cannot
   wait on a host call or be suspended.
-- Date's `toLocaleString`, `toLocaleDateString` and `toLocaleTimeString` read no locales or options: always `en-US` in
-  the host's time zone, where the reference formats any locale and Intl options.
+- Date's `toLocaleString`, `toLocaleDateString` and `toLocaleTimeString` format any locale and `Intl.DateTimeFormat`
+  options through ICU4X rather than the host ICU4C: the common cases match, and the rest render ICU4X's closest output.
+  The differences are recorded by `conformance/date-locale.ts` in `conformance/date-locale.differences.json` and pinned
+  by `bench/tests/date_locale.rs`; among them: an explicit two-digit year, flexible day periods (`b`/`B`), and the
+  narrow weekday/month and long/narrow era widths, which ICU4X can't express.
 
 ## Design
 
