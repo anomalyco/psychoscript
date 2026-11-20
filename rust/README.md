@@ -66,10 +66,12 @@ Known differences:
 
 - A saved state resumes only in the implementation and build that saved it: the snapshot formats differ.
 - Date's `toLocaleString`, `toLocaleDateString` and `toLocaleTimeString` format any locale and `Intl.DateTimeFormat`
-  options through ICU4X rather than the host ICU4C: the common cases match, and the rest render ICU4X's closest output.
-  The differences are recorded by `conformance/date-locale.ts` in `conformance/date-locale.differences.json` and pinned
-  by `bench/tests/date_locale.rs`; among them: an explicit two-digit year, flexible day periods (`b`/`B`), and the
-  narrow weekday/month and long/narrow era widths, which ICU4X can't express.
+  options through ICU4X rather than the host ICU4C: the common cases — and every error kind and message — match, and
+  the rest render ICU4X's closest output. The differences are recorded by `conformance/date-locale.ts` in
+  `conformance/date-locale.differences.json` and pinned by `bench/tests/date_locale.rs`; among them: a two-digit year
+  inside a date, numeric dates where a locale's `yMd` pattern differs from its short style, a standalone minute or
+  second (ICU4X prefixes the hour), flexible day periods (`b`/`B`), and the CJK separators and zone names whose data
+  differs from ICU's.
 
 ## Design
 

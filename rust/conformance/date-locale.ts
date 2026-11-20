@@ -5,9 +5,10 @@
 //
 // The matrix runs a representative set of the common locales through the reference's `Intl.DateTimeFormat` options
 // (dateStyle and timeStyle, each field alone, typical combinations, timeZone and hour12/hourCycle) at fixed instants
-// in fixed time zones, so no machine's own zone shows up. Every case is recorded from the reference (`langDate`); then
-// the Rust side runs the same matrix (the `date_locale` example) and the differences — where ICU4X renders its closest
-// output rather than the exact one — are written to the differences file, kept as short as the limit allows.
+// in fixed time zones, so no machine's own zone shows up, plus an error case for each option the reference rejects,
+// pinned by its kind and message. Every case is recorded from the reference (`langDate`); then the Rust side runs the
+// same matrix (the `date_locale` example) and the differences — where ICU4X renders its closest output rather than the
+// exact one — are written to the differences file, kept as short as the limit allows.
 //
 // Usage: bun conformance/date-locale.ts [reference] — the reference package directory, from the argument,
 // PSYCHOSCRIPT_REF, or by default the repository root.
@@ -30,11 +31,21 @@ const ZONES = ["UTC", "Asia/Tokyo", "America/New_York", "Australia/Sydney", "Asi
 const INSTANT = Date.UTC(2024, 0, 15, 13, 5, 9)
 
 type Bag = Record<string, string | number | boolean>
-type Case = { method: string; locale?: string; options?: Bag; instant: number }
+type Case = {
+  method: string
+  locale?: string | null
+  options?: Bag | null
+  instant: number
+  error?: boolean
+}
 
 const cases: Array<Case> = []
-const push = (method: string, locale: string | undefined, options: Bag | undefined, instant = INSTANT) =>
-  cases.push({ method, ...(locale === undefined ? {} : { locale }), ...(options === undefined ? {} : { options }), instant })
+const push = (method: string, locale: string | null | undefined, options: Bag | null | undefined, instant = INSTANT) => {
+  const case_: Case = { method, instant }
+  if (locale !== undefined) case_.locale = locale
+  if (options !== undefined) case_.options = options
+  cases.push(case_)
+}
 
 // The default fields in each locale, for each of the three methods, at the fixed instant in UTC.
 for (const locale of LOCALES) {
@@ -114,28 +125,67 @@ push("toLocaleString", undefined, undefined)
 push("toLocaleDateString", undefined, undefined)
 push("toLocaleTimeString", undefined, undefined)
 
-// Widths ICU4X can't render exactly, pinned for en-US so the differences list documents them without padding it.
-for (const bag of [{ weekday: "narrow" }, { month: "narrow" }, { era: "long" }, { era: "narrow" }]) {
-  push("toLocaleString", "en-US", { ...bag, timeZone: "UTC" })
+// An error case for every option the reference rejects, pinned by kind and message.
+const errorCase = (method: string, locale: string | null | undefined, options: Bag | null | undefined) => {
+  const case_: Case = { method, instant: INSTANT, error: true }
+  if (locale !== undefined) case_.locale = locale
+  if (options !== undefined) case_.options = options
+  cases.push(case_)
 }
+for (const [method, options] of [
+  ["toLocaleString", { timeZone: "Nope" }],
+  ["toLocaleString", { weekday: "bad" }],
+  ["toLocaleString", { era: "bad" }],
+  ["toLocaleString", { year: "bad" }],
+  ["toLocaleString", { month: "bad" }],
+  ["toLocaleString", { day: "bad" }],
+  ["toLocaleString", { dayPeriod: "bad" }],
+  ["toLocaleString", { hour: "bad" }],
+  ["toLocaleString", { minute: "bad" }],
+  ["toLocaleString", { second: "bad" }],
+  ["toLocaleString", { fractionalSecondDigits: 4 }],
+  ["toLocaleString", { timeZoneName: "bad" }],
+  ["toLocaleString", { hourCycle: "bad" }],
+  ["toLocaleString", { dateStyle: "bad" }],
+  ["toLocaleString", { timeStyle: "bad" }],
+  ["toLocaleString", { dateStyle: "short", year: "numeric" }],
+  ["toLocaleTimeString", { dateStyle: "short" }],
+  ["toLocaleDateString", { timeStyle: "short" }],
+] as const) {
+  errorCase(method, "en-US", options as Bag)
+}
+errorCase("toLocaleString", null, undefined) // null locales
+errorCase("toLocaleString", "en-US", null) // null options
+errorCase("toLocaleString", "!!", { timeZone: "UTC" }) // invalid language tag
 
 // ---------- record the reference's output ----------
 
 const runtime = Runtime.make({})
 const run = async (case_: Case) => {
-  const locale = case_.locale === undefined ? "" : JSON.stringify(case_.locale)
-  const options = case_.options === undefined ? "" : JSON.stringify(case_.options)
-  const comma = case_.locale === undefined || case_.options === undefined ? "" : ", "
-  const code = `return new Date(${case_.instant})[${JSON.stringify(case_.method)}](${locale}${comma}${options})`
+  const json = (value: unknown) => JSON.stringify(value)
+  let args = ""
+  if (case_.locale !== undefined && case_.options !== undefined) args = `${json(case_.locale)},${json(case_.options)}`
+  else if (case_.locale !== undefined) args = json(case_.locale)
+  else if (case_.options !== undefined) args = `undefined,${json(case_.options)}`
+  const call = `new Date(${case_.instant})[${json(case_.method)}](${args})`
+  const code = case_.error ? `try { ${call} } catch (e) { return [e.name, e.message] }` : `return ${call}`
   const result = await Effect.runPromise(runtime.execute(code))
-  return result.ok ? result.value : result.error.kind
+  if (!result.ok) throw new Error(`reference failed unexpectedly: ${result.error.kind}: ${result.error.message}`)
+  return result.value
 }
 
 const expected: Array<unknown> = []
 for (const case_ of cases) expected.push(await run(case_))
 
 const recorded = {
-  cases: cases.map((case_, index) => ({ ...case_, expected: expected[index] })),
+  cases: cases.map((case_, index) => ({
+    method: case_.method,
+    ...(case_.locale !== undefined ? { locale: case_.locale } : {}),
+    ...(case_.options !== undefined ? { options: case_.options } : {}),
+    ...(case_.error ? { error: true } : {}),
+    instant: case_.instant,
+    expected: expected[index],
+  })),
 }
 writeRecording(join(import.meta.dir, "date-locale.json"), recorded)
 
@@ -151,17 +201,28 @@ const proc = Bun.spawnSync({
 if (proc.exitCode !== 0) {
   throw new Error(`date-locale example failed (${proc.exitCode}):\n${proc.stderr.toString()}`)
 }
-const actual: Array<string> = JSON.parse(proc.stdout.toString())
+const actual: Array<unknown> = JSON.parse(proc.stdout.toString())
 if (actual.length !== cases.length) {
   throw new Error(`date-locale example answered ${actual.length} of ${cases.length} cases`)
 }
 
+// An error case (its recorded result is the caught `[name, message]`) must match exactly; only a differing value case
+// is a recorded difference.
+for (let index = 0; index < cases.length; index++) {
+  if (cases[index].error && JSON.stringify(actual[index]) !== JSON.stringify(expected[index])) {
+    throw new Error(`date-locale error case ${index} drifted:\n  reference: ${JSON.stringify(expected[index])}\n  rust:      ${JSON.stringify(actual[index])}`)
+  }
+}
 const differences = actual
-  .map((rust, index) => ({ index, reference: expected[index] as string, rust }))
-  .filter(({ reference, rust }) => reference !== rust)
+  .map((rust, index) => {
+    if (cases[index].error || typeof expected[index] !== "string") return undefined
+    return rust === expected[index] ? undefined : { index, reference: expected[index] as string, rust }
+  })
+  .filter((entry): entry is { index: number; reference: string; rust: string } => entry !== undefined)
 writeRecording(join(import.meta.dir, "date-locale.differences.json"), { differences })
 
 console.log(
   `${cases.length} cases, ${differences.length} differences` +
     (differences.length === 0 ? "" : `\n${differences.map((d) => `  ${cases[d.index].locale} ${JSON.stringify(cases[d.index].options)}:\n    ${d.reference}\n    ${d.rust}`).join("\n")}`),
 )
+

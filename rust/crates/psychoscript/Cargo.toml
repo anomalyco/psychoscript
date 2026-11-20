@@ -12,6 +12,7 @@ test262 = []
 gc-stats = []
 
 [dependencies]
+icu_calendar = { version = "2.4", default-features = false }
 icu_collator = { version = "2.4", default-features = false, features = ["compiled_data"] }
 # Locale-aware date and time formatting for `Date.prototype.toLocale*String`.
 icu_datetime = { version = "2.4", default-features = false, features = ["compiled_data"] }
@@ -19,6 +20,7 @@ icu_datetime = { version = "2.4", default-features = false, features = ["compile
 icu_locale_core = { version = "2.4", default-features = false }
 # Time zone inputs (`ZonedDateTime`, `ZoneNameTimestamp`) for `icu_datetime`.
 icu_time = { version = "2.4", default-features = false }
+writeable = "0.6"
 idna_adapter = "~1.1"
 oxc_allocator = "0.159"
 oxc_ast = "0.159"

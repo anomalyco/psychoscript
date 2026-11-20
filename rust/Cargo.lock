@@ -832,6 +832,7 @@ dependencies = [
 name = "psychoscript"
 version = "0.1.0"
 dependencies = [
+ "icu_calendar",
  "icu_collator",
  "icu_datetime",
  "icu_locale_core",
@@ -853,6 +854,7 @@ dependencies = [
  "tz-rs",
  "unicode-normalization",
  "url",
+ "writeable",
 ]
 
 [[package]]

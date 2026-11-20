@@ -73,6 +73,7 @@ jobs:
           bun conformance/host.ts
           bun conformance/boundary.ts
           bun conformance/streaming.ts
+          bun conformance/date-locale.ts
           git diff --exit-code -- conformance
           test -z "$(git status --porcelain -- conformance)"
       - name: Read the pinned test262 revision

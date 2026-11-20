@@ -1,25 +1,37 @@
 //! The runner for the `conformance/date-locale.json` matrix, shared by the generator's helper (`examples/date_locale.rs`)
 //! and the replay test (`tests/date_locale.rs`): runs each case — `new Date(instant).toLocale*(locale, options)` — and
-//! answers its string. A case's `locale` and `options` are JSON (a string, or `null` for the host default), and
-//! `method` is one of `toLocaleString`, `toLocaleDateString`, `toLocaleTimeString`.
+//! answers it as JSON. A case's `locale` and `options` are JSON (absent, `null`, or the value), and a successful case
+//! answers its string (or, for an error case, the caught `[name, message]` array), so the recorded error kinds and
+//! messages are pinned too.
 
 #![allow(dead_code)]
 
 use serde::Deserialize;
-use serde_json::Value as Json;
+use serde_json::{Value as Json, json};
 
 use psychoscript::Runtime;
+
+/// Absent (undefined) is distinct from JSON `null`, so the two serialize to a sentinel object.
+fn missing() -> Json {
+    json!({ "$$undef": true })
+}
+
+fn is_missing(value: &Json) -> bool {
+    value.as_object().is_some_and(|o| o.contains_key("$$undef"))
+}
 
 #[derive(Deserialize)]
 pub struct Case {
     pub method: String,
-    #[serde(default)]
-    pub locale: Option<String>,
-    #[serde(default)]
-    pub options: Option<Json>,
+    #[serde(default = "missing")]
+    pub locale: Json,
+    #[serde(default = "missing")]
+    pub options: Json,
     pub instant: i64,
     #[serde(default)]
-    pub expected: Option<String>,
+    pub error: bool,
+    #[serde(default)]
+    pub expected: Option<Json>,
 }
 
 #[derive(Deserialize)]
@@ -28,48 +40,55 @@ pub struct Matrix {
 }
 
 impl Case {
-    /// The program the runtime runs for this case.
+    /// The program the runtime runs for this case; an error case catches the throw and answers `[name, message]`.
     pub fn source(&self) -> String {
+        let json = |value: &Json| serde_json::to_string(value).unwrap_or_default();
         let mut args = String::new();
-        match (&self.locale, &self.options) {
-            (Some(locale), Some(options)) => {
-                args.push_str(&serde_json::to_string(locale).unwrap_or_default());
+        match (is_missing(&self.locale), is_missing(&self.options)) {
+            (false, false) => {
+                args.push_str(&json(&self.locale));
                 args.push(',');
-                args.push_str(&serde_json::to_string(options).unwrap_or_default());
+                args.push_str(&json(&self.options));
             }
-            (Some(locale), None) => {
-                args.push_str(&serde_json::to_string(locale).unwrap_or_default());
-            }
-            (None, Some(options)) => {
-                // The first argument as `undefined`, so the options stay the second argument.
+            (false, true) => args.push_str(&json(&self.locale)),
+            // The first argument as `undefined`, so the options stay the second argument.
+            (true, false) => {
                 args.push_str("undefined,");
-                args.push_str(&serde_json::to_string(options).unwrap_or_default());
+                args.push_str(&json(&self.options));
             }
-            (None, None) => {}
+            (true, true) => {}
         }
-        format!(
-            "return new Date({})[{}]({})",
+        let call = format!(
+            "new Date({})[{}]({})",
             self.instant,
             serde_json::to_string(&self.method).unwrap_or_default(),
             args,
-        )
+        );
+        if self.error {
+            format!("try {{ {call} }} catch (e) {{ return [e.name, e.message] }}")
+        } else {
+            format!("return {call}")
+        }
     }
 }
 
-/// Runs every case through one runtime and answers their strings; a diagnostic reads as its kind and message.
-pub fn run_cases(cases: &[Case]) -> Vec<String> {
-    let runtime = Runtime::make();
-    cases.iter().map(|case| run(&runtime, case)).collect()
-}
-
-fn run(runtime: &Runtime, case: &Case) -> String {
+/// Runs a case through one runtime and answers it as JSON.
+pub fn run_case(runtime: &Runtime, case: &Case) -> Json {
     let outcome = runtime.execute(&case.source());
     match outcome.result {
-        Ok(value) => value
-            .as_string()
-            .and_then(|s| s.as_str())
-            .map(str::to_owned)
-            .unwrap_or_else(|| value.to_string()),
-        Err(diagnostic) => format!("{}: {}", diagnostic.kind.name(), diagnostic.message),
+        Ok(value) => value.to_json(),
+        // A case should not throw uncaught (an error case catches its throw); keep this as a loud mismatch.
+        Err(diagnostic) => json!({
+            "error": {
+                "kind": diagnostic.kind.name(),
+                "message": diagnostic.message.as_str().unwrap_or(""),
+            }
+        }),
     }
+}
+
+/// Runs every case and answers each as JSON, in file order.
+pub fn run_cases(cases: &[Case]) -> Vec<Json> {
+    let runtime = Runtime::make();
+    cases.iter().map(|case| run_case(&runtime, case)).collect()
 }

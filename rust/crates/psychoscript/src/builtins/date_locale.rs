@@ -20,6 +20,7 @@ use icu_datetime::preferences::{CalendarAlgorithm, HijriCalendarAlgorithm, HourC
 use icu_datetime::{DateTimeFormatter, DateTimeFormatterPreferences};
 use icu_locale_core::Locale;
 use icu_time::zone::ZoneNameTimestamp;
+use writeable::TryWriteable;
 
 /// The three `toLocale*String` methods: they pick the defaults and which style conflicts are errors.
 #[derive(Clone, Copy, PartialEq)]
@@ -86,10 +87,13 @@ pub(crate) fn format(t: f64, request: &Request) -> Result<String, DateError> {
     // style below; the zone fields only matter when a time zone name is in the pattern.
     let secs = (t / 1000.0).floor().clamp(-8.64e12, 8.64e12) as i64;
     let base = ZonedDateTime::from_epoch_milliseconds_and_utc_offset(time_clip_ms(t), zone.offset);
-    let builder = resolve(request, base.date.year().extended_year())?;
     if !t.is_finite() {
         return Ok("Invalid Date".into());
     }
+    if let Some(year) = two_digit_year_alone(request, &prefs, time_clip_ms(t), zone.offset) {
+        return Ok(year);
+    }
+    let builder = resolve(request, base.date.year().extended_year())?;
     let Ok(fset) = builder.build_composite() else {
         // Every resolved request builds; Y/M/YM are promoted to a date field set below.
         return Ok("Invalid Date".into());
@@ -151,10 +155,10 @@ fn hour_cycle(options: &Options) -> Result<Option<HourCycle>, DateError> {
         (None, Some("h23")) => Some(HourCycle::H23),
         // ICU4X has no h24; its closest 24-hour cycle is h23.
         (None, Some("h24")) => Some(HourCycle::H23),
-        (None, Some(value)) => {
-            return Err(DateError::range(format!(
-                "hourCycle must be \"h11\", \"h12\", \"h23\", or \"h24\": {value}"
-            )));
+        (None, Some(_)) => {
+            return Err(DateError::range(
+                "hourCycle must be \"h11\", \"h12\", \"h23\", or \"h24\"",
+            ));
         }
     })
 }
@@ -214,8 +218,8 @@ fn three(value: Option<&str>, key: &str) -> Result<Option<Font>, DateError> {
         Some("narrow") => Ok(Some(Font::Narrow)),
         Some("short") => Ok(Some(Font::Short)),
         Some("long") => Ok(Some(Font::Long)),
-        Some(v) => Err(DateError::range(format!(
-            "{key} must be \"narrow\", \"short\", or \"long\": {v}"
+        Some(_) => Err(DateError::range(format!(
+            "{key} must be \"narrow\", \"short\", or \"long\""
         ))),
     }
 }
@@ -225,8 +229,8 @@ fn two(value: Option<&str>, key: &str) -> Result<Option<Digits>, DateError> {
         None => Ok(None),
         Some("2-digit") => Ok(Some(Digits::TwoDigit)),
         Some("numeric") => Ok(Some(Digits::Numeric)),
-        Some(v) => Err(DateError::range(format!(
-            "{key} must be \"2-digit\" or \"numeric\": {v}"
+        Some(_) => Err(DateError::range(format!(
+            "{key} must be \"2-digit\" or \"numeric\""
         ))),
     }
 }
@@ -239,9 +243,9 @@ fn month(value: Option<&str>) -> Result<Option<Month>, DateError> {
         Some("narrow") => Ok(Some(Month::Narrow)),
         Some("short") => Ok(Some(Month::Short)),
         Some("long") => Ok(Some(Month::Long)),
-        Some(v) => Err(DateError::range(format!(
-            "month must be \"2-digit\", \"numeric\", \"narrow\", \"short\", or \"long\": {v}"
-        ))),
+        Some(_) => Err(DateError::range(
+            "month must be \"2-digit\", \"numeric\", \"narrow\", \"short\", or \"long\"",
+        )),
     }
 }
 
@@ -254,9 +258,9 @@ fn zone_style(value: Option<&str>) -> Result<Option<ZoneStyle>, DateError> {
         Some("longOffset") => Ok(Some(ZoneStyle::LocalizedOffsetLong)),
         Some("shortGeneric") => Ok(Some(ZoneStyle::GenericShort)),
         Some("longGeneric") => Ok(Some(ZoneStyle::GenericLong)),
-        Some(v) => Err(DateError::range(format!(
-            "timeZoneName must be \"short\", \"long\", \"shortOffset\", \"longOffset\", \"shortGeneric\", or \"longGeneric\": {v}"
-        ))),
+        Some(_) => Err(DateError::range(
+            "timeZoneName must be \"short\", \"long\", \"shortOffset\", \"longOffset\", \"shortGeneric\", or \"longGeneric\"",
+        )),
     }
 }
 
@@ -265,9 +269,7 @@ fn fractional(value: Option<f64>) -> Result<Option<SubsecondDigits>, DateError> 
     let value = value.floor();
     // `GetNumberOption` floors and requires 1..=3.
     if !(1.0..=3.0).contains(&value) {
-        return Err(DateError::range(
-            "fractionalSecondDigits is out of range: value must be 1, 2, or 3",
-        ));
+        return Err(DateError::range("fractionalSecondDigits is out of range"));
     }
     Ok(Some(match value as u8 {
         1 => SubsecondDigits::S1,
@@ -372,8 +374,8 @@ fn resolve_styles(request: &Request) -> Result<Option<FieldSetBuilder>, DateErro
 fn style<'a>(value: Option<&'a str>, key: &str) -> Result<Option<&'a str>, DateError> {
     match value {
         None | Some("full") | Some("long") | Some("medium") | Some("short") => Ok(value),
-        Some(v) => Err(DateError::range(format!(
-            "{key} must be \"full\", \"long\", \"medium\", or \"short\": {v}"
+        Some(_) => Err(DateError::range(format!(
+            "{key} must be \"full\", \"long\", \"medium\", or \"short\""
         ))),
     }
 }
@@ -601,4 +603,58 @@ fn formatter(
         let en_us = Locale::try_from_str("en-US").ok()?;
         DateTimeFormatter::try_new(DateTimeFormatterPreferences::from(en_us), fset).ok()
     })
+}
+
+/// `{ year: "2-digit" }` on its own: the reference always prints two digits, but ICU4X's field sets render the year
+/// alone in full, so format the invariant `yy` pattern directly, with the Gregorian calendar and the locale's digits.
+#[allow(deprecated)] // `CalendarPreferences::resolved_algorithm` has no replacement yet.
+fn two_digit_year_alone(
+    request: &Request,
+    prefs: &DateTimeFormatterPreferences,
+    ms: i64,
+    offset: UtcOffset,
+) -> Option<String> {
+    use icu_calendar::Gregorian;
+    use icu_datetime::pattern::{DateTimePattern, FixedCalendarDateTimeNames};
+    let o = &request.options;
+    if request.kind == Kind::Time
+        || o.year.as_deref() != Some("2-digit")
+        || o.era.is_some()
+        || o.month.is_some()
+        || o.day.is_some()
+        || o.weekday.is_some()
+        || o.day_period.is_some()
+        || o.hour.is_some()
+        || o.minute.is_some()
+        || o.second.is_some()
+        || o.fractional_second_digits.is_some()
+        || o.time_zone_name.is_some()
+        || o.date_style.is_some()
+        || o.time_style.is_some()
+    {
+        return None;
+    }
+    use icu_calendar::preferences::CalendarPreferences;
+    let calendar = CalendarPreferences::from(prefs).resolved_algorithm();
+    if !matches!(
+        calendar,
+        CalendarAlgorithm::Gregory | CalendarAlgorithm::Iso8601
+    ) {
+        return None;
+    }
+    let mut names = FixedCalendarDateTimeNames::<Gregorian>::try_new(*prefs).ok()?;
+    let pattern = DateTimePattern::try_from_pattern_str("yy").ok()?;
+    let formatter = names.include_for_pattern(&pattern).ok()?;
+    let base = ZonedDateTime::from_epoch_milliseconds_and_utc_offset(ms, offset);
+    let input = icu_datetime::input::DateTime {
+        date: base.date.to_calendar(Gregorian),
+        time: base.time,
+    };
+    Some(
+        formatter
+            .format(&input)
+            .try_write_to_string()
+            .ok()?
+            .into_owned(),
+    )
 }
