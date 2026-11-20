@@ -64,12 +64,12 @@ its own until it returns or is stopped. Beside its input function it gets `__hos
   the program's call: hand them to the UI thread and return. `onExit(LiveExit)` runs once on the run's thread:
   `Finished(resultJson)`, `Failed(error)` (`SliceBudget`, `Runtime`, ...), or `Stopped`.
 - `LiveOptions(sliceBudgetMs = 50, maxPostsPerSecond = 240, httpsHosts = nil)`.
-  - **Slice budget:** a run computing past the budget without waiting on `receive`, `sleep` or `fetch` is stopped with
-    `SliceBudget`. The language can't time-slice a VM, so the crate has psychoscript's suspender stop the run at its next
-    step boundary (that works inside tight loops), from a timer that checks each stretch of compute. A stretch counts
-    from when one of those calls resolves (or the run starts) until the program next waits on one that's pending.
-    Compute that follows such a wait in the same turn (`__host.sleep(1000); await null; while (true) {}`) isn't
-    counted.
+  - **Slice budget:** a run computing past the budget without waiting is stopped with `SliceBudget`. Only the VM's
+    compute counts, not the time it waits on pending host calls (several at once included). The language can't
+    time-slice a VM, so the crate has psychoscript's suspender stop the run at its next step, which works inside tight
+    loops. A timer checks each stretch of compute; past the budget it probes the run by waking its pending host calls,
+    which the VM polls as soon as it waits and can't while it computes. An unanswered probe (30 ms grace) means the run
+    is still computing.
   - **Posts:** past the limit in one second they're dropped, with one `onWarning` per second.
   - **Heap:** psychoscript has no heap cap today, so a run's heap isn't bounded beyond its time budget.
 - `deliver(json)`, `pause()`, `resume()`, `snapshot()`, `stop()`, `isRunning()`;

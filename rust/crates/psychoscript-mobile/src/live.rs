@@ -271,6 +271,33 @@ struct Clock {
     paused: Option<(Instant, f64)>,
 }
 
+/// The VM's stretches of compute. Host calls tell when the VM computes: a sync call, or an async one's first poll,
+/// happens inside the VM's run; a later poll happens while the VM is stopped between runs, and one that resolves
+/// starts a stretch. That a stretch has ended (the VM waits) is confirmed by a probe: the budget check wakes the
+/// program's pending host calls, which the VM polls as soon as it stops, and can't while it computes.
+struct Slice {
+    busy: bool,
+    /// Counts stretches.
+    n: u64,
+    start: Instant,
+    /// A budget check is on the timer.
+    armed: bool,
+    /// The stretch a probe is out for.
+    probe: Option<u64>,
+}
+
+/// Where a host call's poll happens.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum At {
+    /// Its first poll, inside the VM's run: the VM is computing.
+    Inside,
+    /// A later poll, while the VM is stopped between runs.
+    Between,
+}
+
+/// How long a probed run thread has to answer: wake, and poll its pending calls.
+const PROBE_GRACE: Duration = Duration::from_millis(30);
+
 struct Posts {
     window: Instant,
     count: u32,
@@ -294,12 +321,8 @@ pub(crate) struct Control {
     posts: Mutex<Posts>,
     /// Set by `stop`: host calls interrupt the run.
     stopping: AtomicBool,
-    /// Computing rather than waiting on the host.
-    busy: AtomicBool,
-    /// When the current stretch of compute began.
-    slice_start: Mutex<Instant>,
-    /// A slice-budget check is on the timer.
-    watching: AtomicBool,
+    /// Whether the VM is computing, for the slice budget.
+    slice: Mutex<Slice>,
     why: Mutex<Why>,
     /// One suspend at a time.
     suspending: Mutex<()>,
@@ -336,9 +359,13 @@ impl Control {
                 warned: false,
             }),
             stopping: AtomicBool::new(false),
-            busy: AtomicBool::new(false),
-            slice_start: Mutex::new(now),
-            watching: AtomicBool::new(false),
+            slice: Mutex::new(Slice {
+                busy: false,
+                n: 0,
+                start: now,
+                armed: false,
+                probe: None,
+            }),
             why: Mutex::new(Why::None),
             suspending: Mutex::new(()),
         })
@@ -409,9 +436,9 @@ impl Control {
         };
         let _ = ready.send(Ok(program.suspender()));
         drop(start);
-        self.begin_slice();
+        self.computing();
         let outcome = program.run_resumable();
-        self.busy.store(false, Ordering::SeqCst);
+        lock(&self.slice).busy = false;
         let why = *lock(&self.why);
         let exit = match outcome {
             Ok(RunOutcome::Suspended(_)) => match why {
@@ -466,23 +493,29 @@ impl Control {
             let c = control.clone();
             let input = HostFunction::new(move |_args, _call| -> HostResult {
                 c.interrupted()?;
+                c.computing();
                 Ok(Input::parse(&text).unwrap_or_default())
             });
             let c = control.clone();
             let post = HostFunction::new(move |args: Vec<HostValue>, _call| -> HostResult {
                 c.interrupted()?;
+                c.computing();
                 c.post(args.first().unwrap_or(&HostValue::Undefined));
                 Ok(HostValue::Undefined)
             });
             let c = control.clone();
             let now = HostFunction::new(move |_args, _call| -> HostResult {
                 c.interrupted()?;
+                c.computing();
                 Ok(HostValue::Number(c.now_ms()))
             });
             let c = control.clone();
             let receive = HostFunction::new_async(move |_args, _call| {
                 let c = c.clone();
-                std::future::poll_fn(move |cx| c.poll_receive(cx))
+                let mut at = At::Inside;
+                std::future::poll_fn(move |cx| {
+                    c.poll_receive(cx, std::mem::replace(&mut at, At::Between))
+                })
             })
             .idempotent();
             let c = control.clone();
@@ -495,14 +528,20 @@ impl Control {
                     .unwrap_or(0.0)
                     .max(0.0);
                 let key = call.key();
-                std::future::poll_fn(move |cx| c.poll_sleep(&key, ms, cx))
+                let mut at = At::Inside;
+                std::future::poll_fn(move |cx| {
+                    c.poll_sleep(&key, ms, cx, std::mem::replace(&mut at, At::Between))
+                })
             })
             .idempotent();
             let c = control.clone();
             let fetch = HostFunction::new_async(move |args: Vec<HostValue>, _call| {
                 let slot = c.start_fetch(args.first());
                 let c = c.clone();
-                std::future::poll_fn(move |cx| c.poll_fetch(&slot, cx))
+                let mut at = At::Inside;
+                std::future::poll_fn(move |cx| {
+                    c.poll_fetch(&slot, cx, std::mem::replace(&mut at, At::Between))
+                })
             });
             let host = HostValue::object([
                 ("post", HostValue::Function(post.named("post").length(1))),
@@ -593,50 +632,99 @@ impl Control {
 
     // ---------- slices ----------
 
-    /// The program continues after waiting: a new stretch of compute, watched against the slice budget.
-    fn begin_slice(&self) {
-        let now = Instant::now();
-        *lock(&self.slice_start) = now;
-        self.busy.store(true, Ordering::SeqCst);
-        self.watch_later(now);
-    }
-
-    fn watch_later(&self, from: Instant) {
-        if !self.watching.swap(true, Ordering::SeqCst) {
-            timer::schedule(from + self.budget(), Fire::Watch(self.me.clone()));
+    /// The VM computes (a sync call, or a host call's first poll): a stretch starts unless one is going.
+    fn computing(&self) {
+        let mut slice = lock(&self.slice);
+        if !slice.busy {
+            self.start_stretch(&mut slice);
         }
     }
 
-    fn wait(&self) {
-        self.busy.store(false, Ordering::SeqCst);
+    /// A host call resolved: polled between runs, the VM computes from now.
+    fn resolved(&self, at: At) {
+        let mut slice = lock(&self.slice);
+        if at == At::Between || !slice.busy {
+            self.start_stretch(&mut slice);
+        }
+    }
+
+    /// A host call is still pending. Polled between runs in answer to a probe for the current stretch (nothing
+    /// resolved since the probe went out), it means the VM waits: the stretch is over.
+    fn pending(&self, at: At) {
+        if at == At::Inside {
+            return self.computing();
+        }
+        let mut slice = lock(&self.slice);
+        if slice.probe == Some(slice.n) {
+            slice.busy = false;
+            slice.probe = None;
+        }
+    }
+
+    fn start_stretch(&self, slice: &mut Slice) {
+        let now = Instant::now();
+        slice.n += 1;
+        slice.start = now;
+        slice.busy = true;
+        slice.probe = None;
+        if !std::mem::replace(&mut slice.armed, true) {
+            timer::schedule(now + self.budget(), Fire::Watch(self.me.clone()));
+        }
     }
 
     fn budget(&self) -> Duration {
         Duration::from_millis(self.options.slice_budget_ms.max(1))
     }
 
-    /// The timer's check: stop the run if its current stretch of compute is over budget, or check again when it
-    /// could be.
+    /// The timer's check. A stretch past its budget gets a probe (its pending host calls woken); one still going a
+    /// grace period after its probe is stopped.
     pub(crate) fn watch(&self) {
-        self.watching.store(false, Ordering::SeqCst);
-        if !self.busy.load(Ordering::SeqCst) {
+        let mut slice = lock(&self.slice);
+        slice.armed = false;
+        if !slice.busy {
             return;
         }
-        let start = *lock(&self.slice_start);
-        if start.elapsed() < self.budget() {
-            self.watch_later(start);
-            return;
+        let over = slice.start.elapsed() >= self.budget();
+        let at = match slice.probe {
+            // Unanswered: the VM is still computing.
+            Some(n) if n == slice.n && over => None,
+            _ if !over => Some(slice.start + self.budget()),
+            _ => {
+                slice.probe = Some(slice.n);
+                Some(Instant::now() + PROBE_GRACE)
+            }
+        };
+        let Some(at) = at else {
+            drop(slice);
+            return self.overrun();
+        };
+        slice.armed = true;
+        let probing = slice.probe == Some(slice.n);
+        drop(slice);
+        timer::schedule(at, Fire::Watch(self.me.clone()));
+        if probing {
+            self.wake_all();
         }
-        // Over budget: suspend the run from a thread of its own (the timer thread mustn't block on it).
+    }
+
+    /// Over budget: suspend the run from a thread of its own (the timer thread mustn't block on it).
+    fn overrun(&self) {
         let Some(control) = self.me.upgrade() else {
             return;
         };
         let _ = std::thread::Builder::new()
             .name("psychoscript-live-stop".into())
             .spawn(move || {
-                if control.busy.load(Ordering::SeqCst) && control.suspend(Why::Overrun).is_err() {
+                if lock(&control.slice).busy && control.suspend(Why::Overrun).is_err() {
                     // In a host call that can't be suspended: check again in a slice.
-                    control.watch_later(Instant::now());
+                    let mut slice = lock(&control.slice);
+                    slice.probe = None;
+                    if !std::mem::replace(&mut slice.armed, true) {
+                        timer::schedule(
+                            Instant::now() + control.budget(),
+                            Fire::Watch(control.me.clone()),
+                        );
+                    }
                 }
             });
     }
@@ -693,7 +781,7 @@ impl Control {
                     let _ = t.join();
                 }
                 *lock(&self.why) = Why::None;
-                self.busy.store(false, Ordering::SeqCst);
+                lock(&self.slice).busy = false;
                 lock(&self.inbox).waker = None;
                 for sleep in lock(&self.sleeps).values_mut() {
                     sleep.waker = None;
@@ -724,7 +812,7 @@ impl Control {
             if *why == Why::None {
                 *why = Why::Stop;
             }
-            self.busy.load(Ordering::SeqCst)
+            lock(&self.slice).busy
         };
         // A waiting program wakes to an interrupted host call; a computing one is suspended at its next step.
         self.wake_all();
@@ -765,7 +853,7 @@ impl Control {
         self.handler.on_post(json::write(message));
     }
 
-    fn poll_receive(&self, cx: &mut Context<'_>) -> Poll<HostResult> {
+    fn poll_receive(&self, cx: &mut Context<'_>, at: At) -> Poll<HostResult> {
         if self.stopping.load(Ordering::SeqCst) {
             return Poll::Ready(Err(HostValue::Interrupt));
         }
@@ -778,19 +866,19 @@ impl Control {
         } {
             Some(message) => {
                 drop(inbox);
-                self.begin_slice();
+                self.resolved(at);
                 Poll::Ready(Ok(message))
             }
             None => {
                 inbox.waker = Some(cx.waker().clone());
                 drop(inbox);
-                self.wait();
+                self.pending(at);
                 Poll::Pending
             }
         }
     }
 
-    fn poll_sleep(&self, key: &str, ms: f64, cx: &mut Context<'_>) -> Poll<HostResult> {
+    fn poll_sleep(&self, key: &str, ms: f64, cx: &mut Context<'_>, at: At) -> Poll<HostResult> {
         if self.stopping.load(Ordering::SeqCst) {
             return Poll::Ready(Err(HostValue::Interrupt));
         }
@@ -804,7 +892,7 @@ impl Control {
         if now >= sleep.deadline && !paused {
             sleeps.remove(key);
             drop(sleeps);
-            self.begin_slice();
+            self.resolved(at);
             return Poll::Ready(Ok(HostValue::Undefined));
         }
         let left = Duration::from_secs_f64(((sleep.deadline - now) / 1000.0).max(0.0));
@@ -814,7 +902,7 @@ impl Control {
         if !paused {
             timer::schedule(Instant::now() + left, Fire::Wake(cx.waker().clone()));
         }
-        self.wait();
+        self.pending(at);
         Poll::Pending
     }
 
@@ -867,7 +955,12 @@ impl Control {
         slot
     }
 
-    fn poll_fetch(&self, slot: &Mutex<fetch::Slot>, cx: &mut Context<'_>) -> Poll<HostResult> {
+    fn poll_fetch(
+        &self,
+        slot: &Mutex<fetch::Slot>,
+        cx: &mut Context<'_>,
+        at: At,
+    ) -> Poll<HostResult> {
         if self.stopping.load(Ordering::SeqCst) {
             return Poll::Ready(Err(HostValue::Interrupt));
         }
@@ -876,14 +969,14 @@ impl Control {
         match slot.result.take() {
             Some(result) if !paused => {
                 drop(slot);
-                self.begin_slice();
+                self.resolved(at);
                 Poll::Ready(result)
             }
             held => {
                 slot.result = held;
                 slot.waker = Some(cx.waker().clone());
                 drop(slot);
-                self.wait();
+                self.pending(at);
                 Poll::Pending
             }
         }
