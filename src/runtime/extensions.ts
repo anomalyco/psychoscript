@@ -1,4 +1,4 @@
-import { DurableFn, Fn, HostWork, Namespace, type Snapshot } from "./contract.js"
+import { DurableFn, Fn, HostWork, Namespace, promiseControllers, type Snapshot } from "./contract.js"
 import type { HostTarget } from "../host.js"
 import { BufferObj } from "../stdlib/buffer.js"
 import { StreamingResponse } from "../streaming-response.js"
@@ -65,7 +65,6 @@ type Within = {
  * Promise or `HostWork` becomes a program promise.
  */
 // A synchronous call's signal: its pending work, if any, runs later under the driver's own.
-const NEVER = new AbortController().signal
 
 const setterOnly = (slot: Slot): boolean => !("value" in slot) && slot.get === undefined
 
@@ -420,13 +419,24 @@ export const hostGlobals = <R>(
     isPending: (value) => value instanceof Promise || value instanceof HostWork,
     invoke: (fn, args, key, label) => {
       let result: unknown
+      let controller: AbortController | undefined
       try {
-        result = fn.run(args, { key, suspending: () => false, signal: NEVER, context: undefined })
+        result = fn.run(args, {
+          key,
+          suspending: () => false,
+          get signal() {
+            return (controller ??= new AbortController()).signal
+          },
+          context: undefined,
+        })
       } catch (reason) {
         throw failure(reason, label)
       }
       if (result instanceof HostWork) return { kind: "block", work: result }
-      if (result instanceof Promise) return { kind: "pending", work: result }
+      if (result instanceof Promise) {
+        promiseControllers.set(result, () => controller)
+        return { kind: "pending", work: result }
+      }
       return { kind: "value", value: result }
     },
     resolve: (path) => {

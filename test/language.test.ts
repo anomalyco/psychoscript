@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Fiber } from "effect"
-import { Host, Runtime, toBytes } from "../src/index.js"
+import { Host, Runtime, toBytes } from "../src/effect/index.js"
 
 // The language layer on its own: host functions, namespaces, failures, and per-run state, with nothing else.
 

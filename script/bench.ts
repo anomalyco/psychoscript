@@ -5,7 +5,7 @@
 
 import { numberOfDFGCompiles, reoptimizationRetryCount } from "bun:jsc"
 import { Effect } from "effect"
-import { Host, Runtime } from "../src/index.js"
+import { Host, Runtime } from "../src/effect/index.js"
 import { Vm } from "../src/vm.js"
 
 const cases: ReadonlyArray<readonly [name: string, code: string]> = [

@@ -1,5 +1,5 @@
 import type { Json } from "../data.js"
-import { DurableFn, type Fn, HostDefect, HostWork, Interrupted, type Settled } from "./contract.js"
+import { DurableFn, type Fn, HostDefect, HostWork, Interrupted, promiseControllers, type Settled } from "./contract.js"
 import type { HostCall } from "../scheduler.js"
 import { locate } from "./errors.js"
 import { HostFailure, PendingThrow } from "./model.js"
@@ -299,6 +299,8 @@ class CallContext {
 // stop it and when it ends, which stopping the run waits for.
 class Pending {
   controller: AbortController | undefined
+  // The controller of a call the VM made itself, whose Promise this entry settles.
+  made: (() => AbortController | undefined) | undefined
   stop: (() => void) | void = undefined
   done: Promise<void> | undefined
   get signal(): AbortSignal {
@@ -306,6 +308,7 @@ class Pending {
   }
   abort(): void {
     this.controller?.abort()
+    this.made?.()?.abort()
     this.stop?.()
   }
 }
@@ -324,6 +327,7 @@ const settle = (result: unknown, entry: Pending, context: unknown, finish: (sett
     return
   }
   if (result instanceof Promise) {
+    entry.made = promiseControllers.get(result)
     result.then(
       (value) => finish({ ok: true, value }),
       (error) => finish({ ok: false, error }),

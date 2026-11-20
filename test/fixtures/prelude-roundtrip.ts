@@ -1,7 +1,7 @@
 // Runs prelude built-ins in the round-trip mode and prints the result and how many round trips were taken while a
 // prelude frame was on the stack.
 import { Effect } from "effect"
-import { Runtime } from "../../src/index.js"
+import { Runtime } from "../../src/effect/index.js"
 import { CodeFlags } from "../../src/opcodes.js"
 import { setRoundTrip } from "../../src/runtime/execute.js"
 import { Vm } from "../../src/vm.js"

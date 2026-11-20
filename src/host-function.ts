@@ -1,27 +1,20 @@
 export * as Host from "./host-function.js"
 
-import { Cause, Context, Effect, Exit } from "effect"
 import type { Json } from "./data.js"
-import {
-  type Call,
-  DurableFn,
-  type DurableCall,
-  Fn,
-  HostDefect,
-  HostWork,
-  Interrupted,
-  Namespace,
-  type Snapshot,
-  type Type,
-} from "./runtime/contract.js"
+import { type Call as RunCall, DurableFn, Fn, Namespace, type Snapshot, type Type } from "./runtime/contract.js"
 import { HostFailure } from "./runtime/model.js"
 
 // Host functions a program calls as globals. Arguments cross into the host as copies (`Date`, `Map`, `Set`,
 // `Uint8Array`, `URL`, `Headers`, errors, plain data), and results cross back the same way; a function inside a
-// result is callable too. A host function may return a value, a Promise, or an Effect, and an Effect's requirements
-// join the runtime's environment. An Effect runs as `HostWork` with the services the run was started with.
+// result is callable too. A host function returns a value or a Promise, or throws.
 
-export type { Call, DurableCall, Snapshot, Type }
+/** What every call of a host function gets. */
+export type Call = Omit<RunCall, "context">
+
+/** What every call of a durable function gets: also the arguments it was called with, as they crossed. */
+export type DurableCall = Call & { readonly args: ReadonlyArray<unknown> }
+
+export type { Snapshot, Type }
 export { DurableFn, Fn, Namespace }
 
 export type Options =
@@ -44,8 +37,8 @@ export type Options =
   | {
       readonly type: "async"
       /**
-       * Safe to run twice: a suspend interrupts a call in progress, and the resumed run calls it again with the same
-       * key. Without it, a suspend fails while a call is in progress.
+       * Safe to run twice: a suspend aborts a call in progress, and the resumed run calls it again with the same key.
+       * Without it, a suspend fails while a call is in progress.
        */
       readonly idempotent?: boolean
       readonly snapshot?: Snapshot | undefined
@@ -55,18 +48,10 @@ export type Options =
 
 export { HostFailure as Failure }
 
-type Requirements<A> = A extends Effect.Effect<infer _A, infer _E, infer R> ? R : never
-
-/** A host function: `f` gets the program's arguments, as they crossed, and the call. */
-export const fn = <F extends (args: ReadonlyArray<any>, call: Call) => unknown>(
-  f: F,
-  options: Options = {},
-): Fn<Requirements<ReturnType<F>>> =>
+/** A host function: `f` gets the program's arguments, as they crossed, and the call, and returns a value or a Promise. */
+export const fn = (f: (args: ReadonlyArray<any>, call: Call) => unknown, options: Options = {}): Fn =>
   new Fn(
-    (args, call) => {
-      const result = f(args, call)
-      return Effect.isEffect(result) ? work(result) : result
-    },
+    f,
     options.type ?? "sync",
     options.type === "async" && options.idempotent === true,
     options.snapshot,
@@ -77,17 +62,17 @@ export const fn = <F extends (args: ReadonlyArray<any>, call: Call) => unknown>(
 /**
  * A host function whose work keeps running across a suspend. `start` begins it and gives JSON data, kept in a saved
  * run; `wait(data)` runs right after, and again after a resume, for the result. `cancel(data)` runs only when the run
- * is interrupted, or ends with the work still running. The program always gets a promise.
+ * is aborted, or ends with the work still running. The program always gets a promise.
  */
-export const durableFn = <Data extends Json, R = never>(options: {
-  readonly start: (args: ReadonlyArray<any>, call: Call) => Effect.Effect<Data, unknown, R>
-  readonly wait: (data: Data, call: DurableCall) => Effect.Effect<unknown, unknown, R>
-  readonly cancel: (data: Data, call: DurableCall) => Effect.Effect<void, unknown, R>
-}): DurableFn<R> =>
-  new DurableFn<R>(
-    (args, call) => work(Effect.suspend(() => options.start(args, call))),
-    (data, call) => work(Effect.suspend(() => options.wait(data as Data, call))),
-    (data, call) => work(Effect.suspend(() => options.cancel(data as Data, call))),
+export const durableFn = <Data extends Json>(options: {
+  readonly start: (args: ReadonlyArray<any>, call: Call) => Data | Promise<Data>
+  readonly wait: (data: Data, call: DurableCall) => unknown
+  readonly cancel: (data: Data, call: DurableCall) => void | Promise<void>
+}): DurableFn =>
+  new DurableFn(
+    (args, call) => options.start(args, call),
+    (data, call) => options.wait(data as Data, call),
+    (data, call) => options.cancel(data as Data, call),
   )
 
 /**
@@ -95,40 +80,15 @@ export const durableFn = <Data extends Json, R = never>(options: {
  * path, for `Object.keys` and `for...in`; `resolve(path)` gives the function a call reaches, or a failure (see
  * `missing`) the call throws. Any path can be read, so `ns.a.b` is a path whether or not anything is there.
  */
-export const namespace = <R = never>(options: {
+export const namespace = (options: {
   readonly keys: (path: ReadonlyArray<string>) => ReadonlyArray<string>
-  readonly resolve: (path: ReadonlyArray<string>) => Fn<R> | DurableFn<R> | HostFailure
-}): Namespace<R> => new Namespace(options.keys, options.resolve)
+  readonly resolve: (path: ReadonlyArray<string>) => Fn | DurableFn | HostFailure
+}): Namespace => new Namespace(options.keys, options.resolve)
 
-/** A failure with its own diagnostic `kind` and `suggestions`, to throw or fail with from a host function. */
+/** A failure with its own diagnostic `kind` and `suggestions`, to throw from a host function. */
 export const fail = (kind: string, message: string, suggestions?: ReadonlyArray<string>): HostFailure =>
   new HostFailure(kind, message, suggestions)
 
 /** What `resolve` gives for a path with no function: calling it throws this failure. */
 export const missing = (message: string, suggestions?: ReadonlyArray<string>, kind = "ExecutionFailure"): HostFailure =>
   new HostFailure(kind, message, suggestions)
-
-// An Effect as host work: it runs with the run's services when the driver starts it, an abort interrupts it, and its
-// exit settles the call. An interruption stays one, and a defect gets the call's location.
-const work = (effect: Effect.Effect<unknown, unknown, unknown>): HostWork =>
-  new HostWork((context, done) => {
-    const fiber = Effect.runForkWith((context ?? emptyServices) as Context.Context<unknown>)(effect)
-    fiber.addObserver((exit) => {
-      if (Exit.isSuccess(exit)) {
-        const value = exit.value
-        return done({ ok: true, value: Effect.isEffect(value) ? work(value) : value })
-      }
-      const cause = exit.cause
-      done({
-        ok: false,
-        error: Cause.hasInterruptsOnly(cause)
-          ? new Interrupted()
-          : Cause.hasDies(cause)
-            ? new HostDefect(Cause.squash(cause))
-            : Cause.squash(cause),
-      })
-    })
-    return () => fiber.interruptUnsafe()
-  })
-
-const emptyServices = Context.empty()

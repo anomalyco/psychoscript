@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Fiber } from "effect"
-import { Host, Runtime, toBytes } from "../src/index.js"
+import { Host, Runtime, toBytes } from "../src/effect/index.js"
 import { parking } from "../src/runtime/driver.js"
 import { runProgram } from "./run.js"
 

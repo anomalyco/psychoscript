@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Cause, Deferred, Effect, Exit, Fiber } from "effect"
-import { Host, Runtime } from "../src/index.js"
+import { Host, Runtime } from "../src/effect/index.js"
 import { MAX_ARRAY_LENGTH, MAX_PENDING_PROMISES, MAX_STRING_LENGTH } from "../src/runtime/limits.js"
 
 const runtime = Runtime.make()

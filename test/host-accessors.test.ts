@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
-import { Host, Runtime } from "../src/index.js"
+import { Host, Runtime } from "../src/effect/index.js"
 
 // Program getters crossing to the host: they run (once per receiver and key) before the host function does, their
 // values cross as data, and setter-only properties are left out.

@@ -1,8 +1,6 @@
 export * as Runtime from "./runtime.js"
 
-import { type Context, Effect } from "effect"
-import type { Json } from "./data.js"
-import { type DurableFn, type Fn, Interrupted, type Namespace } from "./runtime/contract.js"
+import { Interrupted } from "./runtime/contract.js"
 import {
   checkMaxBytes,
   finishExecution,
@@ -11,193 +9,83 @@ import {
   type Result,
   resumeProgram,
   type Run,
-  type Setup,
   startProgram,
   SuspendError,
   type Suspended,
 } from "./runtime/execute.js"
-import { SnapshotError } from "./snapshot/snapshot.js"
+import { type Globals, makeSetup, type Options, type ProgramOptions, type SuspendOptions } from "./runtime/options.js"
 
 export { SuspendError }
 export type { Outcome, Result, Run, Suspended }
+export type { Globals, Limits, Options, ProgramOptions, SuspendOptions, Translate } from "./runtime/options.js"
 
-/** Budgets enforced on each run. Time counts active time only, across every resume of a run. */
-export type Limits = {
-  /** Wall-clock milliseconds before interruption. No default: absent means no timeout. */
-  readonly timeoutMs?: number
-  /**
-   * Maximum UTF-8 bytes retained from the result and logs. Warnings have a separate equal budget; truncation notices
-   * are additional.
-   */
-  readonly maxOutputBytes?: number
+/** How one run is stopped: aborting `signal` makes it reject with an `AbortError`. */
+export type RunOptions = {
+  readonly signal?: AbortSignal | undefined
 }
 
-/**
- * How a host call's arguments carry program values the host can't hold. Every host function in the runtime gets its
- * arguments this way; results are not affected.
- */
-export type Translate = {
-  /**
-   * A program function inside an argument: `"error"` (the default) fails the call; `"drop"` leaves it out, as
-   * `JSON.stringify` does: an object's key is left out, an array's item is `null`, and an argument is `undefined`.
-   */
-  readonly functions?: "error" | "drop" | undefined
-  /**
-   * A program promise inside an argument: `"error"` (the default) fails the call; `"await"` makes the call wait for it
-   * to settle and use its value. A rejection fails the call with its reason.
-   */
-  readonly promises?: "error" | "await" | undefined
-}
-
-/** A runtime's host globals for one run: `Host.fn`, `Host.durableFn`, `Host.namespace`, and plain values of them. */
-export type Globals = Readonly<Record<string, unknown>>
-
-/** How `Runtime.make` sets up a runtime: its host globals, module aliases, limits, and argument translation. */
-export type Options<G extends Globals = Globals> = {
-  /**
-   * The globals a program reaches, made for each run when it starts and again when it resumes, so they can keep the
-   * run's own state in `run.metadata`.
-   */
-  readonly globals?: ((run: Run) => G) | undefined
-  /** Module names that load a global, beyond its own name: `{ bun: "Bun" }` makes `import "bun"` load `Bun`. */
-  readonly modules?: Readonly<Record<string, string>> | undefined
-  /** Budgets every run gets; none by default. */
-  readonly limits?: Limits | undefined
-  /** How host calls receive program functions and promises inside arguments; both fail the call by default. */
-  readonly translate?: Translate | undefined
-}
-
-/** Options for `Runtime.program`. */
-export type ProgramOptions = {
-  /** Read-only JSON values bound in the program's outer scope (shadowable by top-level declarations). */
-  readonly bindings?: Readonly<Record<string, Json>> | undefined
-  /** Names this run's host calls (`<runId>:<callId>`); a random UUID by default. */
-  readonly runId?: string | undefined
-}
-
-/** How `program.suspend` saves a run's state. */
-export type SuspendOptions = {
-  /** The most bytes a saved state may take; a larger one fails the suspend, and the run goes on. */
-  readonly maxBytes?: number
-}
+/** Options for `Runtime.execute`. */
+export type ExecuteOptions = ProgramOptions & RunOptions
 
 /** A reusable confined runtime over host globals. */
-export type Runtime<R = never> = {
-  /** Runs a program to its end. */
-  readonly execute: (code: string, options?: ProgramOptions) => Effect.Effect<Result, never, R>
+export type Runtime = {
+  /** Runs a program to its end. Rejects with an `AbortError` when `options.signal` aborts. */
+  readonly execute: (code: string, options?: ExecuteOptions) => Promise<Result>
   /** A program ready to run once; nothing runs until `program.run()`. */
-  readonly program: (code: string, options?: ProgramOptions) => Program<R>
+  readonly program: (code: string, options?: ProgramOptions) => Program
   /**
    * A suspended run (its `state`, or that state as bytes) as a program to continue in this runtime, which must be the
-   * same build with the same host globals. The state is checked when it runs: `run()` fails with a `SnapshotError`
+   * same build with the same host globals. The state is checked when it runs: `run()` rejects with a `SnapshotError`
    * when it can't be resumed here.
    */
-  readonly resume: (state: Suspended["state"] | Uint8Array) => Program<R, SnapshotError>
+  readonly resume: (state: Suspended["state"] | Uint8Array) => Program
 }
 
 /**
- * One run of a program. `run()` runs it in the current fiber until it ends or is suspended, and owns its host calls:
- * interrupting `run()` interrupts them. A program runs once: running it again is a defect.
+ * One run of a program. Aborting `run`'s signal stops it and its host calls, and it rejects with an `AbortError`;
+ * host work that ignores its call's signal is not waited for. A program runs once: running it again throws.
  */
-export type Program<R = never, E = never> = {
+export type Program = {
   /** Runs the program until it ends (a `Result`) or is suspended (a `Suspended` with its state). */
-  readonly run: () => Effect.Effect<Outcome, E, R>
+  readonly run: (options?: RunOptions) => Promise<Outcome>
   /**
-   * Saves the run's state and stops it, at once, from another fiber: `run()` then returns the same `Suspended`, and so
-   * does this. It fails with a `SuspendError`, leaving the run running, while a host call that can't be suspended is
-   * in progress, or when the state can't be saved or is over `options.maxBytes`. A run that already ended gives its
-   * result. Before `run()` starts, this waits for it to start.
+   * Saves the run's state and stops it, at once: `run()` then resolves with the same `Suspended`, and so does this. It
+   * rejects with a `SuspendError`, leaving the run running, while a host call that can't be suspended is in progress,
+   * or when the state can't be saved or is over `options.maxBytes`. A run that already ended gives its result. Before
+   * `run()` starts, this waits for it to start.
    */
-  readonly suspend: (options?: SuspendOptions) => Effect.Effect<Outcome, SuspendError>
+  readonly suspend: (options?: SuspendOptions) => Promise<Outcome>
 }
-
-/** The Effect environment the host functions among `G` need, at any depth. */
-export type Services<G> = ServicesOf<G, []>
-
-type ServicesOf<T, Depth extends ReadonlyArray<unknown>> = Depth["length"] extends 8
-  ? never
-  : T extends Fn<infer R> | DurableFn<infer R> | Namespace<infer R>
-    ? R
-    : T extends object
-      ? ServicesOf<T[keyof T], [...Depth, unknown]>
-      : never
 
 /**
  * Creates a runtime whose programs reach the host globals `options.globals` makes for each run. Throws a `RangeError`
  * for invalid limits.
  */
-export const make = <const G extends Globals = {}>(options: Options<G> = {}): Runtime<Services<G>> => {
-  type R = Services<G>
-  const setup: Setup<R> = {
-    limits: {
-      timeoutMs: validateLimit("timeoutMs", options.limits?.timeoutMs, 1),
-      maxOutputBytes: validateLimit("maxOutputBytes", options.limits?.maxOutputBytes, 0),
-    },
-    globals: options.globals,
-    modules: options.modules,
-    translate: {
-      functions: options.translate?.functions ?? "error",
-      promises: options.translate?.promises ?? "error",
-    },
-  }
-  const program = (code: string, programOptions?: ProgramOptions): Program<R> =>
-    wrap(makeProgram(() => startProgram(setup, code, programOptions?.bindings, programOptions?.runId)))
+export const make = <const G extends Globals = {}>(options: Options<G> = {}): Runtime => {
+  const setup = makeSetup<never>(options)
+  const start = (code: string, programOptions?: ProgramOptions) =>
+    makeProgram(() => startProgram(setup, code, programOptions?.bindings, programOptions?.runId))
   return {
-    execute: (code, programOptions) =>
-      Effect.flatMap(Effect.context<R>(), (services) =>
-        fromPromise((signal) =>
-          finishExecution(
-            makeProgram(() => startProgram(setup, code, programOptions?.bindings, programOptions?.runId)).run({
-              signal,
-              context: services,
-            }),
-          ),
-        ),
-      ) as Effect.Effect<Result, never, R>,
-    program,
-    resume: (state) => wrap(makeProgram(() => resumeProgram(setup, state))) as Program<R, SnapshotError>,
+    execute: (code, executeOptions) =>
+      aborting(finishExecution(start(code, executeOptions).run({ signal: executeOptions?.signal })), executeOptions?.signal),
+    program: (code, programOptions) => wrap(start(code, programOptions)),
+    resume: (state) => wrap(makeProgram(() => resumeProgram(setup, state))),
   }
 }
 
-const validateLimit = (name: string, value: number | undefined, minimum: number): number | undefined => {
-  if (value !== undefined && (!Number.isSafeInteger(value) || value < minimum)) {
-    throw new RangeError(`${name} must be a safe integer greater than or equal to ${minimum}.`)
-  }
-  return value
-}
-
-// The Effect API over a program's Promise one: `run` gives host calls the caller's services, and interrupting it
-// aborts the run.
-const wrap = <R>(program: ReturnType<typeof makeProgram<R>>): Program<R, never> => ({
-  run: () =>
-    Effect.flatMap(Effect.context<R>(), (services: Context.Context<R>) =>
-      fromPromise((signal) => program.run({ signal, context: services })),
-    ),
-  suspend: (options) => {
-    const maxBytes = options?.maxBytes
-    checkMaxBytes(maxBytes)
-    return fromPromise(() => program.suspend(maxBytes)) as Effect.Effect<Outcome, SuspendError>
+const wrap = (program: ReturnType<typeof makeProgram<never>>): Program => ({
+  run: (runOptions) => aborting(program.run({ signal: runOptions?.signal }), runOptions?.signal),
+  suspend: async (suspendOptions) => {
+    checkMaxBytes(suspendOptions?.maxBytes)
+    return program.suspend(suspendOptions?.maxBytes)
   },
 })
 
-// A Promise as an Effect: `Interrupted` interrupts, a `SuspendError` or `SnapshotError` fails, and anything else is a
-// defect. Interrupting the Effect aborts the signal and waits for the Promise to settle.
-const fromPromise = <A>(start: (signal: AbortSignal) => Promise<A>): Effect.Effect<A> =>
-  Effect.callback<A>((resume) => {
-    const controller = new AbortController()
-    const settled = start(controller.signal).then(
-      (value) => resume(Effect.succeed(value)),
-      (error: unknown) =>
-        resume(
-          error instanceof Interrupted
-            ? Effect.interrupt
-            : error instanceof SuspendError || error instanceof SnapshotError
-              ? (Effect.fail(error) as unknown as Effect.Effect<A>)
-              : Effect.die(error),
-        ),
-    )
-    return Effect.promise(() => {
-      controller.abort()
-      return settled
-    })
+// An aborted run rejects with a DOMException named "AbortError", as `fetch` does; its cause is the signal's reason.
+const aborting = <A>(promise: Promise<A>, signal: AbortSignal | undefined): Promise<A> =>
+  promise.catch((error: unknown) => {
+    if (!(error instanceof Interrupted)) throw error
+    const abort = new DOMException("The run was aborted.", "AbortError")
+    if (signal?.reason !== undefined) Object.defineProperty(abort, "cause", { value: signal.reason, configurable: true })
+    throw abort
   })

@@ -50,6 +50,12 @@ export class HostWork {
   constructor(readonly start: (context: unknown, done: (settled: Settled) => void) => (() => void) | void) {}
 }
 
+/**
+ * The abort controller of the call that returned a Promise, for calls the VM makes before the driver adopts their work:
+ * the driver aborts it when it stops the call.
+ */
+export const promiseControllers = new WeakMap<Promise<unknown>, () => AbortController | undefined>()
+
 /** A host failure that is a defect, not a failure the host meant: it gets the call's source location. */
 export class HostDefect {
   constructor(readonly error: unknown) {}

@@ -2,7 +2,7 @@
 // test/accessors-suspend.test.ts: `slow` answers `n * 2`, `pick` its argument, `keep` nothing; promises in arguments are
 // awaited.
 import { Effect } from "effect"
-import { Host, Runtime } from "../../src/index.js"
+import { Host, Runtime } from "../../src/effect/index.js"
 
 const runtime = Runtime.make({
   translate: { promises: "await" },
