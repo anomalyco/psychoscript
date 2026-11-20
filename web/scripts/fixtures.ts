@@ -126,13 +126,14 @@ const DEMO = {
   "keys-demo": {
     mode: "step",
     data: { title: "Keyboard and mouse" },
-    source: `function init() { return { capture: false, focus: false, captured: false, last: "-", keys: 0, moved: 0, buttons: 0 } }
+    source: `function init() { return { capture: false, focus: false, captured: false, last: "-", keys: 0, moved: 0, buttons: 0, hover: 0 } }
 function view(state, data) {
   return ui.column({ gap: 1, capture: state.capture ? "pointer" : undefined }, [
     ui.text(data.title, { style: "title" }),
     ui.canvas({ id: "pad", height: 110 }),
     ui.text("focus " + state.focus + " · captured " + state.captured, { style: "code" }),
     ui.text("last " + state.last + " · keys " + state.keys + " · moved " + state.moved + " · buttons " + state.buttons, { style: "code" }),
+    ui.text("hover " + state.hover, { style: "code" }),
     ui.row({ gap: 1 }, [ui.button("capture", state.capture ? "Stop asking for the mouse" : "Ask for the mouse")]),
   ])
 }
@@ -140,6 +141,7 @@ function update(state, event) {
   if (event.type === "focus") return { ...state, focus: event.value }
   if (event.type === "capture") return { ...state, captured: event.value }
   if (event.type === "key") return { ...state, last: event.value.kind + " " + event.value.key, keys: state.keys + 1 }
+  if (event.type === "pointer" && event.value.kind === "move" && event.value.down === false) return { ...state, hover: state.hover + 1 }
   if (event.type === "pointer" && event.value.dx !== undefined) return { ...state, moved: state.moved + Math.abs(event.value.dx) + Math.abs(event.value.dy) }
   if (event.type === "pointer" && event.value.button !== undefined) return { ...state, buttons: state.buttons + 1 }
   if (event.id === "capture") return { ...state, capture: !state.capture }
@@ -206,18 +208,20 @@ function draw(state, data, frame) {
 }\`
 
 async function main(data) {
-  const s = { down: 0, move: 0, up: 0, x: 0.5, y: 0.5, pressed: 0, frames: 0 }
+  const s = { down: 0, move: 0, up: 0, hover: 0, x: 0.5, y: 0.5, pressed: 0, frames: 0 }
   while (true) {
     widget.render(ui.column({ gap: 1 }, [
       ui.text(data.title, { style: "title" }),
       ui.shader(WGSL, { id: "orb", height: 160, fps: 0, values: [widget.now() / 1000, s.x, s.y, s.pressed], alt: "A glowing orb that follows the pointer" }),
-      ui.text("frames " + s.frames + " · down " + s.down + " · move " + s.move + " · up " + s.up, { style: "caption", tone: "muted" }),
+      ui.text("frames " + s.frames + " · down " + s.down + " · move " + s.move + " · up " + s.up + " · hover " + s.hover, { style: "caption", tone: "muted" }),
     ]))
     const next = await widget.next({ frame: true })
     if (next.type === "frame") s.frames++
     if (next.type === "event" && next.event.type === "pointer") {
       const v = next.event.value
-      s[v.kind]++
+      // Hover moves (no button held) light the orb dimly; drags count as moves.
+      if (v.kind === "move" && v.down === false) s.hover++
+      else s[v.kind]++
       s.x = v.x / v.width
       s.y = v.y / v.height
       s.pressed = v.kind === "up" ? 0 : 1

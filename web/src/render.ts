@@ -674,11 +674,14 @@ abstract class SurfaceBase {
   }
 
   /** A `pointer` event for a surface with an `id` (canvas and shader alike). */
-  private send(kind: "down" | "move" | "up", e: PointerEvent) {
+  private send(kind: "down" | "move" | "up", e: PointerEvent, down?: boolean) {
     const id = this.id
     if (id === null || this.ctx.readOnly()) return
     const p = this.local(e)
-    this.ctx.emit({ id, type: "pointer", value: { kind, x: p.x, y: p.y, width: this.width, height: this.height } })
+    const value: Record<string, unknown> = { kind, x: p.x, y: p.y, width: this.width, height: this.height }
+    // Moves say whether a button is held: hover moves (desktop and web) have `down: false`.
+    if (kind === "move") value.down = down ?? true
+    this.ctx.emit({ id, type: "pointer", value })
   }
 
   /** Tracks the pointer for frames and uniforms; sends `down` and `up` at once, `move` only while down, at most once a frame. */
@@ -694,13 +697,14 @@ abstract class SurfaceBase {
     c.addEventListener("pointermove", (e) => {
       const down = this.pointer?.down === true
       this.pointer = { ...this.local(e), down }
-      if (down) this.moved = e
+      // Drags, and on desktop and web hovers (touch has none): the latest of each frame is sent.
+      if (down || e.pointerType !== "touch") this.moved = e
       this.pointerChanged(!down)
     })
     const up = (e: PointerEvent) => {
       if (this.pointer?.down !== true) return
       if (this.moved) {
-        this.send("move", this.moved)
+        this.send("move", this.moved, true)
         this.moved = undefined
       }
       this.pointer = { ...this.local(e), down: false }
@@ -712,6 +716,7 @@ abstract class SurfaceBase {
     c.addEventListener("pointerleave", () => {
       if (this.pointer && !this.pointer.down) {
         this.pointer = null
+        this.moved = undefined
         this.pointerChanged(true)
       }
     })
@@ -722,7 +727,7 @@ abstract class SurfaceBase {
     const e = this.moved
     if (!e) return
     this.moved = undefined
-    this.send("move", e)
+    this.send("move", e, this.pointer?.down === true)
   }
 
   /** The pointer moved, went down or up (`hover`: only moved while up). */

@@ -297,6 +297,7 @@ for (const [query, backend] of [["?only=shader-demo", "webgpu"], ["?only=shader-
   check(same.mark === 1 && same.builds === "1", `shader (${backend}): new values reuse the element and the GPU pipeline`, same)
   const m = /down (\d+) · move (\d+) · up (\d+)/.exec(text)
   check(m !== null && m[1] === "1" && m[3] === "1" && Number(m[2]) >= 1 && Number(m[2]) <= 8, `shader (${backend}): pointer down, moves (at most one a frame) and up reach the program`, text)
+  check(/hover [1-9]/.test(text), `shader (${backend}): hover moves (down: false) before the press`, text)
   check(errors.length === 0, `shader (${backend}): no page errors`, errors)
   await page.close()
 }
@@ -442,10 +443,35 @@ for (const [query, backend] of [["?only=shader-demo", "webgpu"], ["?only=shader-
   }
   const hint = () => w.evaluate((el) => getComputedStyle(el.shadowRoot!.querySelector(".pw-hint")!).display !== "none")
   const pad = (await w.locator("canvas").boundingBox())!
+  // Hover: moves over a canvas with an id and no button held, at most one a frame.
+  for (let i = 0; i < 5; i++) {
+    await page.mouse.move(pad.x + 30 + i * 40, pad.y + pad.height / 2)
+    await page.waitForTimeout(60)
+  }
+  let t = await until(/hover [3-9]/)
+  const hovered = Number(/hover (\d+)/.exec(t)?.[1] ?? 0)
+  check(hovered >= 3 && hovered <= 5, `hover: moves with down: false reach update without a button held (${hovered} for 5 moves)`, t)
+  // 40 moves in one task (Chromium already aligns real input to frames, so send them at once).
+  await w.evaluate((el) => {
+    const c = el.shadowRoot!.querySelector("canvas")!
+    const r = c.getBoundingClientRect()
+    for (let i = 0; i < 40; i++)
+      c.dispatchEvent(new PointerEvent("pointermove", { clientX: r.left + 20 + i * 5, clientY: r.top + 30, pointerType: "mouse", bubbles: true, composed: true }))
+  })
+  await page.waitForTimeout(300)
+  const burst = Number(/hover (\d+)/.exec(await text())?.[1] ?? 0) - hovered
+  check(burst === 1, `hover: at most one a frame (${burst} sent for 40 moves in one frame)`)
   await page.mouse.click(pad.x + pad.width / 2, pad.y + pad.height / 2)
-  let t = await until(/focus true/)
+  t = await until(/focus true/)
   check(/focus true/.test(t), "keys: a click inside gives the widget keyboard focus ({ type: focus, value: true })", t)
   check((await hint()) && (await w.evaluate((el) => "focused" in el.dataset)), "keys: focus ring and the Esc-to-release hint show")
+  const hintShape = () =>
+    w.evaluate((el) => {
+      const h = el.shadowRoot!.querySelector(".pw-hint") as HTMLElement
+      return { mode: h.dataset.mode, icon: h.querySelector("svg") !== null, text: h.textContent, label: h.getAttribute("aria-label") }
+    })
+  const focusedHint = await hintShape()
+  check(focusedHint.mode === "keyboard" && focusedHint.icon && focusedHint.text === "Esc", "keys: the hint is a keyboard icon plus Esc", focusedHint)
   const scrolled = await page.evaluate(() => window.scrollY)
   await page.keyboard.press("ArrowDown")
   await page.keyboard.press("x")
@@ -477,6 +503,8 @@ for (const [query, backend] of [["?only=shader-demo", "webgpu"], ["?only=shader-
   await page.mouse.click(pad.x + pad.width / 2, pad.y + pad.height / 2)
   t = await until(/captured true/)
   check((await locked()) && /captured true/.test(t), "capture: the next click locks the pointer ({ type: capture, value: true })", t)
+  const capturedHint = await hintShape()
+  check(capturedHint.mode === "pointer" && capturedHint.icon && capturedHint.text === "Esc", "capture: the hint turns into a cursor icon plus Esc", capturedHint)
   for (let i = 1; i <= 5; i++) {
     await page.mouse.move(pad.x + pad.width / 2 + i * 12, pad.y + pad.height / 2 + i * 3)
     await page.waitForTimeout(40)

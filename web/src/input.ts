@@ -18,8 +18,11 @@ export interface InputHost {
   pointerReleased(): void
   /** The `id` for captured pointer events: the first canvas or shader with one. */
   pointerId(): string
-  /** Focus or capture changed: show or hide the ring and the "Esc to release" hint. */
-  changed(focused: boolean, captured: boolean): void
+  /**
+   * Focus or capture changed (or the first key from a hardware keyboard arrived): show or hide the ring and the hint.
+   * `keys`: a physical keyboard is known to be there (on touch devices, the hint shows only then).
+   */
+  changed(focused: boolean, captured: boolean, keys: boolean): void
 }
 
 const MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent)
@@ -29,6 +32,8 @@ const ARROWS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home
 
 export class Input {
   private focused = false
+  /** A key reached the widget outside text fields: there is a hardware keyboard. */
+  private keys = false
   private locked = false
   private held = new Map<string, string>()
   private dx = 0
@@ -88,7 +93,7 @@ export class Input {
     if (this.focused || !this.h.open()) return
     this.focused = true
     this.h.emit({ id: "", type: "focus", value: true })
-    this.h.changed(true, this.locked)
+    this.h.changed(true, this.locked, this.keys)
   }
 
   private onFocusOut = () => {
@@ -104,7 +109,7 @@ export class Input {
       this.h.emit({ id: "", type: "key", value: { kind: "up", key, code, repeat: false, shift: false, alt: false, ctrl: false, meta: false } })
     this.held.clear()
     this.h.emit({ id: "", type: "focus", value: false })
-    this.h.changed(false, this.locked)
+    this.h.changed(false, this.locked, this.keys)
   }
 
   private onWindowBlur = () => this.release()
@@ -134,6 +139,10 @@ export class Input {
     e.preventDefault()
     e.stopPropagation()
     const down = e.type === "keydown"
+    if (down && !this.keys) {
+      this.keys = true
+      this.h.changed(this.focused, this.locked, true)
+    }
     if (down) this.held.set(e.code, e.key)
     else if (!this.held.delete(e.code)) return
     this.h.emit({
@@ -173,7 +182,7 @@ export class Input {
         this.release()
       }
     }
-    this.h.changed(this.focused, locked)
+    this.h.changed(this.focused, locked, this.keys)
   }
 
   private stopMoves() {

@@ -14,12 +14,17 @@ export interface InputHost {
     pointerReleased(): void;
     /** The `id` for captured pointer events: the first canvas or shader with one. */
     pointerId(): string;
-    /** Focus or capture changed: show or hide the ring and the "Esc to release" hint. */
-    changed(focused: boolean, captured: boolean): void;
+    /**
+     * Focus or capture changed (or the first key from a hardware keyboard arrived): show or hide the ring and the hint.
+     * `keys`: a physical keyboard is known to be there (on touch devices, the hint shows only then).
+     */
+    changed(focused: boolean, captured: boolean, keys: boolean): void;
 }
 export declare class Input {
     private h;
     private focused;
+    /** A key reached the widget outside text fields: there is a hardware keyboard. */
+    private keys;
     private locked;
     private held;
     private dx;

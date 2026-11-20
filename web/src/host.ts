@@ -465,7 +465,7 @@ class Widget implements MountedWidget {
     this.hint = doc.createElement("div")
     this.hint.className = "pw-hint"
     this.hint.hidden = true
-    this.hint.textContent = this.label("release")
+    this.hint.setAttribute("role", "note")
     this.root.append(this.expand, this.hint, this.viewEl, this.errorEl, this.statusEl)
     this.shadow.append(this.root)
     this.loading()
@@ -499,10 +499,10 @@ class Widget implements MountedWidget {
       wantsPointer: () => this.livePointer || this.view?.capture === "pointer",
       pointerReleased: () => (this.livePointer = false),
       pointerId: () => surfaces(this.viewEl).find((s) => s.id !== null)?.id ?? "",
-      changed: (focused, captured) => {
+      changed: (focused, captured, keys) => {
         if (focused) this.element.dataset.focused = ""
         else delete this.element.dataset.focused
-        this.hint.hidden = !(focused || captured)
+        this.updateHint(focused, captured, keys)
       },
     })
     this.renderStatus()
@@ -711,6 +711,33 @@ class Widget implements MountedWidget {
       this.firstView = true
       const at = performance.now()
       requestAnimationFrame(() => this.metric("init", at - this.mountedAt))
+    }
+  }
+
+  /**
+   * The focus hint: a keyboard icon plus "Esc" (a cursor icon while the pointer is captured). Touch devices show it only
+   * once a hardware keyboard typed, and then the icon alone.
+   */
+  private updateHint(focused: boolean, captured: boolean, keys: boolean) {
+    const touch = matchMedia("(hover: none) and (pointer: coarse)").matches
+    const show = (focused || captured) && (!touch || keys)
+    this.hint.hidden = !show
+    if (!show) return
+    const mode = captured ? "pointer" : "keyboard"
+    const compact = touch && !captured
+    if (this.hint.dataset.mode === mode && this.hint.dataset.compact === String(compact)) return
+    this.hint.dataset.mode = mode
+    this.hint.dataset.compact = String(compact)
+    const label = this.label("release")
+    this.hint.title = label
+    this.hint.setAttribute("aria-label", label)
+    this.hint.replaceChildren(
+      icon(this.ctx, captured ? "M4 2.5l8 5.8-3.6.7 2 4.1-1.6.8-2-4.1L4 12.3z" : "M1.5 4.5h13v7h-13zM4 7h.01M6.5 7h.01M9 7h.01M11.5 7h.01M5 9.2h6"),
+    )
+    if (!compact) {
+      const esc = this.element.ownerDocument.createElement("span")
+      esc.textContent = "Esc"
+      this.hint.append(esc)
     }
   }
 

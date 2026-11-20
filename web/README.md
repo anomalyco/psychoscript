@@ -83,8 +83,9 @@ Behavior, per the contract:
   New `values` (a live program re-rendering every frame) update the uniforms only: same element, same pipeline.
   Over 50 ms of GPU time a frame three frames in a row stops it (measured on WebGPU only). A failing shader shows
   `poster` or `alt` with the error.
-- `canvas` and `shader` with an `id` send `pointer` events (`down`, `move` only while down and at most once a frame,
-  `up`) to `update` or `widget.event()`.
+- `canvas` and `shader` with an `id` send `pointer` events to `update` or `widget.event()`: `down`, `up`, and `move`
+  at most once a frame, with `down: true` while a button is held and, on desktop and web, hover moves
+  `{ kind: "move", x, y, down: false, width, height }` while the pointer is over the node (touch has no hover).
 - Full screen (widgets-fullscreen.md): an expand button in the top-right corner (on hover/focus; always on touch)
   when the root node has `fullscreen: true`, or it isn't `false` and the widget is live or its view has a `canvas` or
   `shader`. It uses the Fullscreen API on the widget's element (Esc exits); the program gets
@@ -93,7 +94,9 @@ Behavior, per the contract:
 ### Keyboard and pointer capture (widgets-input.md)
 
 - Clicking or tapping inside an open widget, or tabbing to it (the widget's element is focusable), gives it keyboard
-  focus: an accent focus ring and an "Esc to release" hint. The program gets `{ id: "", type: "focus", value }`, and
+  focus: an accent focus ring and a tiny hint, a keyboard icon plus "Esc" (a cursor icon plus "Esc" while the pointer
+  is captured; `aria-label` "Esc to release"). Touch devices show no hint until a hardware keyboard types, then the
+  icon alone. The program gets `{ id: "", type: "focus", value }`, and
   while focused `{ id: "", type: "key", value: { kind: "down" | "up", key, code, repeat, shift, alt, ctrl, meta } }`
   through `update` (step) or `widget.event()`/`widget.next()` (live). Delivered keys are `preventDefault`ed and stop
   propagating at the widget (no page scrolling, no app shortcuts in the bubble phase).
