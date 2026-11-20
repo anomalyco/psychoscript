@@ -1,5 +1,5 @@
 import type { Expression, MemberExpression, NewExpression, Super } from "acorn"
-import { type AstNode, invalidData, typeError } from "./model.js"
+import { type AstNode, invalidData, rangeError, typeError } from "./model.js"
 import { checkStringLength } from "./limits.js"
 import { locate } from "./errors.js"
 import { type Builtins, primitivePrototype } from "./intrinsics.js"
@@ -27,9 +27,12 @@ import {
   Position,
   PromiseObj,
   set,
+  coerceToNumber,
+  coerceToNumeric,
   coerceToString,
   type Value,
 } from "./objects.js"
+import { UnaryOp } from "../opcodes.js"
 import { circularValue, describeValue, hasCircularReference, isOpaque, typeofValue } from "./references.js"
 import type { Interpreter } from "./interpreter.js"
 import { enumerableSource } from "../stdlib/object.js"
@@ -133,9 +136,19 @@ export const applyBinaryOperator = (operator: string, lhs: Value, rhs: Value, no
     throw invalidData("Binary operators require data values.", node)
   }
   // Object operands were already converted through ToPrimitive; only primitives reach the arithmetic below.
+  if ((typeof lhs === "bigint" || typeof rhs === "bigint") && bigintOperators.has(operator)) {
+    // `+` with a string operand concatenates; every other arithmetic operator needs two BigInts after ToNumeric.
+    if (!(operator === "+" && (typeof lhs === "string" || typeof rhs === "string"))) {
+      return bigintOperator(operator, coerceToNumeric(lhs), coerceToNumeric(rhs), node)
+    }
+  }
   switch (operator) {
     case "+": {
-      const sum = (lhs as string) + (rhs as string)
+      // A BigInt meeting a string converts through the checked ToString, which refuses one too long to write.
+      const sum =
+        typeof lhs === "bigint" || typeof rhs === "bigint"
+          ? coerceToString(lhs) + coerceToString(rhs)
+          : (lhs as string) + (rhs as string)
       if (typeof sum === "string") checkStringLength(sum.length)
       return sum
     }
@@ -175,6 +188,66 @@ export const applyBinaryOperator = (operator: string, lhs: Value, rhs: Value, no
       throw typeError(`Unsupported binary operator '${operator}'.`, node)
   }
 }
+
+/** The operators whose BigInt form is BigInt arithmetic; the relational ones compare BigInts with any primitive. */
+const bigintOperators = new Set(["+", "-", "*", "/", "%", "**", "&", "|", "^", "<<", ">>", ">>>"])
+
+// The BigInt::* operations. The host's BigInts follow the spec; only its failures need to become program errors.
+const bigintOperator = (operator: string, lhs: number | bigint, rhs: number | bigint, node: AstNode): bigint => {
+  if (typeof lhs !== "bigint" || typeof rhs !== "bigint") {
+    throw typeError("Cannot mix BigInt and other types, use explicit conversions.", node)
+  }
+  if ((operator === "/" || operator === "%") && rhs === 0n) throw rangeError("Division by zero.", node)
+  if (operator === "**" && rhs < 0n) throw rangeError("Exponent must be non-negative.", node)
+  if (operator === ">>>") throw typeError("BigInts have no unsigned right shift, use >> instead.", node)
+  try {
+    switch (operator) {
+      case "+":
+        return lhs + rhs
+      case "-":
+        return lhs - rhs
+      case "*":
+        return lhs * rhs
+      case "/":
+        return lhs / rhs
+      case "%":
+        return lhs % rhs
+      case "**":
+        return lhs ** rhs
+      case "&":
+        return lhs & rhs
+      case "|":
+        return lhs | rhs
+      case "^":
+        return lhs ^ rhs
+      case "<<":
+        return lhs << rhs
+      default:
+        return lhs >> rhs
+    }
+  } catch (error) {
+    throw bigintFailure(error, node)
+  }
+}
+
+/** A host failure from BigInt arithmetic, as the program error it is: the host refuses results past its size limit. */
+export const bigintFailure = (error: unknown, node?: AstNode): unknown =>
+  error instanceof RangeError ? rangeError("Maximum BigInt size exceeded.", node) : error
+
+/** `-`, `+` and `~` on a primitive: ToNumeric, except `+`, which is ToNumber and so rejects a BigInt. */
+export const applyUnaryOperator = (sub: number, value: Value, node?: AstNode): number | bigint => {
+  try {
+    if (sub === UnaryOp.PLUS) return coerceToNumber(value)
+    const n = coerceToNumeric(value)
+    return sub === UnaryOp.NEG ? -n : ~n
+  } catch (error) {
+    throw locate(error, node)
+  }
+}
+
+/** `++` and `--` on a numeric value. */
+export const increment = (value: number | bigint, decrement: boolean): number | bigint =>
+  typeof value === "bigint" ? (decrement ? value - 1n : value + 1n) : decrement ? value - 1 : value + 1
 
 // IsLooselyEqual: objects (including functions and namespace paths) compare by identity, and a nullish
 // primitive never equals an object.

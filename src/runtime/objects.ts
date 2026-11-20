@@ -1,5 +1,5 @@
 import type { Builtins } from "./intrinsics.js"
-import { checkArrayLength } from "./limits.js"
+import { checkArrayLength, checkBigIntDigits } from "./limits.js"
 import {
   type AstNode,
   AsyncIteratorSymbol,
@@ -898,16 +898,25 @@ export class HostNamespace {
 }
 
 /** Every value a program can hold. Host values never appear here; they are copied in at the boundaries. */
-export type Value = string | number | boolean | null | undefined | symbol | Obj | HostNamespace
+export type Value = string | number | bigint | boolean | null | undefined | symbol | Obj | HostNamespace
 
 /** ToString without consulting program-defined methods. */
-export const coerceToString = (value: Value): string => (value instanceof Obj ? value.toString() : String(value))
+export const coerceToString = (value: Value): string => {
+  if (value instanceof Obj) return value.toString()
+  if (typeof value === "bigint") checkBigIntDigits(value)
+  return String(value)
+}
 
 /** ToNumber without consulting program-defined methods; namespace paths are not numbers. */
 export const coerceToNumber = (value: Value): number => {
   if (value instanceof Obj) return value.toNumber()
+  if (typeof value === "bigint") throw typeError("Cannot convert a BigInt value to a number.")
   return value instanceof HostNamespace ? Number.NaN : Number(value)
 }
+
+/** ToNumeric without consulting program-defined methods: a BigInt stays one, anything else is ToNumber. */
+export const coerceToNumeric = (value: Value): number | bigint =>
+  typeof value === "bigint" ? value : coerceToNumber(value)
 
 /** ToIntegerOrInfinity: NaN is 0, fractions truncate. */
 export const coerceToInteger = (value: Value): number => {

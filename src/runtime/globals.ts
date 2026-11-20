@@ -9,6 +9,7 @@ import { dateGlobal } from "../stdlib/date.js"
 import { jsonGlobal } from "../stdlib/json.js"
 import { mathGlobal } from "../stdlib/math.js"
 import { booleanGlobal, numberGlobal } from "../stdlib/number.js"
+import { bigintGlobal } from "../stdlib/bigint.js"
 import { objectGlobal } from "../stdlib/object.js"
 import { regexpGlobal } from "../stdlib/regexp.js"
 import { stringGlobal } from "../stdlib/string.js"
@@ -126,6 +127,7 @@ const table: Record<string, Factory> = {
   Symbol: (ctx) => symbolGlobal(ctx),
   Iterator: (ctx) => iteratorGlobals(ctx),
   Number: (ctx) => numberGlobal(ctx),
+  BigInt: (ctx) => bigintGlobal(ctx),
   String: (ctx) => stringGlobal(ctx),
   Boolean: (ctx) => booleanGlobal(ctx),
   parseInt: (ctx) => coercion(ctx, "parseInt", 2),

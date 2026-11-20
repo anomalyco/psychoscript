@@ -64,6 +64,7 @@ export type Json = null | boolean | number | string | ReadonlyArray<Json> | { re
  * A value inside a record: a JSON primitive, or a tag (an array whose first item says what it is):
  * - `["u"]` undefined, `["n", "NaN" | "Infinity" | "-Infinity" | "-0"]` a number JSON cannot spell, `["-"]` an absent
  *   field, `["h"]` an array hole;
+ * - `["b", digits]` a BigInt, in hexadecimal with an optional `-`;
  * - `["s", name]` an interpreter symbol;
  * - `["i", name]` a built-in or host global, unchanged since the runtime was made;
  * - `["a", source, index]` an AST node (a call site, an error's location);
@@ -431,7 +432,8 @@ class Encoder {
         return ["s", name]
       }
       case "bigint":
-        throw new SnapshotError("Codec gap: a bigint has no data form.")
+        // Hexadecimal, which converts in linear time either way (decimal is quadratic for large values).
+        return ["b", value < 0n ? `-${(-value).toString(16)}` : value.toString(16)]
     }
     if (value === null) return null
     const object = value as object
@@ -1034,6 +1036,11 @@ class Decoder {
             return -0
         }
         return invalid(`unknown number ${String(value[1])}.`)
+      case "b": {
+        const digits = text(value[1], "a BigInt")
+        if (!/^-?[0-9a-f]+$/.test(digits)) return invalid(`malformed BigInt ${digits}.`)
+        return digits.startsWith("-") ? -BigInt(`0x${digits.slice(1)}`) : BigInt(`0x${digits}`)
+      }
       case "s":
         return symbols.get(text(value[1], "a symbol")) ?? invalid(`unknown symbol ${String(value[1])}.`)
       case "x":

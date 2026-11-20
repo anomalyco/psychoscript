@@ -108,6 +108,11 @@ export const hostGlobals = <R>(
   ): unknown => {
     if (depth > MAX_VALUE_DEPTH) throw typeError(`${label} exceeds the maximum value depth of ${MAX_VALUE_DEPTH}.`)
     if (isPrimitive(value)) return value
+    if (typeof value === "bigint") {
+      throw typeError(
+        `${label} contains a BigInt, which cannot be passed to the host; convert it first, e.g. \`String(value)\`, or \`Number(value)\` if it is small enough.`,
+      )
+    }
     const host = value instanceof Obj ? hosted.get(value) : undefined
     if (back !== undefined && host !== undefined) {
       back.push(host)
@@ -328,6 +333,9 @@ export const hostGlobals = <R>(
         return copied
       }
     }
+    if (typeof value === "bigint") {
+      throw typeError(`${label} produced a BigInt, which cannot cross from the host; return it as a string or number.`)
+    }
     throw typeError(`${label} produced ${describeHost(value)}, which the program cannot hold.`)
   }
 
@@ -543,7 +551,7 @@ const hostErrors = new Map<string, ErrorConstructor>([
   ["URIError", URIError],
 ])
 
-// The primitives the interpreter operates on; symbols and BigInts are not among them.
+// The primitives that cross the host boundary as they are; symbols and BigInts are not among them.
 const isPrimitive = (value: unknown): value is string | number | boolean | null | undefined =>
   value === null ||
   value === undefined ||

@@ -1,6 +1,7 @@
 import { type Method, methods } from "../runtime/native.js"
 import {
   accessorLabel,
+  coerceToString,
   get,
   Arr,
   HostNamespace,
@@ -55,6 +56,7 @@ export const formatValue = (value: Value): string => {
 const formatConsoleValue = (value: Value, seen: Set<object>, depth: number): string => {
   if (value === null || value === undefined) return "null"
   if (typeof value === "string") return JSON.stringify(value)
+  if (typeof value === "bigint") return `${coerceToString(value)}n`
   if (!(value instanceof Obj)) return value instanceof HostNamespace ? "[opaque reference]" : String(value)
   if (depth > MAX_CONSOLE_DEPTH) return "..."
   if (seen.has(value)) return "[Circular]"

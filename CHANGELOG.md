@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- BigInt: literals, arithmetic, comparison, `BigInt()`, `BigInt.asIntN`/`asUintN`, `BigInt.prototype` methods, and
+  Buffer's `readBigInt64*`/`writeBigInt64*` methods, following ECMAScript. BigInts survive a suspend and resume, and
+  are refused, with a hint, at the host boundary: in results, in host function arguments, and from host functions.
+- Snapshot format 4 (adds BigInt values); snapshots from earlier builds were already refused by build id.
+
 ## 0.2.1
 
 - `psychoscript/effect`: a plain function the host gives the program (inside a host function's result, such as a
