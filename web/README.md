@@ -90,7 +90,10 @@ Behavior, per the contract:
 - Full screen (widgets-fullscreen.md): an expand button in the top-right corner (on hover/focus; always on touch)
   when the root node has `fullscreen: true`, or it isn't `false` and the widget is live or its view has a `canvas` or
   `shader`. It uses the Fullscreen API on the widget's element (Esc exits); the program gets
-  `{ id: "", type: "fullscreen", value }`, `Frame.fullscreen` is set, `fill: true` surfaces take the free height.
+  `{ id: "", type: "fullscreen", value }` (`onFullscreen` / `widget.on("fullscreen")`) and `Frame.fullscreen` is set.
+  The root fills the screen and every `canvas` and `shader` shares the remaining height equally (its `height` is the
+  minimum; `fill: false` keeps it at its `height`); taller content scrolls. The only chrome is a small floating close
+  button in the top corner (clear of safe areas); the capability chip is hidden.
 
 ### Keyboard and pointer capture (widgets-input.md)
 
