@@ -24,6 +24,8 @@ struct Gate {
 struct GateState {
     value: Option<Json>,
     entered: usize,
+    /// How many suspends the test has tried: `held()` holds the run while it trails `entered`.
+    released: usize,
     dropped: usize,
     waker: Option<Waker>,
 }
@@ -61,6 +63,18 @@ impl Gate {
         while s.entered < n {
             s = c.wait_timeout(s, Duration::from_millis(10)).unwrap().0;
         }
+    }
+
+    /// Lets a run that `held()` holds go on, once the test tried its suspend.
+    fn release(&self) {
+        let (m, c) = &*self.inner;
+        m.lock().unwrap().released += 1;
+        c.notify_all();
+    }
+
+    fn held(&self) -> bool {
+        let s = self.inner.0.lock().unwrap();
+        s.entered > s.released
     }
 
     fn dropped(&self) -> usize {
@@ -128,15 +142,22 @@ fn step(gate: Option<&Gate>) -> HostFunction {
     .length(1)
 }
 
-/// A runtime whose only global is `step`, marking `gate`.
-fn stepping(gate: &Gate) -> Runtime {
-    let gate = gate.clone();
-    Runtime::make().globals(move |_| [("step", step(Some(&gate)))])
+/// `held()`: true while `gate` was entered more often than released, so `while (held()) {}` busy-waits until the test
+/// has tried its suspend, however late its thread runs. Without a gate (a fresh runtime) it is false.
+fn held(gate: Option<&Gate>) -> HostFunction {
+    let gate = gate.cloned();
+    HostFunction::new(move |_, _| HostValue::Bool(gate.as_ref().is_some_and(Gate::held)))
 }
 
-/// A runtime whose only global is `step`, marking nothing: the same host globals as [`stepping`].
+/// A runtime whose globals are `step` and `held`, marking `gate`.
+fn stepping(gate: &Gate) -> Runtime {
+    let gate = gate.clone();
+    Runtime::make().globals(move |_| [("step", step(Some(&gate))), ("held", held(Some(&gate)))])
+}
+
+/// A runtime with `step` and `held`, marking nothing: the same host globals as [`stepping`].
 fn fresh() -> Runtime {
-    Runtime::make().globals(|_| [("step", step(None))])
+    Runtime::make().globals(|_| [("step", step(None)), ("held", held(None))])
 }
 
 fn options(run_id: &str) -> ProgramOptions {
@@ -156,18 +177,23 @@ fn background<'a, T: Send>(
     })
 }
 
-/// Suspends, trying again while a synchronous host call is running: a suspend that lands inside one is refused.
+/// Suspends, trying again while a synchronous host call is running: a suspend that lands inside one is refused. Then
+/// releases `gate`, so a run that `held()` holds goes on once resumed, or now if the suspend failed.
 fn suspend_soon(
     s: &Suspender,
+    gate: &Gate,
     max_bytes: Option<usize>,
 ) -> Result<RunOutcome, psychoscript::SuspendError> {
+    let mut outcome = s.suspend(max_bytes);
     for _ in 0..1000 {
-        match s.suspend(max_bytes) {
+        match outcome {
             Err(e) if !e.running.is_empty() => thread::sleep(Duration::from_millis(1)),
-            other => return other,
+            _ => break,
         }
+        outcome = s.suspend(max_bytes);
     }
-    s.suspend(max_bytes)
+    gate.release();
+    outcome
 }
 
 fn suspended(o: RunOutcome) -> Suspended {
@@ -188,8 +214,8 @@ fn header(state: &Snapshot) -> &Json {
     &state.0["header"]
 }
 
-/// Busy-waits in the program after its first host call, so a suspend lands mid-loop.
-const BUSY: &str = "const t = Date.now(); while (Date.now() - t < 300) {}";
+/// Busy-waits in the program after a `step`, until the test tried its suspend, so the suspend lands mid-loop.
+const BUSY: &str = "while (held()) {}";
 
 /// The message a runtime with other host globals refuses a state with.
 const OTHER_GLOBALS: &str =
@@ -210,7 +236,7 @@ fn a_run_suspended_between_calls_resumes_from_state_and_from_bytes() {
     let rt = stepping(&gate);
     let (outcome, from_suspend) = background(rt.program(&code, &ProgramOptions::new()), |s| {
         gate.entered(1);
-        suspend_soon(&s, None)
+        suspend_soon(&s, &gate, None)
     });
     let state = suspended(outcome).state;
     assert_eq!(suspended(from_suspend.unwrap()).state, state);
@@ -311,7 +337,7 @@ fn a_loop_of_synchronous_calls_can_be_suspended_and_resumed() {
     let code = "let n = 0\nwhile (n < 200000) draw(n++)\nreturn n";
     let (outcome, _) = background(rt.program(code, &ProgramOptions::new()), |s| {
         gate.entered(500);
-        suspend_soon(&s, None)
+        suspend_soon(&s, &gate, None)
     });
     let state = suspended(outcome).state;
     assert!(gate.inner.0.lock().unwrap().entered < 200000);
@@ -367,7 +393,7 @@ fn a_state_over_the_byte_budget_fails_the_suspend_and_the_run_goes_on() {
     let rt = stepping(&gate);
     let (outcome, error) = background(rt.program(&code, &ProgramOptions::new()), |s| {
         gate.entered(1);
-        suspend_soon(&s, Some(100))
+        suspend_soon(&s, &gate, Some(100))
     });
     let error = error.unwrap_err();
     assert!(error.running.is_empty());
@@ -386,7 +412,7 @@ fn a_state_over_the_byte_budget_fails_the_suspend_and_the_run_goes_on() {
 fn suspend_mid_loop(rt: &Runtime, gate: &Gate, code: &str) -> Snapshot {
     let (outcome, _) = background(rt.program(code, &ProgramOptions::new()), |s| {
         gate.entered(1);
-        suspend_soon(&s, None)
+        suspend_soon(&s, gate, None)
     });
     suspended(outcome).state
 }
@@ -397,7 +423,7 @@ fn a_resumed_run_keeps_its_limits_and_counts_time_across_resumes() {
     let gate = Gate::default();
     let g = gate.clone();
     let rt = Runtime::make()
-        .globals(move |_| [("step", step(Some(&g)))])
+        .globals(move |_| [("step", step(Some(&g))), ("held", held(Some(&g)))])
         .limits(Limits {
             max_output_bytes: Some(10),
             timeout_ms: None,
@@ -420,19 +446,23 @@ fn a_resumed_run_keeps_its_limits_and_counts_time_across_resumes() {
     let gate = Gate::default();
     let g = gate.clone();
     let timed = Runtime::make()
-        .globals(move |_| [("step", step(Some(&g)))])
+        .globals(move |_| [("step", step(Some(&g))), ("held", held(Some(&g)))])
         .limits(Limits {
-            timeout_ms: Some(400),
+            timeout_ms: Some(1000),
             ..Limits::default()
         });
-    let code = "await step(1); const a = Date.now(); while (Date.now() - a < 250) {} const b = Date.now(); while (Date.now() - b < 250) {} return 1";
-    let (outcome, _) = background(timed.program(code, &ProgramOptions::new()), |s| {
+    // Held for at least 300ms before the suspend, then 850ms after the resume: only over the 1000ms limit counted
+    // together.
+    let code = format!(
+        "await step(1); {BUSY} const b = Date.now(); while (Date.now() - b < 850) {{}} return 1"
+    );
+    let (outcome, _) = background(timed.program(&code, &ProgramOptions::new()), |s| {
         gate.entered(1);
-        thread::sleep(Duration::from_millis(200));
-        suspend_soon(&s, None)
+        thread::sleep(Duration::from_millis(300));
+        suspend_soon(&s, &gate, None)
     });
     let state = suspended(outcome).state;
-    assert!(header(&state)["budget"]["activeMs"].as_u64().unwrap() >= 150);
+    assert!(header(&state)["budget"]["activeMs"].as_u64().unwrap() >= 300);
     let o = done(timed.resume(&state).unwrap().run_resumable().unwrap());
     assert_eq!(
         o.result.unwrap_err().kind,
@@ -458,6 +488,7 @@ fn a_state_is_refused_by_another_build_other_host_globals_or_a_changed_source() 
     let others = Runtime::make().globals(|_| {
         [
             ("step", step(None)),
+            ("held", held(None)),
             ("f", HostFunction::new(|_, _| HostValue::Number(1.0))),
         ]
     });
@@ -496,7 +527,11 @@ fn a_run_resumes_with_the_globals_made_for_it_in_the_same_order() {
     let g = gate.clone();
     // Each run gets its own choice of globals: `later` only for the run named "both".
     let rt = Runtime::make().globals(move |run| {
-        let mut globals = vec![("step", step(Some(&g))), ("now", number(7.0))];
+        let mut globals = vec![
+            ("step", step(Some(&g))),
+            ("held", held(Some(&g))),
+            ("now", number(7.0)),
+        ];
         if run.id() == "both" {
             globals.push(("later", number(8.0)));
         }
@@ -505,13 +540,20 @@ fn a_run_resumes_with_the_globals_made_for_it_in_the_same_order() {
     let code = format!("await step(1); {BUSY} return [now(), later(), typeof unused]");
     let (outcome, _) = background(rt.program(&code, &options("both")), |s| {
         gate.entered(1);
-        suspend_soon(&s, None)
+        suspend_soon(&s, &gate, None)
     });
     let state = suspended(outcome).state;
-    let fewer = Runtime::make().globals(move |_| [("step", step(None)), ("now", number(7.0))]);
+    let fewer = Runtime::make().globals(move |_| {
+        [
+            ("step", step(None)),
+            ("held", held(None)),
+            ("now", number(7.0)),
+        ]
+    });
     let reordered = Runtime::make().globals(move |_| {
         [
             ("step", step(None)),
+            ("held", held(None)),
             ("later", number(8.0)),
             ("now", number(7.0)),
         ]
@@ -529,6 +571,7 @@ fn a_function_a_host_function_returned_is_lost_on_resume() {
         move |_: &psychoscript::Run| {
             [
                 ("step", step(gate.as_ref())),
+                ("held", held(gate.as_ref())),
                 (
                     "make",
                     HostFunction::new(|_, _| {
@@ -641,8 +684,7 @@ fn changes_to_built_ins_survive_a_second_suspend() {
       await step(1)
       {BUSY}
       await step(2)
-      const t2 = Date.now()
-      while (Date.now() - t2 < 300) {{}}
+      {BUSY}
       return {{
         extra: [].extra,
         max: typeof Math.max,
@@ -657,7 +699,7 @@ fn changes_to_built_ins_survive_a_second_suspend() {
     let first = suspend_mid_loop(&rt, &gate, &code);
     let (outcome, _) = background(rt.resume(&first).unwrap(), |s| {
         gate.entered(2);
-        suspend_soon(&s, None)
+        suspend_soon(&s, &gate, None)
     });
     let second = suspended(outcome).state;
     let o = done(rt.resume(&second).unwrap().run_resumable().unwrap());
@@ -694,7 +736,7 @@ fn an_idempotent_call_in_flight_suspends_and_reruns_on_resume_with_the_same_key(
     let code = "const a = await read(20); const b = await read(22); return a + b";
     let (outcome, _) = background(rt.program(code, &options("rr")), |s| {
         gate.entered(1);
-        suspend_soon(&s, None)
+        suspend_soon(&s, &gate, None)
     });
     let state = suspended(outcome).state;
     assert_eq!(gate.dropped(), 1);
@@ -835,12 +877,24 @@ fn methods_on_a_returned_value_survive_with_snapshot_hooks() {
     };
     let gate = Gate::default();
     let g = gate.clone();
-    let rt = Runtime::make().globals(move |_| [("step", step(Some(&g))), ("fetch", fetch())]);
+    let rt = Runtime::make().globals(move |_| {
+        [
+            ("step", step(Some(&g))),
+            ("held", held(Some(&g))),
+            ("fetch", fetch()),
+        ]
+    });
     let code = format!(
         r#"const res = fetch("https://a.test/"); await step(1); {BUSY} return [res.url, res.text()]"#
     );
     let state = suspend_mid_loop(&rt, &gate, &code);
-    let fresh = Runtime::make().globals(move |_| [("step", step(None)), ("fetch", fetch())]);
+    let fresh = Runtime::make().globals(move |_| {
+        [
+            ("step", step(None)),
+            ("held", held(None)),
+            ("fetch", fetch()),
+        ]
+    });
     let o = done(fresh.resume(&state).unwrap().run_resumable().unwrap());
     assert_eq!(
         o.result.unwrap(),
@@ -850,6 +904,7 @@ fn methods_on_a_returned_value_survive_with_snapshot_hooks() {
     let bare = Runtime::make().globals(|_| {
         [
             ("step", step(None)),
+            ("held", held(None)),
             ("fetch", HostFunction::new(|_, _| HostValue::Null)),
         ]
     });
@@ -863,6 +918,7 @@ fn a_suspend_fails_when_an_encode_hook_fails_and_the_run_goes_on() {
     let rt = Runtime::make().globals(move |_| {
         [
             ("step", step(Some(&g))),
+            ("held", held(Some(&g))),
             (
                 "make",
                 HostFunction::new(|_, _| {
@@ -878,7 +934,7 @@ fn a_suspend_fails_when_an_encode_hook_fails_and_the_run_goes_on() {
     let code = format!("const v = make(); await step(1); {BUSY} return v.f()");
     let (outcome, error) = background(rt.program(&code, &ProgramOptions::new()), |s| {
         gate.entered(1);
-        suspend_soon(&s, None)
+        suspend_soon(&s, &gate, None)
     });
     let error = error.unwrap_err();
     assert!(error.running.is_empty());

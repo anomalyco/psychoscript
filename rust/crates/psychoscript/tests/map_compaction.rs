@@ -224,23 +224,31 @@ fn set_methods_continue_when_their_walk_is_compacted() {
     );
 }
 
-/// Marks that the program called `reached()`, after which it busy-waits so a suspend lands mid-walk.
+/// Marks that the program called `reached()`, which is true until the test tried its suspend, so
+/// `while (reached()) {}` busy-waits until the suspend lands mid-walk, however late the test's thread runs.
 #[derive(Clone, Default)]
-struct Reached(Arc<(Mutex<bool>, Condvar)>);
+struct Reached(Arc<(Mutex<(bool, bool)>, Condvar)>);
 
 impl Reached {
-    fn mark(&self) {
+    /// Marks the call, and says whether the run is still held.
+    fn mark(&self) -> bool {
         let (m, c) = &*self.0;
-        *m.lock().unwrap() = true;
+        let mut s = m.lock().unwrap();
+        s.0 = true;
         c.notify_all();
+        !s.1
     }
 
     fn wait(&self) {
         let (m, c) = &*self.0;
-        let mut r = m.lock().unwrap();
-        while !*r {
-            r = c.wait_timeout(r, Duration::from_millis(10)).unwrap().0;
+        let mut s = m.lock().unwrap();
+        while !s.0 {
+            s = c.wait_timeout(s, Duration::from_millis(10)).unwrap().0;
         }
+    }
+
+    fn release(&self) {
+        self.0.0.lock().unwrap().1 = true;
     }
 }
 
@@ -249,10 +257,7 @@ fn reaching(reached: Reached) -> Runtime {
         let reached = reached.clone();
         [(
             "reached",
-            HostFunction::new(move |_, _| {
-                reached.mark();
-                HostValue::Undefined
-            }),
+            HostFunction::new(move |_, _| HostValue::Bool(reached.mark())),
         )]
     })
 }
@@ -268,20 +273,26 @@ fn suspended_mid_walk(code: &str) -> Json {
         let h = s.spawn(move || {
             reached.wait();
             // The suspend is refused while `reached()` itself runs.
+            let mut answer = suspender.suspend(None);
             for _ in 0..1000 {
-                match suspender.suspend(None) {
+                match answer {
                     Err(e) if !e.running.is_empty() => thread::sleep(Duration::from_millis(1)),
-                    other => return other,
+                    _ => break,
                 }
+                answer = suspender.suspend(None);
             }
-            suspender.suspend(None)
+            // The run goes on if the suspend failed.
+            reached.release();
+            answer
         });
         (program.run_resumable().unwrap(), h.join().unwrap())
     });
     let RunOutcome::Suspended(state) = outcome else {
         panic!("expected a suspended run, got {answer:?}");
     };
-    let fresh = reaching(Reached::default());
+    let fresh = Reached::default();
+    fresh.release();
+    let fresh = reaching(fresh);
     let resumed = fresh
         .resume_bytes(&psychoscript::to_bytes(&state.state))
         .unwrap()
@@ -304,8 +315,7 @@ fn a_for_of_suspended_after_compaction_resumes_where_it_was() {
           if (k === 10) {
             for (let i = 0; i < 10; i++) m.delete(i)
             for (let i = 20; i < 100; i++) if (i % 10 !== 0) m.delete(i)
-            reached()
-            const t = Date.now(); while (Date.now() - t < 300) {}
+            while (reached()) {}
             m.delete(30)
             m.set(1, "again")
           }
@@ -326,8 +336,7 @@ fn a_for_each_suspended_after_compaction_resumes_where_it_was() {
           seen.push(v)
           if (v === 10) {
             for (let i = 0; i < 95; i++) if (i % 20 !== 0) s.delete(i)
-            reached()
-            const t = Date.now(); while (Date.now() - t < 300) {}
+            while (reached()) {}
             s.delete(40)
             s.add(7)
           }
@@ -351,8 +360,7 @@ fn a_set_method_suspended_after_compaction_resumes_where_it_was() {
           has(x) {
             if (x === 5) {
               for (let i = 6; i < 90; i++) a.delete(i)
-              reached()
-              const t = Date.now(); while (Date.now() - t < 300) {}
+              while (reached()) {}
               a.delete(92)
               a.add(200)
             }
