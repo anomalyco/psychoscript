@@ -10,7 +10,12 @@ const root = path.resolve(import.meta.dir, "..")
 const widget = path.resolve(process.argv[2] ?? path.join(root, "../../../oc-widgets/packages/widget"))
 const src = path.join(widget, "src")
 const prelude = await Bun.file(path.join(src, "prelude.js")).text()
-const names = (await readdir(path.join(src, "templates"))).filter((f) => f.endsWith(".js")).map((f) => f.slice(0, -3))
+const FIRST = ["suggestions", "form", "confirm", "chart", "backdrop", "minigame"]
+const rank = (n: string) => (FIRST.includes(n) ? FIRST.indexOf(n) : FIRST.length)
+const names = (await readdir(path.join(src, "templates")))
+  .filter((f) => f.endsWith(".js"))
+  .map((f) => f.slice(0, -3))
+  .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
 const diagrams: Record<string, unknown> = await import(path.join(widget, "test/fixtures/diagrams.ts"))
   .then((m) => m.examples as Record<string, unknown>)
   .catch(() => ({}))
@@ -77,7 +82,7 @@ const DEMO = {
     capabilities: { https: { hosts: ["api.github.com"] } },
     data: { title: "GitHub status" },
     source: `async function main(data) {
-  const show = (lines, tone) => widget.render(ui.column({ gap: 2 }, [
+  const show = (lines, tone) => widget.render(ui.column({ gap: 2, fullscreen: false }, [
     ui.text(data.title, { style: "title" }),
     ...lines.map((l) => ui.text(l, { style: "code", tone })),
     ui.row({ gap: 1 }, [ui.button("again", "Fetch again", { variant: "primary" }), ui.button("local", "Try http://localhost"), ui.button("other", "Try example.com")]),
@@ -86,13 +91,61 @@ const DEMO = {
   let url = "https://api.github.com/zen"
   while (true) {
     try {
-      const r = await widget.fetch(url, { headers: { Accept: "text/plain" } })
+      const r = await widget.fetch(url)
       show(["GET " + url, "status " + r.status, (await r.text()).slice(0, 120)], "success")
     } catch (e) {
       show(["GET " + url, e.kind + ": " + e.message], "error")
     }
     const ev = await widget.event()
     url = ev.id === "local" ? "http://localhost/x" : ev.id === "other" ? "https://example.com/" : "https://api.github.com/zen"
+  }
+}`,
+  },
+  "clock-demo": {
+    mode: "live",
+    data: { title: "Running time" },
+    source: `async function main(data) {
+  let resumed = 0
+  let paused = 0
+  while (true) {
+    widget.render(ui.column({ gap: 1 }, [
+      ui.text(data.title, { style: "title" }),
+      ui.text("running " + (widget.now() / 1000).toFixed(1) + " s", { style: "code" }),
+      ui.text("resumed " + resumed + "x, paused " + paused + " ms in all", { style: "caption", tone: "muted" }),
+    ]))
+    const next = await widget.next({ timeout: 100 })
+    if (next.type === "resumed") { resumed++; paused += next.pausedMs }
+  }
+}`,
+  },
+  "shader-demo": {
+    mode: "live",
+    data: { title: "Shader driven by a live program" },
+    source: `const WGSL = \`fn shade(frag: vec2f) -> vec4f {
+  let uv = frag / widget.resolution;
+  let d = distance(uv, widget.values[0].yz);
+  let glow = exp(-d * d * 40.0) * (0.6 + 0.6 * widget.values[0].w);
+  let base = vec3f(0.08, 0.1, 0.16) + vec3f(0.2, 0.1, 0.4) * (0.5 + 0.5 * sin(widget.values[0].x * 2.0 + uv.x * 6.0));
+  return vec4f(base + vec3f(0.3, 0.6, 1.0) * glow, 1.0);
+}\`
+
+async function main(data) {
+  const s = { down: 0, move: 0, up: 0, x: 0.5, y: 0.5, pressed: 0, frames: 0 }
+  while (true) {
+    widget.render(ui.column({ gap: 1 }, [
+      ui.text(data.title, { style: "title" }),
+      ui.shader(WGSL, { id: "orb", height: 160, fps: 0, values: [widget.now() / 1000, s.x, s.y, s.pressed], alt: "A glowing orb that follows the pointer" }),
+      ui.text("frames " + s.frames + " · down " + s.down + " · move " + s.move + " · up " + s.up, { style: "caption", tone: "muted" }),
+    ]))
+    const next = await widget.next({ frame: true })
+    if (next.type === "frame") s.frames++
+    if (next.type === "event" && next.event.type === "pointer") {
+      const v = next.event.value
+      s[v.kind]++
+      s.x = v.x / v.width
+      s.y = v.y / v.height
+      s.pressed = v.kind === "up" ? 0 : 1
+    }
   }
 }`,
   },

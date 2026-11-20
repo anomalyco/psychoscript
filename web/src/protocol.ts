@@ -63,6 +63,7 @@ export type ToWorker =
   | { t: "resume"; wid: number }
   | { t: "stop"; wid: number }
   | { t: "translate"; req: number; wgsl: string }
+  | { t: "stats"; req: number }
 
 export type FromWorker =
   | { t: "ready" }
@@ -74,6 +75,7 @@ export type FromWorker =
   | { t: "exit"; wid: number; exit: LiveExit }
   | { t: "translated"; req: number; code?: string; block?: string; error?: ErrorInfo }
   | { t: "crash"; message: string; wid?: number }
+  | { t: "stats"; req: number; wasmBytes: number; programs: number; widgets: number }
 
 /** The contract's budgets. */
 export const STEP_TIMEOUT_MS = 250

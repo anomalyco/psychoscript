@@ -175,7 +175,10 @@ function container(kind: "column" | "row"): Builder {
       node: { type: kind },
       update(n) {
         const gap = [0, 1, 2, 3].includes(n.gap as number) ? (n.gap as number) : kind === "column" ? 2 : 1
-        const align = ["start", "center", "end", "stretch"].includes(n.align as string) ? (n.align as string) : kind === "column" ? "stretch" : "center"
+        // As Rune lays them out: a column stretches its children by default, a row aligns them at the start (and
+        // reads `stretch` as `start`).
+        const allowed = kind === "column" ? ["start", "center", "end", "stretch"] : ["start", "center", "end"]
+        const align = allowed.includes(n.align as string) ? (n.align as string) : kind === "column" ? "stretch" : "start"
         setClass(
           el,
           `${kind === "column" ? "pw-col" : "pw-row"} pw-g${gap} pw-a-${align}${kind === "row" && n.wrap === true ? " pw-wrap" : ""}${hasFill(n) ? " pw-has-fill" : ""}`,
@@ -643,6 +646,8 @@ abstract class SurfaceBase {
   scale = 1
   readonly appeared = performance.now()
   pointer: { x: number; y: number; down: boolean } | null = null
+  protected moved: PointerEvent | undefined
+  private laid = ""
   protected observer: ResizeObserver
   protected destroyed = false
   protected ticking = false
@@ -654,11 +659,74 @@ abstract class SurfaceBase {
     this.node = node
     this.el = h(ctx, "div", "pw-surface")
     this.el.dataset.pwLive = ""
+    this.el.dataset.kind = node.type
     this.canvas = h(ctx, "canvas")
     this.el.append(this.canvas)
     this.observer = new ResizeObserver(() => this.measure())
     this.observer.observe(this.el)
+    this.listen()
   }
+
+  /** Point in the canvas, logical px. */
+  private local(e: PointerEvent) {
+    const r = this.canvas.getBoundingClientRect()
+    return { x: e.clientX - r.left, y: e.clientY - r.top }
+  }
+
+  /** A `pointer` event for a surface with an `id` (canvas and shader alike). */
+  private send(kind: "down" | "move" | "up", e: PointerEvent) {
+    const id = this.id
+    if (id === null || this.ctx.readOnly()) return
+    const p = this.local(e)
+    this.ctx.emit({ id, type: "pointer", value: { kind, x: p.x, y: p.y, width: this.width, height: this.height } })
+  }
+
+  /** Tracks the pointer for frames and uniforms; sends `down` and `up` at once, `move` only while down, at most once a frame. */
+  private listen() {
+    const c = this.canvas
+    c.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return
+      c.setPointerCapture(e.pointerId)
+      this.pointer = { ...this.local(e), down: true }
+      this.send("down", e)
+      this.pointerChanged()
+    })
+    c.addEventListener("pointermove", (e) => {
+      const down = this.pointer?.down === true
+      this.pointer = { ...this.local(e), down }
+      if (down) this.moved = e
+      this.pointerChanged(!down)
+    })
+    const up = (e: PointerEvent) => {
+      if (this.pointer?.down !== true) return
+      if (this.moved) {
+        this.send("move", this.moved)
+        this.moved = undefined
+      }
+      this.pointer = { ...this.local(e), down: false }
+      this.send("up", e)
+      this.pointerChanged()
+    }
+    c.addEventListener("pointerup", up)
+    c.addEventListener("pointercancel", up)
+    c.addEventListener("pointerleave", () => {
+      if (this.pointer && !this.pointer.down) {
+        this.pointer = null
+        this.pointerChanged(true)
+      }
+    })
+  }
+
+  /** Sends the latest `move` of this frame, if any; each surface's tick calls it first. */
+  protected flushMove() {
+    const e = this.moved
+    if (!e) return
+    this.moved = undefined
+    this.send("move", e)
+  }
+
+  /** The pointer moved, went down or up (`hover`: only moved while up). */
+  protected abstract pointerChanged(hover?: boolean): void
 
   built(): { el: HTMLElement; rec: Rec } {
     const rec: Rec = {
@@ -676,9 +744,13 @@ abstract class SurfaceBase {
   }
 
   /** Applies the node's size; returns whether the backing store changed. */
-  protected layout(n: ViewNode) {
+  protected layout(n: ViewNode): boolean {
     const height = Math.max(1, Math.min(4096, finite(n.height, 160)))
     const width = finite(n.width, 0)
+    // Live programs re-render every frame: touch the DOM only when the size or label changes.
+    const key = `${height}|${width}|${n.fill === true}|${this.ctx.fullscreen()}|${str(n.alt)}`
+    if (key === this.laid) return false
+    this.laid = key
     this.el.style.minHeight = `${height}px`
     this.el.style.height = n.fill === true && this.ctx.fullscreen() ? "auto" : `${height}px`
     this.el.style.width = width > 0 ? `${width}px` : ""
@@ -687,6 +759,7 @@ abstract class SurfaceBase {
     const alt = str(n.alt)
     if (alt) this.canvas.setAttribute("aria-label", alt)
     this.canvas.setAttribute("role", "img")
+    return true
   }
 
   protected measure(): boolean {
@@ -706,6 +779,8 @@ abstract class SurfaceBase {
   }
 
   frame(dt: number): Frame {
+    // A surface rendered this frame hasn't had its ResizeObserver callback yet: measure now.
+    this.measure()
     return {
       id: this.id,
       t: (performance.now() - this.appeared) / 1000,
@@ -763,59 +838,26 @@ export class CanvasView extends SurfaceBase {
   private lastFrame = 0
   private lastDrawT = -1
   private lastDrawAt = performance.now()
-  private moved: PointerEvent | undefined
   private context: CanvasRenderingContext2D | null
 
   constructor(ctx: RenderContext, node: ViewNode) {
     super(ctx, node)
     this.context = this.canvas.getContext("2d", { alpha: true })
-    const local = (e: PointerEvent) => {
-      const r = this.canvas.getBoundingClientRect()
-      return { x: e.clientX - r.left, y: e.clientY - r.top }
+  }
+
+  protected pointerChanged(hover?: boolean) {
+    if (hover) {
+      // Hovering changes `Frame.pointer` only: the next draw sees it.
+      if (this.pointer === null || this.moved) this.start()
+      return
     }
-    const send = (kind: "down" | "move" | "up", e: PointerEvent) => {
-      const id = this.id
-      if (id === null || this.ctx.readOnly()) return
-      const p = local(e)
-      this.ctx.emit({ id, type: "pointer", value: { kind, x: p.x, y: p.y, width: this.width, height: this.height } })
-    }
-    this.canvas.addEventListener("pointerdown", (e) => {
-      if (e.button !== 0) return
-      this.canvas.setPointerCapture(e.pointerId)
-      this.pointer = { ...local(e), down: true }
-      send("down", e)
-      this.invalidate()
-    })
-    this.canvas.addEventListener("pointermove", (e) => {
-      const down = this.pointer?.down === true
-      this.pointer = { ...local(e), down }
-      if (down) {
-        // At most one `move` per frame: the latest.
-        this.moved = e
-        this.start()
-      }
-    })
-    const up = (e: PointerEvent) => {
-      if (this.pointer?.down !== true) return
-      if (this.moved) {
-        send("move", this.moved)
-        this.moved = undefined
-      }
-      this.pointer = { ...local(e), down: false }
-      send("up", e)
-      this.invalidate()
-    }
-    this.canvas.addEventListener("pointerup", up)
-    this.canvas.addEventListener("pointercancel", up)
-    this.canvas.addEventListener("pointerleave", () => {
-      if (this.pointer && !this.pointer.down) this.pointer = null
-    })
+    if (this.moved) this.start()
+    else this.invalidate()
   }
 
   update(n: ViewNode) {
     this.node = n
-    this.layout(n)
-    this.measure()
+    if (this.layout(n)) this.measure()
     // A new view may come with new state: draw again (step mode); live canvases repaint their latest commands.
     this.invalidate()
   }
@@ -838,10 +880,12 @@ export class CanvasView extends SurfaceBase {
   }
 
   protected resized() {
+    // Resizing cleared the canvas: show the last commands at the new size until the next draw lands.
+    this.repaint()
     if (this.ctx.draw) {
       this.dirty = true
       this.start()
-    } else this.repaint()
+    }
   }
 
   private fps(): number {
@@ -856,19 +900,7 @@ export class CanvasView extends SurfaceBase {
   }
 
   protected tick = (now: number) => {
-    if (this.moved) {
-      const e = this.moved
-      this.moved = undefined
-      const id = this.id
-      if (id !== null && !this.ctx.readOnly()) {
-        const r = this.canvas.getBoundingClientRect()
-        this.ctx.emit({
-          id,
-          type: "pointer",
-          value: { kind: "move", x: e.clientX - r.left, y: e.clientY - r.top, width: this.width, height: this.height },
-        })
-      }
-    }
+    this.flushMove()
     const draw = this.ctx.draw
     if (!draw) return this.stop()
     if (!this.ctx.visible()) return this.stop()
@@ -929,35 +961,18 @@ export class ShaderView extends SurfaceBase {
   private lastFrame = 0
   private dirty = true
   private poster: HTMLImageElement | undefined
+  private builds = 0
 
-  constructor(ctx: RenderContext, node: ViewNode) {
-    super(ctx, node)
-    const at = (e: PointerEvent, down: boolean) => {
-      const r = this.canvas.getBoundingClientRect()
-      this.pointer = { x: e.clientX - r.left, y: e.clientY - r.top, down }
-      this.dirty = true
-      this.start()
-    }
-    this.canvas.addEventListener("pointerdown", (e) => {
-      this.canvas.setPointerCapture(e.pointerId)
-      at(e, true)
-    })
-    this.canvas.addEventListener("pointermove", (e) => at(e, this.pointer?.down === true))
-    this.canvas.addEventListener("pointerup", (e) => at(e, false))
-    this.canvas.addEventListener("pointercancel", (e) => at(e, false))
-    this.canvas.addEventListener("pointerleave", () => {
-      if (this.pointer && !this.pointer.down) {
-        this.pointer = null
-        this.dirty = true
-        this.start()
-      }
-    })
+  protected pointerChanged() {
+    // `widget.pointer` follows the pointer; a shader at `fps: 0` renders again for it.
+    this.dirty = true
+    this.start()
   }
 
+  /** Only `values` changed (live programs re-render every frame): new uniforms, no rebuild. */
   update(n: ViewNode) {
     this.node = n
-    this.layout(n)
-    this.measure()
+    if (this.layout(n)) this.measure()
     const values = Array.isArray(n.values) ? n.values.slice(0, MAX_SHADER_VALUES).map((v) => finite(v, 0)) : []
     const key = values.join(",")
     if (key !== this.values) {
@@ -989,6 +1004,7 @@ export class ShaderView extends SurfaceBase {
     if ("message" in made) return this.fail(made.line ? `${made.message} (line ${made.line}, column ${made.column})` : made.message)
     this.surface = made
     this.el.dataset.backend = made.backend
+    this.el.dataset.builds = String(++this.builds)
     this.dirty = true
     this.start()
   }
@@ -1018,6 +1034,7 @@ export class ShaderView extends SurfaceBase {
   }
 
   protected tick = (now: number) => {
+    this.flushMove()
     if (this.failed || this.stopped || !this.ctx.visible()) return this.stop()
     const s = this.surface
     if (!s) return

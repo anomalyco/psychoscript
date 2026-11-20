@@ -137,6 +137,7 @@ class WorkerHandle {
           this.compiled.delete(m.pid)
           return
         case "translated":
+        case "stats":
         case "drawn": {
           const f = this.requests.get(m.req)
           this.requests.delete(m.req)
@@ -224,6 +225,7 @@ class WorkerHandle {
   terminate() {
     this.dead = true
     this.worker.terminate()
+    this.host.ended(this)
   }
 }
 
@@ -235,6 +237,7 @@ export class WidgetHost {
   private module: Promise<WebAssembly.Module> | undefined
   private shader: Promise<WebAssembly.Module> | undefined
   private stepWorker: WorkerHandle | undefined
+  private liveWorkers = new Set<WorkerHandle>()
   readonly ticker = new Ticker()
   readonly images: Images
   private observer: IntersectionObserver | undefined
@@ -276,7 +279,26 @@ export class WidgetHost {
   }
 
   live(): WorkerHandle {
-    return new WorkerHandle(this, this.languageModule())
+    const w = new WorkerHandle(this, this.languageModule())
+    this.liveWorkers.add(w)
+    return w
+  }
+
+  ended(worker: WorkerHandle) {
+    this.liveWorkers.delete(worker)
+  }
+
+  /** Each running worker's WebAssembly memory (the interpreter's heap and code data), compiled programs and widgets. */
+  async stats(): Promise<{ kind: "step" | "live"; wasmBytes: number; programs: number; widgets: number }[]> {
+    const workers: [WorkerHandle, "step" | "live"][] = [...this.liveWorkers].map((w) => [w, "live"])
+    if (this.stepWorker && !this.stepWorker.dead) workers.unshift([this.stepWorker, "step"])
+    return Promise.all(
+      workers.map(async ([w, kind]) => {
+        await w.ready
+        const m = await w.request({ t: "stats", req: this.nextId() })
+        return m.t === "stats" ? { kind, wasmBytes: m.wasmBytes, programs: m.programs, widgets: m.widgets } : { kind, wasmBytes: 0, programs: 0, widgets: 0 }
+      }),
+    )
   }
 
   translate(wgsl: string): Promise<{ code: string; block: string } | ShaderError> {
@@ -292,6 +314,7 @@ export class WidgetHost {
   /** A worker died: its widgets start again, but the one whose program crashed it shows the error. */
   lost(worker: WorkerHandle, message: string, culprit?: number) {
     if (worker === this.stepWorker) this.stepWorker = undefined
+    this.liveWorkers.delete(worker)
     this.translations.clear()
     for (const w of [...worker.widgets.values()]) w.crashed(message, w.wid === culprit || worker.widgets.size === 1)
   }

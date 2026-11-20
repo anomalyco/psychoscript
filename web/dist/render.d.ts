@@ -63,17 +63,29 @@ declare abstract class SurfaceBase {
         y: number;
         down: boolean;
     } | null;
+    protected moved: PointerEvent | undefined;
+    private laid;
     protected observer: ResizeObserver;
     protected destroyed: boolean;
     protected ticking: boolean;
     constructor(ctx: RenderContext, node: ViewNode);
+    /** Point in the canvas, logical px. */
+    private local;
+    /** A `pointer` event for a surface with an `id` (canvas and shader alike). */
+    private send;
+    /** Tracks the pointer for frames and uniforms; sends `down` and `up` at once, `move` only while down, at most once a frame. */
+    private listen;
+    /** Sends the latest `move` of this frame, if any; each surface's tick calls it first. */
+    protected flushMove(): void;
+    /** The pointer moved, went down or up (`hover`: only moved while up). */
+    protected abstract pointerChanged(hover?: boolean): void;
     built(): {
         el: HTMLElement;
         rec: Rec;
     };
     get id(): string | null;
     /** Applies the node's size; returns whether the backing store changed. */
-    protected layout(n: ViewNode): void;
+    protected layout(n: ViewNode): boolean;
     protected measure(): boolean;
     frame(dt: number): Frame;
     protected start(): void;
@@ -94,9 +106,9 @@ export declare class CanvasView extends SurfaceBase {
     private lastFrame;
     private lastDrawT;
     private lastDrawAt;
-    private moved;
     private context;
     constructor(ctx: RenderContext, node: ViewNode);
+    protected pointerChanged(hover?: boolean): void;
     update(n: ViewNode): void;
     /** New commands from a live program's `draw`. */
     setCommands(commands: Command[]): void;
@@ -122,7 +134,9 @@ export declare class ShaderView extends SurfaceBase {
     private lastFrame;
     private dirty;
     private poster;
-    constructor(ctx: RenderContext, node: ViewNode);
+    private builds;
+    protected pointerChanged(): void;
+    /** Only `values` changed (live programs re-render every frame): new uniforms, no rebuild. */
     update(n: ViewNode): void;
     private build;
     private fail;

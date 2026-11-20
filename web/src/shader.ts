@@ -113,6 +113,7 @@ async function gpuSurface(g: Gpu, canvas: HTMLCanvasElement, wgsl: string): Prom
   const bind = g.device.createBindGroup({ layout: g.layout, entries: [{ binding: 0, resource: { buffer } }] })
   let destroyed = false
   let timing = true
+  let measuring = false
   return {
     backend: "webgpu",
     render(uniforms) {
@@ -130,9 +131,14 @@ async function gpuSurface(g: Gpu, canvas: HTMLCanvasElement, wgsl: string): Prom
       pass.end()
       const started = performance.now()
       g.device.queue.submit([encoder.finish()])
-      if (!timing) return undefined
+      // One frame measured at a time, so the time is this frame's rather than a queue of them.
+      if (!timing || measuring) return undefined
+      measuring = true
       return g.device.queue.onSubmittedWorkDone().then(
-        () => performance.now() - started,
+        () => {
+          measuring = false
+          return performance.now() - started
+        },
         () => {
           // Some implementations (SwiftShader in headless Chromium) can't tell: no GPU-time budget there.
           timing = false
