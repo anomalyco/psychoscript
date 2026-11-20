@@ -269,6 +269,7 @@ const anchorsOf = (vm: Vm): ReadonlyArray<readonly [object, string]> => [
   [vm.hosts, "hosts"],
   [vm.ctx, "ctx"],
   [vm.ctx.globalScope, "globals"],
+  [vm.ctx.protector, "protector"],
 ]
 
 // Every source a saved node can belong to: the programs, and the prelude's and the internal helpers' sources.
