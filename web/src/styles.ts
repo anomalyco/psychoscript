@@ -1,6 +1,8 @@
 /** The renderer's stylesheet, adopted by each widget's shadow root (constructable, so no inline `<style>` for CSP). */
 export const CSS: string = /* css */ `
-:host { display: block; position: relative; contain: content; }
+:host { display: block; position: relative; contain: layout style; border-radius: 6px; }
+:host(:focus) { outline: none; }
+:host([data-focused]) { outline: 2px solid var(--pw-accent); outline-offset: 4px; }
 :host([hidden]) { display: none; }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
@@ -122,6 +124,12 @@ export const CSS: string = /* css */ `
 .pw-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--pw-muted); border: 1px solid var(--pw-border); border-radius: 999px; padding: 1px 8px; margin-bottom: 8px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pw-readonly .pw-view { pointer-events: none; }
 .pw-readonly .pw-view .pw-carousel { pointer-events: auto; }
+.pw-hint {
+  position: absolute; top: -2px; right: 30px; z-index: 2; font-size: 11px; line-height: 16px; padding: 2px 8px;
+  border-radius: 999px; color: var(--pw-muted); background: var(--pw-bg); border: 1px solid var(--pw-border);
+  pointer-events: none;
+}
+:host(:fullscreen) .pw-hint { position: fixed; top: 14px; right: 48px; }
 .pw-expand {
   position: absolute; top: -4px; right: -4px; z-index: 2; width: 28px; height: 28px; border-radius: 6px; padding: 0;
   display: flex; align-items: center; justify-content: center; cursor: pointer;

@@ -96,7 +96,9 @@ const DEMO = {
     } catch (e) {
       show(["GET " + url, e.kind + ": " + e.message], "error")
     }
-    const ev = await widget.event()
+    let ev = await widget.event()
+    // Focus and key events (widgets-input.md) arrive too: wait for a press.
+    while (ev.type !== "press") ev = await widget.event()
     url = ev.id === "local" ? "http://localhost/x" : ev.id === "other" ? "https://example.com/" : "https://api.github.com/zen"
   }
 }`,
@@ -119,6 +121,60 @@ const DEMO = {
     show(["GET " + url, e.kind + ": " + e.message], "error")
   }
   await widget.event()
+}`,
+  },
+  "keys-demo": {
+    mode: "step",
+    data: { title: "Keyboard and mouse" },
+    source: `function init() { return { capture: false, focus: false, captured: false, last: "-", keys: 0, moved: 0, buttons: 0 } }
+function view(state, data) {
+  return ui.column({ gap: 1, capture: state.capture ? "pointer" : undefined }, [
+    ui.text(data.title, { style: "title" }),
+    ui.canvas({ id: "pad", height: 110 }),
+    ui.text("focus " + state.focus + " · captured " + state.captured, { style: "code" }),
+    ui.text("last " + state.last + " · keys " + state.keys + " · moved " + state.moved + " · buttons " + state.buttons, { style: "code" }),
+    ui.row({ gap: 1 }, [ui.button("capture", state.capture ? "Stop asking for the mouse" : "Ask for the mouse")]),
+  ])
+}
+function update(state, event) {
+  if (event.type === "focus") return { ...state, focus: event.value }
+  if (event.type === "capture") return { ...state, captured: event.value }
+  if (event.type === "key") return { ...state, last: event.value.kind + " " + event.value.key, keys: state.keys + 1 }
+  if (event.type === "pointer" && event.value.dx !== undefined) return { ...state, moved: state.moved + Math.abs(event.value.dx) + Math.abs(event.value.dy) }
+  if (event.type === "pointer" && event.value.button !== undefined) return { ...state, buttons: state.buttons + 1 }
+  if (event.id === "capture") return { ...state, capture: !state.capture }
+  return state
+}
+function draw(state, data, frame) {
+  const g = ui.draw()
+  g.rrect(0, 0, frame.width, frame.height, 8, state.captured ? "accent" : "surface")
+  const hint = state.captured ? "mouse captured: move it, Esc releases" : state.capture ? "click here to give it the mouse" : state.focus ? "type: keys go to the widget" : "click to focus"
+  g.text(frame.width / 2, frame.height / 2 + 5, hint, { align: "center", color: state.captured ? "bg" : "muted" })
+  return g
+}`,
+  },
+  "keys-live": {
+    mode: "live",
+    data: { title: "Keys in a live widget" },
+    source: `async function main(data) {
+  const s = { focus: false, captured: false, last: "-", keys: 0, moved: 0 }
+  while (true) {
+    widget.render(ui.column({ gap: 1, fullscreen: false }, [
+      ui.text(data.title, { style: "title" }),
+      ui.canvas({ id: "pad", height: 70 }),
+      ui.text("focus " + s.focus + " · captured " + s.captured + " · last " + s.last + " · keys " + s.keys + " · moved " + s.moved, { style: "code" }),
+      ui.button("capture", "Capture the mouse"),
+    ]))
+    const g = ui.draw()
+    g.rrect(0, 0, 2000, 70, 8, s.captured ? "accent" : "surface")
+    widget.draw("pad", g)
+    const e = await widget.event()
+    if (e.id === "capture") widget.capturePointer ? widget.capturePointer() : __host.post({ type: "capture", value: true })
+    if (e.type === "focus") s.focus = e.value
+    if (e.type === "capture") s.captured = e.value
+    if (e.type === "key") { s.last = e.value.kind + " " + e.value.key; s.keys++ }
+    if (e.type === "pointer" && e.value.dx !== undefined) s.moved += Math.abs(e.value.dx) + Math.abs(e.value.dy)
+  }
 }`,
   },
   "clock-demo": {
@@ -174,7 +230,7 @@ async function main(data) {
     data: { title: "A runaway loop" },
     source: `async function main(data) {
   widget.render(ui.column({ gap: 2 }, [ui.text(data.title, { style: "title" }), ui.text("Press to spin forever: the host stops it after 50 ms.", { tone: "muted" }), ui.button("spin", "Spin", { variant: "danger" })]))
-  await widget.event()
+  while ((await widget.event()).id !== "spin") {}
   let n = 0
   while (true) n++
 }`,

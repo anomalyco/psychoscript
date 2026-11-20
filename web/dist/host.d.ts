@@ -62,6 +62,7 @@ export interface Labels {
     retry: string;
     network: string;
     localNetwork: string;
+    release: string;
     loading: string;
 }
 /** A mounted widget. */
@@ -195,6 +196,10 @@ declare class Widget implements MountedWidget {
     private warned;
     private isFullscreen;
     private onFullscreen;
+    private input;
+    private hint;
+    /** A live program called `widget.capturePointer()` (and not `releasePointer()` since). */
+    private livePointer;
     constructor(host: WidgetHost, mountPoint: HTMLElement, options: MountOptions);
     private mode;
     private label;

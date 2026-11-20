@@ -3,6 +3,7 @@
 import type { Command } from "./canvas.js"
 import { Images } from "./canvas.js"
 import type { ErrorInfo, Frame, FromWorker, LiveExit, StepOutput, ToWorker, ViewNode, WidgetEvent } from "./protocol.js"
+import { Input } from "./input.js"
 import { SLICE_BUDGET_MS } from "./protocol.js"
 import type { RenderContext } from "./render.js"
 import { CanvasView, ShaderView, Ticker, destroy as destroyTree, hasSurface, icon, reconcile, surfaces } from "./render.js"
@@ -68,6 +69,7 @@ export interface Labels {
   retry: string
   network: string
   localNetwork: string
+  release: string
   loading: string
 }
 
@@ -79,6 +81,7 @@ const LABELS: Labels = {
   restart: "Restart",
   retry: "Try again",
   network: "Network",
+  release: "Esc to release",
   localNetwork: "local network allowed",
   loading: "Loading widget",
 }
@@ -416,6 +419,10 @@ class Widget implements MountedWidget {
   private warned = new Set<string>()
   private isFullscreen = false
   private onFullscreen = () => this.fullscreenChanged()
+  private input: Input
+  private hint: HTMLDivElement
+  /** A live program called `widget.capturePointer()` (and not `releasePointer()` since). */
+  private livePointer = false
 
   constructor(
     private host: WidgetHost,
@@ -455,7 +462,11 @@ class Widget implements MountedWidget {
       chip.title = chip.textContent
       this.root.append(chip)
     }
-    this.root.append(this.expand, this.viewEl, this.errorEl, this.statusEl)
+    this.hint = doc.createElement("div")
+    this.hint.className = "pw-hint"
+    this.hint.hidden = true
+    this.hint.textContent = this.label("release")
+    this.root.append(this.expand, this.hint, this.viewEl, this.errorEl, this.statusEl)
     this.shadow.append(this.root)
     this.loading()
     mountPoint.append(this.element)
@@ -479,6 +490,21 @@ class Widget implements MountedWidget {
       // Images on canvases resolve through this widget's resolver.
       this.ctx.images = new Images(options.resolveImage)
     }
+    this.input = new Input({
+      element: this.element,
+      shadow: this.shadow,
+      ticker: host.ticker,
+      open: () => this.status === "open" && !this.destroyed,
+      emit: (e) => this.emit(e),
+      wantsPointer: () => this.livePointer || this.view?.capture === "pointer",
+      pointerReleased: () => (this.livePointer = false),
+      pointerId: () => surfaces(this.viewEl).find((s) => s.id !== null)?.id ?? "",
+      changed: (focused, captured) => {
+        if (focused) this.element.dataset.focused = ""
+        else delete this.element.dataset.focused
+        this.hint.hidden = !(focused || captured)
+      },
+    })
     this.renderStatus()
     host.observe(this.element, this)
   }
@@ -651,6 +677,11 @@ class Widget implements MountedWidget {
       case "send":
         this.send(p.value ?? null, p.wake !== false)
         return
+      case "capture":
+        // widget.capturePointer() / releasePointer(): granted on the next click inside the widget.
+        this.livePointer = p.value === true
+        this.input.refresh()
+        return
     }
   }
 
@@ -675,6 +706,7 @@ class Widget implements MountedWidget {
     this.view = node
     reconcile(this.ctx, this.viewEl, [node])
     this.updateExpand()
+    this.input.refresh()
     if (!this.firstView) {
       this.firstView = true
       const at = performance.now()
@@ -809,6 +841,7 @@ class Widget implements MountedWidget {
   private refreshControls() {
     if (this.view) reconcile(this.ctx, this.viewEl, [this.view])
     this.updateExpand()
+    this.input.refresh()
   }
 
   setTheme(theme: Theme) {
@@ -877,6 +910,8 @@ class Widget implements MountedWidget {
     const on = document.fullscreenElement === this.element
     if (on === this.isFullscreen) return
     this.isFullscreen = on
+    // Leaving full screen releases the keyboard and the pointer.
+    if (!on) this.input.release()
     this.updateExpand()
     // Surfaces with `fill` grow or shrink; resizes reach their draws through their ResizeObservers.
     if (this.view) reconcile(this.ctx, this.viewEl, [this.view])
@@ -889,6 +924,7 @@ class Widget implements MountedWidget {
     this.stopWorker()
     this.destroyed = true
     this.host.ticker.delete(this.liveTick)
+    this.input.destroy()
     this.element.ownerDocument.removeEventListener("fullscreenchange", this.onFullscreen)
     for (const el of this.viewEl.children) destroyTree(el)
     this.host.forget(this)

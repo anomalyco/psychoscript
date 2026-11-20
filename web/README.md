@@ -90,6 +90,28 @@ Behavior, per the contract:
   `shader`. It uses the Fullscreen API on the widget's element (Esc exits); the program gets
   `{ id: "", type: "fullscreen", value }`, `Frame.fullscreen` is set, `fill: true` surfaces take the free height.
 
+### Keyboard and pointer capture (widgets-input.md)
+
+- Clicking or tapping inside an open widget, or tabbing to it (the widget's element is focusable), gives it keyboard
+  focus: an accent focus ring and an "Esc to release" hint. The program gets `{ id: "", type: "focus", value }`, and
+  while focused `{ id: "", type: "key", value: { kind: "down" | "up", key, code, repeat, shift, alt, ctrl, meta } }`
+  through `update` (step) or `widget.event()`/`widget.next()` (live). Delivered keys are `preventDefault`ed and stop
+  propagating at the widget (no page scrolling, no app shortcuts in the bubble phase).
+- Not delivered: Cmd (macOS) / Ctrl (elsewhere) chords, which reach the page; Tab, which moves focus; keys typed into
+  text inputs; Enter/Space on buttons and options, and arrows on sliders, options and carousels, which keep working.
+  Clicking outside blurs it; held keys get their `up` on blur.
+- Pointer capture: root `capture: "pointer"` (step or live) or a live program posting `{ type: "capture", value: true }`
+  (what the prelude's `widget.capturePointer()` posts; `releasePointer()` posts `value: false`). Granted on the next
+  click inside the widget with the Pointer Lock API (cursor hidden); then `{ id, type: "pointer", value: { kind: "move",
+  dx, dy } }` at most once a frame and `{ kind: "down" | "up", button }`, with `id` the first canvas/shader `id` in the
+  view (else `""`). The program gets `{ id: "", type: "capture", value: true }` when granted.
+- Esc is never delivered. One Esc releases both (the browser itself ends Pointer Lock on Esc; that also drops focus),
+  as do leaving full screen, the window losing focus, submit/dismiss and `destroy()`. The program gets
+  `{ type: "focus", value: false }` and, if it had the pointer, `{ type: "capture", value: false }`. A live program
+  must call `capturePointer()` again after a release; a root `capture: "pointer"` is granted again on the next click.
+- Programs now see `focus` and `key` events they didn't before: a live loop that treats any `widget.event()` as a press
+  should check `event.type` or `event.id`.
+
 ### Theme
 
 `theme` is `"dark"`, `"light"` or tokens: `{ text, muted, accent, bg, surface, border, success, warning, error,
