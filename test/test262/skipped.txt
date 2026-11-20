@@ -1,3 +1,4 @@
+built-ins/AggregateError/message-undefined-no-prop.js  # explicit Expected SameValue(«true», «false») to be true
 built-ins/Array/S15.4.5.2_A3_T3.js  # RangeError: Invalid array length
 built-ins/Array/from/Array.from_forwards-length-for-array-likes.js  # TypeError: Cannot read properties of undefined (reading '…').
 built-ins/Array/from/elements-deleted-after.js  # TypeError: Cannot read properties of undefined (reading '…').
@@ -2338,10 +2339,6 @@ language/expressions/assignmenttargettype/simple-basic-identifierreference-await
 language/expressions/await/await-in-global.js  # SyntaxError: Unexpected token. Code must be plain JavaScript written as a program body.
 language/expressions/await/await-in-nested-function.js  # SyntaxError: Unexpected token. Code must be plain JavaScript written as a program body.
 language/expressions/await/await-in-nested-generator.js  # SyntaxError: Unexpected token. Code must be plain JavaScript written as a program body.
-language/expressions/bitwise-and/S11.10.1_A3_T1.5.js  # TypeError: Binary operators require data values.
-language/expressions/bitwise-not/S11.4.8_A3_T5.js  # TypeError: Unary operators require data values.
-language/expressions/bitwise-or/S11.10.3_A3_T1.5.js  # TypeError: Binary operators require data values.
-language/expressions/bitwise-xor/S11.10.2_A3_T1.5.js  # TypeError: Binary operators require data values.
 language/expressions/class/elements/fields-run-once-on-double-super.js  # Expected a ReferenceError but got a SyntaxError
 language/expressions/class/scope-name-lex-open-heritage.js  # TypeError: Class extends value a function is not a constructor or null.
 language/expressions/class/subclass-builtins/subclass-Array.js  # TypeError: Extending the built-in Array is not supported. Only classes and Error types can be extend
@@ -2395,11 +2392,6 @@ language/expressions/delete/S11.4.1_A3.2_T3.js  # TypeError: MyFunction is not a
 language/expressions/delete/S11.4.1_A3.3_T3.js  # TypeError: MyFunction is not a constructor: only classes can be constructed with new. Use a class, o
 language/expressions/delete/S8.12.7_A2_T2.js  # TypeError: Palette is not a constructor: only classes can be constructed with new. Use a class, or c
 language/expressions/delete/super-property.js  # TypeError: Extending the built-in Object is not supported. Only classes and Error types can be exten
-language/expressions/division/S11.5.2_A3_T1.5.js  # TypeError: Binary operators require data values.
-language/expressions/generators/default-proto.js  # Expected SameValue(«object», «undefined») to be true
-language/expressions/generators/prototype-relation-to-function.js  # Expected SameValue(«object», «») to be true
-language/expressions/greater-than-or-equal/S11.8.4_A3.2_T1.2.js  # TypeError: Binary operators require data values.
-language/expressions/greater-than/S11.8.2_A3.2_T1.2.js  # TypeError: Binary operators require data values.
 language/expressions/in/S8.12.6_A2_T2.js  # TypeError: Robin is not a constructor: only classes can be constructed with new. Use a class, or cal
 language/expressions/logical-assignment/lgcl-and-assignment-operator-lhs-before-rhs.js  # Expected a DummyError but got a TypeError
 language/expressions/logical-assignment/lgcl-nullish-assignment-operator-lhs-before-rhs.js  # Expected a DummyError but got a TypeError
@@ -2601,8 +2593,6 @@ language/statements/function/S13.2_A1_T1.js  # #1: __func.prototype !== undefine
 language/statements/function/S13.2_A1_T2.js  # #1: __func.prototype !== undefined
 language/statements/function/S13.2_A4_T1.js  # ReferenceError: Unknown identifier '…'.
 language/statements/function/S13.2_A4_T2.js  # #1: typeof __gunc.prototype === '…'. Actual: typeof __gunc.prototype ===undefined
-language/statements/generators/default-proto.js  # Expected SameValue(«object», «undefined») to be true
-language/statements/generators/prototype-relation-to-function.js  # Expected SameValue(«object», «») to be true
 language/statements/labeled/value-await-non-module.js  # SyntaxError: Unexpected token. Code must be plain JavaScript written as a program body.
 language/statements/return/S12.9_A1_T1.js  # expected SyntaxError but the program ran
 language/statements/return/S12.9_A1_T10.js  # expected SyntaxError but the program ran
