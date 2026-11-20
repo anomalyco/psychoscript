@@ -1,5 +1,5 @@
 //! Date. Local time follows the host's time zone (`TZ`, else `/etc/localtime`), like the reference; the string forms
-//! the reference makes deterministic (`toString`, `Date()`, `toLocale*String`) are ISO or `en-US` in UTC.
+//! the reference makes deterministic (`toString`, `Date()`) are ISO in UTC, and `toLocale*String` is `en-US` in local time.
 
 use std::sync::OnceLock;
 
@@ -867,19 +867,36 @@ fn to_utc_string(vm: &mut Vm, this: Value, _args: &[Value], _: Id) -> Res {
     format_with(vm, &this, "toUTCString", utc_string)
 }
 
-fn to_locale_string(vm: &mut Vm, this: Value, _args: &[Value], _: Id) -> Res {
+// The locale forms are `en-US` in the host's time zone. The reference formats any locale and options through Intl;
+// here they are not read (a known difference), but null fails as it does there.
+fn locale_args(vm: &mut Vm, this: &Value, name: &str, args: &[Value]) -> Result<(), Value> {
+    this_date(vm, this, name)?;
+    if args.iter().take(2).any(|a| matches!(a, Value::Null)) {
+        return Err(vm.type_error("Cannot convert undefined or null to object."));
+    }
+    Ok(())
+}
+
+fn to_locale_string(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
+    locale_args(vm, &this, "toLocaleString", args)?;
     format_with(vm, &this, "toLocaleString", |t| {
-        let f = fields(t);
+        let f = fields(local_time(t));
         format!("{}, {}", locale_date(&f), locale_time(&f))
     })
 }
 
-fn to_locale_date_string(vm: &mut Vm, this: Value, _args: &[Value], _: Id) -> Res {
-    format_with(vm, &this, "toLocaleDateString", |t| locale_date(&fields(t)))
+fn to_locale_date_string(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
+    locale_args(vm, &this, "toLocaleDateString", args)?;
+    format_with(vm, &this, "toLocaleDateString", |t| {
+        locale_date(&fields(local_time(t)))
+    })
 }
 
-fn to_locale_time_string(vm: &mut Vm, this: Value, _args: &[Value], _: Id) -> Res {
-    format_with(vm, &this, "toLocaleTimeString", |t| locale_time(&fields(t)))
+fn to_locale_time_string(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
+    locale_args(vm, &this, "toLocaleTimeString", args)?;
+    format_with(vm, &this, "toLocaleTimeString", |t| {
+        locale_time(&fields(local_time(t)))
+    })
 }
 
 fn get_timezone_offset(vm: &mut Vm, this: Value, _args: &[Value], _: Id) -> Res {

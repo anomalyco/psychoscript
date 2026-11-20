@@ -18,6 +18,10 @@
 
 import { join, resolve } from "node:path"
 
+// Recordings are made in UTC, so dates in local time read the same on every machine (the Rust tests run in UTC too,
+// see .cargo/config.toml).
+process.env.TZ = "UTC"
+
 export const reference = async (override?: string) => {
   const pkg = override === undefined ? resolve(import.meta.dir, "../..") : resolve(override)
   const effect = await import(Bun.resolveSync("effect", join(pkg, "src")))

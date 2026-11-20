@@ -1158,8 +1158,11 @@ fn s_locale_compare(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res
             options.strength = Some(Strength::Primary);
             Collator::try_new(Default::default(), options).ok()
         });
-    simple(vm, callee, this, args, &[Hint::String], |vm, _, s, args| {
+    simple(vm, callee, this, args, &[Hint::String], |vm, c, s, args| {
         let o = arg_str(vm, "localeCompare", args, 0)?;
+        if !matches!(arg(args, 1), Value::Undef) || !matches!(arg(args, 2), Value::Undef) {
+            return locale_compare_with(vm, c, s, o, arg(args, 1), arg(args, 2));
+        }
         let (a, b) = (vm.atoms.sref(s), vm.atoms.sref(o));
         let order = match (COLLATOR.as_ref(), PRIMARY.as_ref()) {
             (Some(c), Some(p)) if a.units.is_some() || b.units.is_some() => {
@@ -1710,4 +1713,252 @@ fn m_random(vm: &mut Vm, _this: Value, _args: &[Value], _: Id) -> Res {
     x ^= x << 17;
     vm.rng = x;
     Ok(Value::Num((x >> 11) as f64 / (1u64 << 53) as f64))
+}
+
+// The options the host's Intl.Collator reads, in its order; the boolean ones take an object as true.
+const COLLATOR_OPTIONS: [&str; 7] = [
+    "usage",
+    "localeMatcher",
+    "collation",
+    "numeric",
+    "caseFirst",
+    "sensitivity",
+    "ignorePunctuation",
+];
+
+/// `localeCompare` with locales or options, as the reference hands them to the host's Intl.Collator: the locale list
+/// and the options are read through their getters, objects among them converted to strings, then the collator is
+/// made from them; what it refuses fails as the host's message, named for `String.localeCompare`.
+fn locale_compare_with(
+    vm: &mut Vm,
+    c: &mut Conversions,
+    s: StrId,
+    o: StrId,
+    locales: Value,
+    options: Value,
+) -> Res {
+    if matches!(locales, Value::Null) || matches!(options, Value::Null) {
+        return Err(vm.type_error(
+            "String.localeCompare cannot take null locales or options; pass undefined for the defaults.",
+        ));
+    }
+    let locale_list = locales.as_obj().filter(|id| !vm.is_namespace(*id));
+    let option_obj = options.as_obj().filter(|id| !vm.is_namespace(*id));
+    let read = vm.reading(|vm| {
+        let mut values = Vec::new();
+        if let Some(id) = locale_list {
+            let lk = vm.names.length;
+            let len = match vm.get_obj(id, lk) {
+                Value::Num(n) if n.is_finite() && n > 0.0 => n.trunc(),
+                Value::Num(n) if n == f64::INFINITY => n,
+                _ => 0.0,
+            };
+            if len > crate::ops::MAX_ARRAY_LEN as f64 {
+                return Err(vm.range_error("Invalid array length"));
+            }
+            for i in 0..len as usize {
+                values.push(vm.get_elem(&Value::Obj(id), &Value::Num(i as f64))?);
+            }
+        }
+        if let Some(id) = option_obj {
+            for (i, key) in COLLATOR_OPTIONS.iter().enumerate() {
+                let k = vm.atoms.intern_static(key);
+                let v = vm.get_obj(id, k);
+                let flag = i == 3 || i == 6;
+                values.push(if flag && matches!(v, Value::Obj(_)) {
+                    Value::Bool(true)
+                } else {
+                    v
+                });
+            }
+        }
+        Ok(values)
+    })?;
+    let values = c.converted(vm, &[Hint::String], &read, false)?.into_owned();
+    let n = if locale_list.is_some() {
+        values.len() - if option_obj.is_some() { 7 } else { 0 }
+    } else {
+        0
+    };
+    let tags: Vec<Value> = match locale_list {
+        Some(_) => values[..n].to_vec(),
+        None => match locales {
+            Value::Str(_) => vec![locales],
+            _ => Vec::new(),
+        },
+    };
+    let opts: Vec<Value> = match option_obj {
+        Some(_) => values[n..].to_vec(),
+        None => vec![Value::Undef; 7],
+    };
+    let order = collate(vm, &tags, &opts, s, o)?;
+    Ok(Value::Num(match order {
+        std::cmp::Ordering::Less => -1.0,
+        std::cmp::Ordering::Equal => 0.0,
+        std::cmp::Ordering::Greater => 1.0,
+    }))
+}
+
+/// Makes the host's collator from its locale tags and options, and compares.
+fn collate(
+    vm: &mut Vm,
+    tags: &[Value],
+    opts: &[Value],
+    s: StrId,
+    o: StrId,
+) -> Result<std::cmp::Ordering, Value> {
+    use icu_collator::options::{AlternateHandling, CaseLevel, CollatorOptions, Strength};
+    use icu_collator::preferences::{CollationCaseFirst, CollationNumericOrdering, CollationType};
+    use icu_collator::{Collator, CollatorPreferences};
+    let range = |vm: &mut Vm, m: String| vm.range_error(&format!("String.localeCompare: {m}"));
+    let mut locale = None;
+    for t in tags {
+        let Value::Str(t) = t else {
+            return Err(
+                vm.type_error("String.localeCompare: locale value must be a string or object")
+            );
+        };
+        let text = vm.text(*t).to_owned();
+        let parsed = (!text.contains('_'))
+            .then(|| icu_locale_core::Locale::try_from_str(&text).ok())
+            .flatten();
+        match parsed {
+            Some(l) => {
+                locale.get_or_insert(l);
+            }
+            None => return Err(range(vm, format!("invalid language tag: {text}"))),
+        }
+    }
+    // An option's string, by ToString; `None` when it is undefined.
+    let text = |vm: &mut Vm, v: &Value| -> Result<Option<String>, Value> {
+        Ok(match v {
+            Value::Undef => None,
+            v => {
+                let s = vm.string_of(v)?;
+                Some(vm.text(s).to_owned())
+            }
+        })
+    };
+    let choose = |vm: &mut Vm,
+                  v: &Value,
+                  key: &str,
+                  allowed: &[&str],
+                  said: &str|
+     -> Result<Option<String>, Value> {
+        match text(vm, v)? {
+            Some(t) if !allowed.contains(&t.as_str()) => {
+                Err(range(vm, format!("{key} must be either {said}")))
+            }
+            t => Ok(t),
+        }
+    };
+    let usage = choose(
+        vm,
+        &opts[0],
+        "usage",
+        &["sort", "search"],
+        "\"sort\" or \"search\"",
+    )?;
+    choose(
+        vm,
+        &opts[1],
+        "localeMatcher",
+        &["lookup", "best fit"],
+        "\"lookup\" or \"best fit\"",
+    )?;
+    let collation = text(vm, &opts[2])?;
+    if let Some(co) = &collation {
+        let well_formed = !co.is_empty()
+            && co.split('-').all(|p| {
+                (3..=8).contains(&p.len()) && p.chars().all(|c| c.is_ascii_alphanumeric())
+            });
+        if !well_formed {
+            return Err(range(
+                vm,
+                "collation is not a well-formed collation value".to_owned(),
+            ));
+        }
+    }
+    let numeric = match &opts[3] {
+        Value::Undef => None,
+        v => Some(vm.truthy(v)),
+    };
+    let case_first = choose(
+        vm,
+        &opts[4],
+        "caseFirst",
+        &["upper", "lower", "false"],
+        "\"upper\", \"lower\", or \"false\"",
+    )?;
+    let sensitivity = choose(
+        vm,
+        &opts[5],
+        "sensitivity",
+        &["base", "accent", "case", "variant"],
+        "\"base\", \"accent\", \"case\", or \"variant\"",
+    )?;
+    let ignore_punctuation = match &opts[6] {
+        Value::Undef => false,
+        v => vm.truthy(v),
+    };
+    // The host's default locale is en-US.
+    let locale = locale.unwrap_or(icu_locale_core::locale!("en-US"));
+    let mut prefs = CollatorPreferences::from(&locale);
+    // An option overrides the locale's own extension keyword.
+    if let Some(n) = numeric {
+        prefs.numeric_ordering = Some(if n {
+            CollationNumericOrdering::True
+        } else {
+            CollationNumericOrdering::False
+        });
+    }
+    if let Some(cf) = case_first {
+        prefs.case_first = Some(match cf.as_str() {
+            "upper" => CollationCaseFirst::Upper,
+            "lower" => CollationCaseFirst::Lower,
+            _ => CollationCaseFirst::False,
+        });
+    }
+    let named = |co: &str| {
+        Some(match co {
+            "compat" => CollationType::Compat,
+            "dict" => CollationType::Dict,
+            "emoji" => CollationType::Emoji,
+            "eor" => CollationType::Eor,
+            "phonebk" => CollationType::Phonebk,
+            "phonetic" => CollationType::Phonetic,
+            "pinyin" => CollationType::Pinyin,
+            "searchjl" => CollationType::Searchjl,
+            "stroke" => CollationType::Stroke,
+            "trad" => CollationType::Trad,
+            "unihan" => CollationType::Unihan,
+            "zhuyin" => CollationType::Zhuyin,
+            // `standard` and `search` are chosen by `usage`, not by name.
+            _ => return None,
+        })
+    };
+    if let Some(t) = collation.as_deref().and_then(named) {
+        prefs.collation_type = Some(t);
+    }
+    if usage.as_deref() == Some("search") {
+        prefs.collation_type = Some(CollationType::Search);
+    }
+    let mut options = CollatorOptions::default();
+    match sensitivity.as_deref() {
+        Some("base") => options.strength = Some(Strength::Primary),
+        Some("accent") => options.strength = Some(Strength::Secondary),
+        Some("case") => {
+            options.strength = Some(Strength::Primary);
+            options.case_level = Some(CaseLevel::On);
+        }
+        _ => options.strength = Some(Strength::Tertiary),
+    }
+    if ignore_punctuation {
+        options.alternate_handling = Some(AlternateHandling::Shifted);
+    }
+    let Ok(collator) = Collator::try_new(prefs, options) else {
+        return Ok(vm.atoms.sref(s).cmp16(vm.atoms.sref(o)));
+    };
+    let (a, b) = (vm.atoms.sref(s).utf16(), vm.atoms.sref(o).utf16());
+    Ok(collator.compare_utf16(&a, &b))
 }

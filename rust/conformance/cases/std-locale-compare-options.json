@@ -1,0 +1,41 @@
+{
+  "bindings": {},
+  "ok": true,
+  "value": [
+    [
+      "a1",
+      "a9",
+      "a10"
+    ],
+    0,
+    0,
+    0,
+    -1,
+    1,
+    0,
+    1,
+    -1,
+    -1,
+    1,
+    1,
+    [
+      "a9",
+      "a10"
+    ],
+    0,
+    -1,
+    "RangeError: String.localeCompare: invalid language tag: xx_bad",
+    "RangeError: String.localeCompare: invalid language tag: ",
+    "RangeError: String.localeCompare: sensitivity must be either \"base\", \"accent\", \"case\", or \"variant\"",
+    "RangeError: String.localeCompare: usage must be either \"sort\" or \"search\"",
+    "RangeError: String.localeCompare: caseFirst must be either \"upper\", \"lower\", or \"false\"",
+    "RangeError: String.localeCompare: localeMatcher must be either \"lookup\" or \"best fit\"",
+    "RangeError: String.localeCompare: collation is not a well-formed collation value",
+    "TypeError: String.localeCompare cannot take null locales or options; pass undefined for the defaults.",
+    "TypeError: String.localeCompare cannot take null locales or options; pass undefined for the defaults.",
+    "TypeError: String.localeCompare: locale value must be a string or object",
+    -1
+  ],
+  "logs": [],
+  "metadata": null
+}
