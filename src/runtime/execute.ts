@@ -1,7 +1,6 @@
 import { parse, type Program } from "acorn"
-import { Cause, Deferred, Effect, Option, Schema } from "effect"
 import { fromJson, type Json } from "../data.js"
-import { DurableFn } from "../host-function.js"
+import { DurableFn, Interrupted } from "./contract.js"
 import { fromBytes, header, type Snapshot, SnapshotError, toBytes } from "../snapshot/snapshot.js"
 import { normalizeError } from "./errors.js"
 import { hostGlobals } from "./extensions.js"
@@ -9,7 +8,7 @@ import { createBuiltins } from "./intrinsics.js"
 import { Interpreter } from "./interpreter.js"
 import type { Value } from "./objects.js"
 import { type Diagnostic, formatLocation, sourceLocation } from "./model.js"
-import { Driver, SUSPENDED } from "./driver.js"
+import { CANCELLED, Driver, SUSPENDED } from "./driver.js"
 import { Interruption } from "./signals.js"
 import { Source } from "./source.js"
 import type { Vm } from "../vm.js"
@@ -19,10 +18,54 @@ import type { Translate } from "../runtime.js"
  * A suspend that failed, leaving the run running: `running` names each host call that blocked it by its key and its
  * path (for example `sleep` or `store.get`). Empty when the state couldn't be saved or was too large.
  */
-export class SuspendError extends Schema.TaggedError<SuspendError>()("SuspendError", {
-  message: Schema.String,
-  running: Schema.Array(Schema.Struct({ key: Schema.String, path: Schema.String })),
-}) {}
+export class SuspendError extends Error {
+  readonly _tag = "SuspendError"
+  override readonly name = "SuspendError"
+  readonly running: ReadonlyArray<{ readonly key: string; readonly path: string }>
+  constructor(props: { readonly message: string; readonly running: ReadonlyArray<{ readonly key: string; readonly path: string }> }) {
+    super(props.message)
+    this.running = props.running
+  }
+}
+
+/** How one run is started: `signal` interrupts it (it then rejects with `Interrupted`); `context` goes to host calls. */
+export type RunOptions = {
+  readonly signal?: AbortSignal | undefined
+  readonly context?: unknown
+}
+
+/**
+ * A program's one run: `start` makes it when `run()` is called, and a suspend waits for it. Running it twice rejects.
+ * `suspend` throws a `RangeError` at once for an invalid `maxBytes`.
+ */
+export const makeProgram = <R>(start: () => Running<R>) => {
+  let claimed = false
+  const started = Promise.withResolvers<Running<R>>()
+  started.promise.catch(() => {})
+  return {
+    run: async (options?: RunOptions): Promise<Outcome> => {
+      if (claimed) throw new Error("A program runs once; make another with runtime.program or runtime.resume.")
+      claimed = true
+      const running = attempt(start)
+      if (!running.ok) {
+        started.reject(new SuspendError({ message: "The program didn't start.", running: [] }))
+        throw running.error
+      }
+      started.resolve(running.value)
+      return running.value.run(options)
+    },
+    suspend: (maxBytes?: number): Promise<Outcome> => {
+      checkMaxBytes(maxBytes)
+      return started.promise.then((running) => running.suspend(maxBytes))
+    },
+  }
+}
+
+export const checkMaxBytes = (maxBytes: number | undefined): void => {
+  if (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes < 0)) {
+    throw new RangeError("maxBytes must be a safe integer greater than or equal to 0.")
+  }
+}
 
 /** A run that ended: its value, or the diagnostic it failed with, plus its logs and its `run.metadata` at the end. */
 export type Result =
@@ -81,15 +124,15 @@ export type Setup<R> = {
 }
 
 /** Turns a suspended outcome into a failure, for callers that only run programs to their end. */
-export const finishExecution = <E, R>(outcome: Effect.Effect<Outcome, E, R>): Effect.Effect<Result, E, R> =>
-  Effect.map(outcome, (outcome): Result => {
-    if (outcome.ok !== "suspended") return outcome
-    return {
-      ok: false,
-      error: { kind: "ExecutionFailure", message: "The program suspended, which isn't supported here." },
-      metadata: outcome.state.header.metadata,
-    }
-  })
+export const finishExecution = async (outcome: Promise<Outcome>): Promise<Result> => {
+  const ended = await outcome
+  if (ended.ok !== "suspended") return ended
+  return {
+    ok: false,
+    error: { kind: "ExecutionFailure", message: "The program suspended, which isn't supported here." },
+    metadata: ended.state.header.metadata,
+  }
+}
 
 /** A program ready to run on the VM: nothing runs until `run`. */
 export const startProgram = <R>(
@@ -119,9 +162,8 @@ export const startProgram = <R>(
 export const resumeProgram = <R>(
   setup: Setup<R>,
   saved: Snapshot | Uint8Array | unknown,
-): Effect.Effect<Running<R>, SnapshotError> =>
-  Effect.try({
-    try: () => {
+): Running<R> => {
+  try {
       const state = saved instanceof Uint8Array ? fromBytes(saved) : saved
       const saw = header(state)
       const resumed: Setup<R> = {
@@ -143,9 +185,10 @@ export const resumeProgram = <R>(
         }
       }
       return new Running(resumed, snapshot.header.budget.activeMs, () => [fresh, run] as const, true)
-    },
-    catch: (error) => (error instanceof SnapshotError ? error : new SnapshotError(String(error))),
-  })
+  } catch (error) {
+    throw error instanceof SnapshotError ? error : new SnapshotError(String(error))
+  }
+}
 
 // Sources restored recently, by text: the AST is never changed, so runs restored from the same program share it.
 const restoredSources = new Map<string, Source>()
@@ -161,7 +204,7 @@ const restoreInto = (saved: unknown, vm: Vm): Snapshot =>
       restoredSources.set(code, parsed.source)
       return parsed.source
     },
-    interruption: () => new Interruption(Cause.interrupt()),
+    interruption: () => new Interruption(),
   })
 
 // A new runtime for a run: intrinsics, the host globals, the program's bindings, and its VM.
@@ -199,7 +242,7 @@ const ROUND_TRIP_MAX = 200
 export class Running<R> {
   private ctx!: Interpreter<R>
   private run_!: Run
-  private driver!: Driver<R>
+  private driver!: Driver
   private startedAt = 0
   // Set once the program's body ends, and once a suspend saved the run: either way, `done` gets the outcome next.
   private finished = false
@@ -207,8 +250,8 @@ export class Running<R> {
   private trips = 0
   // Checkpoints to let pass before the next round trip, so a large state is not saved at every one.
   private skip = 0
-  private readonly started = Deferred.makeUnsafe<void>()
-  private readonly done = Deferred.makeUnsafe<Outcome>()
+  private readonly started = Promise.withResolvers<void>()
+  private readonly done = Promise.withResolvers<Outcome>()
 
   constructor(
     private readonly setup: Setup<R>,
@@ -218,123 +261,145 @@ export class Running<R> {
     private readonly resuming = false,
   ) {}
 
-  /** Makes the run's runtime and driver, then runs the program in the current fiber until it ends or is suspended. */
-  run(): Effect.Effect<Outcome, never, R> {
-    const self = this
-    return Effect.gen(function* () {
-      const prepared = self.prepare()
-      if (!Array.isArray(prepared)) {
-        self.finished = true
-        return prepared as Result
-      }
-      const [ctx, run] = prepared as readonly [Interpreter<R>, Run]
-      self.ctx = ctx
-      self.run_ = run
-      self.driver = new Driver(ctx.vm, yield* Effect.context<R>())
-      if (roundTrip) self.driver.checkpoint = Effect.sync(() => self.trip())
-      self.startedAt = Date.now()
-      return yield* self.execute()
-    }).pipe(
-      Effect.onExit((exit) =>
-        Effect.andThen(Deferred.succeed(self.started, undefined), Deferred.done(self.done, exit)),
-      ),
-    )
+  /** Makes the run's runtime and driver, then runs the program until it ends or is suspended. */
+  async run(options?: RunOptions): Promise<Outcome> {
+    this.done.promise.catch(() => {})
+    try {
+      const outcome = await this.begin(options)
+      this.done.resolve(outcome)
+      return outcome
+    } catch (error) {
+      this.done.reject(error)
+      throw error
+    } finally {
+      this.started.resolve()
+    }
+  }
+
+  private begin(options: RunOptions | undefined): Promise<Outcome> {
+    const prepared = this.prepare()
+    if (!Array.isArray(prepared)) {
+      this.finished = true
+      return Promise.resolve(prepared as Result)
+    }
+    const [ctx, run] = prepared as readonly [Interpreter<R>, Run]
+    this.ctx = ctx
+    this.run_ = run
+    this.driver = new Driver(ctx.vm, options?.context)
+    if (roundTrip) this.driver.checkpoint = () => this.trip()
+    this.startedAt = Date.now()
+    return this.execute(options?.signal)
   }
 
   /**
-   * Saves the run's state and stops it, at once: `run` then returns the same `Suspended`. It fails with a
+   * Saves the run's state and stops it, at once: `run` then returns the same `Suspended`. It rejects with a
    * `SuspendError`, leaving the run running, while a host call is in progress. A run that already ended gives its result.
    * Before the run has started, it waits for it.
    */
-  suspend(maxBytes: number | undefined): Effect.Effect<Outcome, SuspendError> {
-    return Effect.andThen(
-      Deferred.await(this.started),
-      Effect.suspend(() => {
-        if (this.finished) return Deferred.await(this.done)
-        const saved = this.save(maxBytes)
-        if (saved instanceof SuspendError) return Effect.fail(saved)
-        this.stop(saved)
-        return Deferred.await(this.done)
-      }),
-    )
+  async suspend(maxBytes: number | undefined): Promise<Outcome> {
+    await this.started.promise
+    if (this.finished) return this.done.promise
+    const saved = this.save(maxBytes)
+    if (saved instanceof SuspendError) throw saved
+    this.stop(saved)
+    return this.done.promise
   }
 
-  private execute(): Effect.Effect<Outcome, never, R> {
-    const self = this
+  private async execute(signal: AbortSignal | undefined): Promise<Outcome> {
     const limits = this.setup.limits
     const logged = () => {
-      const logs = self.ctx.logs
+      const logs = this.ctx.logs
       return logs.length > 0 ? { logs: [...logs] } : {}
     }
-    const metadata = () => self.run_.metadata
+    const metadata = () => this.run_.metadata
     const failed = (error: Diagnostic): Result => ({ ok: false, error, ...logged(), metadata: metadata() })
     // Set only after copy-out so timeouts cannot report invalid values as completed.
     let returned: { value: Json; warnings: () => Array<Diagnostic> } | undefined
+    const driver = this.driver
 
-    const base = Effect.gen(function* () {
-      const driver = self.driver
-      if (self.resuming) driver.resume()
-      yield* Deferred.succeed(self.started, undefined)
-      const outcome = yield* driver.run()
-      if (outcome === SUSPENDED) return self.suspended!
-      self.finished = true
-      if (!outcome.ok) return failed(normalizeError(outcome.error))
-      const result = (outcome.value as Json | undefined) ?? null
-      const vm = self.ctx.vm
-      returned = { value: result, warnings: () => vm.diagnostics() }
-      // Host work the program left running is interrupted, not awaited.
-      yield* driver.interrupt()
-      const warnings = vm.diagnostics()
+    const base = async (): Promise<Outcome | typeof CANCELLED> => {
+      try {
+        if (this.resuming) driver.resume()
+        this.started.resolve()
+        const outcome = await driver.run()
+        if (outcome === CANCELLED) return CANCELLED
+        if (outcome === SUSPENDED) return this.suspended!
+        this.finished = true
+        if (!outcome.ok) return failed(normalizeError(outcome.error))
+        const result = (outcome.value as Json | undefined) ?? null
+        const vm = this.ctx.vm
+        returned = { value: result, warnings: () => vm.diagnostics() }
+        // Host work the program left running is interrupted, not awaited.
+        await driver.interrupt()
+        const warnings = vm.diagnostics()
+        return {
+          ok: true,
+          value: result,
+          ...(warnings.length > 0 ? { warnings } : {}),
+          ...logged(),
+          metadata: metadata(),
+        } satisfies Result
+      } finally {
+        await driver.interrupt()
+      }
+    }
+    const timedOut = (timeoutMs: number): Outcome => {
+      this.finished = true
+      if (this.suspended !== undefined) return this.suspended
+      if (returned === undefined) {
+        return failed({ kind: "TimeoutExceeded", message: `Execution timed out after ${timeoutMs}ms.` })
+      }
+      // Keep the timeout warning first so truncation preserves it.
       return {
         ok: true,
-        value: result,
-        ...(warnings.length > 0 ? { warnings } : {}),
+        value: returned.value,
+        warnings: [
+          {
+            kind: "TimeoutExceeded",
+            message: `The program returned, but background work was still running at the ${timeoutMs}ms timeout and was interrupted. Await all started promises.`,
+          },
+          ...returned.warnings(),
+        ],
         ...logged(),
         metadata: metadata(),
       } satisfies Result
-    }).pipe(Effect.ensuring(Effect.suspend(() => self.driver.interrupt())))
-    const timeoutMs = limits.timeoutMs
-    const operation =
-      timeoutMs === undefined
-        ? base
-        : base.pipe(
-            Effect.timeoutOrElse({
-              duration: Math.max(0, timeoutMs - this.activeBefore),
-              orElse: () =>
-                Effect.sync((): Outcome => {
-                  self.finished = true
-                  if (self.suspended !== undefined) return self.suspended
-                  if (returned === undefined) {
-                    return failed({ kind: "TimeoutExceeded", message: `Execution timed out after ${timeoutMs}ms.` })
-                  }
-                  // Keep the timeout warning first so truncation preserves it.
-                  return {
-                    ok: true,
-                    value: returned.value,
-                    warnings: [
-                      {
-                        kind: "TimeoutExceeded",
-                        message: `The program returned, but background work was still running at the ${timeoutMs}ms timeout and was interrupted. Await all started promises.`,
-                      },
-                      ...returned.warnings(),
-                    ],
-                    ...logged(),
-                    metadata: metadata(),
-                  } satisfies Result
-                }),
-            }),
-          )
+    }
 
-    return operation.pipe(
-      Effect.catchCause((cause) =>
-        Cause.hasInterruptsOnly(cause) ? Effect.interrupt : Effect.succeed(failed(normalizeError(Cause.squash(cause)))),
-      ),
-      Effect.map((result) =>
-        result.ok === "suspended" || limits.maxOutputBytes === undefined
-          ? result
-          : boundOutput(result, limits.maxOutputBytes),
-      ),
+    const timeoutMs = limits.timeoutMs
+    const stopped = Promise.withResolvers<"timeout" | "interrupt">()
+    const timer =
+      timeoutMs === undefined
+        ? undefined
+        : setTimeout(() => stopped.resolve("timeout"), Math.max(0, timeoutMs - this.activeBefore))
+    const onAbort = () => stopped.resolve("interrupt")
+    if (signal?.aborted) onAbort()
+    else signal?.addEventListener("abort", onAbort, { once: true })
+    const running = base().then(
+      (outcome) => ({ outcome }),
+      (error: unknown) => ({ error }),
     )
+    const first = await Promise.race([running, stopped.promise]).finally(() => {
+      clearTimeout(timer)
+      signal?.removeEventListener("abort", onAbort)
+    })
+    if (typeof first === "string") {
+      driver.cancel()
+      const late = first === "timeout" ? timedOut(timeoutMs!) : undefined
+      await running
+      if (late === undefined) throw new Interrupted()
+      return this.bound(late)
+    }
+    if ("error" in first) {
+      if (first.error instanceof Interrupted) throw first.error
+      return this.bound(failed(normalizeError(first.error)))
+    }
+    // Only a cancelled run gives CANCELLED, and that is the other branch.
+    return this.bound(first.outcome as Outcome)
+  }
+
+  private bound(result: Outcome): Outcome {
+    const maxOutputBytes = this.setup.limits.maxOutputBytes
+    return result.ok === "suspended" || maxOutputBytes === undefined ? result : boundOutput(result, maxOutputBytes)
   }
 
   // Suspends the run once its state is saved: the driver stops.
@@ -467,20 +532,25 @@ export const parseProgram = (
     return { ok: true, program, source: new Source("main", code, program) }
   } catch (error) {
     // Only acorn's own syntax errors become a located ParseError; anything else keeps the generic failure path.
-    const acorn = error instanceof SyntaxError ? decodeAcornError(error) : Option.none()
-    if (Option.isNone(acorn)) throw error
-    return { ok: false, error: parseDiagnostic(acorn.value) }
+    if (!(error instanceof SyntaxError) || !isAcornError(error)) throw error
+    return { ok: false, error: parseDiagnostic(error) }
   }
 }
 
 // Acorn appends ` (line:column)` to its messages; its lines are 1-based and its columns 0-based.
-const AcornError = Schema.Struct({
-  message: Schema.String,
-  loc: Schema.Struct({ line: Schema.Number, column: Schema.Number }),
-})
-const decodeAcornError = Schema.decodeUnknownOption(AcornError)
+type AcornError = { readonly message: string; readonly loc: { readonly line: number; readonly column: number } }
 
-const parseDiagnostic = (error: typeof AcornError.Type): Diagnostic => {
+const isAcornError = (error: SyntaxError): error is SyntaxError & AcornError => {
+  const loc: unknown = (error as { loc?: unknown }).loc
+  return (
+    typeof loc === "object" &&
+    loc !== null &&
+    typeof (loc as { line?: unknown }).line === "number" &&
+    typeof (loc as { column?: unknown }).column === "number"
+  )
+}
+
+const parseDiagnostic = (error: AcornError): Diagnostic => {
   const location = { line: error.loc.line, column: error.loc.column + 1 }
   const reason = error.message.replace(/ \(\d+:\d+\)$/, "")
   const feature = reason === "Unexpected character '@'"

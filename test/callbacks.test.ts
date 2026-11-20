@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
-import { Host, Runtime } from "../src/index.js"
+import { Host, Runtime } from "../src/effect/index.js"
 import { execute } from "./run.js"
 
 // Callback acceptance is one gate shared by array methods, sort, string replacers,

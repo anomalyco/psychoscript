@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Effect, Fiber } from "effect"
-import { Host, Runtime, toBytes } from "../src/index.js"
+import { Host, Runtime, toBytes } from "../src/effect/index.js"
 
 // Suspending a run, saving its state, and resuming it in a brand-new runtime.
 

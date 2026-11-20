@@ -1,6 +1,17 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
+
+**Breaking.**
+
+- The root API is Promise-based: `runtime.execute`, `program.run`, `program.suspend` and `runtime.resume(...).run`
+  return Promises, and host functions return values or Promises.
+- The Effect API moved to `psychoscript/effect`. To migrate, change `from "psychoscript"` to
+  `from "psychoscript/effect"`; nothing else changes.
+- `effect` is now an optional peer dependency, needed only for `psychoscript/effect`.
+- Host calls get `call.signal`, aborted when the run stops or a suspend interrupts the call.
+- Aborting `execute(code, { signal })` or `run({ signal })` rejects with a `DOMException` named `"AbortError"`.
+- A sync host function that returns a Promise now sees its signal abort when the run stops.
 
 - Errors have a V8-style, non-enumerable `stack`: `name: message` and up to 10 `at fn (<program>:line:col)`
   frames, taken when the error is made and kept across a suspend and resume.

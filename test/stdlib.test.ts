@@ -16,7 +16,7 @@
  */
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
-import { Host, Runtime } from "../src/index.js"
+import { Host, Runtime } from "../src/effect/index.js"
 import { emptyNamespace } from "./run.js"
 
 // Standard-library value types: Date, RegExp, Map, Set. Programs use them as ordinary JS;

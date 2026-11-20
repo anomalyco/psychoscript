@@ -1,5 +1,5 @@
 import type { Code } from "./code.js"
-import { DurableFn, Fn } from "./host-function.js"
+import { DurableFn, Fn } from "./runtime/contract.js"
 import type { Interpreter } from "./runtime/interpreter.js"
 import type { AstNode, Diagnostic } from "./runtime/model.js"
 import { internalCode } from "./prelude/internal.js"
