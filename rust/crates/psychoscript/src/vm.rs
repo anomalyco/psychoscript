@@ -191,6 +191,9 @@ pub struct Names {
     pub status: Atom,
     pub reason: Atom,
     pub errors: Atom,
+    pub byte_length: Atom,
+    pub byte_offset: Atom,
+    pub buffer: Atom,
 }
 
 #[derive(Default)]
@@ -360,6 +363,9 @@ impl Vm {
             status: atoms.intern_static("status"),
             reason: atoms.intern_static("reason"),
             errors: atoms.intern_static("errors"),
+            byte_length: atoms.intern_static("byteLength"),
+            byte_offset: atoms.intern_static("byteOffset"),
+            buffer: atoms.intern_static("buffer"),
         };
         let char_strs = (0u8..128)
             .map(|c| atoms.alloc((c as char).to_string()))

@@ -83,6 +83,12 @@ pub fn describe(v: &HostValue) -> Json {
         HostValue::Headers(entries) => json!({ "headers": entries }),
         HostValue::Buffer(b) => json!({ "buffer": b }),
         HostValue::Bytes(b) => json!({ "bytes": b }),
+        HostValue::TypedArray(t) if t.kind() == psychoscript::TypedKind::ArrayBuffer => {
+            json!({ "arrayBuffer": t.to_vec() })
+        }
+        HostValue::TypedArray(t) => json!({
+            "typed": [t.kind().name(), t.values().into_iter().map(number).collect::<Vec<_>>()]
+        }),
         HostValue::Map(entries) => json!({
             "map": entries.iter().map(|(k, x)| json!([describe(k), describe(x)])).collect::<Vec<_>>()
         }),

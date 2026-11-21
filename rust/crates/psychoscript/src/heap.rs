@@ -3,9 +3,10 @@
 //! share, so a measurement is the same on every platform and garbage never counts.
 //!
 //! - An object made by the run: `OBJECT_BYTES`, plus `PROPERTY_BYTES` per own property, plus `ELEMENT_BYTES` per
-//!   array element or argument (holes included), `ENTRY_BYTES` per Map, Set, WeakMap or WeakSet entry, and one per
-//!   byte of a Uint8Array. A function's `name` and `length` are part of it, an accessor's own object part of its
-//!   property, and the program body's function object, which the reference has none of, counts nothing.
+//!   array element or argument (holes included), `ENTRY_BYTES` per Map, Set, WeakMap or WeakSet entry. A function's
+//!   `name` and `length` are part of it, an accessor's own object part of its property, and the program body's
+//!   function object, which the reference has none of, counts nothing.
+//! - A typed array's storage: one per byte, once for every view and `ArrayBuffer` that shares it.
 //! - What the fresh runtime made (built-ins, host globals, and the lazy groups of built-ins it sets up later) counts
 //!   nothing, though the objects the program stored on it do.
 //! - A string value: `STRING_BYTES` plus two per UTF-16 code unit, once per distinct text. Property keys count as part
@@ -138,6 +139,7 @@ pub(crate) fn measure(vm: &Vm) -> u64 {
         cells: vec![false; vm.cells.len()],
         strings: vec![false; vm.atoms.bufs.len()],
         texts: FxHashSet::default(),
+        buffers: FxHashSet::default(),
         work: Vec::new(),
         bytes: 0,
     };
@@ -166,6 +168,12 @@ pub(crate) fn measure(vm: &Vm) -> u64 {
             continue;
         }
         w.bytes += object_bytes(vm, o);
+        // A typed array's storage counts once, whole, however many views and `ArrayBuffer`s share it.
+        if let Kind::Bytes(b) = &o.kind
+            && w.buffers.insert(Arc::as_ptr(&b.buf) as usize)
+        {
+            w.bytes += b.bytes().len() as u64;
+        }
         // An error's `stack` text counts as part of the error, a function's `name` and `length` as part of it.
         let skip: &[Option<&Atom>] = match &o.kind {
             Kind::Error(_) => &[stack, stack],
@@ -206,7 +214,7 @@ fn object_bytes(vm: &Vm, o: &Obj) -> u64 {
         Kind::Map(m) | Kind::Set(m) | Kind::WeakMap(m) | Kind::WeakSet(m) => {
             own + ENTRY_BYTES * m.live as u64
         }
-        Kind::Bytes(b) => own + b.len as u64,
+
         _ => own,
     }
 }
@@ -217,6 +225,7 @@ struct Walk<'v> {
     cells: Vec<bool>,
     strings: Vec<bool>,
     texts: FxHashSet<(&'v str, Option<&'v [u16]>)>,
+    buffers: FxHashSet<usize>,
     work: Vec<Id>,
     bytes: u64,
 }

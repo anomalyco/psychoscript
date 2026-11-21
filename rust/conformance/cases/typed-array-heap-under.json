@@ -1,0 +1,10 @@
+{
+  "bindings": {},
+  "limits": {
+    "max_heap_bytes": 4192
+  },
+  "ok": true,
+  "value": 1000,
+  "logs": [],
+  "metadata": null
+}

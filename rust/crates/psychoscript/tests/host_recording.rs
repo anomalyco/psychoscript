@@ -87,6 +87,7 @@ fn globals(state: &State, run: &psychoscript::Run) -> Vec<(String, HostValue)> {
             .takes_functions()
     };
     let (note, post, never, grab, wait) = (s.clone(), s.clone(), s.clone(), s.clone(), s.clone());
+    let scale = s.clone();
     let (start, waited, cancel) = (s.clone(), s.clone(), s.clone());
     let counting = run.clone();
     vec![
@@ -121,6 +122,38 @@ fn globals(state: &State, run: &psychoscript::Run) -> Vec<(String, HostValue)> {
                 HostValue::object([("items", HostValue::array([1.0.into(), 2.0.into()]))])
             })
             .thenable()),
+        ),
+        (
+            "scale".into(),
+            HostFunction::new(move |args, call| {
+                scale.push(json!(["scale", call.key(), describe(&args[0])]));
+                let k = num(args.get(1));
+                match &args[0] {
+                    HostValue::TypedArray(t) => {
+                        let kind = t.kind();
+                        t.with_bytes_mut(|bytes| {
+                            for c in bytes.chunks_exact_mut(kind.size()) {
+                                let v = kind.read(c);
+                                kind.write(v * k, c);
+                            }
+                        });
+                        args[0].clone()
+                    }
+                    // A Uint8Array is the host's own copy.
+                    HostValue::Bytes(b) => {
+                        HostValue::Bytes(b.iter().map(|x| (*x as f64 * k) as u8).collect())
+                    }
+                    other => other.clone(),
+                }
+            })
+            .into(),
+        ),
+        (
+            "mesh".into(),
+            HostFunction::new(|_, _| {
+                HostValue::TypedArray(psychoscript::TypedArray::from_f32(&[0.5, 1.5, 2.5]))
+            })
+            .into(),
         ),
         (
             "note".into(),

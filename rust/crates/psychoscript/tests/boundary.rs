@@ -153,6 +153,7 @@ fn constructor(v: &HostValue) -> &'static str {
         HostValue::Headers(_) => "Headers",
         HostValue::Bytes(_) => "Uint8Array",
         HostValue::Buffer(_) => "Buffer",
+        HostValue::TypedArray(t) => t.kind().name(),
         HostValue::Response(_) => "StreamingResponse",
     }
 }

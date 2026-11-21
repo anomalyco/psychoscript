@@ -830,7 +830,7 @@ pub fn tag_of(vm: &Vm, v: &Value) -> &'static str {
             Kind::StrIter { .. } => "String Iterator",
             Kind::RegExp(_) => "RegExp",
             Kind::Date(_) => "Date",
-            Kind::Bytes(_) => "Uint8Array",
+            Kind::Bytes(b) => b.elem.name(),
             Kind::WeakMap(_) => "WeakMap",
             Kind::Url(_) => "URL",
             Kind::SearchParams(_) => "URLSearchParams",

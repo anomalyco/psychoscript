@@ -439,7 +439,7 @@ impl Enc<'_> {
             "lazyBuiltins": vm.lazy_builtins,
             "std": [std.regexp, std.date, std.uint8, std.buffer, std.text_encoder, std.text_decoder,
                     std.weak_map, std.weak_set, std.iterator_helper, std.uri_error, std.url, std.params,
-                    std.headers, std.loaded],
+                    std.headers, std.loaded, std.array_buffer, std.typed],
             "host": host,
         }))
     }
@@ -620,7 +620,15 @@ impl Enc<'_> {
                         self.buffers.len() - 1
                     }
                 };
-                json!(["y", i, b.start, b.len, b.buffer])
+                json!([
+                    "y",
+                    i,
+                    b.start,
+                    b.len,
+                    b.buffer,
+                    b.elem.code(),
+                    opt_id(b.owner)
+                ])
             }
             Kind::TextDecoder(d) => {
                 json!(["td", d.fatal, d.ignore_bom, bytes_hex(&d.queued), d.seen])
@@ -1011,6 +1019,7 @@ fn host_value(v: &HostValue) -> J {
         HostValue::Headers(entries) => json!(["hd", entries]),
         HostValue::Bytes(b) => json!(["u8", bytes_hex(b)]),
         HostValue::Buffer(b) => json!(["buf", bytes_hex(b)]),
+        HostValue::TypedArray(t) => json!(["ta", t.kind.code(), bytes_hex(&t.to_vec())]),
         HostValue::Response(_) => json!(["resp"]),
         HostValue::Error(e) => json!([
             "e",
@@ -1148,6 +1157,15 @@ fn host_value_from(j: &J) -> R<HostValue> {
             Some("sp") => HostValue::SearchParams(pairs(at(j, 1)?)?),
             Some("hd") => HostValue::Headers(pairs(at(j, 1)?)?),
             Some("u8") => HostValue::Bytes(hex_bytes(&string(at(j, 1)?)?)?),
+            Some("ta") => {
+                let kind = crate::TypedKind::from_code(uint(at(j, 1)?)?)
+                    .ok_or_else(|| invalid("a typed array's kind is unknown."))?;
+                let bytes = hex_bytes(&string(at(j, 2)?)?)?;
+                HostValue::TypedArray(
+                    crate::TypedArray::new(kind, bytes)
+                        .ok_or_else(|| invalid("a typed array's bytes are not whole elements."))?,
+                )
+            }
             Some("buf") => HostValue::Buffer(hex_bytes(&string(at(j, 1)?)?)?),
             // A live response has no data form; a settlement holding one is restored as `lost_path` says.
             Some("resp") => HostValue::Undefined,
@@ -1751,7 +1769,9 @@ impl Dec<'_> {
                     return Err(invalid("a byte array's buffer is missing."));
                 };
                 let (start, len) = (usize_(f(2)?)?, usize_(f(3)?)?);
-                if start + len
+                let elem = crate::builtins::bytes::Elem::from_code(uint(f(5)?)?)
+                    .ok_or_else(|| invalid("a typed array's kind is unknown."))?;
+                if start + len * elem.size()
                     > buf
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1764,6 +1784,8 @@ impl Dec<'_> {
                     start,
                     len,
                     buffer: boolean(f(4)?)?,
+                    elem,
+                    owner: self.opt_id(f(6)?)?,
                 }))
             }
             "td" => Kind::TextDecoder(Box::new(crate::builtins::bytes::Decoder {
@@ -2092,6 +2114,14 @@ pub fn restore(vm: &mut Vm, snapshot: &Snapshot, program_hash: &str) -> R<()> {
     realm.params = id(11)?;
     realm.headers = id(12)?;
     realm.loaded = id(13)? as u8;
+    realm.array_buffer = id(14)?;
+    let typed = std
+        .get(15)
+        .and_then(J::as_array)
+        .ok_or_else(|| invalid("built-in prototypes are missing."))?;
+    for (i, t) in typed.iter().enumerate().take(5) {
+        realm.typed[i] = u32_(t)?;
+    }
 
     restore_host(vm, &dec, field(st, "host")?, base)?;
     let inbox = field_list(st, "inbox")?;

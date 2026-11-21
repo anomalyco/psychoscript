@@ -102,6 +102,9 @@ export const describe = (v: unknown): unknown => {
   if (Buffer.isBuffer(v)) return { buffer: [...v] }
   if (v instanceof Uint8Array) return { bytes: [...v] }
   if (v instanceof ArrayBuffer) return { arrayBuffer: [...new Uint8Array(v)] }
+  if (ArrayBuffer.isView(v) && !(v instanceof DataView)) {
+    return { typed: [v.constructor.name, [...(v as unknown as Iterable<number>)]] }
+  }
   if (v instanceof Map) return { map: [...v].map(([k, x]) => [describe(k), describe(x)]) }
   if (v instanceof Set) return { set: [...v].map(describe) }
   if (Array.isArray(v))

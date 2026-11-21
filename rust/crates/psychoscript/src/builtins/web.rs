@@ -1190,7 +1190,7 @@ fn clone_value(vm: &mut Vm, v: &Value, memo: &mut Vec<(Id, Id)>) -> Res {
         Map(bool),
         Date(f64),
         RegExp,
-        Bytes(Vec<u8>),
+        Bytes(Vec<u8>, super::bytes::Elem),
         Error,
         Array(usize),
         Object,
@@ -1201,7 +1201,7 @@ fn clone_value(vm: &mut Vm, v: &Value, memo: &mut Vec<(Id, Id)>) -> Res {
         Kind::Set(_) => Plan::Map(true),
         Kind::Date(t) => Plan::Date(*t),
         Kind::RegExp(_) => Plan::RegExp,
-        Kind::Bytes(b) => Plan::Bytes(b.to_vec()),
+        Kind::Bytes(b) => Plan::Bytes(b.to_vec(), b.elem),
         Kind::Error(_) => Plan::Error,
         Kind::Array(items) => Plan::Array(items.len()),
         Kind::Ordinary | Kind::Arguments(_) | Kind::TextDecoder(_) => Plan::Object,
@@ -1219,8 +1219,8 @@ fn clone_value(vm: &mut Vm, v: &Value, memo: &mut Vec<(Id, Id)>) -> Res {
             remember(vm, memo, r.as_obj().unwrap_or(0));
             Ok(r)
         }
-        Plan::Bytes(data) => {
-            let b = super::bytes::new_bytes(vm, data, false);
+        Plan::Bytes(data, elem) => {
+            let b = super::bytes::new_typed(vm, data, elem);
             remember(vm, memo, b.as_obj().unwrap_or(0));
             Ok(b)
         }

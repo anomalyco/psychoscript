@@ -52,6 +52,12 @@ pub const GLOBAL_NAMES: &[&str] = &[
     "Headers",
     "Uint8Array",
     "Buffer",
+    "ArrayBuffer",
+    "Uint16Array",
+    "Uint32Array",
+    "Int32Array",
+    "Float32Array",
+    "Float64Array",
     "TextEncoder",
     "TextDecoder",
     "encodeURI",
@@ -1439,6 +1445,14 @@ fn to_host(
         Kind::Url(_) => HostValue::Url(crate::builtins::web::url_href(vm, id)),
         Kind::SearchParams(p) => HostValue::SearchParams(p.list.clone()),
         Kind::Headers(h) => HostValue::Headers(crate::builtins::web::header_entries(&h.list)),
+        Kind::Bytes(b) if b.elem != crate::builtins::bytes::Elem::U8 => {
+            HostValue::TypedArray(crate::TypedArray {
+                kind: b.elem,
+                buf: b.buf.clone(),
+                start: b.start,
+                len: b.len,
+            })
+        }
         Kind::Bytes(b) => {
             let data = b.to_vec();
             if b.buffer {
@@ -1653,6 +1667,7 @@ fn from_host(
         }
         HostValue::Bytes(data) => crate::builtins::bytes::new_bytes(vm, data.clone(), false),
         HostValue::Buffer(data) => crate::builtins::bytes::new_bytes(vm, data.clone(), true),
+        HostValue::TypedArray(t) => crate::builtins::typed::from_host(vm, t),
         HostValue::Response(response) => response_from_host(vm, response, label, place, depth)?,
         HostValue::Map(entries) => {
             let proto = vm.realm.map_proto;

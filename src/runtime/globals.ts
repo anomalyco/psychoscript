@@ -1,7 +1,7 @@
 import { Arr, BoundFn, Callable, coerceToInteger, defineAccessor, get, Obj, type Value } from "./objects.js"
 import { withReads } from "./callback.js"
 import { arrayGlobal } from "../stdlib/array.js"
-import { textDecoderGlobal, textEncoderGlobal, uint8ArrayGlobal } from "../stdlib/bytes.js"
+import { arrayBufferGlobal, textDecoderGlobal, textEncoderGlobal, typedArrayGlobal, uint8ArrayGlobal } from "../stdlib/bytes.js"
 import { bufferGlobal } from "../stdlib/buffer.js"
 import { mapGlobal, setGlobal, weakMapGlobal, weakSetGlobal } from "../stdlib/collections.js"
 import { consoleGlobal } from "../stdlib/console.js"
@@ -144,6 +144,12 @@ const table: Record<string, Factory> = {
   Uint8Array: (ctx) => uint8ArrayGlobal(ctx),
   // Built on the host's Buffer, so only where there is one (Node and Bun, not browsers).
   ...(typeof Buffer === "undefined" ? {} : { Buffer: <R>(ctx: Interpreter<R>) => bufferGlobal(ctx) }),
+  ArrayBuffer: (ctx) => arrayBufferGlobal(ctx),
+  Uint16Array: (ctx) => typedArrayGlobal(ctx, "Uint16Array"),
+  Uint32Array: (ctx) => typedArrayGlobal(ctx, "Uint32Array"),
+  Int32Array: (ctx) => typedArrayGlobal(ctx, "Int32Array"),
+  Float32Array: (ctx) => typedArrayGlobal(ctx, "Float32Array"),
+  Float64Array: (ctx) => typedArrayGlobal(ctx, "Float64Array"),
   TextEncoder: (ctx) => textEncoderGlobal(ctx),
   TextDecoder: (ctx) => textDecoderGlobal(ctx),
   encodeURI: (ctx) => uriGlobal(ctx, "encodeURI"),

@@ -57,7 +57,11 @@ pub fn roots_but(vm: &Vm, measuring: bool, visit: &mut impl FnMut(Ref)) {
         std.url,
         std.params,
         std.headers,
-    ] {
+        std.array_buffer,
+    ]
+    .into_iter()
+    .chain(std.typed)
+    {
         t.id(id);
     }
     for id in vm.template_objs_ref().iter().flatten() {
@@ -328,10 +332,14 @@ impl<F: FnMut(Ref)> Tracer<'_, F> {
             | Kind::Error(_)
             | Kind::RegExp(_)
             | Kind::Date(_)
-            | Kind::Bytes(_)
             | Kind::TextDecoder(_)
             | Kind::Headers(_) => {}
             Kind::StrIter { s, .. } => self.val(&Value::Str(*s)),
+            Kind::Bytes(b) => {
+                if let Some(owner) = b.owner {
+                    self.id(owner);
+                }
+            }
             Kind::Namespace(ns) => {
                 self.atom(ns.name);
                 if !ns.is_root() {

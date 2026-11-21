@@ -87,6 +87,13 @@ const make = (entry: Entry) => {
         promised: Host.fn(([n]: ReadonlyArray<number>) => Promise.resolve(n)),
         load: Host.fn(([n]: ReadonlyArray<unknown>) => Effect.succeed(n), { type: "async" }),
         find: Host.fn((_: ReadonlyArray<unknown>) => ({ items: [1, 2] }), { type: "sync-thenable" }),
+        scale: Host.fn(([data, k]: ReadonlyArray<unknown>, call: { key: string }) => {
+          log.push(["scale", call.key, describe(data)])
+          const view = data as Float32Array
+          for (let i = 0; i < view.length; i++) view[i] = view[i]! * (k as number)
+          return view
+        }),
+        mesh: Host.fn(() => new Float32Array([0.5, 1.5, 2.5])),
         note: Host.fn((args: ReadonlyArray<unknown>, call: { key: string }) => {
           log.push(["note", call.key, args.map(describe)])
         }),
@@ -285,6 +292,13 @@ return [thrown instanceof RangeError, thrown.message, sent instanceof Promise, a
   },
   { code: `note({ n: never() })`, translate: wait, limits: { timeoutMs: 50 } },
   { code: `note({ f() {}, p: load(1) }, () => 2)`, translate: { functions: "drop", promises: "await" } },
+  // Typed arrays other than Uint8Array cross as views of the same bytes, which the host reads and writes in place; a
+  // Uint8Array as a copy. What a host function returns stays a view of its bytes.
+  { code: `const v = new Float32Array([1, 2, 3]); const r = scale(v, 2); return [Array.from(v), r instanceof Float32Array, Array.from(r), r === v]` },
+  { code: `const b = new ArrayBuffer(8); const f = new Float32Array(b); scale(f.subarray(1), 3); f[1] = 4; scale(f, 1); note(b, new Int32Array(b, 4, 1)); return Array.from(f)` },
+  { code: `const u = new Uint8Array([1, 2]); scale(u, 2); return Array.from(u)` },
+  { code: `const m = mesh(); m[0] = 9; return [m.constructor.name, Array.from(m), m.byteLength, m.buffer.byteLength]` },
+  { code: `return mesh()` },
   // Limits.
   { code: `while (true) {}`, limits: { timeoutMs: 50 } },
   { code: `await never()`, limits: { timeoutMs: 50 } },

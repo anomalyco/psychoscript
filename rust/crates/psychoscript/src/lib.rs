@@ -54,7 +54,7 @@ pub use exec::BoxFuture;
 pub use gc::HeapStats;
 pub use host_function::{
     Call, CallType, DurableCall, DurableFunction, Failure, HostError, HostFunction, HostResult,
-    HostString, HostValue, Namespace, Resolved, Returned, SnapshotHooks,
+    HostString, HostValue, Namespace, Resolved, Returned, SnapshotHooks, TypedArray, TypedKind,
 };
 pub use program::{Program, RunOutcome, RunningCall, SuspendError, Suspended, Suspender};
 pub use run::{Code, Compiled};
