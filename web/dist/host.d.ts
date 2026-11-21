@@ -303,7 +303,17 @@ declare class Widget implements MountedWidget {
     private livePause;
     private liveTick;
     private toggleFullscreen;
+    private closeFullscreen;
+    /** The close button's area in the root node's coordinates, or null when not full screen. */
+    private closeInRoot;
+    /** Tells the program it's full screen (or not) and where the close button is; again when that area moves. */
+    private announceFullscreen;
     private fullscreenChanged;
+    private announced;
+    private leavingHistory;
+    /** The root's size while full screen: a new size moves the close button's area in root coordinates. */
+    private rootSize;
+    private onPopState;
     destroy(): void;
 }
 export { ShaderView };

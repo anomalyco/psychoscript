@@ -370,43 +370,90 @@ for (const [query, backend] of [["?only=shader-demo", "webgpu"], ["?only=shader-
         [...el.shadowRoot!.querySelectorAll(".pw-surface")].map((s, i) => [["pulse", "echo", "strip"][i]!, Math.round(s.getBoundingClientRect().height)]),
       ),
     )
+  const caption = async () => (await w.locator(".pw-caption").textContent()) ?? ""
+  const enter = async () => {
+    await w.hover()
+    await w.locator(".pw-expand").click()
+    await page.waitForFunction(() => document.fullscreenElement !== null, undefined, { timeout: 3000 }).catch(() => {})
+    await page.waitForTimeout(800)
+  }
+  const inFull = () => page.evaluate(() => document.fullscreenElement !== null)
   const inline = await heights()
   check(inline.pulse === 140 && inline.echo === 80 && inline.strip === 40, "full screen: inline, canvases keep their heights", inline)
-  await w.hover()
-  await w.locator(".pw-expand").click()
-  await page.waitForFunction(() => document.fullscreenElement !== null, undefined, { timeout: 3000 }).catch(() => {})
-  await page.waitForTimeout(800)
-  const inFull = await page.evaluate(() => document.fullscreenElement?.className)
+  const historyBefore = await page.evaluate(() => history.length)
+  await enter()
   const title = await w.locator(".pw-text").first().textContent()
   const full = await heights()
-  check(inFull === "psychoscript-widget", "full screen: the widget's element goes full screen", inFull)
+  check((await page.evaluate(() => document.fullscreenElement?.className)) === "psychoscript-widget", "full screen: the widget's element goes full screen")
   check(title?.includes("(full screen)") ?? false, "full screen: onFullscreen gets { type: 'fullscreen', value: true }", title)
   check(
     full.pulse! > 300 && Math.abs(full.pulse! - full.echo!) <= 2 && full.strip === 40,
     "full screen: canvases share the free height equally by default, fill: false keeps its height",
     full,
   )
-  const close = await w.evaluate((el) => {
-    const b = el.shadowRoot!.querySelector(".pw-expand") as HTMLElement
-    const r = b.getBoundingClientRect()
-    const chrome = [...el.shadowRoot!.querySelectorAll(".pw-root > :not(.pw-view):not(.pw-expand):not(.pw-hint)")].filter(
-      (e) => getComputedStyle(e).display !== "none",
-    ).length
-    return { position: getComputedStyle(b).position, w: r.width, h: r.height, top: r.top, right: innerWidth - r.right, label: b.getAttribute("aria-label"), chrome }
+  // The close button floats over the root's top-right corner: 32 x 32, 8 px from the top and right edges.
+  const geo = await w.evaluate((el) => {
+    const root = el.shadowRoot!
+    const b = (root.querySelector(".pw-expand") as HTMLElement).getBoundingClientRect()
+    const node = (root.querySelector(".pw-view") as HTMLElement).firstElementChild!.getBoundingClientRect()
+    const pulse = root.querySelector(".pw-surface canvas") as HTMLCanvasElement
+    const c = pulse.getBoundingClientRect()
+    const scale = pulse.width / c.width
+    const px = pulse.getContext("2d")!.getImageData(Math.round((b.left + b.width / 2 - c.left) * scale), Math.round((b.top + b.height / 2 - c.top) * scale), 1, 1).data
+    const chrome = [...root.querySelectorAll(".pw-root > :not(.pw-view):not(.pw-expand):not(.pw-hint)")].filter((e) => getComputedStyle(e).display !== "none").length
+    return {
+      button: { w: b.width, h: b.height, top: b.top - node.top, right: node.right - b.right },
+      inRoot: [Math.round(b.left - node.left), Math.round(b.top - node.top), b.width, b.height].join(","),
+      inPulse: [Math.round(b.left - c.left), Math.round(b.top - c.top), b.width, b.height].join(","),
+      pixel: [...px.slice(0, 3)],
+      label: el.shadowRoot!.querySelector(".pw-expand")!.getAttribute("aria-label"),
+      visible: getComputedStyle(root.querySelector(".pw-expand")!).opacity,
+      chrome,
+    }
   })
   check(
-    close.position === "fixed" && close.w <= 32 && close.h <= 32 && close.top <= 16 && close.right <= 16 && close.label === "Exit full screen" && close.chrome === 0,
-    "full screen: the only chrome is a small floating close button in the corner",
-    close,
+    geo.button.w === 32 && geo.button.h === 32 && Math.round(geo.button.top) === 8 && Math.round(geo.button.right) === 8 && geo.visible === "1" &&
+      geo.label === "Exit full screen" && geo.chrome === 0,
+    "full screen: the close button floats 32 x 32, 8 px from the root's top and right, always visible, the only chrome",
+    geo,
   )
+  let text = await caption()
+  check(text.includes("· close " + geo.inRoot + " ·"), `full screen: the fullscreen event carries close in root coordinates (${geo.inRoot})`, text)
+  check(geo.pixel.join(",") === "255,0,255", "full screen: Frame.close is the button's area on the canvas under it (drawn magenta there)", geo.pixel)
+  const pulseBox = (await w.locator(".pw-surface canvas").first().boundingBox())!
+  await page.mouse.click(pulseBox.x + pulseBox.width / 2, pulseBox.y + pulseBox.height / 2)
+  await page.waitForTimeout(300)
+  text = await caption()
+  check(text.endsWith("pointer close " + geo.inPulse), `full screen: pointer values from that canvas carry the same close (${geo.inPulse})`, text)
   await shot(page, "fullscreen")
+  // Esc closes full screen even while the widget holds the keyboard, and releases it.
+  check(await w.evaluate((el) => "focused" in el.dataset), "full screen: the click gave the widget keyboard focus")
+  check(
+    await w.evaluate((el) => getComputedStyle(el.shadowRoot!.querySelector(".pw-hint")!).display === "none"),
+    "full screen: no focus hint over the widget (the close button is the only chrome)",
+  )
   await page.keyboard.press("Escape")
-  await page.waitForTimeout(500)
-  if (await page.evaluate(() => document.fullscreenElement !== null)) await page.evaluate(() => document.exitFullscreen())
-  await page.waitForTimeout(500)
-  const after = await w.locator(".pw-text").first().textContent()
+  await page.waitForTimeout(600)
+  const afterEsc = { full: await inFull(), focused: await w.evaluate((el) => "focused" in el.dataset), text: await caption() }
+  check(!afterEsc.full && !afterEsc.focused && afterEsc.text.includes("close none ·"), "full screen: Esc closes it (keyboard focused), releases focus, and leaving sends close: null", afterEsc)
   const back = await heights()
-  check(!after?.includes("(full screen)") && back.pulse === 140 && back.echo === 80 && back.strip === 40, "full screen: leaving it sends value false and restores the heights", { after, back })
+  check(back.pulse === 140 && back.echo === 80 && back.strip === 40, "full screen: leaving it restores the heights", back)
+  check(
+    (await page.evaluate((k) => history.state?.[k], "psychoscriptWidgetFullscreen")) === undefined,
+    "full screen: closing it takes its history entry back off",
+  )
+  // The browser's back closes it too, whatever holds the keyboard.
+  await enter()
+  check((await page.evaluate((k) => history.state?.[k] !== undefined, "psychoscriptWidgetFullscreen")) && (await page.evaluate(() => history.length)) > historyBefore, "full screen: entering pushes a history entry")
+  await page.mouse.click(pulseBox.x + pulseBox.width / 2, pulseBox.y + 200)
+  await page.goBack()
+  await page.waitForTimeout(600)
+  check(!(await inFull()) && !(await w.evaluate((el) => "focused" in el.dataset)) && page.url().includes("only=fullscreen-demo"), "full screen: the browser's back closes it and releases focus, staying on the page")
+  // The close button closes it as well.
+  await enter()
+  await w.locator(".pw-expand").click()
+  await page.waitForTimeout(600)
+  check(!(await inFull()), "full screen: the close button closes it")
   check(errors.length === 0, "full screen: no page errors", errors)
   await page.close()
 }

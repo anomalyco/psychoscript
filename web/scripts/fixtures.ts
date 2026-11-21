@@ -302,28 +302,33 @@ function view(state, data) {
     mode: "step",
     data: { title: "Pulse" },
     source: `function init() {
-  return { full: false, taps: 0 }
+  return { full: false, taps: 0, close: null, pointerClose: null }
 }
 
-// In full screen "pulse" and "echo" share the free height (the default); "strip" keeps its 40 px (fill: false).
+const rect = (r) => (r ? [r.x, r.y, r.width, r.height].join(",") : "none")
+
+// In full screen "pulse" goes first (under the close button) and shares the free height with "echo"; "strip" keeps
+// its 40 px (fill: false). The close button's area comes with the fullscreen hook, each Frame and pointer values.
 function view(state, data) {
+  const pulse = ui.canvas({
+    key: "pulse",
+    height: 140,
+    fps: 60,
+    onPointer: (state, p) => (p.kind === "down" ? { ...state, taps: state.taps + 1, pointerClose: p.close ?? null } : state),
+  })
   return ui.column({ gap: 2, fullscreen: true }, [
+    state.full && pulse,
     ui.text(data.title + (state.full ? " (full screen)" : ""), { style: "title" }),
     !state.full && ui.text("Expand me: both canvases share the screen, the strip keeps its height.", { tone: "muted" }),
-    ui.canvas({
-      key: "pulse",
-      height: 140,
-      fps: 60,
-      onPointer: (state, p) => (p.kind === "down" ? { ...state, taps: state.taps + 1 } : state),
-    }),
+    !state.full && pulse,
     ui.canvas({ key: "echo", height: 80 }),
     ui.canvas({ key: "strip", height: 40, fill: false }),
-    ui.text("taps: " + state.taps, { style: "caption" }),
+    ui.text("taps: " + state.taps + " · close " + rect(state.close) + " · pointer close " + rect(state.pointerClose), { style: "caption" }),
   ])
 }
 
-function onFullscreen(state, on) {
-  return { ...state, full: on }
+function onFullscreen(state, on, close) {
+  return { ...state, full: on, close }
 }
 
 function draw(state, data, frame) {
@@ -340,6 +345,8 @@ function draw(state, data, frame) {
     g.rect(0, frame.height / 2 - 2, frame.width * 0.6, 4, "success")
   }
   g.text(12, 20, label, { color: "muted", mono: true, size: 12 })
+  // Where the close button floats over this canvas: magenta, so a check can find it.
+  if (frame.close) g.rect(frame.close.x, frame.close.y, frame.close.width, frame.close.height, "#ff00ff")
   return g
 }`,
   },
@@ -358,6 +365,19 @@ for (const name of names) {
 const tapDots = Bun.file(path.join(widget, "test/fixtures/tap-dots.js"))
 if (!fixtures.minigame && (await tapDots.exists()))
   fixtures.minigame = { mode: "live", source: await tapDots.text(), data: data.minigame }
+// Widget templates kept in demo/extra/ (<name>.js, and <name>.json with mode, capabilities and example data), such
+// as the launch dashboard used for full-screen shots.
+const extra = path.join(root, "demo/extra")
+for (const file of (await readdir(extra).catch(() => [] as string[])).filter((f) => f.endsWith(".js")).sort()) {
+  const name = file.slice(0, -3)
+  const meta = await Bun.file(path.join(extra, `${name}.json`)).json()
+  fixtures[name] = {
+    mode: meta.mode ?? "step",
+    source: await Bun.file(path.join(extra, file)).text(),
+    data: meta.example ?? {},
+    ...(meta.capabilities ? { capabilities: meta.capabilities } : {}),
+  }
+}
 for (const [name, t] of Object.entries(DEMO))
   fixtures[name] = {
     mode: t.mode,

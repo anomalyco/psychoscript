@@ -4,7 +4,7 @@
 import type { Command, Images } from "./canvas.js"
 import { paint } from "./canvas.js"
 import { markdown } from "./markdown.js"
-import type { Frame, ViewNode, WidgetEvent } from "./protocol.js"
+import type { Frame, Rect, ViewNode, WidgetEvent } from "./protocol.js"
 import { DRAW_BUDGET_MS, MAX_FPS, MAX_SHADER_BYTES, MAX_SHADER_VALUES, OVERRUNS_TO_FREEZE, SHADER_FRAME_BUDGET_MS } from "./protocol.js"
 import type { ShaderError, Surface } from "./shader.js"
 import { UNIFORM_FLOATS, surface } from "./shader.js"
@@ -18,6 +18,8 @@ export interface RenderContext {
   theme(): Resolved
   visible(): boolean
   fullscreen(): boolean
+  /** The full-screen close button's area in viewport coordinates, or null when not full screen. */
+  closeRect(): DOMRect | null
   images: Images
   resolveImage(src: string): string | undefined
   /** Step mode: run the draw step for `frame`. Live mode: undefined (commands arrive through `liveCommands`). */
@@ -685,6 +687,9 @@ abstract class SurfaceBase {
     if (id === null || this.ctx.readOnly()) return
     const p = this.local(e)
     const value: Record<string, unknown> = { kind, x: p.x, y: p.y, width: this.width, height: this.height }
+    // The close button's area, as the drawing saw it, for hit tests that keep clear of it.
+    const close = this.close()
+    if (close) value.close = close
     // Moves say whether a button is held: hover moves (desktop and web) have `down: false`.
     if (kind === "move") value.down = down ?? true
     this.ctx.emit({ id, type: "pointer", value })
@@ -803,7 +808,17 @@ abstract class SurfaceBase {
       pointer: this.pointer,
       dark: this.ctx.theme().dark,
       fullscreen: this.ctx.fullscreen(),
+      close: this.close(),
     }
+  }
+
+  /** The full-screen close button's area in this surface's coordinates when it overlaps it, else null. */
+  close(): Rect | null {
+    const b = this.ctx.closeRect()
+    if (!b) return null
+    const c = this.canvas.getBoundingClientRect()
+    if (b.right <= c.left || b.left >= c.right || b.bottom <= c.top || b.top >= c.bottom) return null
+    return rectIn(b, c)
   }
 
   protected start() {
@@ -1084,6 +1099,16 @@ export class ShaderView extends SurfaceBase {
     super.destroy()
     this.surface?.destroy()
     this.surface = undefined
+  }
+}
+
+/** `r` in the coordinates of `origin`'s top-left corner, rounded to logical pixels. */
+export function rectIn(r: DOMRect, origin: DOMRect): Rect {
+  return {
+    x: Math.round(r.left - origin.left),
+    y: Math.round(r.top - origin.top),
+    width: Math.round(r.width),
+    height: Math.round(r.height),
   }
 }
 

@@ -2,11 +2,11 @@
 
 import type { Command } from "./canvas.js"
 import { Images } from "./canvas.js"
-import type { ErrorInfo, Frame, FromWorker, LiveExit, StepOutput, ToWorker, ViewNode, WidgetEvent } from "./protocol.js"
+import type { ErrorInfo, Frame, FromWorker, LiveExit, Rect, StepOutput, ToWorker, ViewNode, WidgetEvent } from "./protocol.js"
 import { Input } from "./input.js"
 import { SLICE_BUDGET_MS } from "./protocol.js"
 import type { RenderContext } from "./render.js"
-import { CanvasView, ShaderView, Ticker, destroy as destroyTree, hasSurface, icon, reconcile, surfaces } from "./render.js"
+import { CanvasView, ShaderView, Ticker, destroy as destroyTree, hasSurface, icon, rectIn, reconcile, surfaces } from "./render.js"
 import type { ShaderError } from "./shader.js"
 import { stylesheet } from "./styles.js"
 import type { Resolved, Theme } from "./theme.js"
@@ -540,6 +540,7 @@ class Widget implements MountedWidget {
       theme: () => this.theme,
       visible: () => this.visible,
       fullscreen: () => this.isFullscreen,
+      closeRect: () => (this.isFullscreen ? this.expand.getBoundingClientRect() : null),
       images: host.images,
       resolveImage: (src) => (options.resolveImage ? options.resolveImage(src) : defaultImage(src)),
       draw: this.mode() === "step" ? (frame) => this.draw(frame) : undefined,
@@ -562,6 +563,9 @@ class Widget implements MountedWidget {
       emit: (e) => this.emit(e),
       wantsPointer: () => this.livePointer || this.view?.capture === "pointer",
       pointerReleased: () => (this.livePointer = false),
+      escape: () => {
+        if (this.isFullscreen) void this.closeFullscreen()
+      },
       pointerId: () => surfaces(this.viewEl).find((s) => s.id !== null)?.id ?? "",
       changed: (focused, captured, keys) => {
         if (focused) this.element.dataset.focused = ""
@@ -1118,6 +1122,7 @@ class Widget implements MountedWidget {
           pointer: null,
           dark: this.theme.dark,
           fullscreen: this.isFullscreen,
+          close: this.closeInRoot(),
         }
     this.worker.send({ t: "deliver", wid: this.wid, message: { type: "frame", frame } })
   }
@@ -1126,11 +1131,31 @@ class Widget implements MountedWidget {
 
   private async toggleFullscreen() {
     try {
-      if (this.isFullscreen) await document.exitFullscreen()
+      if (this.isFullscreen) await this.closeFullscreen()
       else await this.element.requestFullscreen({ navigationUI: "hide" })
     } catch (e) {
       this.clientError(`full screen: ${String((e as Error)?.message ?? e)}`, e)
     }
+  }
+
+  private async closeFullscreen() {
+    if (document.fullscreenElement === this.element) await document.exitFullscreen().catch(() => {})
+  }
+
+  /** The close button's area in the root node's coordinates, or null when not full screen. */
+  private closeInRoot(): Rect | null {
+    if (!this.isFullscreen) return null
+    const root = (this.viewEl.firstElementChild as HTMLElement | null) ?? this.viewEl
+    return rectIn(this.expand.getBoundingClientRect(), root.getBoundingClientRect())
+  }
+
+  /** Tells the program it's full screen (or not) and where the close button is; again when that area moves. */
+  private announceFullscreen() {
+    const close = this.closeInRoot()
+    const key = JSON.stringify([this.isFullscreen, close])
+    if (key === this.announced) return
+    this.announced = key
+    this.emit({ id: "", type: "fullscreen", value: this.isFullscreen, close })
   }
 
   private fullscreenChanged() {
@@ -1142,7 +1167,37 @@ class Widget implements MountedWidget {
     this.updateExpand()
     // Surfaces with `fill` grow or shrink; resizes reach their draws through their ResizeObservers.
     if (this.view) reconcile(this.ctx, this.viewEl, [this.view])
-    this.emit({ id: "", type: "fullscreen", value: on })
+    if (on) {
+      // Back closes full screen: an entry to go back from (widgets-fullscreen.md, "Back always closes full screen").
+      history.pushState({ ...(history.state ?? {}), [HISTORY_KEY]: this.wid }, "")
+      this.rootSize.observe(this.viewEl)
+      addEventListener("popstate", this.onPopState)
+    } else {
+      this.rootSize.disconnect()
+      // Closed some other way (Esc, the button): take our history entry back off.
+      if (history.state?.[HISTORY_KEY] === this.wid) {
+        this.leavingHistory = true
+        history.back()
+      } else removeEventListener("popstate", this.onPopState)
+    }
+    this.announceFullscreen()
+  }
+
+  private announced = ""
+  private leavingHistory = false
+  /** The root's size while full screen: a new size moves the close button's area in root coordinates. */
+  private rootSize = new ResizeObserver(() => this.announceFullscreen())
+
+  private onPopState = () => {
+    if (this.leavingHistory) {
+      this.leavingHistory = false
+      removeEventListener("popstate", this.onPopState)
+      return
+    }
+    removeEventListener("popstate", this.onPopState)
+    // The browser's back: close full screen, whatever holds the keyboard or the pointer.
+    this.input.release()
+    void this.closeFullscreen()
   }
 
   destroy() {
@@ -1152,6 +1207,8 @@ class Widget implements MountedWidget {
     this.destroyed = true
     this.host.ticker.delete(this.liveTick)
     this.input.destroy()
+    this.rootSize.disconnect()
+    removeEventListener("popstate", this.onPopState)
     this.element.ownerDocument.removeEventListener("fullscreenchange", this.onFullscreen)
     for (const el of this.viewEl.children) destroyTree(el)
     this.host.forget(this)
@@ -1169,6 +1226,9 @@ function programError(e: ErrorInfo, phase: string): boolean {
   if (e.type === "shader") return e.program === true
   return ["syntax", "runtime", "timeout", "outputTooLarge", "sliceBudget", "view", "draw"].includes(e.type)
 }
+
+/** Marks the history entry a full-screen widget pushed. */
+const HISTORY_KEY = "psychoscriptWidgetFullscreen"
 
 function describe(e: ErrorInfo): string {
   const where = e.line ? ` (line ${e.line}${e.column ? `, column ${e.column}` : ""})` : ""

@@ -22,6 +22,8 @@ interface Gpu {
     device: GPUDevice;
     format: GPUTextureFormat;
     pipelines: Map<string, Promise<GPURenderPipeline | ShaderError>>;
+    /** Error scopes are the device's, not a pipeline's: builds take turns so one's errors can't land in another's scope. */
+    turn: Promise<unknown>;
     layout: GPUBindGroupLayout;
 }
 /** Use WebGL2 even where WebGPU works (tests, or a host that wants it). */

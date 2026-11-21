@@ -16,6 +16,8 @@ export interface InputHost {
   wantsPointer(): boolean
   /** The pointer was released by Esc or the browser: a live `capturePointer()` must ask again. */
   pointerReleased(): void
+  /** Esc (pressed, or ending Pointer Lock): besides releasing both, it closes full screen. */
+  escape(): void
   /** The `id` for captured pointer events: the first canvas or shader with one. */
   pointerId(): string
   /**
@@ -69,7 +71,12 @@ export class Input {
 
   /** Esc, leaving full screen, the window losing focus: give back the pointer and the keyboard at once. */
   release() {
-    if (this.locked) this.doc.exitPointerLock()
+    if (this.locked) {
+      // Our own let-go: the lock change that follows isn't another Esc.
+      this.letGo = true
+      this.h.pointerReleased()
+      this.doc.exitPointerLock()
+    }
     const inner = this.h.shadow.activeElement as HTMLElement | null
     inner?.blur()
     if (this.doc.activeElement === this.h.element) this.h.element.blur()
@@ -121,6 +128,7 @@ export class Input {
         e.preventDefault()
         e.stopPropagation()
         this.release()
+        this.h.escape()
       }
       return
     }
@@ -177,9 +185,11 @@ export class Input {
       this.h.emit({ id: "", type: "capture", value: false })
       if (this.letGo) this.letGo = false
       else {
-        // Esc (which the browser takes itself while the pointer is locked) or the browser letting go: both go.
+        // Esc (which the browser takes itself while the pointer is locked) or the browser letting go: both go, and
+        // full screen closes.
         this.h.pointerReleased()
         this.release()
+        this.h.escape()
       }
     }
     this.h.changed(this.focused, locked, this.keys)

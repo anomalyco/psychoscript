@@ -37,6 +37,8 @@ interface Gpu {
   device: GPUDevice
   format: GPUTextureFormat
   pipelines: Map<string, Promise<GPURenderPipeline | ShaderError>>
+  /** Error scopes are the device's, not a pipeline's: builds take turns so one's errors can't land in another's scope. */
+  turn: Promise<unknown>
   layout: GPUBindGroupLayout
 }
 
@@ -63,7 +65,7 @@ export function webgpu(): Promise<Gpu | undefined> {
       const layout = device.createBindGroupLayout({
         entries: [{ binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } }],
       })
-      return { adapter, device, format: nav.gpu.getPreferredCanvasFormat(), pipelines: new Map(), layout }
+      return { adapter, device, format: nav.gpu.getPreferredCanvasFormat(), pipelines: new Map(), layout, turn: Promise.resolve() }
     } catch {
       return undefined
     }
@@ -74,7 +76,7 @@ export function webgpu(): Promise<Gpu | undefined> {
 async function pipeline(g: Gpu, wgsl: string): Promise<GPURenderPipeline | ShaderError> {
   let p = g.pipelines.get(wgsl)
   if (!p) {
-    p = (async () => {
+    const build = async (): Promise<GPURenderPipeline | ShaderError> => {
       const code = HEADER + wgsl + ENTRY
       g.device.pushErrorScope("validation")
       const module = g.device.createShaderModule({ code })
@@ -100,7 +102,9 @@ async function pipeline(g: Gpu, wgsl: string): Promise<GPURenderPipeline | Shade
         await g.device.popErrorScope()
         return { message: String((e as Error)?.message ?? e), program: (e as { reason?: string })?.reason === "validation" }
       }
-    })()
+    }
+    p = g.turn.then(build, build)
+    g.turn = p
     g.pipelines.set(wgsl, p)
   }
   return p

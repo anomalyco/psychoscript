@@ -12,8 +12,10 @@ export const CSS: string = /* css */ `
 }
 :host(:fullscreen) { background: var(--pw-bg); overflow: auto; }
 :host(:fullscreen) .pw-root {
+  /* The root fills the screen (the safe area): the close button floats over its top-right corner, and the program is
+     told where (widgets-fullscreen.md, Chrome). */
   min-height: 100%; display: flex; flex-direction: column;
-  padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
 /* Full screen (widgets-fullscreen.md, Layout): the root fills the screen; every canvas and shader not opted out with
    fill: false shares the remaining height equally (its height is the minimum); taller content scrolls. */
@@ -141,7 +143,11 @@ export const CSS: string = /* css */ `
   pointer-events: none;
 }
 .pw-hint svg { width: 13px; height: 13px; }
-:host(:fullscreen) .pw-hint { position: fixed; top: max(14px, env(safe-area-inset-top)); right: max(48px, calc(env(safe-area-inset-right) + 38px)); }
+:host(:fullscreen) .pw-hint {
+  /* Full screen has no chrome but the close button, and the program only keeps clear of that: no focus hint there
+     (Esc and back close full screen, releasing the keyboard). */
+  display: none;
+}
 .pw-expand {
   position: absolute; top: -4px; right: -4px; z-index: 2; width: 28px; height: 28px; border-radius: 6px; padding: 0;
   display: flex; align-items: center; justify-content: center; cursor: pointer;
@@ -153,9 +159,10 @@ export const CSS: string = /* css */ `
 .pw-expand:focus-visible { outline: 2px solid var(--pw-accent); outline-offset: 1px; }
 @media (hover: none) { .pw-expand { opacity: .85; } }
 :host(:fullscreen) .pw-expand {
-  /* The only chrome in full screen: a small floating close button, clear of the safe areas. */
-  position: fixed; top: max(10px, env(safe-area-inset-top)); right: max(10px, env(safe-area-inset-right)); opacity: .9;
-  border-radius: 50%; background: color-mix(in srgb, var(--pw-bg) 80%, transparent);
+  /* The only chrome: always visible, 32 x 32 (all of it the button), 8 px from the root's top and right edges. */
+  position: fixed; top: calc(env(safe-area-inset-top) + 8px); right: calc(env(safe-area-inset-right) + 8px);
+  width: 32px; height: 32px; border-radius: 8px; opacity: 1;
+  background: color-mix(in srgb, var(--pw-bg) 85%, transparent); color: var(--pw-text);
 }
 `
 

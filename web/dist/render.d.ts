@@ -1,5 +1,5 @@
 import type { Command, Images } from "./canvas.js";
-import type { Frame, ViewNode, WidgetEvent } from "./protocol.js";
+import type { Frame, Rect, ViewNode, WidgetEvent } from "./protocol.js";
 import type { ShaderError } from "./shader.js";
 import type { Resolved } from "./theme.js";
 /** What rendering needs from its widget. */
@@ -10,6 +10,8 @@ export interface RenderContext {
     theme(): Resolved;
     visible(): boolean;
     fullscreen(): boolean;
+    /** The full-screen close button's area in viewport coordinates, or null when not full screen. */
+    closeRect(): DOMRect | null;
     images: Images;
     resolveImage(src: string): string | undefined;
     /** Step mode: run the draw step for `frame`. Live mode: undefined (commands arrive through `liveCommands`). */
@@ -97,6 +99,8 @@ declare abstract class SurfaceBase {
     protected layout(n: ViewNode): boolean;
     protected measure(): boolean;
     frame(dt: number): Frame;
+    /** The full-screen close button's area in this surface's coordinates when it overlaps it, else null. */
+    close(): Rect | null;
     protected start(): void;
     protected stop(): void;
     protected abstract tick: (now: number) => void;
@@ -154,5 +158,7 @@ export declare class ShaderView extends SurfaceBase {
     protected tick: (now: number) => void;
     destroy(): void;
 }
+/** `r` in the coordinates of `origin`'s top-left corner, rounded to logical pixels. */
+export declare function rectIn(r: DOMRect, origin: DOMRect): Rect;
 /** The surfaces under `root`, in document order. */
 export declare function surfaces(root: Element): (CanvasView | ShaderView)[];

@@ -98,8 +98,13 @@ Behavior, per the contract:
   `shader`. It uses the Fullscreen API on the widget's element (Esc exits); the program gets
   `{ id: "", type: "fullscreen", value }` (`onFullscreen` / `widget.on("fullscreen")`) and `Frame.fullscreen` is set.
   The root fills the screen and every `canvas` and `shader` shares the remaining height equally (its `height` is the
-  minimum; `fill: false` keeps it at its `height`); taller content scrolls. The only chrome is a small floating close
-  button in the top corner (clear of safe areas); the capability chip is hidden.
+  minimum; `fill: false` keeps it at its `height`); taller content scrolls. The only chrome is the close button,
+  always visible, floating 32 x 32 CSS px, 8 px from the root's top and right edges (no capability chip, no focus
+  hint). The program is told where it is: the `fullscreen` event carries `close` (the button's area in root
+  coordinates, `null` when leaving; sent again when the root's size changes), and `Frame.close` and absolute canvas or
+  shader `pointer` values carry it in that node's coordinates when it overlaps the node. Esc and the browser's back
+  close full screen whatever holds the keyboard or the pointer (entering pushes a history entry; `popstate` closes),
+  releasing both; closing it any other way takes that history entry back off.
 
 ### Failures (widgets.md, Failures)
 

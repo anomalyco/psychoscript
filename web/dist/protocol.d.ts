@@ -3,6 +3,15 @@ export interface WidgetEvent {
     id: string;
     type: "press" | "change" | "pointer" | "fullscreen" | "key" | "focus" | "capture";
     value?: unknown;
+    /** `fullscreen` events: the close button's area in the root node's coordinates, `null` when leaving. */
+    close?: Rect | null;
+}
+/** A rectangle in logical pixels. */
+export interface Rect {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
 }
 /** What a canvas draw step or a live `widget.frame()` knows of its frame. */
 export interface Frame {
@@ -19,6 +28,8 @@ export interface Frame {
     } | null;
     dark: boolean;
     fullscreen: boolean;
+    /** The full-screen close button's area in this canvas's coordinates when it overlaps the canvas, else `null`. */
+    close: Rect | null;
 }
 /** A view node: `{ type, ...props }`. */
 export interface ViewNode {

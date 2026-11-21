@@ -12,6 +12,8 @@ export interface InputHost {
     wantsPointer(): boolean;
     /** The pointer was released by Esc or the browser: a live `capturePointer()` must ask again. */
     pointerReleased(): void;
+    /** Esc (pressed, or ending Pointer Lock): besides releasing both, it closes full screen. */
+    escape(): void;
     /** The `id` for captured pointer events: the first canvas or shader with one. */
     pointerId(): string;
     /**
