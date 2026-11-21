@@ -786,3 +786,108 @@ while (true) {
     let exit = rx.recv_timeout(Duration::from_secs(5)).unwrap();
     assert!(exit[0].contains("SliceBudget"), "{exit:?}");
 }
+
+/// A frame loop: each message costs some compute (`m.work` iterations), then the program waits again.
+const WORK: &str = r#"
+// As the widget prelude does, the next receive is started before the work, and the wait is on that pending call.
+let next = __host.receive()
+while (true) {
+  const m = await next
+  next = __host.receive()
+  if (m.spin) while (true) {}
+  let x = 0
+  for (let i = 0; i < (m.work ?? 0); i++) x += Math.sqrt(i)
+  __host.post({ type: m.type ?? "done", x: x > 0 })
+}
+"#;
+
+fn exited(rx: &Receiver<Event>, within: Duration) -> Option<LiveExit> {
+    let until = Instant::now() + within;
+    while let Some(left) = until.checked_duration_since(Instant::now()) {
+        match rx.recv_timeout(left) {
+            Ok(Event::Exit(exit)) => return Some(exit),
+            Ok(_) => {}
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+/// How much `WORK` takes about `ms` of compute here (debug builds are slow).
+fn calibrate(run: &LiveRun, rx: &Receiver<Event>, ms: u64) -> u64 {
+    let mut work = 1_000u64;
+    loop {
+        let t = Instant::now();
+        run.deliver(format!(r#"{{"work":{work}}}"#)).unwrap();
+        assert!(matches!(next(rx), Event::Post(_)));
+        let took = t.elapsed();
+        if took >= Duration::from_millis(5) {
+            return (work as f64 * ms as f64 / (took.as_secs_f64() * 1000.0)) as u64;
+        }
+        work *= 2;
+    }
+}
+
+#[test]
+fn paused_at_rest_isnt_stopped() {
+    // Paused while it computes, so it reaches its next wait while paused: that's rest, not compute.
+    let (run, rx) = start_source(WORK, LiveOptions::default());
+    let work = calibrate(&run, &rx, 15);
+    // Paused at different points of the stretch, including right as it ends.
+    for wait in [0, 3, 8, 12, 14, 15, 16, 20] {
+        run.deliver(format!(r#"{{"work":{work}}}"#)).unwrap();
+        std::thread::sleep(Duration::from_millis(wait));
+        run.pause().unwrap();
+        assert!(
+            exited(&rx, Duration::from_millis(200)).is_none(),
+            "stopped while paused at rest ({wait} ms in)"
+        );
+        run.resume().unwrap();
+    }
+    run.deliver(r#"{"type":"alive"}"#.into()).unwrap();
+    loop {
+        match next(&rx) {
+            Event::Post(p) if p["type"] == "alive" => break,
+            Event::Exit(exit) => panic!("{exit:?}"),
+            _ => {}
+        }
+    }
+    assert!(run.is_running());
+}
+
+#[test]
+fn busy_while_paused_is_stopped() {
+    let (run, rx) = start_source(WORK, LiveOptions::default());
+    run.deliver(r#"{"spin":true}"#.into()).unwrap();
+    std::thread::sleep(Duration::from_millis(5));
+    run.pause().unwrap();
+    match exited(&rx, Duration::from_secs(2)) {
+        Some(LiveExit::Failed {
+            error: PsychoScriptError::SliceBudget { .. },
+        }) => {}
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn resume_restarts_the_budget() {
+    // At rest through a pause longer than the budget, then about 30 ms of compute right after resuming: within its
+    // own 50 ms, so not stopped (it would be if the budget counted from the pause).
+    let (run, rx) = start_source(WORK, LiveOptions::default());
+    let work = calibrate(&run, &rx, 30);
+    run.deliver(format!(r#"{{"work":{work}}}"#)).unwrap();
+    assert!(matches!(next(&rx), Event::Post(_)));
+    run.pause().unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    run.deliver(format!(r#"{{"work":{work},"type":"after"}}"#))
+        .unwrap();
+    run.resume().unwrap();
+    loop {
+        match next(&rx) {
+            Event::Post(p) if p["type"] == "after" => break,
+            Event::Exit(exit) => panic!("{exit:?}"),
+            _ => {}
+        }
+    }
+    assert!(exited(&rx, Duration::from_millis(150)).is_none());
+}

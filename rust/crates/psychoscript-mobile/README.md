@@ -78,7 +78,11 @@ its own until it returns or is stopped. Beside its input function it gets `__hos
   - **Slice budget:** a run computing past the budget without waiting is stopped with `SliceBudget`. Only the VM's
     own execution counts: not the time it waits on pending host calls (several at once included), and not time
     inside host code on its thread (`post`, `now`, the input function, polls of host calls, and the handler's
-    callbacks, however long the app takes in them). The language can't
+    callbacks, however long the app takes in them). Pausing doesn't change the accounting. A run that reaches a wait
+    while paused (its calls are held by the pause) answers the check from there and counts as at rest. A run still
+    computing while paused is stopped as it would be otherwise. On resume, the program's next stretch starts a fresh
+    budget, so the paused time never counts. Don't "reset" the stretch on pause: a loop that never waits would then
+    run unchecked. The language can't
     time-slice a VM, so the crate has psychoscript's suspender stop the run at its next step, which works inside tight
     loops. A timer checks each stretch of compute; past the budget it probes the run by waking its pending host calls,
     which the VM polls as soon as it waits and can't while it computes. An unanswered probe (30 ms grace) means the run
