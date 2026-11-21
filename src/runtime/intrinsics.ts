@@ -1,4 +1,4 @@
-import { define, hidden, Native, Arr, ErrorObj, Obj, StackSlot, type Value } from "./objects.js"
+import { define, hidden, Native, Arr, ErrorObj, Obj, readonly, StackSlot, type Value } from "./objects.js"
 
 export const errorTypes = [
   "Error",
@@ -43,6 +43,9 @@ const builtins = [
   "Generator",
   "AsyncGenerator",
   "AsyncFromSyncIterator",
+  "GeneratorFunction",
+  "AsyncGeneratorFunction",
+  "AsyncFunction",
 ] as const
 
 /**
@@ -84,6 +87,16 @@ export const createBuiltins = (): Builtins => {
   const iterator = plain()
   const asyncIterator = plain()
   const uint8Array = plain()
+  const generator = new Obj(iterator)
+  const asyncGenerator = new Obj(asyncIterator)
+  // What generator and async functions inherit: plain objects, not callable, linked to the prototype of what they make.
+  const functionKind = (made?: Obj) => {
+    const proto = new Obj(fn)
+    if (made === undefined) return proto
+    define(proto, "prototype", made, readonly)
+    define(made, "constructor", proto, readonly)
+    return proto
+  }
   return {
     Object: object,
     Function: fn,
@@ -111,10 +124,13 @@ export const createBuiltins = (): Builtins => {
     Iterator: iterator,
     IteratorHelper: new Obj(iterator),
     AsyncIterator: asyncIterator,
-    Generator: new Obj(iterator),
-    AsyncGenerator: new Obj(asyncIterator),
+    Generator: generator,
+    AsyncGenerator: asyncGenerator,
     /** CreateAsyncFromSyncIterator's objects; programs never see them. */
     AsyncFromSyncIterator: new Obj(asyncIterator),
+    GeneratorFunction: functionKind(generator),
+    AsyncGeneratorFunction: functionKind(asyncGenerator),
+    AsyncFunction: functionKind(),
     Error: error,
     TypeError: derived("TypeError"),
     RangeError: derived("RangeError"),

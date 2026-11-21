@@ -4,7 +4,8 @@ import type { ErrorObj, Value } from "./objects.js"
 
 /**
  * A diagnostic's category: one of the language's (`ParseError`, `UnsupportedSyntax`, `InvalidDataValue`,
- * `TimeoutExceeded`, `ExecutionFailure`, `Truncated`), or one a host function gives with `Host.fail`.
+ * `TimeoutExceeded`, `MemoryLimitExceeded`, `ExecutionFailure`, `Truncated`), or one a host function gives with
+ * `Host.fail`.
  */
 export type DiagnosticKind = string
 

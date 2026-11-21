@@ -4,10 +4,12 @@ import { conversions } from "./runtime/callback.js"
 import { locate, materialize, stackFrame } from "./runtime/errors.js"
 import type { Interpreter } from "./runtime/interpreter.js"
 import { type Builtins, isErrorType } from "./runtime/intrinsics.js"
+import { charging, FUEL_BYTES, type HeapMeter, memoryLimitMessage, setCharging } from "./runtime/heap.js"
 import { checkArrayLength, checkStringLength } from "./runtime/limits.js"
 import {
   AsyncIteratorSymbol,
   type AstNode,
+  HostFailure,
   invalidData,
   IteratorSymbol,
   PendingThrow,
@@ -44,6 +46,7 @@ import {
   Native,
   type NativeResult,
   Obj,
+  parseArrayIndex,
   Position,
   PromiseObj,
   readonly,
@@ -92,7 +95,7 @@ import { constructRegExp } from "./stdlib/regexp.js"
 import { enumerableSource } from "./stdlib/object.js"
 import { registerAsyncIntrinsics, type SettlingTarget, VmScheduler } from "./async.js"
 import type { Code } from "./code.js"
-import { type CaptureOptions, captureVm, type RestoreOptions, restoreVm } from "./snapshot.js"
+import { type CaptureOptions, captureVm, measureVm, type RestoreOptions, restoreVm } from "./snapshot.js"
 import { compileSource } from "./compiler/compile.js"
 import {
   AsyncFromSyncIterator,
@@ -212,6 +215,16 @@ const allocRegs = (size: number): Array<unknown> => {
   return regs
 }
 
+/** A program's bytecode, or the RangeError of one nested deeper than the compiler's host stack. */
+export const compileCodes = (source: Source): ReadonlyArray<Code> | RangeError => {
+  try {
+    return compileSource(source)
+  } catch (error) {
+    if (!(error instanceof RangeError)) throw error
+    return error
+  }
+}
+
 /** Internal closure wrapper that does not touch `builtins.Function` or `nativeRule.sealed`. */
 export class VmInternalFn {
   constructor(
@@ -267,6 +280,8 @@ export class Vm {
   redo:
     | { readonly frame: Frame; readonly pc: number; readonly values: ReadonlyArray<Value>; next: number }
     | undefined = undefined
+  /** The run's `limits.maxHeapBytes` and its pacing, when it has one. Never saved: a restored run measures afresh. */
+  heap: HeapMeter | undefined = undefined
 
   constructor(readonly ctx: Interpreter<unknown>) {
     this.scheduler = new VmScheduler(this)
@@ -296,17 +311,14 @@ export class Vm {
     return this.intrinsics.get(name)
   }
 
-  /** Queues the program's body as the root frame. */
-  start(source: Source): void {
+  /** Queues the program's body as the root frame, from its bytecode (`compileCodes`) when it is compiled already. */
+  start(source: Source, compiled?: ReadonlyArray<Code> | RangeError): void {
     if (!warmed) warmupVm(this)
     this.ctx.sources.set(source.id, source)
-    let codes: ReadonlyArray<Code>
-    try {
-      codes = compileSource(source)
-    } catch (error) {
-      // A program nested deeper than the compiler's host stack fails the run, as running it would.
-      if (!(error instanceof RangeError)) throw error
-      this.outcome = abrupt(error)
+    const codes = compiled ?? compileCodes(source)
+    // A program nested deeper than the compiler's host stack fails the run, as running it would.
+    if (codes instanceof RangeError) {
+      this.outcome = abrupt(codes)
       return
     }
     this.sourceCodes.set(source.id, codes)
@@ -331,12 +343,30 @@ export class Vm {
    * other; the outcome; the next job; one inbox completion; wait for running calls; stuck.
    */
   run(): Stop {
+    const heap = this.heap
+    if (heap === undefined) return this.runUntilStop()
+    const outer = charging
+    setCharging(heap)
+    try {
+      return this.runUntilStop()
+    } finally {
+      setCharging(outer)
+    }
+  }
+
+  private runUntilStop(): Stop {
     if (this.sliceStart < 0) this.sliceStart = performance.now()
     if (this.tripEvery > 0) this.fuel = this.tripEvery
     const sched = this.scheduler
     const hosts = this.hosts
     while (true) {
-      if (hosts.queued.length > 0) return { kind: "host", calls: hosts.handOver() }
+      if (hosts.queued.length > 0) {
+        if (this.heap !== undefined && this.heap.due) {
+          const stop = this.heapLimit()
+          if (stop !== undefined) return stop
+        }
+        return { kind: "host", calls: hosts.handOver() }
+      }
       if (this.sliced) {
         this.sliced = false
         this.sliceStart = -1
@@ -349,11 +379,12 @@ export class Vm {
         continue
       }
       if (this.frames.length > 0) {
-        if (hosts.blocked !== undefined) return { kind: "host", calls: [] }
+        if (hosts.blocked !== undefined) return this.waiting()
         // Fuel can run out on a call that then stopped for the host (a built-in or sync host call costs fuel too):
         // that's a slice point as well, or a loop of such calls would refill forever without yielding.
         if (this.fuel <= 0) {
-          this.fuel = this.tripEvery || INITIAL_FUEL
+          const stop = this.refuel()
+          if (stop !== undefined) return stop
           if (this.tripEvery > 0 || performance.now() - this.sliceStart >= SLICE_MS) {
             this.sliced = true
             continue
@@ -368,19 +399,28 @@ export class Vm {
           continue
         }
         if (signal === EXEC_FUEL) {
-          this.fuel = this.tripEvery || INITIAL_FUEL
+          const stop = this.refuel()
+          if (stop !== undefined) return stop
           if (this.tripEvery > 0 || performance.now() - this.sliceStart >= SLICE_MS) {
             this.sliced = true
           }
         }
         continue
       }
-      if (this.outcome !== undefined) return { kind: "done", completion: this.outcome }
+      if (this.outcome !== undefined) {
+        // The body ended: what it leaves reachable (its value among it) is measured once more.
+        if (this.heap !== undefined) {
+          const stop = this.heapLimit()
+          if (stop !== undefined) return stop
+        }
+        return { kind: "done", completion: this.outcome }
+      }
       const job = sched.dequeue()
       if (job !== undefined) {
         sched.beginJob(job)
         if (--this.fuel <= 0) {
-          this.fuel = this.tripEvery || INITIAL_FUEL
+          const stop = this.refuel()
+          if (stop !== undefined) return stop
           if (this.tripEvery > 0 || performance.now() - this.sliceStart >= SLICE_MS) {
             this.sliced = true
           }
@@ -388,9 +428,38 @@ export class Vm {
         continue
       }
       if (hosts.deliver()) continue
-      if (hosts.running.size > 0) return { kind: "host", calls: [] }
+      if (hosts.running.size > 0) return this.waiting()
       return { kind: "stuck", node: sched.stuckAwait() }
     }
+  }
+
+  // A stop to wait for host work, after measuring the heap when that is due.
+  private waiting(): Stop {
+    if (this.heap !== undefined && this.heap.due) {
+      const stop = this.heapLimit()
+      if (stop !== undefined) return stop
+    }
+    return { kind: "host", calls: [] }
+  }
+
+  // A fuel point: fuel for the next stretch, and the heap measured when that is due. The stop that ends the run once
+  // its heap is over its limit.
+  private refuel(): Stop | undefined {
+    const full = this.tripEvery || INITIAL_FUEL
+    const heap = this.heap
+    if (heap !== undefined) heap.debt += FUEL_BYTES * (full - this.fuel)
+    this.fuel = full
+    return heap !== undefined && heap.due ? this.heapLimit() : undefined
+  }
+
+  // Measures the heap; over the limit, the run ends here with `MemoryLimitExceeded`, which no handler sees.
+  private heapLimit(): Stop | undefined {
+    const heap = this.heap!
+    if (!heap.measured(measureVm(this))) return undefined
+    const completion = abrupt(new HostFailure("MemoryLimitExceeded", memoryLimitMessage(heap.limit)))
+    this.outcome = completion
+    this.frames.length = 0
+    return { kind: "done", completion }
   }
 
   // Continues the job stopped at a blocking call with the call's result, or throws its failure at the call.
@@ -784,9 +853,11 @@ export class Vm {
             // Op.PUT_PROP
             const v = regs[--sp] as Value
             const o = regs[sp - 1] as Value
+            const key = consts[w >>> 16] as string
             frame.pc = pc
             frame.sp = sp
-            if (this.execPutProp(frame, o, consts[w >>> 16] as string, v, pc, sp)) continue outer
+            if (key === "length" && this.execSetLength(frame, o, v, pc, sp)) continue outer
+            if (this.execPutProp(frame, o, key, v, pc, sp)) continue outer
             regs[sp - 1] = v
             pc++
             continue
@@ -823,6 +894,7 @@ export class Vm {
             }
             frame.pc = pc
             frame.sp = sp
+            if (keyVal === "length" && this.execSetLength(frame, o, v, pc, sp)) continue outer
             if (this.execPutProp(frame, o, propertyKey(keyVal), v, pc, sp)) continue outer
             regs[sp - 1] = v
             pc++
@@ -866,8 +938,15 @@ export class Vm {
             // Op.IN
             const rhs = regs[--sp] as Value
             const lhs = regs[sp - 1] as Value
-            if (typeof lhs === "number" && lhs >= 0 && (lhs | 0) === lhs && rhs instanceof ArrCtor) {
-              regs[sp - 1] = lhs in rhs.items
+            // A present element; a hole or an index past the end may still be inherited.
+            if (
+              typeof lhs === "number" &&
+              lhs >= 0 &&
+              (lhs | 0) === lhs &&
+              rhs instanceof ArrCtor &&
+              lhs in rhs.items
+            ) {
+              regs[sp - 1] = true
               pc++
               continue
             }
@@ -1614,7 +1693,7 @@ export class Vm {
   }
 
   private execToKey(frame: Frame, v: Value, pc: number, sp: number): boolean {
-    if (!(v instanceof Obj) || isOpaque(v)) {
+    if (!(v instanceof Obj)) {
       frame.regs[sp - 1] = coerceToString(v)
       return false
     }
@@ -1733,7 +1812,10 @@ export class Vm {
       return this.execConstruct(frame, parent, args, callSiteOf(frame, pc), regs[bx] as Fn)
     }
     if (!(parent instanceof Fn) || parent.klass === undefined) {
-      throw typeError(`Super constructor ${describeValue(parent)} of anonymous class is not a constructor`, frame.code.siteAt(pc))
+      throw typeError(
+        `Super constructor ${describeValue(parent)} of anonymous class is not a constructor`,
+        frame.code.siteAt(pc),
+      )
     }
     return this.constructClass(frame, parent, args, callSiteOf(frame, pc), regs[bx] as Fn)
   }
@@ -1935,7 +2017,7 @@ export class Vm {
     const fcode = frame.code
     frame.pc = pc
     frame.sp = sp
-    if (v instanceof Obj && !isOpaque(v)) {
+    if (v instanceof Obj) {
       frame.sp = sp - 1
       this.pushInternalCall(helper, [flag, v], fcode.siteAt(pc) ?? frame.origin)
       return true
@@ -1955,7 +2037,7 @@ export class Vm {
   }
 
   private execToStringSlow(frame: Frame, flag: number, v: Value, pc: number, sp: number): boolean {
-    if (flag === 1 || !(v instanceof Obj) || isOpaque(v)) {
+    if (flag === 1 || !(v instanceof Obj)) {
       frame.regs[sp - 1] = coerceToString(v)
       return false
     }
@@ -2086,7 +2168,7 @@ export class Vm {
     }
     frame.pc = pc
     const base = sp - n
-    const callee = regs[base - 1] as Builtin | Fn
+    const callee = this.constructible(frame, regs[base - 1] as Value, pc, sp)
     const args = regs.slice(base, sp) as Array<Value>
     frame.sp = base - 1
     if (callee instanceof Fn) return this.constructClass(frame, callee, args, callSiteOf(frame, pc))
@@ -2095,12 +2177,20 @@ export class Vm {
 
   private execNewSpread(frame: Frame, pc: number, sp: number): number {
     const regs = frame.regs
-    const argsArr = regs[--sp] as Arr
-    const callee = regs[--sp] as Builtin | Fn
     frame.pc = pc
-    frame.sp = sp
+    const callee = this.constructible(frame, regs[sp - 2] as Value, pc, sp)
+    const argsArr = regs[--sp] as Arr
+    frame.sp = --sp
     if (callee instanceof Fn) return this.constructClass(frame, callee, [...argsArr.items], callSiteOf(frame, pc))
     return this.execConstruct(frame, callee, [...argsArr.items], callSiteOf(frame, pc))
+  }
+
+  // IsConstructor, checked once the arguments are evaluated: a class, or a built-in that constructs.
+  private constructible(frame: Frame, callee: Value, pc: number, sp: number): Builtin | Fn {
+    if (callee instanceof Fn && callee.klass !== undefined) return callee
+    if (callee instanceof Builtin && callee.construct !== undefined) return callee
+    frame.sp = sp
+    throw notConstructible(callee, frame.code.siteAt(pc) as NewExpression)
   }
 
   // `new C(...)`, or `super(...)` for `newTarget`, runs C's constructor (`Mode.CONSTRUCT`): a base class's on a new
@@ -2116,7 +2206,14 @@ export class Vm {
     const proto = get(newTarget, "prototype")
     const self = ctor.klass!.derived ? newTarget : new Obj(proto instanceof Obj ? proto : this.ctx.builtins.Object)
     // A derived constructor's frame holds its new target until `super()` binds `this`.
-    this.pushFn(ctor, self, args, site ?? callerFrame.origin, Mode.CONSTRUCT, ctor.klass!.derived ? newTarget : undefined)
+    this.pushFn(
+      ctor,
+      self,
+      args,
+      site ?? callerFrame.origin,
+      Mode.CONSTRUCT,
+      ctor.klass!.derived ? newTarget : undefined,
+    )
     this.fuel--
     return 1
   }
@@ -2386,11 +2483,13 @@ export class Vm {
       }
       childCells = arr
     }
-    const fn = new Fn(this.ctx.builtins.Function, childCode, childCells)
-    if ((childCode.flags & CodeFlags.GENERATOR) !== 0) {
-      const isAsync = (childCode.flags & CodeFlags.ASYNC) !== 0
-      define(fn, "prototype", new Obj(isAsync ? this.ctx.builtins.AsyncGenerator : this.ctx.builtins.Generator), hidden)
+    const builtins = this.ctx.builtins
+    const isAsync = (childCode.flags & CodeFlags.ASYNC) !== 0
+    if ((childCode.flags & CodeFlags.GENERATOR) === 0) {
+      return new Fn(isAsync ? builtins.AsyncFunction : builtins.Function, childCode, childCells)
     }
+    const fn = new Fn(isAsync ? builtins.AsyncGeneratorFunction : builtins.GeneratorFunction, childCode, childCells)
+    define(fn, "prototype", new Obj(isAsync ? builtins.AsyncGenerator : builtins.Generator), hidden)
     return fn
   }
 
@@ -2497,7 +2596,7 @@ export class Vm {
     const site = frame.code.siteAt(pc)!
     const memberNode = site as MemberExpression
     if (mode !== 2) requireMemberBase(memberNode, o, keyVal)
-    if (keyVal instanceof Obj && !isOpaque(keyVal)) {
+    if (keyVal instanceof Obj) {
       frame.sp = sp - 2
       this.pushInternalCall("$vmGetElem", [o, keyVal], memberNode.property ?? site)
       return GETTER_ENTERED
@@ -2539,6 +2638,14 @@ export class Vm {
     return true
   }
 
+  // ArraySetLength converts an object through its own valueOf/toString: `[o, v] -> [v]` once the prelude has set it.
+  private execSetLength(frame: Frame, o: Value, v: Value, pc: number, sp: number): boolean {
+    if (!(o instanceof Arr) || !(v instanceof Obj)) return false
+    frame.sp = sp - 1
+    this.pushInternalCall("$vmSetLength", [o, v], frame.code.siteAt(pc) ?? frame.origin)
+    return true
+  }
+
   // A write to a primitive's property: only an inherited setter can take it (with the primitive as `this`).
   private primitiveSetter(fcode: Code, o: Value, key: PropertyKey, v: Value, pc: number): Callable | undefined {
     const site = fcode.siteAt(pc)!
@@ -2564,6 +2671,13 @@ export class Vm {
   private execDeleteProp(fcode: Code, o: Value, key: PropertyKey, pc: number): boolean {
     const site = fcode.siteAt(pc)!
     const ref = this.resolveMember(o, key, site)
+    // A primitive base deletes from its wrapper, whose only own properties are a string's indexes and length.
+    if (!(ref instanceof HostNamespace) && !(o instanceof Obj)) {
+      const index = typeof key === "symbol" ? undefined : parseArrayIndex(key)
+      const own = typeof o === "string" && (key === "length" || (index !== undefined && index < o.length))
+      if (own) throw typeError(`Cannot delete property '${String(key)}' of ${JSON.stringify(o)}.`, site)
+      return true
+    }
     if (ref instanceof HostNamespace || "value" in ref || ref.receiver !== ref.target) {
       throw invalidData("Only data fields may be deleted.", site)
     }
@@ -2574,7 +2688,7 @@ export class Vm {
   private execDeleteElem(frame: Frame, o: Value, keyVal: Value, pc: number, sp: number): boolean {
     const site = frame.code.siteAt(pc)!
     requireMemberBase(site as MemberExpression, o, keyVal)
-    if (keyVal instanceof Obj && !isOpaque(keyVal)) {
+    if (keyVal instanceof Obj) {
       frame.sp = sp - 1
       this.pushInternalCall("$vmDeleteElem", [o, keyVal], site)
       return true
@@ -2585,7 +2699,11 @@ export class Vm {
   }
 
   private execCheckBase(fcode: Code, kind: number, bx: number, regs: Array<unknown>, sp: number, pc: number): void {
-    const base = regs[kind === CheckBaseKind.READ || kind === CheckBaseKind.WRITE_ELEM ? sp - 2 : sp - 1] as Value
+    const base = regs[
+      kind === CheckBaseKind.READ || kind === CheckBaseKind.WRITE_ELEM || kind === CheckBaseKind.ASSIGN_PROP
+        ? sp - 2
+        : sp - 1
+    ] as Value
     if (base instanceof Obj && !(base instanceof PromiseObj)) return
     const site = fcode.siteAt(pc)!
     if (kind === CheckBaseKind.DESTRUCTURE) {
@@ -2599,7 +2717,7 @@ export class Vm {
       requireMemberBase(memberNode, base, regs[sp - 1] as Value)
       return
     }
-    const key = kind === CheckBaseKind.WRITE_PROP ? (fcode.consts[bx] as string) : propertyKey(regs[sp - 1] as Value)
+    const key = kind === CheckBaseKind.WRITE_ELEM ? propertyKey(regs[sp - 1] as Value) : (fcode.consts[bx] as string)
     const ref = this.resolveMember(base, key, site)
     // A primitive's inherited accessor takes the write (see `primitiveSetter`); the base is all that's checked here.
     if (!(ref instanceof HostNamespace) && !("value" in ref) && ref.receiver !== ref.target) {
@@ -2635,7 +2753,7 @@ export class Vm {
     }
     const fcode = frame.code
     const site = fcode.siteAt(pc) ?? frame.origin
-    if (v instanceof Obj && !isOpaque(v)) {
+    if (v instanceof Obj) {
       frame.sp = sp - 1
       this.pushInternalCall("$vmUnary", [sub, v], site)
       return true
@@ -3209,6 +3327,7 @@ export class Vm {
       case Op.PUT_PROP: {
         const v = regs[--sp] as Value
         frame.sp = sp
+        if (consts[bx] === "length" && this.execSetLength(frame, regs[sp - 1] as Value, v, pc, sp)) return -1
         if (this.execPutProp(frame, regs[sp - 1] as Value, consts[bx] as string, v, pc, sp)) return -1
         regs[sp - 1] = v
         return pc + 1
@@ -3217,6 +3336,7 @@ export class Vm {
         const v = regs[--sp] as Value
         const keyVal = regs[--sp] as Value
         frame.sp = sp
+        if (keyVal === "length" && this.execSetLength(frame, regs[sp - 1] as Value, v, pc, sp)) return -1
         if (this.execPutProp(frame, regs[sp - 1] as Value, propertyKey(keyVal), v, pc, sp)) return -1
         regs[sp - 1] = v
         return pc + 1

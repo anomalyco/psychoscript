@@ -4,6 +4,7 @@ import { type Call, DurableFn, Interrupted } from "./contract.js"
 import { fromBytes, header, type Snapshot, SnapshotError, toBytes } from "../snapshot/snapshot.js"
 import { normalizeError } from "./errors.js"
 import { hostGlobals } from "./extensions.js"
+import { HeapMeter } from "./heap.js"
 import { createBuiltins } from "./intrinsics.js"
 import { Interpreter } from "./interpreter.js"
 import type { Value } from "./objects.js"
@@ -11,7 +12,8 @@ import { type Diagnostic, formatLocation, sourceLocation } from "./model.js"
 import { CANCELLED, Driver, SUSPENDED } from "./driver.js"
 import { Interruption } from "./signals.js"
 import { Source } from "./source.js"
-import type { Vm } from "../vm.js"
+import { compileCodes, type Vm } from "../vm.js"
+import type { Code } from "../code.js"
 import type { Translate } from "../runtime.js"
 
 /**
@@ -107,6 +109,7 @@ export type Run = {
 export type Limits = {
   readonly timeoutMs: number | undefined
   readonly maxOutputBytes: number | undefined
+  readonly maxHeapBytes?: number | undefined
 }
 
 type Globals<R> = (ctx: Interpreter<R>) => ReadonlyArray<readonly [string, Value]>
@@ -136,23 +139,49 @@ export const finishExecution = async (outcome: Promise<Outcome>): Promise<Result
   }
 }
 
+/**
+ * A program compiled once to run many times, in any runtime: its parse and its bytecode, which no run changes. A run
+ * of it is the same as a run of its source, and so is a state saved from one.
+ */
+export class Compiled {
+  /** @internal */
+  constructor(
+    /** The program's source. */
+    readonly code: string,
+    /** @internal */
+    readonly source: Source,
+    /** @internal */
+    readonly codes: ReadonlyArray<Code> | RangeError,
+  ) {}
+}
+
+/**
+ * Parses and compiles a program, or gives the diagnostic its run would fail with before running anything: an empty
+ * program or a syntax error. Unsupported syntax still fails where it runs, as from source.
+ */
+export const compileProgram = (
+  code: string,
+): { readonly ok: true; readonly compiled: Compiled } | { readonly ok: false; readonly error: Diagnostic } => {
+  if (code.trim().length === 0) return { ok: false, error: { kind: "ParseError", message: "Code cannot be empty." } }
+  const parsed = parseProgram(code)
+  if (!parsed.ok) return parsed
+  return { ok: true, compiled: new Compiled(code, parsed.source, compileCodes(parsed.source)) }
+}
+
 /** A program ready to run on the VM: nothing runs until `run`. */
 export const startProgram = <R>(
   setup: Setup<R>,
-  code: string,
+  code: string | Compiled,
   bindings?: Readonly<Record<string, Json>>,
   runId: string = crypto.randomUUID(),
 ): Running<R> =>
   new Running(setup, 0, () => {
-    if (code.trim().length === 0) {
-      return { ok: false, error: { kind: "ParseError", message: "Code cannot be empty." }, metadata: null }
-    }
-    const parsed = parseProgram(code)
-    if (!parsed.ok) return { ok: false, error: parsed.error, metadata: null }
+    const compiled = typeof code === "string" ? compileProgram(code) : { ok: true as const, compiled: code }
+    if (!compiled.ok) return { ok: false, error: compiled.error, metadata: null }
     const run: Run = { id: runId, metadata: null }
     const runtime = instantiate(setup, run, bindings)
     runtime.vm.hosts.runId = runId
-    runtime.vm.start(parsed.source)
+    runtime.vm.start(compiled.compiled.source, compiled.compiled.codes)
     return [runtime, run] as const
   })
 
@@ -173,10 +202,11 @@ export const resumeProgram = <R>(
         limits: {
           timeoutMs: saw.limits.timeoutMs ?? undefined,
           maxOutputBytes: saw.limits.maxOutputBytes ?? undefined,
+          maxHeapBytes: saw.limits.maxHeapBytes ?? undefined,
         },
       }
       const run: Run = { id: saw.runId, metadata: saw.metadata }
-      const fresh = instantiate(resumed, run)
+      const fresh = instantiate(resumed, run, undefined, true)
       const snapshot = restoreInto(state, fresh.vm)
       for (const call of fresh.vm.calls()) {
         if (call.status !== "started") continue
@@ -210,7 +240,12 @@ const restoreInto = (saved: unknown, vm: Vm): Snapshot =>
   })
 
 // A new runtime for a run: intrinsics, the host globals, the program's bindings, and its VM.
-const instantiate = <R>(setup: Setup<R>, run: Run, bindings?: Readonly<Record<string, Json>>): Interpreter<R> => {
+const instantiate = <R>(
+  setup: Setup<R>,
+  run: Run,
+  bindings?: Readonly<Record<string, Json>>,
+  restored = false,
+): Interpreter<R> => {
   const ctx = new Interpreter<R>({
     builtins: createBuiltins(),
     logs: [],
@@ -225,6 +260,8 @@ const instantiate = <R>(setup: Setup<R>, run: Run, bindings?: Readonly<Record<st
         : (ctx) => Object.entries(bindings).map(([name, value]) => [name, fromJson(ctx, value)] as const),
   })
   if (roundTrip) ctx.vm.tripEvery = ROUND_TRIP_TICKS
+  const maxHeapBytes = setup.limits.maxHeapBytes
+  if (maxHeapBytes !== undefined) ctx.vm.heap = new HeapMeter(maxHeapBytes, restored)
   return ctx
 }
 
@@ -433,7 +470,11 @@ export class Running<R> {
     const limits = this.setup.limits
     const saved = attempt(() =>
       vm.capture({
-        limits: { timeoutMs: limits.timeoutMs ?? null, maxOutputBytes: limits.maxOutputBytes ?? null },
+        limits: {
+          timeoutMs: limits.timeoutMs ?? null,
+          maxOutputBytes: limits.maxOutputBytes ?? null,
+          ...(limits.maxHeapBytes === undefined ? {} : { maxHeapBytes: limits.maxHeapBytes }),
+        },
         activeMs: this.activeBefore + Date.now() - this.startedAt,
         metadata: this.run_.metadata,
         strict: false,
@@ -490,7 +531,7 @@ export class Running<R> {
     if (saved.lost.length > 0) return
     const restored = fromBytes(bytes)
     const run = { id: this.run_.id, metadata: header(restored).metadata }
-    const fresh = instantiate(this.setup, run)
+    const fresh = instantiate(this.setup, run, undefined, true)
     restoreInto(restored, fresh.vm)
     this.ctx = fresh
     this.run_ = run

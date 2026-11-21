@@ -10,6 +10,12 @@ export type Limits = {
    * are additional.
    */
   readonly maxOutputBytes?: number
+  /**
+   * The most bytes the run's heap may hold: everything it can still reach, in a size model that is the same on every
+   * platform (objects, properties, elements, entries and strings at fixed sizes; see `interpreter-support.md`), not
+   * the process's memory. A run over it stops with `MemoryLimitExceeded`. No default: absent means no limit.
+   */
+  readonly maxHeapBytes?: number
 }
 
 /**
@@ -66,6 +72,7 @@ export const makeSetup = <R>(options: Options<Globals>): Setup<R> => ({
   limits: {
     timeoutMs: validateLimit("timeoutMs", options.limits?.timeoutMs, 1),
     maxOutputBytes: validateLimit("maxOutputBytes", options.limits?.maxOutputBytes, 0),
+    maxHeapBytes: validateLimit("maxHeapBytes", options.limits?.maxHeapBytes, 1),
   },
   globals: options.globals,
   modules: options.modules,

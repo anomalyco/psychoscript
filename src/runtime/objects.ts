@@ -1,4 +1,5 @@
 import type { Builtins } from "./intrinsics.js"
+import { charging, ELEMENT_BYTES, OBJECT_BYTES } from "./heap.js"
 import { checkArrayLength } from "./limits.js"
 import {
   type AstNode,
@@ -137,10 +138,13 @@ export class Obj {
   intrinsic = 0
   /** Whether a program accessor was ever defined here: the bulk readers' cue to take their slow paths. */
   hasProgramAccessors = false
+  /** The last heap measurement that reached it (see `measure` in snapshot/codec.ts). */
+  visited = 0
   /** Only on `Array.prototype` and the built-in iterators' prototype: the key whose change clears the protector. */
   declare guard?: { readonly key: PropertyKey; readonly protector: Protector }
   constructor(public proto: Obj | null) {
     if (making !== undefined) making.push(this)
+    if (charging !== undefined) charging.debt += OBJECT_BYTES
   }
 
   /** The class name `Object.prototype.toString` reports: `[object Map]`. */
@@ -228,6 +232,7 @@ export class Arr extends Obj {
     readonly items: Array<Value> = [],
   ) {
     super(proto)
+    if (charging !== undefined) charging.debt += ELEMENT_BYTES * items.length
   }
   override get describe() {
     return "an array"
@@ -672,16 +677,27 @@ export class Position implements TableCursor {
 
 /** A built-in iterator: a live cursor over a host collection or an iterator helper, yielding program values. */
 export class IteratorObj extends Opaque {
-  override readonly tag = "Iterator"
+  /** The `@@toStringTag` of what it walks: `[object Array Iterator]`, or `[object Iterator]` for a helper. */
+  override readonly tag: string
   constructor(
     proto: Obj,
     readonly cursor: Cursor,
   ) {
     super(proto)
+    this.tag = cursor instanceof Position ? `${iteratedKind(cursor.source)} Iterator` : "Iterator"
   }
   override get describe() {
     return "an iterator"
   }
+}
+
+const iteratedKind = (source: PositionSource): string => {
+  if (typeof source === "string") return "String"
+  if (source instanceof MapObj) return "Map"
+  if (source instanceof SetObj) return "Set"
+  if (source instanceof HeadersObj) return "Headers"
+  if (source instanceof URLSearchParamsObj) return "URLSearchParams"
+  return "Array"
 }
 
 /** A built-in iterator over a collection, e.g. `array.values()`. */

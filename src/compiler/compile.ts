@@ -152,7 +152,7 @@ type ControlEntry =
 const idx = (node: AstNode | undefined | null): number => (node ? (nodeId(node)?.index ?? -1) : -1)
 
 /** Bump when the compiler emits different bytecode for the same source; it is part of the snapshot build id. */
-export const COMPILER_VERSION = 3
+export const COMPILER_VERSION = 4
 
 const compileCache = new Map<string, ReadonlyArray<Code>>()
 const MAX_CACHE_SIZE = 64
@@ -1238,12 +1238,10 @@ const compileFunctionBody = (
       return
     }
     if (target.object.type === "Super" && analysis.superRefs.has(target.object)) {
-      // `delete super.x` evaluates the reference (`this` first, then the key) and always throws.
+      // `delete super.x` / `delete super[key]` evaluates the reference (`this` first, then the key) and always
+      // throws, before the computed key's ToPropertyKey.
       emitSuperBase(target)
-      if (target.computed) {
-        compileExpression(target.property as Expression)
-        builder.emit(Op.TO_KEY, 0, 0, idx(target.property), 0)
-      }
+      if (target.computed) compileExpression(target.property as Expression)
       return emitThrowError({ type: "ReferenceError", message: "Unsupported reference to 'super'." }, target)
     }
     if (unsupportedSuper(target)) return
@@ -1432,6 +1430,12 @@ const compileFunctionBody = (
     if (left.computed) {
       compileExpression(left.property as Expression)
       emitWritableKey(left)
+    } else if (op === "=") {
+      // PutValue checks the base, so the right side is evaluated first: `null.x = f()` calls `f`.
+      compileExpression(node.right)
+      builder.emit(Op.CHECK_BASE, CheckBaseKind.ASSIGN_PROP, k, idx(left), 0)
+      put()
+      return
     } else builder.emit(Op.CHECK_BASE, CheckBaseKind.WRITE_PROP, k, idx(left), 0)
     if (op === "=") {
       compileExpression(node.right)
@@ -1555,9 +1559,8 @@ const compileFunctionBody = (
     [...analysis.classConstructors].some(([c, fn]) => fn === ctor && analysis.classFieldInits.get(c)?.instance)
 
   const compileNewExpression = (node: NewExpression): void => {
+    // The callee, then the arguments, and only then the constructibility check, as in EvaluateNew.
     compileExpression(node.callee as Expression)
-    // Check constructibility before evaluating arguments
-    builder.emit(Op.NEW, 255, 0, idx(node), 0)
     const args = node.arguments
     if (emitArguments(args, node)) builder.emit(Op.NEW_SPREAD, 0, 0, idx(node), -1)
     else builder.emit(Op.NEW, args.length, 0, idx(node), -args.length)

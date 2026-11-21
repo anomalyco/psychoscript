@@ -1,8 +1,11 @@
 export * as Runtime from "./runtime.js"
 
 import { Interrupted } from "./runtime/contract.js"
+import type { Diagnostic } from "./runtime/model.js"
 import {
   checkMaxBytes,
+  Compiled,
+  compileProgram,
   finishExecution,
   makeProgram,
   type Outcome,
@@ -15,7 +18,7 @@ import {
 } from "./runtime/execute.js"
 import { type Globals, makeSetup, type Options, type ProgramOptions, type SuspendOptions } from "./runtime/options.js"
 
-export { SuspendError }
+export { Compiled, SuspendError }
 export type { Outcome, Result, Run, Suspended }
 export type { Globals, Limits, Options, ProgramOptions, SuspendOptions, Translate } from "./runtime/options.js"
 
@@ -29,10 +32,20 @@ export type ExecuteOptions = ProgramOptions & RunOptions
 
 /** A reusable confined runtime over host globals. */
 export type Runtime = {
-  /** Runs a program to its end. Rejects with an `AbortError` when `options.signal` aborts. */
-  readonly execute: (code: string, options?: ExecuteOptions) => Promise<Result>
-  /** A program ready to run once; nothing runs until `program.run()`. */
-  readonly program: (code: string, options?: ProgramOptions) => Program
+  /**
+   * Runs a program, from its source or compiled, to its end. Rejects with an `AbortError` when `options.signal`
+   * aborts.
+   */
+  readonly execute: (code: string | Compiled, options?: ExecuteOptions) => Promise<Result>
+  /** A program, from its source or compiled, ready to run once; nothing runs until `program.run()`. */
+  readonly program: (code: string | Compiled, options?: ProgramOptions) => Program
+  /**
+   * Parses and compiles a program once, for `program` and `execute` to run many times without doing it again; or the
+   * diagnostic a run of it would fail with first (an empty program, a syntax error).
+   */
+  readonly compile: (
+    code: string,
+  ) => { readonly ok: true; readonly compiled: Compiled } | { readonly ok: false; readonly error: Diagnostic }
   /**
    * A suspended run (its `state`, or that state as bytes) as a program to continue in this runtime, which must be the
    * same build with the same host globals. The state is checked when it runs: `run()` rejects with a `SnapshotError`
@@ -63,12 +76,13 @@ export type Program = {
  */
 export const make = <const G extends Globals = {}>(options: Options<G> = {}): Runtime => {
   const setup = makeSetup<never>(options)
-  const start = (code: string, programOptions?: ProgramOptions) =>
+  const start = (code: string | Compiled, programOptions?: ProgramOptions) =>
     makeProgram(() => startProgram(setup, code, programOptions?.bindings, programOptions?.runId))
   return {
     execute: (code, executeOptions) =>
       aborting(finishExecution(start(code, executeOptions).run({ signal: executeOptions?.signal })), executeOptions?.signal),
     program: (code, programOptions) => wrap(start(code, programOptions)),
+    compile: compileProgram,
     resume: (state) => wrap(makeProgram(() => resumeProgram(setup, state))),
   }
 }
