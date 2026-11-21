@@ -97,11 +97,13 @@ Behavior, per the contract:
   when the root node has `fullscreen: true`, or it isn't `false` and the widget is live or its view has a `canvas` or
   `shader`. It uses the Fullscreen API on the widget's element (Esc exits); the program gets
   `{ id: "", type: "fullscreen", value }` (`onFullscreen` / `widget.on("fullscreen")`) and `Frame.fullscreen` is set.
-  The root fills the screen and every `canvas` and `shader` shares the remaining height equally (its `height` is the
-  minimum; `fill: false` keeps it at its `height`); taller content scrolls. The only chrome is the close button,
-  always visible, floating 32 x 32 CSS px, 8 px from the root's top and right edges (no capability chip, no focus
-  hint). The program is told where it is: the `fullscreen` event carries `close` (the button's area in root
-  coordinates, `null` when leaving; sent again when the root's size changes), and `Frame.close` and absolute canvas or
+  The root fills the screen minus a 16 px padding on every side (canvases inside it too) and every `canvas` and
+  `shader` shares the remaining height equally (its `height` is the minimum; `fill: false` keeps it at its `height`);
+  taller content scrolls. The only chrome is the close button, always visible, floating 32 x 32 CSS px, 8 px from the
+  screen's top and right edges, over the padded root's corner (no capability chip, no focus hint). The program is told
+  where it is: the `fullscreen` event carries `close` (the button's area in root coordinates, `{ x: W - 24, y: -8,
+  width: 32, height: 32 }` for a root `W` wide, `null` when leaving; sent again when the root's size changes), and
+  `Frame.close` and absolute canvas or
   shader `pointer` values carry it in that node's coordinates when it overlaps the node. Esc and the browser's back
   close full screen whatever holds the keyboard or the pointer (entering pushes a history entry; `popstate` closes),
   releasing both; closing it any other way takes that history entry back off.

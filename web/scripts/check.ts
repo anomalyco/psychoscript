@@ -402,7 +402,8 @@ for (const [query, backend] of [["?only=shader-demo", "webgpu"], ["?only=shader-
     const px = pulse.getContext("2d")!.getImageData(Math.round((b.left + b.width / 2 - c.left) * scale), Math.round((b.top + b.height / 2 - c.top) * scale), 1, 1).data
     const chrome = [...root.querySelectorAll(".pw-root > :not(.pw-view):not(.pw-expand):not(.pw-hint)")].filter((e) => getComputedStyle(e).display !== "none").length
     return {
-      button: { w: b.width, h: b.height, top: b.top - node.top, right: node.right - b.right },
+      button: { w: b.width, h: b.height, screenTop: Math.round(b.top), screenRight: Math.round(innerWidth - b.right) },
+      root: { left: Math.round(node.left), top: Math.round(node.top), right: Math.round(innerWidth - node.right), width: Math.round(node.width) },
       inRoot: [Math.round(b.left - node.left), Math.round(b.top - node.top), b.width, b.height].join(","),
       inPulse: [Math.round(b.left - c.left), Math.round(b.top - c.top), b.width, b.height].join(","),
       pixel: [...px.slice(0, 3)],
@@ -412,11 +413,17 @@ for (const [query, backend] of [["?only=shader-demo", "webgpu"], ["?only=shader-
     }
   })
   check(
-    geo.button.w === 32 && geo.button.h === 32 && Math.round(geo.button.top) === 8 && Math.round(geo.button.right) === 8 && geo.visible === "1" &&
+    geo.button.w === 32 && geo.button.h === 32 && geo.button.screenTop === 8 && geo.button.screenRight === 8 && geo.visible === "1" &&
       geo.label === "Exit full screen" && geo.chrome === 0,
-    "full screen: the close button floats 32 x 32, 8 px from the root's top and right, always visible, the only chrome",
+    "full screen: the close button floats 32 x 32, 8 px from the screen's top and right, always visible, the only chrome",
     geo,
   )
+  check(
+    geo.root.left === 16 && geo.root.top === 16 && geo.root.right === 16,
+    "full screen: the root sits inside a 16 px padding, canvases included",
+    geo.root,
+  )
+  check(geo.inRoot === `${geo.root.width - 24},-8,32,32`, `full screen: close is { x: W - 24, y: -8, 32, 32 } in root coordinates (${geo.inRoot})`)
   let text = await caption()
   check(text.includes("· close " + geo.inRoot + " ·"), `full screen: the fullscreen event carries close in root coordinates (${geo.inRoot})`, text)
   check(geo.pixel.join(",") === "255,0,255", "full screen: Frame.close is the button's area on the canvas under it (drawn magenta there)", geo.pixel)

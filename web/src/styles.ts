@@ -12,10 +12,12 @@ export const CSS: string = /* css */ `
 }
 :host(:fullscreen) { background: var(--pw-bg); overflow: auto; }
 :host(:fullscreen) .pw-root {
-  /* The root fills the screen (the safe area): the close button floats over its top-right corner, and the program is
-     told where (widgets-fullscreen.md, Chrome). */
+  /* The root fills the safe area minus a 16 px padding on every side, canvases included; the padding shows the
+     background. The close button keeps its place on screen, over the padded root's top-right corner, and the
+     program is told where (widgets-fullscreen.md, Layout and Chrome). */
   min-height: 100%; display: flex; flex-direction: column;
-  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  padding: calc(env(safe-area-inset-top) + 16px) calc(env(safe-area-inset-right) + 16px)
+    calc(env(safe-area-inset-bottom) + 16px) calc(env(safe-area-inset-left) + 16px);
 }
 /* Full screen (widgets-fullscreen.md, Layout): the root fills the screen; every canvas and shader not opted out with
    fill: false shares the remaining height equally (its height is the minimum); taller content scrolls. */
@@ -159,7 +161,7 @@ export const CSS: string = /* css */ `
 .pw-expand:focus-visible { outline: 2px solid var(--pw-accent); outline-offset: 1px; }
 @media (hover: none) { .pw-expand { opacity: .85; } }
 :host(:fullscreen) .pw-expand {
-  /* The only chrome: always visible, 32 x 32 (all of it the button), 8 px from the root's top and right edges. */
+  /* The only chrome: always visible, 32 x 32 (all of it the button), 8 px from the safe area's top and right edges. */
   position: fixed; top: calc(env(safe-area-inset-top) + 8px); right: calc(env(safe-area-inset-right) + 8px);
   width: 32px; height: 32px; border-radius: 8px; opacity: 1;
   background: color-mix(in srgb, var(--pw-bg) 85%, transparent); color: var(--pw-text);
