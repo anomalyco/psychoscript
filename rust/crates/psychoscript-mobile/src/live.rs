@@ -296,6 +296,42 @@ struct Slice {
     armed: bool,
     /// The stretch a probe is out for.
     probe: Option<u64>,
+    /// Host code running on the run's thread (host functions, polls of host calls, the handler's callbacks) doesn't
+    /// count as the VM's compute: how deep in it the run's thread is, since when, and how long it spent there in this
+    /// stretch.
+    host_depth: u32,
+    host_since: Instant,
+    host_time: Duration,
+}
+
+impl Slice {
+    /// How long the VM itself has computed in this stretch.
+    fn vm_time(&self, now: Instant) -> Duration {
+        let host = self.host_time
+            + if self.host_depth > 0 {
+                now.saturating_duration_since(self.host_since)
+            } else {
+                Duration::ZERO
+            };
+        now.saturating_duration_since(self.start)
+            .saturating_sub(host)
+    }
+}
+
+/// A stretch of host code on the run's thread, ended when dropped (also on an early return).
+struct HostSection<'a>(&'a Control);
+
+impl<'a> HostSection<'a> {
+    fn enter(control: &'a Control) -> HostSection<'a> {
+        control.enter_host();
+        HostSection(control)
+    }
+}
+
+impl Drop for HostSection<'_> {
+    fn drop(&mut self) {
+        self.0.leave_host();
+    }
 }
 
 /// Where a host call's poll happens.
@@ -380,6 +416,9 @@ impl Control {
                 start: now,
                 armed: false,
                 probe: None,
+                host_depth: 0,
+                host_since: now,
+                host_time: Duration::ZERO,
             }),
             why: Mutex::new(Why::None),
             suspending: Mutex::new(()),
@@ -514,12 +553,14 @@ impl Control {
             let input = HostFunction::new(move |_args, _call| -> HostResult {
                 c.interrupted()?;
                 c.computing();
+                let _host = HostSection::enter(&c);
                 Ok(Input::parse(&text).unwrap_or_default())
             });
             let c = control.clone();
             let post = HostFunction::new(move |args: Vec<HostValue>, _call| -> HostResult {
                 c.interrupted()?;
                 c.computing();
+                let _host = HostSection::enter(&c);
                 c.post(args.first().unwrap_or(&HostValue::Undefined));
                 Ok(HostValue::Undefined)
             });
@@ -527,6 +568,7 @@ impl Control {
             let now = HostFunction::new(move |_args, _call| -> HostResult {
                 c.interrupted()?;
                 c.computing();
+                let _host = HostSection::enter(&c);
                 Ok(HostValue::Number(c.now_ms()))
             });
             let c = control.clone();
@@ -690,6 +732,10 @@ impl Control {
         slice.start = now;
         slice.busy = true;
         slice.probe = None;
+        slice.host_time = Duration::ZERO;
+        if slice.host_depth > 0 {
+            slice.host_since = now;
+        }
         if !std::mem::replace(&mut slice.armed, true) {
             timer::schedule(now + self.budget(), Fire::Watch(self.me.clone()));
         }
@@ -699,19 +745,44 @@ impl Control {
         Duration::from_millis(self.options.slice_budget_ms.max(1))
     }
 
-    /// The timer's check. A stretch past its budget gets a probe (its pending host calls woken); one still going a
-    /// grace period after its probe is stopped.
+    /// Host code starts on the run's thread: its time isn't the VM's.
+    fn enter_host(&self) {
+        let mut slice = lock(&self.slice);
+        if slice.host_depth == 0 {
+            slice.host_since = Instant::now();
+        }
+        slice.host_depth += 1;
+    }
+
+    fn leave_host(&self) {
+        let mut slice = lock(&self.slice);
+        slice.host_depth = slice.host_depth.saturating_sub(1);
+        if slice.host_depth == 0 {
+            let spent = slice.host_since.elapsed();
+            slice.host_time += spent;
+            // A probe that went out meanwhile couldn't be answered: the next check sends another.
+            slice.probe = None;
+        }
+    }
+
+    /// The timer's check. A stretch past its budget of VM time gets a probe (its pending host calls woken); one still
+    /// going a grace period after its probe is stopped. Time in host code doesn't count, and no probe goes out while
+    /// the run's thread is in it (it couldn't answer).
     pub(crate) fn watch(&self) {
         let mut slice = lock(&self.slice);
         slice.armed = false;
         if !slice.busy {
             return;
         }
-        let over = slice.start.elapsed() >= self.budget();
+        let now = Instant::now();
+        let vm = slice.vm_time(now);
+        let left = self.budget().saturating_sub(vm);
+        let over = left.is_zero();
         let at = match slice.probe {
+            _ if slice.host_depth > 0 => Some(now + left.max(Duration::from_millis(5))),
             // Unanswered: the VM is still computing.
             Some(n) if n == slice.n && over => None,
-            _ if !over => Some(slice.start + self.budget()),
+            _ if !over => Some(now + left),
             _ => {
                 slice.probe = Some(slice.n);
                 Some(Instant::now() + PROBE_GRACE)
@@ -900,6 +971,7 @@ impl Control {
         cx: &mut Context<'_>,
         poll: impl FnOnce(&mut Context<'_>) -> Poll<HostResult>,
     ) -> Poll<HostResult> {
+        let _host = HostSection::enter(self);
         if at == At::Between {
             self.flush();
         }
