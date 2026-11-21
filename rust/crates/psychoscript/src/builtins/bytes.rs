@@ -408,6 +408,15 @@ pub fn set_prop(vm: &mut Vm, id: Id, key: Atom, val: Value) -> Option<Result<(),
     {
         return Some(Err(vm.only_getter(&Value::Obj(id), key)));
     }
+    // A typed array has no element at another numeric key (-1, 1.5, 2 ** 32): writing one does nothing.
+    let text = vm.atoms.text(key);
+    if text == "-0"
+        || text
+            .parse::<f64>()
+            .is_ok_and(|n| crate::value::num_to_string(n) == text)
+    {
+        return Some(Ok(()));
+    }
     None
 }
 

@@ -1012,6 +1012,9 @@ export const parseArrayIndex = (key: string | number): number | undefined => {
 
 const canonical = (key: PropertyKey): string | symbol => (typeof key === "symbol" ? key : String(key))
 
+/** Whether a key is a number's own text, as `-1`, `1.5` and `-0` are: a typed array's elements are only its indexes. */
+const isCanonicalNumeric = (key: string): boolean => key === "-0" || String(Number(key)) === key
+
 /** Objects whose integer keys are live elements rather than own property slots. */
 type Indexed = Arr | Bytes
 
@@ -1166,6 +1169,14 @@ export const hasPrototype = (value: Value, proto: Obj): boolean => {
 
 const writeElement = (target: Indexed, name: string | number | symbol, value: Value): boolean | undefined => {
   const at = index(target, name)
+  // A typed array has no element at another numeric key (-1, 1.5, 2 ** 32): writing one does nothing.
+  if (
+    at === undefined &&
+    target instanceof Bytes &&
+    (typeof name === "number" || (typeof name === "string" && isCanonicalNumeric(name)))
+  ) {
+    return true
+  }
   if (at !== undefined) {
     if (target instanceof Bytes) {
       target.bytes[at] = typeof value === "number" ? value : Number(value)
