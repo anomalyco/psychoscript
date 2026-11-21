@@ -1,8 +1,8 @@
-/** What clients prepend to a template's WGSL. */
+/** What clients prepend to a widget template's WGSL. */
 export declare const HEADER = "struct Widget { resolution: vec2f, time: f32, scale: f32, pointer: vec4f, values: array<vec4f, 4> }\n@group(0) @binding(0) var<uniform> widget: Widget;\n";
 /** The uniform block: resolution, time, scale, pointer, values (std140 and WGSL agree: 96 bytes). */
 export declare const UNIFORM_FLOATS = 24;
-/** `program`: the template's WGSL is at fault (it fails validation), a program error; else this host's (a client error). */
+/** `program`: the widget template's WGSL is at fault (it fails validation), a program error; else this host's (a client error). */
 export interface ShaderError {
     message: string;
     line?: number;

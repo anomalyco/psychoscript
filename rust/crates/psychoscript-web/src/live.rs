@@ -41,7 +41,7 @@ pub struct LiveOptions {
     /// every fetch is rejected with `CapabilityDenied`.
     pub https_hosts: Option<Vec<String>>,
     /// Dev mode (widgets-live.md, "Local network in dev mode"): `fetch` may also reach loopback, private and
-    /// link-local destinations and local names, over `http:` too, when the template declares them (not through `*`).
+    /// link-local destinations and local names, over `http:` too, when the widget template declares them (not through `*`).
     /// Off by default.
     pub allow_local_network: bool,
 }

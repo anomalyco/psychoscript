@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Writes demo/fixtures.js from an opencode checkout's @opencode/widget: the served program (prelude + "\n" + source)
-// of every built-in template, its mode, and example data, plus a few demo-only templates (fetch, a runaway loop, a
+// of every built-in widget template, its mode, and example data, plus a few demo-only widget templates (fetch, a runaway loop, a
 // full-screen layout switch). Usage: bun scripts/fixtures.ts [path/to/opencode/packages/widget]
 
 import { readdir } from "node:fs/promises"
@@ -12,7 +12,7 @@ const src = path.join(widget, "src")
 const prelude = await Bun.file(path.join(src, "prelude.js")).text()
 const FIRST = ["suggestions", "form", "confirm", "chart", "backdrop", "minigame"]
 const rank = (n: string) => (FIRST.includes(n) ? FIRST.indexOf(n) : FIRST.length)
-const names = (await readdir(path.join(src, "templates")))
+const names = (await readdir(path.join(src, "widget-templates")))
   .filter((f) => f.endsWith(".js"))
   .map((f) => f.slice(0, -3))
   .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
@@ -76,7 +76,7 @@ const data: Record<string, unknown> = {
   ...diagrams,
 }
 
-// Demo templates, in the authoring style of widgets.md: handlers on nodes (`onPress`, `onChange`, `onPointer`), hooks
+// Demo widget templates, in the authoring style of widgets.md: handlers on nodes (`onPress`, `onChange`, `onPointer`), hooks
 // for events that belong to no node (`onKey`, `onFocus`, `onFullscreen`, `onCapture`; live: `widget.on`), no `update`
 // and no `widget.event()`.
 const DEMO = {
@@ -264,7 +264,7 @@ async function main(data) {
   },
   "broken-demo": {
     mode: "step",
-    data: { title: "A template with a bug" },
+    data: { title: "A widget template with a bug" },
     source: `function view(state, data) {
   return ui.column({ gap: 1 }, [
     ui.text(data.title, { style: "title" }),
@@ -351,7 +351,7 @@ for (const name of names) {
     console.warn(`no example data for ${name}: skipped`)
     continue
   }
-  const source = await Bun.file(path.join(src, "templates", `${name}.js`)).text()
+  const source = await Bun.file(path.join(src, "widget-templates", `${name}.js`)).text()
   fixtures[name] = { mode: LIVE.has(name) ? "live" : "step", source, data: data[name] }
 }
 // "Tap the dots" left the built-ins and lives on as a live runtime test fixture: the demo keeps it as "minigame".

@@ -1,4 +1,4 @@
-//! A `shader` node's WGSL for WebGL2: the contract's header, the template's `shade`, and an entry point that flips
+//! A `shader` node's WGSL for WebGL2: the contract's header, the widget template's `shade`, and an entry point that flips
 //! `frag` to a top-left origin (GL's fragment coordinates start bottom-left), translated with naga to a GLSL ES 3.00
 //! fragment shader. Feature `shader`.
 //!
@@ -16,7 +16,7 @@ use naga::{AddressSpace, SourceLocation};
 /// The contract's cap on a shader's source.
 pub const MAX_SOURCE_BYTES: usize = 16 * 1024;
 
-/// What clients prepend to a template's WGSL (`widgets.md`, Shader).
+/// What clients prepend to a widget template's WGSL (`widgets.md`, Shader).
 pub const HEADER: &str = "struct Widget { resolution: vec2f, time: f32, scale: f32, pointer: vec4f, values: array<vec4f, 4> }\n@group(0) @binding(0) var<uniform> widget: Widget;\n";
 
 /// The entry point for WebGPU, as the contract writes it.
@@ -34,8 +34,8 @@ pub struct Translated {
     pub block: String,
 }
 
-/// Why a shader didn't translate. `line` and `column` are 1-based, in the template's WGSL, when known. `program`: the
-/// template's WGSL is at fault (it doesn't parse or validate, or breaks the node's contract), a program error to report
+/// Why a shader didn't translate. `line` and `column` are 1-based, in the widget template's WGSL, when known. `program`: the
+/// widget template's WGSL is at fault (it doesn't parse or validate, or breaks the node's contract), a program error to report
 /// (widgets.md, Failures); otherwise naga couldn't write valid WGSL as GLSL, a client error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShaderError {
@@ -86,7 +86,7 @@ impl ShaderError {
     }
 }
 
-/// Translates a `shader` node's `wgsl` (the template's part, defining `shade`) to a GLSL ES 3.00 fragment shader.
+/// Translates a `shader` node's `wgsl` (the widget template's part, defining `shade`) to a GLSL ES 3.00 fragment shader.
 pub fn translate(wgsl: &str) -> Result<Translated, ShaderError> {
     if wgsl.len() > MAX_SOURCE_BYTES {
         return Err(ShaderError::new(format!(
@@ -96,7 +96,7 @@ pub fn translate(wgsl: &str) -> Result<Translated, ShaderError> {
     }
     let source = format!("{HEADER}{wgsl}{GL_ENTRY}");
     let header_lines = HEADER.matches('\n').count() as u32;
-    // Places in the template's own source; one in the header or the entry point has none there.
+    // Places in the widget template's own source; one in the header or the entry point has none there.
     let place = |at: Option<SourceLocation>| match at {
         Some(at) if at.line_number > header_lines => {
             (Some(at.line_number - header_lines), Some(at.line_position))
@@ -210,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn errors_point_into_the_template() {
+    fn errors_point_into_the_widget_template() {
         let e = translate("fn shade(frag: vec2f) -> vec4f {\n  return vec4f(nope, 1.0);\n}")
             .unwrap_err();
         assert_eq!(e.line, Some(2), "{e}");

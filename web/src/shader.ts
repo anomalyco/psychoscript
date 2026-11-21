@@ -1,7 +1,7 @@
 // `shader` nodes on the GPU: WGSL straight to WebGPU where the browser has it, else WebGL2 with the WGSL translated to
 // GLSL ES 3.00 by naga in the worker (widgets.md, Shader).
 
-/** What clients prepend to a template's WGSL. */
+/** What clients prepend to a widget template's WGSL. */
 export const HEADER =
   "struct Widget { resolution: vec2f, time: f32, scale: f32, pointer: vec4f, values: array<vec4f, 4> }\n@group(0) @binding(0) var<uniform> widget: Widget;\n"
 const HEADER_LINES = 2
@@ -13,7 +13,7 @@ const ENTRY =
 /** The uniform block: resolution, time, scale, pointer, values (std140 and WGSL agree: 96 bytes). */
 export const UNIFORM_FLOATS = 24
 
-/** `program`: the template's WGSL is at fault (it fails validation), a program error; else this host's (a client error). */
+/** `program`: the widget template's WGSL is at fault (it fails validation), a program error; else this host's (a client error). */
 export interface ShaderError {
   message: string
   line?: number

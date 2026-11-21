@@ -37,7 +37,7 @@ export interface StepOutput {
 /** A failure: the language's (`type`, `kind`, `line`, `column`) or the host's. */
 export interface ErrorInfo {
   type: string
-  /** For `type: "shader"`: the template's WGSL is at fault (a program error), not this host. */
+  /** For `type: "shader"`: the widget template's WGSL is at fault (a program error), not this host. */
   program?: boolean
   kind?: string
   message: string

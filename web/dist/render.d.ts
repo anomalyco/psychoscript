@@ -25,7 +25,7 @@ export interface RenderContext {
     } | ShaderError>;
     /** A program warning that isn't an error (an unknown node type). */
     warn(message: string): void;
-    /** The template's code broke a contract here (WGSL that fails validation, a shader over 16 KB): reported. */
+    /** The widget template's code broke a contract here (WGSL that fails validation, a shader over 16 KB): reported. */
     programError(phase: string, error: {
         message: string;
         line?: number;

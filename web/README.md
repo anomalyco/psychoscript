@@ -54,7 +54,7 @@ const widget = mount(element, {
   theme: "dark",      // "dark" | "light" | tokens (below)
   resolveImage: (src) => /^(https?|data):/.test(src) ? src : fileContentUrl(session, src),   // optional
   onWarning: (message) => console.warn("widget", message),                                    // optional
-  source,             // Program.source: makes error positions template-relative (else found from the prelude)
+  source,             // Program.source: makes error positions widget-template-relative (else found from the prelude)
   failure,            // State.failure, if any
   onReport: (error) => rpc.report({ sessionID, messageID, callID, error, client: "web" }),     // program errors only
   onAsk: (error) => rpc.report({ sessionID, messageID, callID, error, client: "web", ask: true }),  // omit: no button
@@ -105,12 +105,12 @@ Behavior, per the contract:
 
 The host sorts every error into one of two kinds:
 
-- **Program errors** (the template's): a parse error or exception (in `init`, a handler or hook, `draw`, `main`), an
+- **Program errors** (the widget template's): a parse error or exception (in `init`, a handler or hook, `draw`, `main`), an
   invalid view or draw output, WGSL that fails validation (WebGPU's compiler or naga) or is over 16 KB, the 250 ms
   step, the 50 ms live slice, the post rate (240/s) and the send rate (10/s). The widget shows them (error card, or
   inline under the last good view) and calls `onReport({ phase, message, line?, column? })` once per distinct error;
-  `phase` is `init`, `event`, `draw`, `main` or `shader`, and `line`/`column` are in the template's source (the
-  prelude's lines subtracted; dropped when they fall in the prelude or past the template; a shader's WGSL position goes
+  `phase` is `init`, `event`, `draw`, `main` or `shader`, and `line`/`column` are in the widget template's source (the
+  prelude's lines subtracted; dropped when they fall in the prelude or past the widget template; a shader's WGSL position goes
   into the message as "WGSL line N"). Post it with `report` (`client: "web"`).
 - **Client errors** (this host's): a worker or WebAssembly crash, a missing worker or module, valid WGSL the GPU path
   can't run, a draw or shader too slow on this device (the 8 ms draw / 50 ms shader stops), the host's own 100 ms draw
@@ -146,7 +146,7 @@ calls `onAsk(error)` (the embedder calls `report` with `ask: true`; "Asking the 
   `{ type: "focus", value: false }` and, if it had the pointer, `{ type: "capture", value: false }`. A live program
   must call `capturePointer()` again after a release; a root `capture: "pointer"` is granted again on the next click.
 - The host sends only the wire events (`{ id, type, value }`, widgets.md, Events); ids come from the prelude and the
-  host never interprets them, so templates written with handlers (`onPress`, `onChange`, `onPointer`) and hooks need
+  host never interprets them, so widget templates written with handlers (`onPress`, `onChange`, `onPointer`) and hooks need
   nothing from the host.
 
 ### Theme
@@ -170,7 +170,7 @@ style-src 'self'                         # no inline styles: constructable style
 ```
 
 `connect-src` for widget fetch: live widgets fetch from the worker, so the page's policy applies. `https:` allows
-every host a template may declare; a narrower list blocks undeclared and declared hosts alike (the widget sees a
+every host a widget template may declare; a narrower list blocks undeclared and declared hosts alike (the widget sees a
 `Network` error). The `.wasm` and worker must be same-origin with the page (or the CDN must be in `script-src`,
 `worker-src` and `connect-src`; module workers can't be cross-origin, so serve `worker.js` from the page's origin).
 
@@ -186,7 +186,7 @@ response ≤ 2 MB, 15 s, at most 4 in flight and 10 a second. The worker carries
 
 `allowLocalNetwork: true` (default false; widgets-live.md, "Local network in dev mode") also lets a widget reach
 loopback, private and link-local addresses and local names (`localhost`, `*.localhost`, `*.local`, `*.internal`,
-single-label names), over `http:` as well as `https:`, but only hosts the template declares by name or address, never
+single-label names), over `http:` as well as `https:`, but only hosts the widget template declares by name or address, never
 through `*`. Entries may name a port (`localhost:4097`, `127.0.0.1:5173`, `[::1]:8080`) and then match only it; an
 entry without a port matches any. Turn it on only behind a dev setting (e.g. a debug toggle or an
 `OPENCODE_WIDGETS_DEV_NETWORK`-style flag), never by default in release builds. The capability chip then says
@@ -226,7 +226,7 @@ Chromium 158 on this VM (no GPU, SwiftShader), from `scripts/check.ts`:
 | --- | --- |
 | First view on a fresh page (fetch + compile the module, start and warm the worker, compile, `init`, paint) | ~180–250 |
 | First view of another widget once the worker runs | median 17, p95 ~80 |
-| Compiling a template program | median 2–3, p95 6 |
+| Compiling a widget template program | median 2–3, p95 6 |
 | A step (`init`/`update`) | median 0.8–1, p95 5–11 |
 | A draw step | median 0.5–0.6, p95 2–3 |
 
@@ -257,6 +257,6 @@ pointer events and values-only updates, the minigame, pause/`resumed` out of vie
 budget and Restart, and the fetch rules; then prints timings and memory.
 
 The demo (`demo/`) mounts every built-in (`suggestions`, `form`, `confirm`, `chart`, `backdrop`, `minigame` and the
-17 diagram templates, data from opencode's `packages/widget/test/fixtures/diagrams.ts`) plus demo templates for fetch,
+17 diagram widget templates, data from opencode's `packages/widget/test/fixtures/diagrams.ts`) plus demo widget templates for fetch,
 a running clock (pause), a runaway loop, a live shader and full screen. `?only=<name>`, `?theme=light`, `?gl=1`
 (WebGL2 even with WebGPU).

@@ -1,5 +1,5 @@
 // The demo: every fixture mounted with the shared host, a theme toggle, and a log of what widgets send back.
-// Query: ?only=<name> (one template), ?theme=light, ?gl=1 (WebGL2 shaders even where WebGPU works), ?noask=1 (no
+// Query: ?only=<name> (one widget template), ?theme=light, ?gl=1 (WebGL2 shaders even where WebGPU works), ?noask=1 (no
 // "Ask agent to fix it", as in an artifact with no agent session), ?nosource=1 (positions found without `source`).
 // The demo plays the server for failures: a report becomes the widget's failure (unsent, as for a built-in), and an
 // ask marks it sent.

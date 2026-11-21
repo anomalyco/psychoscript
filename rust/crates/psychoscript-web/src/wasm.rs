@@ -161,7 +161,7 @@ impl JsLiveRun {
 }
 
 /// Translates a `shader` node's WGSL to a GLSL ES 3.00 fragment shader: `{ code, block }`, or throws
-/// `{ message, line?, column?, program }` as an `Error` named `ShaderError` (`program`: the template's WGSL is at
+/// `{ message, line?, column?, program }` as an `Error` named `ShaderError` (`program`: the widget template's WGSL is at
 /// fault, a program error; else a client error).
 #[cfg(feature = "shader")]
 #[wasm_bindgen(js_name = translateWgsl)]

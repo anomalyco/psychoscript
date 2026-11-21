@@ -19,18 +19,18 @@ export interface Capabilities {
 export type WidgetStatus = "open" | "submitted" | "dismissed"
 
 export interface MountOptions {
-  /** The served program: prelude + "\n" + template source (`Program.program` from `opencode.widget/program`). */
+  /** The served program: prelude + "\n" + widget template source (`Program.program` from `opencode.widget/program`). */
   program: string
   /** The widget's data (the `widget` tool call's `data`). */
   data: unknown
   /** `"step"` (default) or `"live"`. */
   mode?: "step" | "live"
-  /** The template's capabilities (live only); granted as declared, shown as a chip. */
+  /** The widget template's capabilities (live only); granted as declared, shown as a chip. */
   capabilities?: Capabilities
   /**
    * Dev mode only (widgets-live.md, "Local network in dev mode"; default false): `fetch` may also reach loopback,
    * private and link-local addresses and local names (`localhost`, `*.local`), over `http:` too and on any declared
-   * port, when the template declares them (`localhost:4097`, `127.0.0.1`; `*` doesn't count). The page's CSP
+   * port, when the widget template declares them (`localhost:4097`, `127.0.0.1`; `*` doesn't count). The page's CSP
    * `connect-src` must allow them as well (e.g. `http://localhost:4097`). Never turn it on for release builds by
    * default.
    */
@@ -53,19 +53,19 @@ export interface MountOptions {
    */
   resolveImage?(src: string): string | undefined
   /**
-   * The template's source (`Program.source`), so error positions can be made template-relative (the prelude's lines
+   * The widget template's source (`Program.source`), so error positions can be made widget-template-relative (the prelude's lines
    * subtracted). Without it the host finds the prelude's end itself, or leaves positions out.
    */
   source?: string
   /**
-   * A **program error** (widgets.md, Failures): the template's code threw or broke a contract (parse error, exception,
+   * A **program error** (widgets.md, Failures): the widget template's code threw or broke a contract (parse error, exception,
    * invalid view or draw output, WGSL that fails validation, the 250 ms step, the 50 ms slice, the post or send rate).
-   * Called once per distinct error, with positions in the template's source; post it with `opencode.widget/report`
+   * Called once per distinct error, with positions in the widget template's source; post it with `opencode.widget/report`
    * (`client: "web"`). The widget already shows it.
    */
   onReport?(error: WidgetError): void
   /**
-   * A **client error**: this host failed, not the template (worker or WebAssembly crash, valid WGSL the GPU path
+   * A **client error**: this host failed, not the widget template (worker or WebAssembly crash, valid WGSL the GPU path
    * couldn't run, a shader or draw too slow on this device, Fullscreen API refusals, a failed `onAsk`). Never report
    * these; log them in dev mode only.
    */
@@ -103,7 +103,7 @@ export interface Labels {
   told: string
 }
 
-/** A program error, as `opencode.widget/report` takes it: positions 1-based, in the template's source. */
+/** A program error, as `opencode.widget/report` takes it: positions 1-based, in the widget template's source. */
 export interface WidgetError {
   /** `init`, `event` (a handler or hook), `draw`, `main` (live), `shader`, ... */
   phase: string
@@ -879,7 +879,7 @@ class Widget implements MountedWidget {
 
   // ---------- failures (widgets.md, Failures) ----------
 
-  /** Classifies a failure: the template's (reported) or this host's (logged). */
+  /** Classifies a failure: the widget template's (reported) or this host's (logged). */
   private problem(phase: string, e: ErrorInfo) {
     if (programError(e, phase)) this.report(phase, e)
     else this.clientError(`${phase}: ${describe(e)}`, e)
@@ -907,7 +907,7 @@ class Widget implements MountedWidget {
     } catch {}
   }
 
-  /** Lines in the program before the template's first line, or null when unknown. */
+  /** Lines in the program before the widget template's first line, or null when unknown. */
   private prelude(): number | null {
     if (this.offset !== undefined) return this.offset
     const program = this.options.program
@@ -915,7 +915,7 @@ class Widget implements MountedWidget {
     const source = this.options.source
     if (source !== undefined && program.endsWith(source)) this.offset = lines(program) - lines(source)
     else {
-      // The canonical prelude ends with `__widget_live`: the template starts on the line after its closing brace.
+      // The canonical prelude ends with `__widget_live`: the widget template starts on the line after its closing brace.
       const at = program.lastIndexOf("async function __widget_live(")
       const end = at < 0 ? -1 : program.indexOf("\n}\n", at)
       // program = prelude + "\n" + source: skip that joining newline too.
@@ -925,7 +925,7 @@ class Widget implements MountedWidget {
     return this.offset
   }
 
-  /** `e` with its position in the template's source: dropped when it falls in the prelude or past the template. */
+  /** `e` with its position in the widget template's source: dropped when it falls in the prelude or past the widget template. */
   private relative(e: ErrorInfo): ErrorInfo {
     if (e.line === undefined) return e
     const offset = this.prelude()
@@ -1160,7 +1160,7 @@ class Widget implements MountedWidget {
 }
 
 /**
- * Whether an error is the template's (widgets.md, Failures): the language's own failures (parse, exception, the step
+ * Whether an error is the widget template's (widgets.md, Failures): the language's own failures (parse, exception, the step
  * timeout, output size, the live slice), an invalid view or draw output, and WGSL that fails validation. The host's
  * (a crash, a missing program, the draw cut-off at 100 ms, which is this host's and device-dependent) are not.
  */

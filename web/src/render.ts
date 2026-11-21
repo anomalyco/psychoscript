@@ -26,7 +26,7 @@ export interface RenderContext {
   translate(wgsl: string): Promise<{ code: string; block: string } | ShaderError>
   /** A program warning that isn't an error (an unknown node type). */
   warn(message: string): void
-  /** The template's code broke a contract here (WGSL that fails validation, a shader over 16 KB): reported. */
+  /** The widget template's code broke a contract here (WGSL that fails validation, a shader over 16 KB): reported. */
   programError(phase: string, error: { message: string; line?: number; column?: number }): void
   /** This host failed (valid WGSL it couldn't run, a surface too slow on this device): logged in dev mode only. */
   clientError(message: string, cause?: unknown): void
@@ -1024,7 +1024,7 @@ export class ShaderView extends SurfaceBase {
 
   private fail(e: ShaderError) {
     this.failed = true
-    // Positions are in the node's WGSL, not the template's source: they go into the message.
+    // Positions are in the node's WGSL, not the widget template's source: they go into the message.
     const message = e.line ? `${e.message} (WGSL line ${e.line}, column ${e.column})` : e.message
     if (e.program) this.ctx.programError("shader", { message })
     else this.ctx.clientError(`shader: ${message}`, e)

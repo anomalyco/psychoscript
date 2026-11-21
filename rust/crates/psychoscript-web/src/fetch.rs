@@ -248,7 +248,7 @@ impl Request {
     }
 }
 
-/// What a run's `fetch` may reach: the template's declared hosts and, in dev mode (`local_network`), the local
+/// What a run's `fetch` may reach: the widget template's declared hosts and, in dev mode (`local_network`), the local
 /// network among them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Policy {

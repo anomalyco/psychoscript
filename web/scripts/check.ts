@@ -623,10 +623,10 @@ for (const query of ["?only=broken-demo", "?only=broken-demo&nosource=1"]) {
       !/\(line \d+/.test(report?.message) &&
       report?.line === 4 &&
       typeof report?.column === "number",
-    `failures: a handler's exception is reported once, with its template-relative position${query.includes("nosource") ? " (prelude found without source)" : ""}`,
+    `failures: a handler's exception is reported once, with its widget-template-relative position${query.includes("nosource") ? " (prelude found without source)" : ""}`,
     report,
   )
-  check(/\(line 4/.test((await w.locator(".pw-error").textContent()) ?? ""), "failures: the inline error shows the template's line too")
+  check(/\(line 4/.test((await w.locator(".pw-error").textContent()) ?? ""), "failures: the inline error shows the widget template's line too")
   const failure = w.locator(".pw-failure")
   const ask = failure.locator("button", { hasText: "Ask agent to fix it" })
   await ask.waitFor({ timeout: 3000 }).catch(() => {})
