@@ -3238,6 +3238,16 @@ impl Vm {
                     Op::GetElem => {
                         let k = self.pop();
                         let o = self.pop();
+                        // A typed array's element, read in place without the general path's bookkeeping.
+                        if let (Value::Obj(id), Value::Num(n)) = (o, k)
+                            && let Kind::Bytes(b) = &self.heap[id as usize].kind
+                            && b.elem != crate::builtins::bytes::Elem::ArrayBuffer
+                            && n as usize as f64 == n
+                        {
+                            let v = b.num(n as usize).map_or(Value::Undef, Value::Num);
+                            self.push(v);
+                            continue;
+                        }
                         if matches!(k, Value::Obj(_)) && self.operand_calls(&k) {
                             conv_op!(code::GET_ELEM, o, k, Value::Undef, 0, 0);
                         }
