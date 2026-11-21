@@ -6,7 +6,8 @@
 use psychoscript::{Failure, HostFunction, HostString, HostValue, Json, Namespace, Resolved};
 use serde_json::json;
 
-/// The `tools` namespace of `conformance/reference.ts`: `tools.echo`, `tools.fail` and `tools.git.status`, all async;
+/// The `tools` namespace of `conformance/reference.ts`: `tools.echo`, `tools.fail` and `tools.git.status`, all async,
+/// and the synchronous `tools.upload`;
 /// any other path is an async function that rejects with `NotFound`, and listing the names under a path that is
 /// neither a namespace nor a function throws `NotFound`.
 pub fn tools() -> Namespace {
@@ -30,11 +31,34 @@ pub fn tools() -> Namespace {
         ]))
     })
     .length(1);
+    // Synchronous: the sum of the bytes of a typed array, read in place, or of a plain array's numbers as float32.
+    let upload = HostFunction::new(|args, _| {
+        let sum: u64 = match args.first() {
+            Some(HostValue::TypedArray(t)) => t.with_bytes(|b| b.iter().map(|x| *x as u64).sum()),
+            Some(HostValue::Bytes(b)) => b.iter().map(|x| *x as u64).sum(),
+            Some(HostValue::Array(items)) => items
+                .iter()
+                .flat_map(|i| {
+                    let n = i.as_ref().and_then(HostValue::as_f64).unwrap_or(f64::NAN);
+                    (n as f32).to_le_bytes()
+                })
+                .map(|x| x as u64)
+                .sum(),
+            _ => 0,
+        };
+        HostValue::Number((sum % 1000003) as f64)
+    })
+    .length(1);
     Namespace::new(
         |path| match path {
-            [] => Ok(vec!["echo".into(), "fail".into(), "git".into()]),
+            [] => Ok(vec![
+                "echo".into(),
+                "fail".into(),
+                "git".into(),
+                "upload".into(),
+            ]),
             [git] if git == "git" => Ok(vec!["status".into()]),
-            [f] if f == "echo" || f == "fail" => Ok(Vec::new()),
+            [f] if f == "echo" || f == "fail" || f == "upload" => Ok(Vec::new()),
             [git, status] if git == "git" && status == "status" => Ok(Vec::new()),
             _ => Err(Failure::new(
                 "NotFound",
@@ -46,6 +70,7 @@ pub fn tools() -> Namespace {
             match path {
                 [f] if f == "echo" => echo.clone().into(),
                 [f] if f == "fail" => fail.clone().into(),
+                [f] if f == "upload" => upload.clone().into(),
                 [git, s] if git == "git" && s == "status" => status.clone().into(),
                 _ => {
                     let message = exact("No function at tools.", &joined_exact(path), ".");

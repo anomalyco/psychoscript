@@ -5,7 +5,8 @@
     [
       "echo",
       "fail",
-      "git"
+      "git",
+      "upload"
     ],
     [
       "status"

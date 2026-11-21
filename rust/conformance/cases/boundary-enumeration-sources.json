@@ -126,7 +126,8 @@
       [
         "echo",
         "fail",
-        "git"
+        "git",
+        "upload"
       ],
       [
         "TypeError",
@@ -151,7 +152,8 @@
       [
         "echo",
         "fail",
-        "git"
+        "git",
+        "upload"
       ],
       [
         "TypeError",

@@ -50,13 +50,21 @@ export const toolsGlobal = (ref: Reference) => {
   const status = Host.fn((_: ReadonlyArray<unknown>) => Effect.succeed({ branch: "main", dirty: true }), {
     type: "async",
   })
+  // Synchronous: the sum of the bytes of a typed array, read in place, or of a plain array's numbers as float32.
+  const upload = Host.fn(([data]: ReadonlyArray<unknown>) => {
+    const view = ArrayBuffer.isView(data) ? data : Float32Array.from(data as Array<number>)
+    let sum = 0
+    for (const byte of new Uint8Array(view.buffer, view.byteOffset, view.byteLength)) sum += byte
+    return sum % 1000003
+  })
   const functions = new Map<string, unknown>([
     ["echo", echo],
     ["fail", fail],
     ["git.status", status],
+    ["upload", upload],
   ])
   const namespaces = new Map([
-    ["", ["echo", "fail", "git"]],
+    ["", ["echo", "fail", "git", "upload"]],
     ["git", ["status"]],
   ])
   return Host.namespace({
