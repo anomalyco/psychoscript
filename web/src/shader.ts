@@ -13,10 +13,12 @@ const ENTRY =
 /** The uniform block: resolution, time, scale, pointer, values (std140 and WGSL agree: 96 bytes). */
 export const UNIFORM_FLOATS = 24
 
+/** `program`: the template's WGSL is at fault (it fails validation), a program error; else this host's (a client error). */
 export interface ShaderError {
   message: string
   line?: number
   column?: number
+  program?: boolean
 }
 
 /** One shader on one canvas. */
@@ -81,7 +83,7 @@ async function pipeline(g: Gpu, wgsl: string): Promise<GPURenderPipeline | Shade
       if (error) {
         await g.device.popErrorScope()
         const line = error.lineNum > HEADER_LINES ? error.lineNum - HEADER_LINES : undefined
-        return { message: error.message, line, column: line ? error.linePos : undefined }
+        return { message: error.message, line, column: line ? error.linePos : undefined, program: true }
       }
       try {
         const made = await g.device.createRenderPipelineAsync({
@@ -90,12 +92,13 @@ async function pipeline(g: Gpu, wgsl: string): Promise<GPURenderPipeline | Shade
           fragment: { module, entryPoint: "widget_main", targets: [{ format: g.format }] },
           primitive: { topology: "triangle-list" },
         })
+        // A validation error here is the WGSL's (its entry points don't fit the pipeline); anything else is the GPU's.
         const scoped = await g.device.popErrorScope()
-        if (scoped) return { message: scoped.message }
+        if (scoped) return { message: scoped.message, program: scoped instanceof GPUValidationError }
         return made
       } catch (e) {
         await g.device.popErrorScope()
-        return { message: String((e as Error)?.message ?? e) }
+        return { message: String((e as Error)?.message ?? e), program: (e as { reason?: string })?.reason === "validation" }
       }
     })()
     g.pipelines.set(wgsl, p)

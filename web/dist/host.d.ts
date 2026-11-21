@@ -43,7 +43,32 @@ export interface MountOptions {
      * file content URL for a path relative to the session's directory, or undefined to show `alt` instead.
      */
     resolveImage?(src: string): string | undefined;
-    /** A program error, a budget overrun, an unknown node: for logs. */
+    /**
+     * The template's source (`Program.source`), so error positions can be made template-relative (the prelude's lines
+     * subtracted). Without it the host finds the prelude's end itself, or leaves positions out.
+     */
+    source?: string;
+    /**
+     * A **program error** (widgets.md, Failures): the template's code threw or broke a contract (parse error, exception,
+     * invalid view or draw output, WGSL that fails validation, the 250 ms step, the 50 ms slice, the post or send rate).
+     * Called once per distinct error, with positions in the template's source; post it with `opencode.widget/report`
+     * (`client: "web"`). The widget already shows it.
+     */
+    onReport?(error: WidgetError): void;
+    /**
+     * A **client error**: this host failed, not the template (worker or WebAssembly crash, valid WGSL the GPU path
+     * couldn't run, a shader or draw too slow on this device, Fullscreen API refusals, a failed `onAsk`). Never report
+     * these; log them in dev mode only.
+     */
+    onClientError?(message: string, cause?: unknown): void;
+    /** The widget's recorded failure (`State.failure`); update it with `setFailure`. */
+    failure?: WidgetFailure;
+    /**
+     * "Ask agent to fix it" for a failure with `sent: false`: call `opencode.widget/report` with this error and
+     * `ask: true`. Without it the button isn't offered (e.g. an artifact with no agent session).
+     */
+    onAsk?(error: WidgetError): void | Promise<void>;
+    /** Program warnings that aren't errors (an unknown node type): for dev logs. */
     onWarning?(message: string): void;
     /** Timings: `compile`, `init` (first view on screen), `step`, `draw`, in ms. */
     onMetrics?(metric: {
@@ -64,6 +89,24 @@ export interface Labels {
     localNetwork: string;
     release: string;
     loading: string;
+    /** "Failed on {client}" before the failure's text. */
+    failedOn: string;
+    ask: string;
+    asking: string;
+    told: string;
+}
+/** A program error, as `opencode.widget/report` takes it: positions 1-based, in the template's source. */
+export interface WidgetError {
+    /** `init`, `event` (a handler or hook), `draw`, `main` (live), `shader`, ... */
+    phase: string;
+    message: string;
+    line?: number;
+    column?: number;
+}
+/** `State.failure`: the program error the server recorded, who reported it, and whether the agent was told. */
+export interface WidgetFailure extends WidgetError {
+    client: string;
+    sent: boolean;
 }
 /** A mounted widget. */
 export interface MountedWidget {
@@ -72,6 +115,8 @@ export interface MountedWidget {
     setTheme(theme: Theme): void;
     /** The server's state changed (from any client): a final state makes it read-only and stops a live program. */
     setState(state: WidgetStatus, response?: unknown): void;
+    /** The server's `State.failure` changed (or went away): shown while the widget is open. */
+    setFailure(failure: WidgetFailure | undefined): void;
     /** Starts over: a fresh `init` (step) or a fresh `main` (live). */
     restart(): void;
     /** Stops the program, frees everything, and removes the element. */
@@ -175,6 +220,13 @@ declare class Widget implements MountedWidget {
     private viewEl;
     private errorEl;
     private statusEl;
+    private failureEl;
+    private failure;
+    private asking;
+    /** The program error shown on the widget now (error card or inline), if any. */
+    private shown;
+    private reported;
+    private offset;
     private expand;
     private theme;
     private status;
@@ -227,6 +279,19 @@ declare class Widget implements MountedWidget {
     private button;
     /** The first step failed (or the program didn't compile): an error card instead of a view. */
     private fatal;
+    /** Classifies a failure: the template's (reported) or this host's (logged). */
+    private problem;
+    /** A program error: once per distinct error, to the embedder's report hook. */
+    private report;
+    private clientError;
+    /** Lines in the program before the template's first line, or null when unknown. */
+    private prelude;
+    /** `e` with its position in the template's source: dropped when it falls in the prelude or past the template. */
+    private relative;
+    setFailure(failure: WidgetFailure | undefined): void;
+    /** "Failed on <client>: <phase>: <message> (line N, col M)", then "Ask agent to fix it" or "The agent was told". */
+    private renderFailure;
+    private ask;
     private renderStatus;
     private emit;
     private draw;

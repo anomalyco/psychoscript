@@ -34,12 +34,15 @@ pub struct Translated {
     pub block: String,
 }
 
-/// Why a shader didn't translate. `line` and `column` are 1-based, in the template's WGSL, when known.
+/// Why a shader didn't translate. `line` and `column` are 1-based, in the template's WGSL, when known. `program`: the
+/// template's WGSL is at fault (it doesn't parse or validate, or breaks the node's contract), a program error to report
+/// (widgets.md, Failures); otherwise naga couldn't write valid WGSL as GLSL, a client error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShaderError {
     pub reason: String,
     pub line: Option<u32>,
     pub column: Option<u32>,
+    pub program: bool,
 }
 
 impl fmt::Display for ShaderError {
@@ -59,13 +62,22 @@ impl ShaderError {
             reason: reason.into(),
             line: None,
             column: None,
+            program: true,
         }
     }
 
-    /// `{ message, line?, column? }`, as JSON.
+    fn client(reason: impl Into<String>) -> ShaderError {
+        ShaderError {
+            program: false,
+            ..ShaderError::new(reason)
+        }
+    }
+
+    /// `{ message, line?, column?, program }`, as JSON.
     pub fn to_json(&self) -> String {
         let mut out = serde_json::Map::new();
         out.insert("message".into(), self.reason.as_str().into());
+        out.insert("program".into(), self.program.into());
         if let (Some(l), Some(c)) = (self.line, self.column) {
             out.insert("line".into(), l.into());
             out.insert("column".into(), c.into());
@@ -104,6 +116,7 @@ pub fn translate(wgsl: &str) -> Result<Translated, ShaderError> {
             reason,
             line,
             column,
+            program: true,
         }
     })?;
     let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
@@ -121,6 +134,7 @@ pub fn translate(wgsl: &str) -> Result<Translated, ShaderError> {
                 reason,
                 line,
                 column,
+                program: true,
             }
         })?;
     let Some(index) = module
@@ -170,7 +184,7 @@ pub fn translate(wgsl: &str) -> Result<Translated, ShaderError> {
     let mut code = String::new();
     let reflection = glsl::Writer::new(&mut code, &module, &info, &options, &pipeline, policies)
         .and_then(|mut w| w.write())
-        .map_err(|e| ShaderError::new(e.to_string()))?;
+        .map_err(|e| ShaderError::client(e.to_string()))?;
     let block = module
         .global_variables
         .iter()
@@ -200,8 +214,10 @@ mod tests {
         let e = translate("fn shade(frag: vec2f) -> vec4f {\n  return vec4f(nope, 1.0);\n}")
             .unwrap_err();
         assert_eq!(e.line, Some(2), "{e}");
+        assert!(e.program);
         let e = translate("fn other() {}").unwrap_err();
         assert!(e.reason.contains("shade"), "{e}");
+        assert!(e.program);
     }
 
     #[test]

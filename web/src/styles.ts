@@ -123,6 +123,9 @@ export const CSS: string = /* css */ `
 .pw-surface .pw-poster { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: calc(var(--pw-radius) - 2px); }
 .pw-surface .pw-alt-error { justify-content: flex-start; align-items: flex-end; color: var(--pw-error); background: transparent; font-family: var(--pw-mono); font-size: 11px; }
 .pw-error { color: var(--pw-error); font-size: 12px; font-family: var(--pw-mono); white-space: pre-wrap; border: 1px solid color-mix(in srgb, var(--pw-error) 40%, transparent); border-radius: 6px; padding: 6px 8px; margin-top: 8px; }
+.pw-failure { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; font-size: 12px; }
+.pw-failure-text { color: var(--pw-error); font-family: var(--pw-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.pw-failure-told { color: var(--pw-muted); }
 .pw-error-card { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
 .pw-loading { height: 64px; border-radius: var(--pw-radius); background: linear-gradient(90deg, var(--pw-surface), color-mix(in srgb, var(--pw-surface) 70%, var(--pw-border)), var(--pw-surface)); background-size: 200% 100%; animation: pw-shimmer 1.2s linear infinite; }
 @keyframes pw-shimmer { from { background-position: 100% 0 } to { background-position: -100% 0 } }

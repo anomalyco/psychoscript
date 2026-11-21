@@ -52,7 +52,32 @@ export interface MountOptions {
    * file content URL for a path relative to the session's directory, or undefined to show `alt` instead.
    */
   resolveImage?(src: string): string | undefined
-  /** A program error, a budget overrun, an unknown node: for logs. */
+  /**
+   * The template's source (`Program.source`), so error positions can be made template-relative (the prelude's lines
+   * subtracted). Without it the host finds the prelude's end itself, or leaves positions out.
+   */
+  source?: string
+  /**
+   * A **program error** (widgets.md, Failures): the template's code threw or broke a contract (parse error, exception,
+   * invalid view or draw output, WGSL that fails validation, the 250 ms step, the 50 ms slice, the post or send rate).
+   * Called once per distinct error, with positions in the template's source; post it with `opencode.widget/report`
+   * (`client: "web"`). The widget already shows it.
+   */
+  onReport?(error: WidgetError): void
+  /**
+   * A **client error**: this host failed, not the template (worker or WebAssembly crash, valid WGSL the GPU path
+   * couldn't run, a shader or draw too slow on this device, Fullscreen API refusals, a failed `onAsk`). Never report
+   * these; log them in dev mode only.
+   */
+  onClientError?(message: string, cause?: unknown): void
+  /** The widget's recorded failure (`State.failure`); update it with `setFailure`. */
+  failure?: WidgetFailure
+  /**
+   * "Ask agent to fix it" for a failure with `sent: false`: call `opencode.widget/report` with this error and
+   * `ask: true`. Without it the button isn't offered (e.g. an artifact with no agent session).
+   */
+  onAsk?(error: WidgetError): void | Promise<void>
+  /** Program warnings that aren't errors (an unknown node type): for dev logs. */
   onWarning?(message: string): void
   /** Timings: `compile`, `init` (first view on screen), `step`, `draw`, in ms. */
   onMetrics?(metric: { kind: "compile" | "init" | "step" | "draw"; ms: number }): void
@@ -71,6 +96,26 @@ export interface Labels {
   localNetwork: string
   release: string
   loading: string
+  /** "Failed on {client}" before the failure's text. */
+  failedOn: string
+  ask: string
+  asking: string
+  told: string
+}
+
+/** A program error, as `opencode.widget/report` takes it: positions 1-based, in the template's source. */
+export interface WidgetError {
+  /** `init`, `event` (a handler or hook), `draw`, `main` (live), `shader`, ... */
+  phase: string
+  message: string
+  line?: number
+  column?: number
+}
+
+/** `State.failure`: the program error the server recorded, who reported it, and whether the agent was told. */
+export interface WidgetFailure extends WidgetError {
+  client: string
+  sent: boolean
 }
 
 const LABELS: Labels = {
@@ -84,6 +129,10 @@ const LABELS: Labels = {
   release: "Esc to release",
   localNetwork: "local network allowed",
   loading: "Loading widget",
+  failedOn: "Failed on",
+  ask: "Ask agent to fix it",
+  asking: "Asking the agent…",
+  told: "The agent was told about this error.",
 }
 
 /** A mounted widget. */
@@ -93,6 +142,8 @@ export interface MountedWidget {
   setTheme(theme: Theme): void
   /** The server's state changed (from any client): a final state makes it read-only and stops a live program. */
   setState(state: WidgetStatus, response?: unknown): void
+  /** The server's `State.failure` changed (or went away): shown while the widget is open. */
+  setFailure(failure: WidgetFailure | undefined): void
   /** Starts over: a fresh `init` (step) or a fresh `main` (live). */
   restart(): void
   /** Stops the program, frees everything, and removes the element. */
@@ -221,7 +272,7 @@ class WorkerHandle {
     await this.ready
     const m = await this.request({ t: "translate", req: this.host.nextId(), wgsl })
     if (m.t !== "translated") return { message: "no answer" }
-    if (m.error) return { message: m.error.message, line: m.error.line, column: m.error.column }
+    if (m.error) return { message: m.error.message, line: m.error.line, column: m.error.column, program: m.error.program === true }
     return { code: m.code!, block: m.block! }
   }
 
@@ -390,6 +441,13 @@ class Widget implements MountedWidget {
   private viewEl: HTMLDivElement
   private errorEl: HTMLDivElement
   private statusEl: HTMLDivElement
+  private failureEl: HTMLDivElement
+  private failure: WidgetFailure | undefined
+  private asking = false
+  /** The program error shown on the widget now (error card or inline), if any. */
+  private shown: WidgetError | undefined
+  private reported = new Set<string>()
+  private offset: number | null | undefined
   private expand: HTMLButtonElement
   private theme: Resolved
   private status: WidgetStatus
@@ -466,7 +524,11 @@ class Widget implements MountedWidget {
     this.hint.className = "pw-hint"
     this.hint.hidden = true
     this.hint.setAttribute("role", "note")
-    this.root.append(this.expand, this.hint, this.viewEl, this.errorEl, this.statusEl)
+    this.failureEl = doc.createElement("div")
+    this.failureEl.className = "pw-failure"
+    this.failureEl.hidden = true
+    this.failure = options.failure
+    this.root.append(this.expand, this.hint, this.viewEl, this.errorEl, this.failureEl, this.statusEl)
     this.shadow.append(this.root)
     this.loading()
     mountPoint.append(this.element)
@@ -484,6 +546,8 @@ class Widget implements MountedWidget {
       liveCommands: (id) => this.live.commands.get(id),
       translate: (wgsl) => host.translate(wgsl),
       warn: (m) => this.warn(m),
+      programError: (phase, e) => this.report(phase, e),
+      clientError: (m, cause) => this.clientError(m, cause),
       ticker: host.ticker,
     }
     if (options.resolveImage) {
@@ -568,7 +632,11 @@ class Widget implements MountedWidget {
     void p.compiled.then((r) => {
       if (this.worker !== worker || this.destroyed) return
       if (r.ms > 0) this.metric("compile", r.ms)
-      if (r.error) return this.fatal(r.error)
+      if (r.error) {
+        const e = this.relative(r.error)
+        this.problem(live ? "main" : "init", e)
+        return this.fatal(e, live ? "main" : "init")
+      }
       if (live) {
         this.live = { ...this.live, commands: new Map(), frameWanted: false, startedAt: performance.now(), pausedAt: undefined, pausedTotal: 0, running: true }
         this.paused = false
@@ -606,6 +674,8 @@ class Widget implements MountedWidget {
     if (this.destroyed) return
     this.stopWorker()
     this.errorEl.hidden = true
+    this.shown = undefined
+    this.renderFailure()
     this.firstView = false
     this.mountedAt = performance.now()
     this.started = false
@@ -615,6 +685,7 @@ class Widget implements MountedWidget {
   crashed(message: string, culprit: boolean) {
     this.worker = undefined
     this.live.running = false
+    this.clientError(`the widget runtime crashed: ${message}`)
     if (culprit) this.fatal({ type: "crash", message: `The widget runtime crashed: ${message}` })
     else this.restart()
   }
@@ -630,7 +701,8 @@ class Widget implements MountedWidget {
         for (const p of m.messages) this.posted(p as { type?: string; [k: string]: unknown })
         return
       case "warning":
-        return this.warn(m.message)
+        // A broken contract the run survives (the post rate, a draw over 2,000 commands) is a program error.
+        return m.phase ? this.report(m.phase, { message: m.message }) : this.warn(m.message)
       case "exit":
         return this.exited(m.exit)
     }
@@ -638,13 +710,16 @@ class Widget implements MountedWidget {
 
   private stepped(m: Extract<FromWorker, { t: "step" }>) {
     if (m.error) {
-      if (!this.view) return this.fatal(m.error)
-      this.inlineError(m.error)
-      this.warn(describe(m.error))
+      const e = this.relative(m.error)
+      this.problem(m.phase, e)
+      if (!this.view) return this.fatal(e, m.phase)
+      this.inlineError(e, m.phase)
       return
     }
     this.metric("step", m.ms)
     this.errorEl.hidden = true
+    this.shown = undefined
+    this.renderFailure()
     const out = m.output as StepOutput
     this.render(out.view)
     if (out.send !== undefined) this.send(out.send.value, out.send.wake !== false)
@@ -689,8 +764,11 @@ class Widget implements MountedWidget {
     this.live.running = false
     // The run is over (returned, failed or stopped): its worker and memory go; the last view stays.
     this.stopWorker()
-    if (exit.type === "failed" && this.status === "open") this.inlineError(exit.error, true)
-    if (exit.type === "failed") this.warn(describe(exit.error))
+    if (exit.type === "failed" && this.status === "open") {
+      const e = this.relative(exit.error)
+      this.problem("main", e)
+      this.inlineError(e, "main", true)
+    }
   }
 
   // ---------- rendering ----------
@@ -761,10 +839,12 @@ class Widget implements MountedWidget {
     }
   }
 
-  private inlineError(e: ErrorInfo, restart = false) {
+  private inlineError(e: ErrorInfo, phase: string, restart = false) {
+    this.shown = { phase, message: e.message }
     this.errorEl.replaceChildren(describe(e))
     if (restart) this.errorEl.append(this.button(this.label("restart"), () => this.restart()))
     this.errorEl.hidden = false
+    this.renderFailure()
   }
 
   private button(text: string, f: () => void): HTMLButtonElement {
@@ -779,7 +859,8 @@ class Widget implements MountedWidget {
   }
 
   /** The first step failed (or the program didn't compile): an error card instead of a view. */
-  private fatal(e: ErrorInfo) {
+  private fatal(e: ErrorInfo, phase?: string) {
+    this.shown = phase ? { phase, message: e.message } : undefined
     for (const el of this.viewEl.children) destroyTree(el)
     this.view = undefined
     const card = this.element.ownerDocument.createElement("div")
@@ -793,10 +874,125 @@ class Widget implements MountedWidget {
     this.viewEl.replaceChildren(card)
     this.errorEl.hidden = true
     this.updateExpand()
-    this.warn(describe(e))
+    this.renderFailure()
+  }
+
+  // ---------- failures (widgets.md, Failures) ----------
+
+  /** Classifies a failure: the template's (reported) or this host's (logged). */
+  private problem(phase: string, e: ErrorInfo) {
+    if (programError(e, phase)) this.report(phase, e)
+    else this.clientError(`${phase}: ${describe(e)}`, e)
+  }
+
+  /** A program error: once per distinct error, to the embedder's report hook. */
+  private report(phase: string, e: { message: string; line?: number; column?: number }) {
+    if (this.status !== "open") return
+    const error: WidgetError = { phase, message: e.message }
+    if (e.line !== undefined) error.line = e.line
+    if (e.column !== undefined && e.line !== undefined) error.column = e.column
+    const key = JSON.stringify(error)
+    if (this.reported.has(key)) return
+    this.reported.add(key)
+    try {
+      this.options.onReport?.(error)
+    } catch (cause) {
+      this.clientError("onReport threw", cause)
+    }
+  }
+
+  private clientError(message: string, cause?: unknown) {
+    try {
+      this.options.onClientError?.(message, cause)
+    } catch {}
+  }
+
+  /** Lines in the program before the template's first line, or null when unknown. */
+  private prelude(): number | null {
+    if (this.offset !== undefined) return this.offset
+    const program = this.options.program
+    const lines = (s: string) => s.split("\n").length
+    const source = this.options.source
+    if (source !== undefined && program.endsWith(source)) this.offset = lines(program) - lines(source)
+    else {
+      // The canonical prelude ends with `__widget_live`: the template starts on the line after its closing brace.
+      const at = program.lastIndexOf("async function __widget_live(")
+      const end = at < 0 ? -1 : program.indexOf("\n}\n", at)
+      // program = prelude + "\n" + source: skip that joining newline too.
+      const start = end < 0 ? -1 : end + 3 + (program[end + 3] === "\n" ? 1 : 0)
+      this.offset = start < 0 ? null : lines(program.slice(0, start)) - 1
+    }
+    return this.offset
+  }
+
+  /** `e` with its position in the template's source: dropped when it falls in the prelude or past the template. */
+  private relative(e: ErrorInfo): ErrorInfo {
+    if (e.line === undefined) return e
+    const offset = this.prelude()
+    const total = this.options.program.split("\n").length
+    // The language puts the program-absolute place at the end of a runtime message too: the fields carry it now.
+    const message = e.message.replace(new RegExp(`\\s*\\(line ${e.line}, col(?:umn)? \\d+\\)\\.?$`), "")
+    const { line: _, column: __, ...rest } = { ...e, message }
+    if (offset === null || e.line <= offset || e.line > total) return rest
+    return { ...rest, line: e.line - offset, column: e.column }
+  }
+
+  setFailure(failure: WidgetFailure | undefined) {
+    this.failure = failure
+    this.renderFailure()
+  }
+
+  /** "Failed on <client>: <phase>: <message> (line N, col M)", then "Ask agent to fix it" or "The agent was told". */
+  private renderFailure() {
+    const f = this.status === "open" ? this.failure : undefined
+    this.failureEl.hidden = !f
+    if (!f) return this.failureEl.replaceChildren()
+    const doc = this.element.ownerDocument
+    const parts: Node[] = []
+    // The same error already on screen (this client hit it) isn't repeated.
+    if (!(this.shown && this.shown.phase === f.phase && this.shown.message === f.message)) {
+      const text = doc.createElement("div")
+      text.className = "pw-failure-text"
+      const where = f.line !== undefined ? ` (line ${f.line}${f.column !== undefined ? `, col ${f.column}` : ""})` : ""
+      text.textContent = `${this.label("failedOn")} ${f.client}: ${f.phase}: ${f.message}${where}`
+      parts.push(text)
+    }
+    if (f.sent) {
+      const told = doc.createElement("div")
+      told.className = "pw-failure-told"
+      told.textContent = this.label("told")
+      parts.push(told)
+    } else if (this.options.onAsk) {
+      const b = doc.createElement("button")
+      b.type = "button"
+      b.className = "pw-btn pw-secondary pw-ask"
+      b.textContent = this.label(this.asking ? "asking" : "ask")
+      b.disabled = this.asking
+      b.addEventListener("click", () => void this.ask())
+      parts.push(b)
+    }
+    this.failureEl.replaceChildren(...parts)
+    this.failureEl.hidden = parts.length === 0
+  }
+
+  private async ask() {
+    const f = this.failure
+    if (!f || f.sent || this.asking || !this.options.onAsk) return
+    const { client: _, sent: __, ...error } = f
+    this.asking = true
+    this.renderFailure()
+    try {
+      await this.options.onAsk(error)
+    } catch (cause) {
+      this.clientError("asking the agent about a widget error failed", cause)
+    } finally {
+      this.asking = false
+      this.renderFailure()
+    }
   }
 
   private renderStatus() {
+    this.renderFailure()
     if (this.status === "open") {
       this.statusEl.hidden = true
       this.root.classList.remove("pw-readonly")
@@ -826,6 +1022,7 @@ class Widget implements MountedWidget {
         this.draws.delete(req)
         if (m.t !== "drawn") return resolve({ error: "the runtime stopped", ms: 0 })
         this.metric("draw", m.ms)
+        if (m.error) this.problem("draw", this.relative(m.error))
         resolve({ commands: m.commands as Command[] | undefined, error: m.error ? describe(m.error) : undefined, ms: m.ms })
       })
     })
@@ -834,7 +1031,8 @@ class Widget implements MountedWidget {
   private send(value: unknown, wake: boolean) {
     const now = performance.now()
     this.sends = this.sends.filter((t) => now - t < 1000)
-    if (this.sends.length >= 10) return this.warn("more than 10 sends in a second: dropped")
+    if (this.sends.length >= 10)
+      return this.report(this.mode() === "live" ? "main" : "event", { message: "more than 10 sends in a second (rate_limited): dropped" })
     this.sends.push(now)
     this.options.onSend?.(value, wake)
   }
@@ -931,7 +1129,7 @@ class Widget implements MountedWidget {
       if (this.isFullscreen) await document.exitFullscreen()
       else await this.element.requestFullscreen({ navigationUI: "hide" })
     } catch (e) {
-      this.warn(`full screen: ${String((e as Error)?.message ?? e)}`)
+      this.clientError(`full screen: ${String((e as Error)?.message ?? e)}`, e)
     }
   }
 
@@ -959,6 +1157,17 @@ class Widget implements MountedWidget {
     this.host.forget(this)
     this.element.remove()
   }
+}
+
+/**
+ * Whether an error is the template's (widgets.md, Failures): the language's own failures (parse, exception, the step
+ * timeout, output size, the live slice), an invalid view or draw output, and WGSL that fails validation. The host's
+ * (a crash, a missing program, the draw cut-off at 100 ms, which is this host's and device-dependent) are not.
+ */
+function programError(e: ErrorInfo, phase: string): boolean {
+  if (e.type === "timeout" && phase === "draw") return false
+  if (e.type === "shader") return e.program === true
+  return ["syntax", "runtime", "timeout", "outputTooLarge", "sliceBudget", "view", "draw"].includes(e.type)
 }
 
 function describe(e: ErrorInfo): string {

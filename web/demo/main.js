@@ -1,6 +1,9 @@
 // The demo: every fixture mounted with the shared host, a theme toggle, and a log of what widgets send back.
-// Query: ?only=<name> (one template), ?theme=light, ?gl=1 (WebGL2 shaders even where WebGPU works).
-import { configure, preferWebGL } from "../dist/index.js"
+// Query: ?only=<name> (one template), ?theme=light, ?gl=1 (WebGL2 shaders even where WebGPU works), ?noask=1 (no
+// "Ask agent to fix it", as in an artifact with no agent session), ?nosource=1 (positions found without `source`).
+// The demo plays the server for failures: a report becomes the widget's failure (unsent, as for a built-in), and an
+// ask marks it sent.
+import { WidgetHost, configure, preferWebGL } from "../dist/index.js"
 import { fixtures, prelude } from "./fixtures.js"
 
 const params = new URLSearchParams(location.search)
@@ -12,6 +15,8 @@ document.documentElement.classList.toggle("light", theme === "light")
 
 const demo = { log: [], metrics: {}, perWidget: {}, widgets: {}, host }
 window.__demo = demo
+demo.WidgetHost = WidgetHost
+demo.fixtures = fixtures
 
 const log = (text) => {
   const li = document.createElement("li")
@@ -74,8 +79,9 @@ for (const [name, f] of Object.entries(fixtures)) {
   label.append(a, b)
   slot.append(label)
   section.append(slot)
-  demo.widgets[name] = host.mount(slot, {
+  const widget = (demo.widgets[name] = host.mount(slot, {
     program: prelude + "\n" + f.source,
+    source: params.has("nosource") ? undefined : f.source,
     data: f.data,
     mode: f.mode,
     capabilities: f.capabilities,
@@ -86,8 +92,19 @@ for (const [name, f] of Object.entries(fixtures)) {
     onDismiss: () => log(`${name} dismiss`),
     onSend: (value, wake) => log(`${name} send ${JSON.stringify(value)}${wake ? "" : " (no wake)"}`),
     onWarning: (message) => log(`${name} warning: ${message}`),
+    onReport: (error) => {
+      log(`${name} report ${JSON.stringify(error)}`)
+      widget.setFailure({ ...error, client: "web", sent: false })
+    },
+    onClientError: (message) => log(`${name} client-error ${message}`),
+    onAsk: params.has("noask")
+      ? undefined
+      : async (error) => {
+          log(`${name} ask ${JSON.stringify(error)}`)
+          widget.setFailure({ ...error, client: "web", sent: true })
+        },
     onMetrics: (m) => record(name, m),
-  })
+  }))
 }
 select.value = only ?? ""
 select.onchange = () => {

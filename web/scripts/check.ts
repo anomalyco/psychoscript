@@ -97,10 +97,19 @@ const expandShown = (w: Locator) =>
     }
   }
   for (const name of names) {
-    const want = name === "fetch-demo" || name === "local-demo" || name === "keys-live" ? false : surfaces.has(name) || name.endsWith("-demo") || name === "minigame"
+    const live = await page.evaluate((n) => (window as unknown as { __demo: { fixtures: Record<string, { mode: string }> } }).__demo.fixtures[n]!.mode === "live", name)
+    const want = name === "fetch-demo" || name === "local-demo" || name === "keys-live" ? false : surfaces.has(name) || live
     check((await expandShown(widget(page, name))) === want, `${name}: full-screen button ${want ? "offered" : "not offered"}`)
   }
   check(errors.length === 0, "all: no page errors", errors.slice(0, 3))
+  // Only program errors reach the report hook: here only the shader that doesn't validate. The backdrop shader that
+  // SwiftShader can't run at 50 ms a frame is this device's problem, a client error.
+  const reports = (await log(page)).filter((l) => / report /.test(l))
+  check(
+    reports.length === 1 && /^shader-broken report \{"phase":"shader","message":".*WGSL line 2/.test(reports[0]!),
+    "failures: rendering every fixture reports only the broken shader's WGSL",
+    reports,
+  )
   await page.evaluate(() => window.scrollTo(0, 0))
   await page.waitForTimeout(300)
   await shot(page, "all-dark", true)
@@ -436,6 +445,8 @@ for (const [query, backend] of [["?only=shader-demo", "webgpu"], ["?only=shader-
   await w.locator(".pw-error button", { hasText: "Restart" }).click()
   await w.locator("button.pw-btn", { hasText: "Spin" }).waitFor({ timeout: 5000 })
   check(await error.isHidden(), "live: Restart starts it again")
+  const sliced = (await log(page)).filter((l) => l.startsWith("runaway-demo report"))
+  check(sliced.length === 1 && /"phase":"main".*50 ms/.test(sliced[0]!), "failures: the slice budget is a program error (phase main)", sliced)
   check(errors.length === 0, "runaway: no page errors", errors)
   await page.close()
 }
@@ -460,6 +471,7 @@ for (const [query, backend] of [["?only=shader-demo", "webgpu"], ["?only=shader-
   await w.locator("button.pw-btn", { hasText: "example.com" }).click()
   const other = await until(/example\.com[\s\S]*CapabilityDenied/)
   check(/isn't among the hosts/.test(other), "fetch: an undeclared host is denied", other)
+  check(!(await log(page)).some((l) => / report /.test(l)), "failures: fetch errors the program handles are never reported")
   await shot(w, "fetch")
   check(errors.length === 0, "fetch: no page errors", errors)
   await page.close()
@@ -594,6 +606,106 @@ for (const [query, backend] of [["?only=shader-demo", "webgpu"], ["?only=shader-
   t = await until(/focus false · captured false/)
   check(/focus false · captured false/.test(t), "capture (live): Esc releases both", t)
   check(errors.length === 0, "keys (live): no page errors", errors)
+  await page.close()
+}
+
+// ---------- failures: program vs client errors, reports, Ask agent to fix it ----------
+for (const query of ["?only=broken-demo", "?only=broken-demo&nosource=1"]) {
+  const { page, errors } = await open(query)
+  const w = widget(page, "broken-demo")
+  await rendered(w)
+  await w.locator("button.pw-btn", { hasText: "Break it" }).click()
+  const line = await waitLog(page, (l) => l.startsWith("broken-demo report"))
+  const report = line ? JSON.parse(line.slice("broken-demo report ".length)) : undefined
+  check(
+    report?.phase === "event" &&
+      /TypeError/.test(report?.message) &&
+      !/\(line \d+/.test(report?.message) &&
+      report?.line === 4 &&
+      typeof report?.column === "number",
+    `failures: a handler's exception is reported once, with its template-relative position${query.includes("nosource") ? " (prelude found without source)" : ""}`,
+    report,
+  )
+  check(/\(line 4/.test((await w.locator(".pw-error").textContent()) ?? ""), "failures: the inline error shows the template's line too")
+  const failure = w.locator(".pw-failure")
+  const ask = failure.locator("button", { hasText: "Ask agent to fix it" })
+  await ask.waitFor({ timeout: 3000 }).catch(() => {})
+  check(await ask.isVisible(), "failures: a failure with sent: false offers Ask agent to fix it")
+  check((await failure.locator(".pw-failure-text").count()) === 0, "failures: the failure's text isn't repeated under the same local error")
+  await w.locator("button.pw-btn", { hasText: "Break it" }).click()
+  await page.waitForTimeout(300)
+  check((await log(page)).filter((l) => l.startsWith("broken-demo report")).length === 1, "failures: the same error isn't reported twice")
+  await ask.click()
+  const asked = await waitLog(page, (l) => l.startsWith("broken-demo ask"))
+  check(asked !== undefined && asked.slice("broken-demo ask ".length) === JSON.stringify(report), "failures: Ask calls the embedder's onAsk with the same error", asked)
+  await failure.locator(".pw-failure-told").waitFor({ timeout: 3000 }).catch(() => {})
+  check(
+    (await failure.locator(".pw-failure-told").textContent()) === "The agent was told about this error." && (await ask.count()) === 0,
+    "failures: with sent: true it says the agent was told",
+  )
+  if (!query.includes("nosource")) await shot(page.locator('.slot[data-name="broken-demo"]'), "failure-told")
+  check(!(await log(page)).some((l) => / client-error /.test(l)), "failures: a program error is no client error")
+  check(errors.length === 0, "failures: no page errors", errors)
+  await page.close()
+}
+{
+  // An artifact (no agent session): no ask handler, so a failure shows without the button.
+  const { page, errors } = await open("?only=broken-demo&noask=1")
+  const w = widget(page, "broken-demo")
+  await rendered(w)
+  await page.evaluate(() =>
+    (window as unknown as { __demo: { widgets: Record<string, { setFailure(f: unknown): void }> } }).__demo.widgets["broken-demo"]!.setFailure({
+      phase: "init",
+      message: "ReferenceError: boom is not defined",
+      line: 2,
+      column: 9,
+      client: "tui",
+      sent: false,
+    }),
+  )
+  const failure = w.locator(".pw-failure")
+  const text = (await failure.locator(".pw-failure-text").textContent()) ?? ""
+  check(text === "Failed on tui: init: ReferenceError: boom is not defined (line 2, col 9)", "failures: another client's failure shows as Failed on <client>: <phase>: <message> (line:col)", text)
+  check((await failure.locator("button").count()) === 0, "failures: without onAsk (an artifact) there's no Ask button")
+  await shot(page.locator('.slot[data-name="broken-demo"]'), "failure-artifact")
+  check(errors.length === 0, "failures (artifact): no page errors", errors)
+  await page.close()
+}
+for (const query of ["?only=shader-broken", "?only=shader-broken&gl=1"]) {
+  const { page, errors } = await open(query)
+  const w = widget(page, "shader-broken")
+  await rendered(w)
+  const line = await waitLog(page, (l) => l.startsWith("shader-broken report"), 8000)
+  const report = line ? JSON.parse(line.slice("shader-broken report ".length)) : undefined
+  check(
+    report?.phase === "shader" && /WGSL line 2/.test(report?.message) && report?.line === undefined,
+    `failures: WGSL that fails validation is a program error (${query.includes("gl") ? "naga" : "WebGPU"})`,
+    report,
+  )
+  check(errors.length === 0, "failures (shader): no page errors", errors)
+  await page.close()
+}
+{
+  // A host that can't start its worker: a client error for the dev log, never a report.
+  const { page } = await open("?only=confirm")
+  const got = await page.evaluate(async () => {
+    const d = (window as unknown as { __demo: { WidgetHost: new (o: object) => { mount(el: HTMLElement, o: object): { destroy(): void }; destroy(): void }; fixtures: Record<string, { source: string; data: unknown }> } }).__demo
+    const slot = document.createElement("div")
+    document.body.prepend(slot)
+    const reports: unknown[] = []
+    const clientErrors: string[] = []
+    const host = new d.WidgetHost({ workerUrl: "/no-such-worker.js" })
+    host.mount(slot, {
+      program: "function view() { return ui.text('x') }",
+      data: {},
+      onReport: (e: unknown) => reports.push(e),
+      onClientError: (m: string) => clientErrors.push(m),
+    })
+    await new Promise((r) => setTimeout(r, 2500))
+    host.destroy()
+    return { reports, clientErrors }
+  })
+  check(got.reports.length === 0 && got.clientErrors.length > 0, "failures: a host failure (no worker) goes to onClientError, not onReport", got)
   await page.close()
 }
 

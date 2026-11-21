@@ -23,7 +23,16 @@ export interface RenderContext {
         code: string;
         block: string;
     } | ShaderError>;
+    /** A program warning that isn't an error (an unknown node type). */
     warn(message: string): void;
+    /** The template's code broke a contract here (WGSL that fails validation, a shader over 16 KB): reported. */
+    programError(phase: string, error: {
+        message: string;
+        line?: number;
+        column?: number;
+    }): void;
+    /** This host failed (valid WGSL it couldn't run, a surface too slow on this device): logged in dev mode only. */
+    clientError(message: string, cause?: unknown): void;
     ticker: Ticker;
 }
 /** One `requestAnimationFrame` loop for every animated surface on the page, running only while one wants frames. */

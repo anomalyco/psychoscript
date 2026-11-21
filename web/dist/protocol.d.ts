@@ -38,6 +38,8 @@ export interface StepOutput {
 /** A failure: the language's (`type`, `kind`, `line`, `column`) or the host's. */
 export interface ErrorInfo {
     type: string;
+    /** For `type: "shader"`: the template's WGSL is at fault (a program error), not this host. */
+    program?: boolean;
     kind?: string;
     message: string;
     line?: number;
@@ -137,10 +139,13 @@ export type FromWorker = {
     t: "posts";
     wid: number;
     messages: unknown[];
-} | {
+}
+/** `phase`: a program error the run survives (the post rate, an oversized draw), else a plain warning. */
+ | {
     t: "warning";
     wid: number;
     message: string;
+    phase?: string;
 } | {
     t: "exit";
     wid: number;

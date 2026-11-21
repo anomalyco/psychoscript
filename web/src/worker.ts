@@ -44,9 +44,10 @@ let memory: WebAssembly.Memory | undefined
 
 function info(e: unknown): ErrorInfo {
   if (e && typeof e === "object" && "message" in e) {
-    const o = e as { type?: string; kind?: string; message: string; line?: number; column?: number; name?: string }
+    const o = e as { type?: string; kind?: string; message: string; line?: number; column?: number; name?: string; program?: boolean }
     return {
       type: o.type ?? (o.name === "ShaderError" ? "shader" : "host"),
+      program: o.program,
       kind: o.kind,
       message: String(o.message),
       line: o.line,
@@ -201,11 +202,11 @@ function flush(wid: number, live: Live) {
     if (e.type === "post") {
       const m = e.message as { type?: string; commands?: unknown }
       if (m && m.type === "draw" && Array.isArray(m.commands) && m.commands.length > MAX_COMMANDS) {
-        post({ t: "warning", wid, message: `a draw of ${m.commands.length} commands, over ${MAX_COMMANDS}, was dropped` })
+        post({ t: "warning", wid, phase: "draw", message: `a draw of ${m.commands.length} commands, over ${MAX_COMMANDS}, was dropped` })
         continue
       }
       messages.push(m)
-    } else if (e.type === "warning") post({ t: "warning", wid, message: String(e.message) })
+    } else if (e.type === "warning") post({ t: "warning", wid, phase: "main", message: String(e.message) })
     else if (e.type === "fetch") void transfer(wid, live, e)
     else if (e.type === "cancel" && e.id !== undefined) live.fetches.get(e.id)?.abort()
   }

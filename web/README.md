@@ -54,9 +54,15 @@ const widget = mount(element, {
   theme: "dark",      // "dark" | "light" | tokens (below)
   resolveImage: (src) => /^(https?|data):/.test(src) ? src : fileContentUrl(session, src),   // optional
   onWarning: (message) => console.warn("widget", message),                                    // optional
+  source,             // Program.source: makes error positions template-relative (else found from the prelude)
+  failure,            // State.failure, if any
+  onReport: (error) => rpc.report({ sessionID, messageID, callID, error, client: "web" }),     // program errors only
+  onAsk: (error) => rpc.report({ sessionID, messageID, callID, error, client: "web", ask: true }),  // omit: no button
+  onClientError: (message, cause) => dev && console.error("widget host:", message, cause),     // dev log only
 })
 
 widget.setState("submitted", response) // the `changed` event said so (from any client): read-only, live program stops
+widget.setFailure(state.failure)       // the `changed` event carried a new failure (or none)
 widget.setTheme("light")
 widget.restart()                       // fresh init / fresh main
 widget.destroy()                       // stops the program, frees the worker side, removes the element
@@ -94,6 +100,28 @@ Behavior, per the contract:
   The root fills the screen and every `canvas` and `shader` shares the remaining height equally (its `height` is the
   minimum; `fill: false` keeps it at its `height`); taller content scrolls. The only chrome is a small floating close
   button in the top corner (clear of safe areas); the capability chip is hidden.
+
+### Failures (widgets.md, Failures)
+
+The host sorts every error into one of two kinds:
+
+- **Program errors** (the template's): a parse error or exception (in `init`, a handler or hook, `draw`, `main`), an
+  invalid view or draw output, WGSL that fails validation (WebGPU's compiler or naga) or is over 16 KB, the 250 ms
+  step, the 50 ms live slice, the post rate (240/s) and the send rate (10/s). The widget shows them (error card, or
+  inline under the last good view) and calls `onReport({ phase, message, line?, column? })` once per distinct error;
+  `phase` is `init`, `event`, `draw`, `main` or `shader`, and `line`/`column` are in the template's source (the
+  prelude's lines subtracted; dropped when they fall in the prelude or past the template; a shader's WGSL position goes
+  into the message as "WGSL line N"). Post it with `report` (`client: "web"`).
+- **Client errors** (this host's): a worker or WebAssembly crash, a missing worker or module, valid WGSL the GPU path
+  can't run, a draw or shader too slow on this device (the 8 ms draw / 50 ms shader stops), the host's own 100 ms draw
+  cut-off, Fullscreen API refusals, a throwing `onReport` or failing `onAsk`. They go only to `onClientError(message,
+  cause)`: log them in dev mode, never report them. A fetch error a live program catches is its own business.
+
+`failure` / `setFailure(f)` is the server's `State.failure`. While the widget is open it shows
+"Failed on <client>: <phase>: <message> (line N, col M)" (not repeated when this client is showing the same error),
+then "The agent was told about this error." when `sent`, or with `sent: false` an **"Ask agent to fix it"** button that
+calls `onAsk(error)` (the embedder calls `report` with `ask: true`; "Asking the agent…" while it runs). Without `onAsk`
+(an artifact with no agent session) there is no button.
 
 ### Keyboard and pointer capture (widgets-input.md)
 

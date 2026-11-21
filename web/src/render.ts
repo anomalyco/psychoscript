@@ -24,7 +24,12 @@ export interface RenderContext {
   draw?(frame: Frame): Promise<{ commands?: Command[]; error?: string; ms: number }>
   liveCommands(id: string | null): Command[] | undefined
   translate(wgsl: string): Promise<{ code: string; block: string } | ShaderError>
+  /** A program warning that isn't an error (an unknown node type). */
   warn(message: string): void
+  /** The template's code broke a contract here (WGSL that fails validation, a shader over 16 KB): reported. */
+  programError(phase: string, error: { message: string; line?: number; column?: number }): void
+  /** This host failed (valid WGSL it couldn't run, a surface too slow on this device): logged in dev mode only. */
+  clientError(message: string, cause?: unknown): void
   ticker: Ticker
 }
 
@@ -927,10 +932,10 @@ export class CanvasView extends SurfaceBase {
       if (this.destroyed) return
       if (r.error !== undefined || r.ms > DRAW_BUDGET_MS) {
         this.overruns++
-        if (r.error !== undefined) this.ctx.warn(`draw: ${r.error}`)
         if (this.overruns >= OVERRUNS_TO_FREEZE && this.fps() > 0 && !this.frozen) {
           this.frozen = true
-          this.ctx.warn(`canvas ${this.id ?? ""} stopped animating: draw over budget ${OVERRUNS_TO_FREEZE} frames in a row`)
+          // The 8 ms budget depends on the device: the host's, not a program error.
+          this.ctx.clientError(`canvas ${this.id ?? ""} stopped animating: draw over budget ${OVERRUNS_TO_FREEZE} frames in a row`)
         }
       } else this.overruns = 0
       if (r.commands) {
@@ -1002,13 +1007,14 @@ export class ShaderView extends SurfaceBase {
   }
 
   private async build(wgsl: string) {
-    if (new TextEncoder().encode(wgsl).length > MAX_SHADER_BYTES) return this.fail(`the shader is over ${MAX_SHADER_BYTES / 1024} KB`)
+    if (new TextEncoder().encode(wgsl).length > MAX_SHADER_BYTES)
+      return this.fail({ message: `the shader is over ${MAX_SHADER_BYTES / 1024} KB`, program: true })
     const made = await surface(this.canvas, wgsl, (w) => this.ctx.translate(w))
     if (this.destroyed || wgsl !== this.wgsl) {
       if (!("message" in made)) made.destroy()
       return
     }
-    if ("message" in made) return this.fail(made.line ? `${made.message} (line ${made.line}, column ${made.column})` : made.message)
+    if ("message" in made) return this.fail(made)
     this.surface = made
     this.el.dataset.backend = made.backend
     this.el.dataset.builds = String(++this.builds)
@@ -1016,9 +1022,12 @@ export class ShaderView extends SurfaceBase {
     this.start()
   }
 
-  private fail(message: string) {
+  private fail(e: ShaderError) {
     this.failed = true
-    this.ctx.warn(`shader: ${message}`)
+    // Positions are in the node's WGSL, not the template's source: they go into the message.
+    const message = e.line ? `${e.message} (WGSL line ${e.line}, column ${e.column})` : e.message
+    if (e.program) this.ctx.programError("shader", { message })
+    else this.ctx.clientError(`shader: ${message}`, e)
     const poster = str(this.node.poster)
     const url = poster ? this.ctx.resolveImage(poster) : undefined
     if (url) {
@@ -1066,7 +1075,7 @@ export class ShaderView extends SurfaceBase {
       this.slow = ms > SHADER_FRAME_BUDGET_MS ? this.slow + 1 : 0
       if (this.slow >= OVERRUNS_TO_FREEZE && !this.stopped) {
         this.stopped = true
-        this.ctx.warn(`shader stopped: over ${SHADER_FRAME_BUDGET_MS} ms a frame ${OVERRUNS_TO_FREEZE} frames in a row`)
+        this.ctx.clientError(`shader stopped: over ${SHADER_FRAME_BUDGET_MS} ms a frame ${OVERRUNS_TO_FREEZE} frames in a row`)
       }
     })
   }

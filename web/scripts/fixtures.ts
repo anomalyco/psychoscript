@@ -262,6 +262,25 @@ async function main(data) {
   }
 }`,
   },
+  "broken-demo": {
+    mode: "step",
+    data: { title: "A template with a bug" },
+    source: `function view(state, data) {
+  return ui.column({ gap: 1 }, [
+    ui.text(data.title, { style: "title" }),
+    ui.button("Break it", { onPress: (state) => state.missing.field }),
+  ])
+}`,
+  },
+  "shader-broken": {
+    mode: "step",
+    data: { title: "A shader that doesn't validate" },
+    source: `const WGSL = "fn shade(frag: vec2f) -> vec4f {\\n  return vec4f(nope, 1.0);\\n}"
+
+function view(state, data) {
+  return ui.column({ gap: 1 }, [ui.text(data.title, { style: "title" }), ui.shader(WGSL, { height: 80, alt: "A broken shader" })])
+}`,
+  },
   "runaway-demo": {
     mode: "live",
     data: { title: "A runaway loop" },
@@ -335,6 +354,10 @@ for (const name of names) {
   const source = await Bun.file(path.join(src, "templates", `${name}.js`)).text()
   fixtures[name] = { mode: LIVE.has(name) ? "live" : "step", source, data: data[name] }
 }
+// "Tap the dots" left the built-ins and lives on as a live runtime test fixture: the demo keeps it as "minigame".
+const tapDots = Bun.file(path.join(widget, "test/fixtures/tap-dots.js"))
+if (!fixtures.minigame && (await tapDots.exists()))
+  fixtures.minigame = { mode: "live", source: await tapDots.text(), data: data.minigame }
 for (const [name, t] of Object.entries(DEMO))
   fixtures[name] = {
     mode: t.mode,
