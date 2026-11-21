@@ -365,19 +365,6 @@ for (const name of names) {
 const tapDots = Bun.file(path.join(widget, "test/fixtures/tap-dots.js"))
 if (!fixtures.minigame && (await tapDots.exists()))
   fixtures.minigame = { mode: "live", source: await tapDots.text(), data: data.minigame }
-// Widget templates kept in demo/extra/ (<name>.js, and <name>.json with mode, capabilities and example data), such
-// as the launch dashboard used for full-screen shots.
-const extra = path.join(root, "demo/extra")
-for (const file of (await readdir(extra).catch(() => [] as string[])).filter((f) => f.endsWith(".js")).sort()) {
-  const name = file.slice(0, -3)
-  const meta = await Bun.file(path.join(extra, `${name}.json`)).json()
-  fixtures[name] = {
-    mode: meta.mode ?? "step",
-    source: await Bun.file(path.join(extra, file)).text(),
-    data: meta.example ?? {},
-    ...(meta.capabilities ? { capabilities: meta.capabilities } : {}),
-  }
-}
 for (const [name, t] of Object.entries(DEMO))
   fixtures[name] = {
     mode: t.mode,

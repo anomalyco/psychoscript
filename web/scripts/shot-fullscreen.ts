@@ -3,7 +3,7 @@
 // (needs the demo server; run under xvfb-run for WebGPU canvases).
 import { chromium } from "playwright-core"
 
-const [name = "launch-dashboard", out = "fullscreen.png"] = process.argv.slice(2)
+const [name = "heatmap", out = "fullscreen.png"] = process.argv.slice(2)
 const exe = process.env.CHROMIUM ?? `${process.env.HOME}/.cache/ms-playwright/chromium-1254/chrome-linux64/chrome`
 const browser = await chromium.launch({
   executablePath: exe,
