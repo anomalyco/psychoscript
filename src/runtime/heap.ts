@@ -3,8 +3,9 @@
 // every platform and garbage never counts.
 //
 // - An object made by the run: OBJECT_BYTES, plus PROPERTY_BYTES per own property, plus ELEMENT_BYTES per array
-//   element or argument (holes included, up to `length`), ENTRY_BYTES per Map, Set, WeakMap or WeakSet entry, and one
-//   per byte of a Uint8Array. A function's `name` and `length`, a RegExp's source and flags are part of it.
+//   element or argument (holes included, up to `length`), and ENTRY_BYTES per Map, Set, WeakMap or WeakSet entry. A
+//   function's `name` and `length`, a RegExp's source and flags are part of it.
+// - A typed array's storage: one per byte, once for every view and ArrayBuffer that shares it.
 // - The runtime's own objects (built-ins, host globals) count nothing, though the objects the program stored on them
 //   do.
 // - A string value: STRING_BYTES plus two per UTF-16 code unit, once per distinct text. Property keys count as part

@@ -125,7 +125,8 @@ built-ins); resuming it in another build, or from malformed bytes, rejects with 
 
 `globals` is called for each run (and again on resume) with the `Run`: its `id`, and `metadata`, JSON the host keeps
 with the run. It returns the program's globals; they shadow built-ins of the same name, and plain objects of host
-functions act as namespaces (`fs.read(...)`). Arguments reach the host as copies, and results are copied back.
+functions act as namespaces (`fs.read(...)`). Arguments reach the host as copies, and results are copied back,
+except typed arrays (below).
 
 - **`Host.fn(f, options)`**: `f(args, call)` returns a value or a Promise, or throws. `call` has the call's `key`, a
   `signal`, and `suspending()`. `options.type`:
@@ -143,6 +144,11 @@ functions act as namespaces (`fs.read(...)`). Arguments reach the host as copies
 - **`Host.fail(kind, message, suggestions)`**: throw it to give the program an error with your own `kind`.
 - **`StreamingResponse`**: return `new StreamingResponse(response)` to give the program a `Response`-like object whose
   body streams (`text()`, `json()`, `bytes()`, `body` readers, `for await`).
+- **Typed arrays** cross without a copy, so a host can upload vertex or uniform data to a GPU as it is: a
+  `Float32Array`, `Uint16Array`, `Uint32Array`, `Int32Array` or `Float64Array` argument arrives as a host typed array
+  over the program's own bytes (an `ArrayBuffer` as the host `ArrayBuffer`), and one a host function returns becomes
+  the program's over the same bytes. Writes on either side show on the other, so read the bytes during the call. A
+  `Uint8Array` still crosses as a copy.
 - **`translate`** (runtime option): what happens to a program function or promise inside an argument. By default both
   fail the call; `{ functions: "drop", promises: "await" }` drops functions (as `JSON.stringify` does) and awaits
   promises.
@@ -252,7 +258,8 @@ defects become an `ExecutionFailure`.
 
 `maxHeapBytes` measures what the program can still reach, not the process: garbage never counts, and the sizes are
 the same on every platform and in the Rust implementation (64 bytes per object, 32 per property, 16 per array
-element, 16 plus 2 per UTF-16 code unit per distinct string; see `interpreter-support.md`). The heap is measured when
+element, 16 plus 2 per UTF-16 code unit per distinct string, 1 per byte of typed array storage; see
+`interpreter-support.md`). The heap is measured when
 the body ends and, paced by allocation, while it runs; the run stops there, and no handler sees it. A saved run keeps
 its limit when resumed.
 
@@ -279,11 +286,12 @@ async generators and `for await`), classes (fields, static members, getters and 
 literal getters and setters, labels, `try`/`finally`, top-level `await` and `return`, and `import`/`require` of host
 globals by module name. Built-ins: `Object`, `Array`, `String`, `Number`, `Math`, `JSON`, `Date`, `RegExp`, `Map`,
 `Set`, `Promise`, `Iterator` helpers, errors, `URL`, `URLSearchParams`, `Headers`, `TextEncoder`/`TextDecoder`,
-`atob`/`btoa`, `structuredClone`, `crypto.randomUUID`/`getRandomValues`, `Uint8Array`, Node's `Buffer`, and `console`.
+`atob`/`btoa`, `structuredClone`, `crypto.randomUUID`/`getRandomValues`, `ArrayBuffer`, `Uint8Array`, `Uint16Array`,
+`Uint32Array`, `Int32Array`, `Float32Array`, `Float64Array`, Node's `Buffer`, and `console`.
 
 Not supported: private members (`#x`), static blocks, `new` on plain functions, `Proxy`/`Reflect`, `Symbol()` (only
-`Symbol.iterator` and `Symbol.asyncIterator` exist), BigInt, typed arrays other than `Uint8Array` (and
-`ArrayBuffer`/`DataView`), `WeakRef`/`FinalizationRegistry`, sloppy mode, `eval`, `export`, and TypeScript syntax.
+`Symbol.iterator` and `Symbol.asyncIterator` exist), BigInt, `Int8Array`, `Int16Array`, `Uint8ClampedArray`, the
+BigInt and Float16 typed arrays, `DataView`, resizable or shared buffers, `WeakRef`/`FinalizationRegistry`, sloppy mode, `eval`, `export`, and TypeScript syntax.
 Unsupported syntax fails before the program runs, with a hint.
 
 [`interpreter-support.md`](interpreter-support.md) is the detailed support matrix.

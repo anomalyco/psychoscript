@@ -42,7 +42,8 @@ the ultimate source of truth. Upstream test262 files run verbatim from `test/tes
       it can still reach is over it. Garbage never counts. Sizes come from a fixed model, not the process: 64 bytes per
       object the program made, 32 per own property (a function's `name` and `length`, an error's `stack` text and a
       RegExp's source are part of the object), 16 per array element or argument (holes included), 32 per Map, Set,
-      WeakMap or WeakSet entry, 1 per Uint8Array byte, and 16 plus 2 per UTF-16 code unit per distinct string value.
+      WeakMap or WeakSet entry, 1 per byte of typed array storage (once per buffer, however many views share it), and
+      16 plus 2 per UTF-16 code unit per distinct string value.
       Built-ins and host globals count nothing, though what the program stores on them does (except strings set
       directly as their properties); property keys count with their property. The heap is measured when the body
       ends, and in between at fuel points and host handovers once the run has allocated about enough to reach the
@@ -610,8 +611,8 @@ reject }` object. The resolvers are anonymous (`name` is `""`) with `length` 1, 
 
 ## Uint8Array
 
-The only binary type. Bytes stay inside the program or cross to host functions as copies; the result boundary rejects them
-with a hint to encode as text first (`TextDecoder`, `toBase64`, `toHex`).
+Bytes stay inside the program or cross to host functions as copies; the result boundary rejects them with a hint to
+encode as text first (`TextDecoder`, `toBase64`, `toHex`). The other typed arrays are below.
 
 - [x] `new Uint8Array(length | array | iterable | Uint8Array)`, `Uint8Array.from`, `Uint8Array.of`, `fromBase64`
       (with the `alphabet` and `lastChunkHandling` options), and `fromHex`. Lengths are capped like arrays. The
@@ -632,7 +633,41 @@ with a hint to encode as text first (`TextDecoder`, `toBase64`, `toHex`).
       `map` and `filter` return new Uint8Arrays with results clamped like index writes (`map((b) => b * 100)` on
       `[1, 2, 3]` is `[100, 200, 44]`); `reduce` on an empty Uint8Array without an initial value is a `TypeError`.
 - [x] `sort` in place, numeric ascending by default (`[10, 9, 1]` sorts to `[1, 9, 10]`) or by comparator.
-- [ ] `ArrayBuffer`, `DataView`, and other typed arrays.
+- [x] `byteLength`, `byteOffset`, `buffer`, and `new Uint8Array(buffer, byteOffset, length)`, as for the typed arrays
+      below.
+
+## Typed arrays and ArrayBuffer
+
+`ArrayBuffer`, `Uint16Array`, `Uint32Array`, `Int32Array`, `Float32Array` and `Float64Array`, for 3D programs that
+fill vertex, index and uniform data in script and hand it to the host. A typed array is a view of elements on one
+contiguous byte buffer, little-endian.
+
+- [x] `new X(length | array | iterable | typed array)`, `new X(buffer, byteOffset, length)` (offsets that are not a
+      multiple of the element size, and views past the buffer, are `RangeError`s), `X.from` (with a mapper and
+      `thisArg`), `X.of`, and `BYTES_PER_ELEMENT`. `new ArrayBuffer(length)`, `byteLength`, `slice`, and
+      `ArrayBuffer.isView`. Lengths are capped like arrays; a buffer at 80,000,000 bytes.
+- [x] Index reads and writes with JS conversions: float32 rounding, integer wrapping modulo 2^16 or 2^32, NaN and
+      infinities as 0 for the integer kinds. Out-of-range reads are `undefined` and writes are ignored, as are writes to
+      other numeric keys (`-1`, `1.5`); elements cannot be deleted or made accessors. A NaN written to a float array
+      reads back as NaN (its bytes are the canonical quiet NaN in Rust; the reference's engine may keep others).
+- [x] `length`, `byteLength`, `byteOffset`, and `buffer` (the same `ArrayBuffer` for every view of one buffer).
+      Views share their bytes: a write through one shows through every other; `subarray` is a view, `slice` a copy.
+- [x] `at`, `slice`, `subarray`, `set` (from a typed array, array or iterable, at an offset), `fill`, `reverse`,
+      `indexOf`, `lastIndexOf`, `includes` (only numbers match; `includes` finds NaN), `join`, `toString`, and live
+      `keys`, `values`, `entries`, and `[Symbol.iterator]`.
+- [x] Spread, destructuring, `for...of`, and `Array.from`. `Array.isArray` is false; `Object.prototype.toString` gives
+      `[object Float32Array]`; `JSON.stringify` gives `{"0":1.5,...}` and an `ArrayBuffer` `{}`; `console.log` prints
+      `Float32Array(n) [...]` and `ArrayBuffer { byteLength: n }`; `structuredClone` copies.
+- [x] Host functions get the typed arrays other than Uint8Array, and `ArrayBuffer`s, as views of the same bytes (the
+      host's own typed array or ArrayBuffer; in Rust `HostValue::TypedArray`), and a typed array a host function
+      returns stays a view of its bytes; the result boundary rejects them with a hint to pass the values instead. Their
+      storage counts against `maxHeapBytes` once per buffer. Snapshots keep them, and which views share a buffer.
+- [x] Fast element access: an indexed read or write with a number goes straight to the bytes, in Rust and in the
+      reference.
+- [ ] The Array callback methods (`map`, `forEach`, `reduce`, ...), `sort`, `copyWithin`, `toReversed`, `toSorted`,
+      `with`, and `findIndex` on the typed arrays other than Uint8Array; a call fails as calling a missing method does.
+- [ ] `Int8Array`, `Int16Array`, `Uint8ClampedArray`, `Float16Array`, `BigInt64Array`, `BigUint64Array`, `DataView`,
+      and resizable or shared buffers. A shared `%TypedArray%` prototype: each kind's prototype holds its own methods.
 
 ## Buffer
 
