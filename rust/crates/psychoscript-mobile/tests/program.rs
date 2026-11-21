@@ -158,3 +158,39 @@ fn caps_the_heap() {
     assert_eq!(run("[1, 2, 3].length", "null").unwrap(), "3");
     assert_eq!(program("1 + 1").run("null".into(), small).unwrap(), "2");
 }
+
+#[test]
+fn sessions_share_fields() {
+    let program = std::sync::Arc::new(program(
+        "const a = __input(); const b = __input(); return [a, b.data === a.data]",
+    ));
+    let session = program
+        .clone()
+        .session(r#"{"data":{"rows":[1,2,3],"title":"t"}}"#.into())
+        .unwrap();
+    let once = session
+        .run(
+            r#"{"phase":"event","state":{"n":1}}"#.into(),
+            RunOptions::default(),
+        )
+        .unwrap();
+    let whole = program
+        .run(
+            r#"{"data":{"rows":[1,2,3],"title":"t"},"phase":"event","state":{"n":1}}"#.into(),
+            RunOptions::default(),
+        )
+        .unwrap();
+    assert_eq!(once, whole);
+    assert_eq!(
+        once,
+        r#"[{"data":{"rows":[1,2,3],"title":"t"},"phase":"event","state":{"n":1}},false]"#
+    );
+    assert!(matches!(
+        session.run("[1]".into(), RunOptions::default()),
+        Err(PsychoScriptError::InvalidInput { .. })
+    ));
+    assert!(matches!(
+        program.session("3".into()),
+        Err(PsychoScriptError::InvalidInput { .. })
+    ));
+}

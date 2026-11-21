@@ -34,11 +34,11 @@ while (true) {
 }
 "##;
 
-/// Sends the time each post arrives.
+/// Sends the time each batch of posts arrives.
 struct Timing(Mutex<Sender<Instant>>);
 
 impl LiveHandler for Timing {
-    fn on_post(&self, _message_json: String) {
+    fn on_posts(&self, _messages_json: Vec<String>) {
         let _ = self.0.lock().map(|tx| tx.send(Instant::now()));
     }
     fn on_warning(&self, message: String) {
@@ -78,7 +78,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     echo.stop();
     report(
-        "wake to post (deliver -> receive -> post -> on_post)",
+        "wake to post (deliver -> receive -> post -> on_posts)",
         latencies,
     );
 
@@ -107,7 +107,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .recv_timeout(Duration::from_secs(1))?
                 .duration_since(sent),
         );
-        posts.recv_timeout(Duration::from_secs(1))?;
     }
     let wall = start.elapsed().as_secs_f64();
     let cpu = cpu_seconds() - cpu0;

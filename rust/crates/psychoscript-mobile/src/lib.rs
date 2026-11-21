@@ -26,7 +26,7 @@ pub use fetch::{
     FetchCompletion, FetchRequest, FetchResponse, FetchTransport, HttpHeader, is_public_address,
 };
 pub use live::{LiveExit, LiveHandler, LiveOptions, LiveRun};
-pub use program::{Program, RunOptions};
+pub use program::{Program, RunOptions, RunSession};
 #[cfg(feature = "shader")]
 pub use shader::{
     ShaderError, ShaderStage, ShaderTarget, TranslatedShader, UniformBlock, translate_wgsl,
