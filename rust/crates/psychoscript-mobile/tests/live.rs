@@ -41,12 +41,11 @@ enum Event {
 struct Handler(Mutex<Sender<Event>>);
 
 impl LiveHandler for Handler {
-    fn on_post(&self, message_json: String) {
-        let _ = self
-            .0
-            .lock()
-            .unwrap()
-            .send(Event::Post(serde_json::from_str(&message_json).unwrap()));
+    fn on_posts(&self, messages_json: Vec<String>) {
+        let tx = self.0.lock().unwrap();
+        for m in messages_json {
+            let _ = tx.send(Event::Post(serde_json::from_str(&m).unwrap()));
+        }
     }
     fn on_warning(&self, message: String) {
         let _ = self.0.lock().unwrap().send(Event::Warning(message));
@@ -671,4 +670,49 @@ fn caps_the_heap() {
         }
         other => panic!("{other:?}"),
     }
+}
+
+/// Records each `on_posts` call.
+struct Batches(Mutex<Sender<Vec<String>>>);
+
+impl LiveHandler for Batches {
+    fn on_posts(&self, messages_json: Vec<String>) {
+        let _ = self.0.lock().unwrap().send(messages_json);
+    }
+    fn on_warning(&self, _message: String) {}
+    fn on_exit(&self, _exit: LiveExit) {}
+}
+
+#[test]
+fn posts_of_one_wake_up_arrive_together() {
+    let source = r#"
+__host.post("hello")
+const pending = __host.receive()
+await __host.sleep(5)
+__host.post("waiting on a call started before")
+await pending
+while (true) {
+  const m = await __host.receive()
+  for (let i = 0; i < m.n; i++) __host.post(i)
+  if (m.n === 0) return "bye"
+}
+"#;
+    let program = Program::new(source.into(), "__input".into()).unwrap();
+    let (tx, rx) = channel();
+    let run = program
+        .start_live(
+            "null".into(),
+            Box::new(Batches(Mutex::new(tx))),
+            LiveOptions::default(),
+            None,
+        )
+        .unwrap();
+    let next = || rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(next(), [r#""hello""#]);
+    assert_eq!(next(), [r#""waiting on a call started before""#]);
+    run.deliver(r#"{"n":0,"first":true}"#.into()).unwrap();
+    run.deliver(r#"{"n":3}"#.into()).unwrap();
+    assert_eq!(next(), ["0", "1", "2"]);
+    run.deliver(r#"{"n":2}"#.into()).unwrap();
+    assert_eq!(next(), ["0", "1"]);
 }
