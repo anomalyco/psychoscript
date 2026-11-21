@@ -1,7 +1,8 @@
 //! Long-running programs that talk to their host: a [`LiveRun`] runs on a thread of its own with these host
 //! functions under `__host`, beside the input function:
 //!
-//! - `__host.post(message)` (sync): hands `message`, as JSON, to [`LiveHandler::on_post`] on the run's thread.
+//! - `__host.post(message)` (sync): queues `message`, as JSON, for [`LiveHandler::on_posts`]: every post of one
+//!   wake-up of the program reaches the host in one call, in order, when the program next waits (or ends).
 //! - `await __host.receive()` (async, idempotent): the next message [`LiveRun::deliver`] queued, in order.
 //! - `await __host.sleep(ms)` (async, idempotent): resolves after `ms` (clamped to >= 0) of running time.
 //! - `__host.now()` (sync): milliseconds the program has been running, paused time left out.
@@ -63,12 +64,12 @@ impl Default for LiveOptions {
     }
 }
 
-/// What a live run tells its host. `on_post` and `on_warning` are called on the run's own thread, inside the
-/// program's call, so return quickly (hand the message to your UI thread); `on_exit` is called once, on the run's
-/// thread, or on the caller's for `stop` on a run suspended to a snapshot.
+/// What a live run tells its host, on the run's own thread, so return quickly (hand the messages to your UI thread).
+/// `on_posts` gets the posts of one wake-up of the program together, in order, as soon as it waits again; `on_exit`
+/// is called once, after the last posts (on the caller's thread for `stop` on a run suspended to a snapshot).
 #[uniffi::export(callback_interface)]
 pub trait LiveHandler: Send + Sync {
-    fn on_post(&self, message_json: String);
+    fn on_posts(&self, messages_json: Vec<String>);
     fn on_warning(&self, message: String);
     fn on_exit(&self, exit: LiveExit);
 }
@@ -325,6 +326,8 @@ pub(crate) struct Control {
     /// The psychoscript run of the current thread, for its metadata.
     run: Mutex<Option<Run>>,
     inbox: Mutex<Inbox>,
+    /// Posts of the current wake-up, not yet handed over.
+    outbox: Mutex<Vec<String>>,
     sleeps: Mutex<HashMap<String, Sleep>>,
     fetches: Mutex<Vec<Weak<Mutex<fetch::Slot>>>>,
     fetch_budget: Mutex<fetch::Budget>,
@@ -356,6 +359,7 @@ impl Control {
             state: Mutex::new(State::Starting),
             run: Mutex::new(None),
             inbox: Mutex::default(),
+            outbox: Mutex::default(),
             sleeps: Mutex::default(),
             fetches: Mutex::default(),
             fetch_budget: Mutex::default(),
@@ -454,7 +458,7 @@ impl Control {
         let exit = match outcome {
             Ok(RunOutcome::Suspended(_)) => match why {
                 // `snapshot` keeps the state and joins this thread.
-                Why::Snapshot => return,
+                Why::Snapshot => return self.flush(),
                 Why::Overrun => LiveExit::Failed {
                     error: PsychoScriptError::SliceBudget {
                         reason: format!(
@@ -477,6 +481,7 @@ impl Control {
             },
             Err(_interrupted) => LiveExit::Stopped,
         };
+        self.flush();
         self.end();
         self.handler.on_exit(exit);
     }
@@ -529,7 +534,8 @@ impl Control {
                 let c = c.clone();
                 let mut at = At::Inside;
                 std::future::poll_fn(move |cx| {
-                    c.poll_receive(cx, std::mem::replace(&mut at, At::Between))
+                    let at = std::mem::replace(&mut at, At::Between);
+                    c.around(at, cx, |cx| c.poll_receive(cx, at))
                 })
             })
             .idempotent();
@@ -545,7 +551,8 @@ impl Control {
                 let key = call.key();
                 let mut at = At::Inside;
                 std::future::poll_fn(move |cx| {
-                    c.poll_sleep(&key, ms, cx, std::mem::replace(&mut at, At::Between))
+                    let at = std::mem::replace(&mut at, At::Between);
+                    c.around(at, cx, |cx| c.poll_sleep(&key, ms, cx, at))
                 })
             })
             .idempotent();
@@ -555,7 +562,8 @@ impl Control {
                 let c = c.clone();
                 let mut at = At::Inside;
                 std::future::poll_fn(move |cx| {
-                    c.poll_fetch(&slot, cx, std::mem::replace(&mut at, At::Between))
+                    let at = std::mem::replace(&mut at, At::Between);
+                    c.around(at, cx, |cx| c.poll_fetch(&slot, cx, at))
                 })
             });
             let host = HostValue::object([
@@ -865,7 +873,41 @@ impl Control {
                 return;
             }
         }
-        self.handler.on_post(json::write(message));
+        let first = {
+            let mut outbox = lock(&self.outbox);
+            outbox.push(json::write(message));
+            outbox.len() == 1
+        };
+        // The host calls the program waits on now get polled again once it stops, which hands the posts over.
+        if first {
+            self.wake_all();
+        }
+    }
+
+    /// Hands the queued posts to the host in one call.
+    fn flush(&self) {
+        let posts = std::mem::take(&mut *lock(&self.outbox));
+        if !posts.is_empty() {
+            self.handler.on_posts(posts);
+        }
+    }
+
+    /// Polls a host call for the program: a poll between the VM's runs first hands over the posts of the run that
+    /// ended; a call started with posts queued is polled again once the VM stops, to hand them over then.
+    fn around(
+        &self,
+        at: At,
+        cx: &mut Context<'_>,
+        poll: impl FnOnce(&mut Context<'_>) -> Poll<HostResult>,
+    ) -> Poll<HostResult> {
+        if at == At::Between {
+            self.flush();
+        }
+        let result = poll(cx);
+        if at == At::Inside && result.is_pending() && !lock(&self.outbox).is_empty() {
+            cx.waker().wake_by_ref();
+        }
+        result
     }
 
     fn poll_receive(&self, cx: &mut Context<'_>, at: At) -> Poll<HostResult> {

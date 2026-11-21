@@ -26,6 +26,12 @@ val out = program.run("""{"n":21}""", RunOptions(timeoutMs = 250uL))
   result is the program's completion value (a top-level `return`'s, or the last expression statement's) as compact
   JSON, `undefined` as `null`. `RunOptions(timeoutMs?, maxOutputBytes?, maxHeapBytes?)`: active-time limit, result
   size limit and heap cap, all off by default.
+- `program.session(fieldsJson) -> RunSession` parses a JSON object once; `session.run(inputJson, options)` runs with
+  those fields followed by `inputJson`'s own (a JSON object) as the input. The program sees the same input as
+  `run` with the whole object (shared fields first). For a widget, keep a session per widget with its `data`, and send
+  only `{ phase, state, event | frame }` per step. That saves sending and parsing `data` on every step: on a Mac JVM
+  (Android-style JNA) bench with 25.6 KB of `data`, a trivial step went from ~400 to ~350 µs. Most of what remains is
+  the VM turning the input into its own values, which every run pays.
 - `PsychoScriptError` (Kotlin `PsychoScriptException`); `reason` is the message, `kind` the language's diagnostic kind,
   `line`/`column` 1-based in the source:
   - `Syntax(kind, reason, line, column)`: `ParseError`, or `UnsupportedSyntax` (which may surface only when a run
@@ -56,14 +62,16 @@ its own until it returns or is stopped. Beside its input function it gets `__hos
 
 | Function | Kind | |
 | --- | --- | --- |
-| `__host.post(message)` | sync | `handler.onPost(json)` |
+| `__host.post(message)` | sync | `handler.onPosts([json, ...])`, a wake-up's posts in one call |
 | `await __host.receive()` | async | the next message `deliver(json)` queued, in order |
 | `await __host.sleep(ms)` | async | resolves after `ms` of running time (clamped to >= 0) |
 | `__host.now()` | sync | ms of running time, paused time left out |
 | `await __host.fetch(request)` | async | HTTPS through the app's `FetchTransport` (below) |
 
-- `LiveHandler` (callback interface): `onPost(messageJson)` and `onWarning(message)` run on the run's thread, inside
-  the program's call: hand them to the UI thread and return. `onExit(LiveExit)` runs once on the run's thread:
+- `LiveHandler` (callback interface): `onPosts(messagesJson)` gets every post of one wake-up of the program, in
+  order, in one call, as soon as the program waits again (or ends). A live frame that draws and then asks for the next
+  frame costs one callback, not two. `onWarning(message)` comes in its own call. Both run on the run's thread: hand
+  them to the UI thread and return. `onExit(LiveExit)` runs once on the run's thread:
   `Finished(resultJson)`, `Failed(error)` (`SliceBudget`, `Runtime`, ...), or `Stopped`.
 - `LiveOptions(sliceBudgetMs = 50, maxPostsPerSecond = 240, httpsHosts = nil, allowLocalNetwork = false,
   maxHeapBytes = nil)`.

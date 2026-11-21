@@ -19,12 +19,11 @@ enum Event {
 struct Handler(Mutex<Sender<Event>>);
 
 impl LiveHandler for Handler {
-    fn on_post(&self, message_json: String) {
-        let _ = self
-            .0
-            .lock()
-            .unwrap()
-            .send(Event::Post(serde_json::from_str(&message_json).unwrap()));
+    fn on_posts(&self, messages_json: Vec<String>) {
+        let tx = self.0.lock().unwrap();
+        for m in messages_json {
+            let _ = tx.send(Event::Post(serde_json::from_str(&m).unwrap()));
+        }
     }
     fn on_warning(&self, _message: String) {}
     fn on_exit(&self, exit: LiveExit) {
