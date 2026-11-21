@@ -76,7 +76,9 @@ its own until it returns or is stopped. Beside its input function it gets `__hos
 - `LiveOptions(sliceBudgetMs = 50, maxPostsPerSecond = 240, httpsHosts = nil, allowLocalNetwork = false,
   maxHeapBytes = nil)`.
   - **Slice budget:** a run computing past the budget without waiting is stopped with `SliceBudget`. Only the VM's
-    compute counts, not the time it waits on pending host calls (several at once included). The language can't
+    own execution counts: not the time it waits on pending host calls (several at once included), and not time
+    inside host code on its thread (`post`, `now`, the input function, polls of host calls, and the handler's
+    callbacks, however long the app takes in them). The language can't
     time-slice a VM, so the crate has psychoscript's suspender stop the run at its next step, which works inside tight
     loops. A timer checks each stretch of compute; past the budget it probes the run by waking its pending host calls,
     which the VM polls as soon as it waits and can't while it computes. An unanswered probe (30 ms grace) means the run

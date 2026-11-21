@@ -716,3 +716,73 @@ while (true) {
     run.deliver(r#"{"n":2}"#.into()).unwrap();
     assert_eq!(next(), ["0", "1"]);
 }
+
+/// Takes 100 ms over every batch of posts, as an app doing heavy work in its callback (compiling a shader) would.
+struct Slow(Mutex<Sender<Vec<String>>>);
+
+impl LiveHandler for Slow {
+    fn on_posts(&self, messages_json: Vec<String>) {
+        std::thread::sleep(Duration::from_millis(100));
+        let _ = self.0.lock().unwrap().send(messages_json);
+    }
+    fn on_warning(&self, _message: String) {}
+    fn on_exit(&self, exit: LiveExit) {
+        let _ = self.0.lock().unwrap().send(vec![format!("exit {exit:?}")]);
+    }
+}
+
+#[test]
+fn time_in_host_callbacks_isnt_computing() {
+    // A light frame loop, as a game: a little arithmetic, a render post, then a wait on a call it already started
+    // (the prelude's `widget.frame()`), so the posts are handed over while the program is between runs.
+    let light = r#"
+let pending = __host.receive()
+while (true) {
+  const m = await pending
+  pending = __host.receive()
+  let x = 0
+  for (let i = 0; i < 200; i++) x += Math.sin(i * m.t)
+  __host.post({ type: "render", x, now: __host.now() })
+  __host.post({ type: "frame" })
+}
+"#;
+    let program = Program::new(light.into(), "__input".into()).unwrap();
+    let (tx, rx) = channel();
+    let run = program
+        .start_live(
+            "null".into(),
+            Box::new(Slow(Mutex::new(tx))),
+            LiveOptions::default(),
+            None,
+        )
+        .unwrap();
+    for t in 0..6 {
+        run.deliver(format!(r#"{{"t":{t}}}"#)).unwrap();
+        let batch = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(batch.len(), 2, "{batch:?}");
+    }
+    assert!(run.is_running());
+    run.stop();
+
+    // A real busy loop is still stopped, slow callbacks or not.
+    let busy = Program::new(
+        r#"__host.post("start"); await __host.sleep(1); while (true) {}"#.into(),
+        "__input".into(),
+    )
+    .unwrap();
+    let (tx, rx) = channel();
+    let _run = busy
+        .start_live(
+            "null".into(),
+            Box::new(Slow(Mutex::new(tx))),
+            LiveOptions::default(),
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+        [r#""start""#]
+    );
+    let exit = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(exit[0].contains("SliceBudget"), "{exit:?}");
+}
