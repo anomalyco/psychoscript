@@ -472,6 +472,32 @@ fn a_resumed_run_keeps_its_limits_and_counts_time_across_resumes() {
 }
 
 #[test]
+fn a_suspended_run_keeps_its_typed_arrays_and_the_buffers_their_views_share() {
+    let code = format!(
+        r#"const b = new ArrayBuffer(8); const f = new Float32Array(b); const u = new Uint8Array(b, 4)
+        const s = f.subarray(1)
+        f[0] = 1.5
+        await step(1)
+        {BUSY}
+        s[0] = 2
+        return [Array.from(f), Array.from(u), s.buffer === f.buffer, u.buffer === b, f.byteLength]"#
+    );
+    let gate = Gate::default();
+    let state = suspend_mid_loop(&stepping(&gate), &gate, &code);
+    let o = done(
+        fresh()
+            .resume_bytes(&psychoscript::to_bytes(&state))
+            .unwrap()
+            .run_resumable()
+            .unwrap(),
+    );
+    assert_eq!(
+        o.result.unwrap(),
+        json!([[1.5, 2], [0, 0, 0, 64], true, true, 8])
+    );
+}
+
+#[test]
 fn a_resumed_run_keeps_its_heap_limit() {
     // Mid-loop, with 1000 small objects kept: under the limit. After the resume, a run that keeps growing goes over it.
     let code = format!(
