@@ -207,7 +207,7 @@ async function main(data) {
     const dt = clamp((now - last) / 1000, 0, 0.1)
     last = now
     sim.advance(now)
-    box = layout(width, view.layoutHeight, full)
+    box = layout(width, view.layoutHeight, full, full && frame ? frame.close : null)
     const dark = !(frame && frame.dark === false)
     widget.draw("board", paint(box, sim, ui_, shown, now, now - start, dt, dark, title, release))
   }
@@ -239,12 +239,16 @@ function baseHeight(width) {
   return width < PHONE ? 778 : 648
 }
 
-function layout(W, H, full) {
+// `close`: in full screen, the close button's area in canvas coordinates when it overlaps the canvas
+// (widgets-fullscreen.md), else null. Only the header reaches that high; it ends 12 px left of the area.
+function layout(W, H, full, close) {
   const phone = W < PHONE
   const pad = phone ? 10 : W >= 720 ? 16 : 12
   const gap = phone ? 8 : 12
   const inner = W - pad * 2
   const header = { x: pad, y: pad, w: inner, h: phone ? 50 : 48 }
+  if (close && close.y < header.y + header.h && close.x < header.x + header.w)
+    header.w = Math.max(120, Math.min(header.w, close.x - 12 - header.x))
   let y = header.y + header.h + (phone ? 8 : 10)
   const tiles = []
   if (phone) {
@@ -446,14 +450,34 @@ function paint(b, sim, ui_, shown, now, age, dt, dark, title, release) {
   return g
 }
 
-function panel(g, r, C, dark, accent, appear) {
-  const a = ease(appear)
-  if (a <= 0) return false
+// Alpha is never nested: clients disagree on whether `alpha` multiplies the current alpha (Android) or replaces it
+// (Rune, iOS). Every `alpha` sits in its own save/restore with nothing fading around it, so all clients agree.
+// A panel's state: its intro fade and slide, opened with `save` (closed by the caller's `restore`).
+function reopen(g, a) {
   g.save()
   if (a < 1) {
     g.alpha(a)
     g.translate(0, (1 - a) * 10)
   }
+}
+
+// Draws `draw` at opacity `alpha` (absolute) inside a panel opened with `appear`: closes the panel's state, draws in a
+// save of its own with the panel's slide, then reopens the panel's state.
+function faded(g, appear, alpha, draw) {
+  const a = ease(appear)
+  g.restore()
+  g.save()
+  if (a < 1) g.translate(0, (1 - a) * 10)
+  g.alpha(alpha)
+  draw()
+  g.restore()
+  reopen(g, a)
+}
+
+function panel(g, r, C, dark, accent, appear) {
+  const a = ease(appear)
+  if (a <= 0) return false
+  reopen(g, a)
   g.rrect(r.x, r.y, r.w, r.h, 12, { fill: { linear: [0, r.y, 0, r.y + r.h], stops: [[0, C.panelTop], [1, C.panel]] } })
   g.rrect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, 11.5, { stroke: accent || C.border, width: 1 })
   return true
@@ -525,12 +549,11 @@ function tile(g, b, C, dark, sim, ui_, shown, i, live, prev, now, age) {
   const label = 32 + kpi.label.length * labelSize * 0.6 + 6 <= r.w - dw - 10 ? kpi.label : kpi.tiny
   g.text(r.x + 32, r.y + 15, label, { size: labelSize, weight: 600, color: focused ? C.text : C.muted, mono: true })
   const appearDelta = clamp((age - 700 - i * 60) / 300, 0, 1)
-  if (appearDelta > 0) {
-    g.save().alpha(appearDelta)
-    g.rrect(r.x + r.w - dw - 10, r.y + 6, dw, 17, 8.5, { fill: tone + "1f" })
-    g.text(r.x + r.w - 10 - dw / 2, r.y + 18, dtext, { size: 10, weight: 600, align: "center", color: tone })
-    g.restore()
-  }
+  if (appearDelta > 0)
+    faded(g, appear, appearDelta, () => {
+      g.rrect(r.x + r.w - dw - 10, r.y + 6, dw, 17, 8.5, { fill: tone + "1f" })
+      g.text(r.x + r.w - 10 - dw / 2, r.y + 18, dtext, { size: 10, weight: 600, align: "center", color: tone })
+    })
   // sparkline: the last minute
   const sx = r.x + 12
   const sw = r.w - 24
@@ -569,7 +592,8 @@ function chart(g, b, C, dark, sim, ui_, shown, now, age, k, wall) {
   const i = ui_.focus
   const kpi = KPIS[i]
   const color = dark ? kpi.color : kpi.light
-  if (!panel(g, r, C, dark, null, clamp((age - 180) / 520, 0, 1))) return
+  const appear = clamp((age - 180) / 520, 0, 1)
+  if (!panel(g, r, C, dark, null, appear)) return
   const head = sim.now
   const span = WINDOW_S * 1000
   // Visible samples, plus the interpolated head.
@@ -612,10 +636,12 @@ function chart(g, b, C, dark, sim, ui_, shown, now, age, k, wall) {
   const fa = clamp((now - shown.focusAt) / 350, 0, 1)
   g.circle(r.x + 18, r.y + 22, 4, color)
   g.circle(r.x + 18, r.y + 22, 9, { fill: { radial: [r.x + 18, r.y + 22, 9], stops: [[0, color + "55"], [1, color + "00"]] } })
-  if (fa < 1) g.save().alpha(0.35 + 0.65 * fa)
-  g.text(r.x + 30, r.y + 26, kpi.short, { size: 14, weight: 700, color: C.text })
-  g.text(r.x + 30 + kpi.short.length * 7.9 + 8, r.y + 26, b.phone ? "60 s" : "last 60 s · " + kpi.unit, { size: 11, color: C.muted, mono: true })
-  if (fa < 1) g.restore()
+  const title = () => {
+    g.text(r.x + 30, r.y + 26, kpi.short, { size: 14, weight: 700, color: C.text })
+    g.text(r.x + 30 + kpi.short.length * 7.9 + 8, r.y + 26, b.phone ? "60 s" : "last 60 s · " + kpi.unit, { size: 11, color: C.muted, mono: true })
+  }
+  if (fa < 1) faded(g, appear, 0.35 + 0.65 * fa, title)
+  else title()
   const headVal = valueAt(sim, i, head)
   g.text(r.x + r.w - 14, r.y + 26, fmt(i, shown.kpi[i]) + " " + kpi.unit, { size: 13, weight: 600, align: "right", color, mono: true })
   if (!b.phone) g.text(r.x + r.w - 14 - (fmt(i, shown.kpi[i]).length + kpi.unit.length + 1) * 7.8 - 12, r.y + 26, "tap a KPI to focus", { size: 10.5, align: "right", color: C.dim })
@@ -726,21 +752,21 @@ function chart(g, b, C, dark, sim, ui_, shown, now, age, k, wall) {
     const t = x0 + ((hx - p.x) / p.w) * span
     const v = valueAt(sim, i, t)
     const hy = Y(v)
-    g.save().alpha(ha)
-    g.path(dash(hx, p.y, p.y + p.h, 3, 3, true), { stroke: C.muted + "aa", width: 1 })
-    g.line(p.x, hy, p.x + p.w, hy, { stroke: color + "33", width: 1 })
-    g.circle(hx, hy, 8, { fill: color + "33" })
-    g.circle(hx, hy, 4, { fill: C.bg, stroke: color, width: 2 })
-    const secs = (head - t) / 1000
-    const l1 = fmt(i, v) + " " + kpi.unit
-    const l2 = dayClock(wall.local - (head - t)) + "  ·  " + (secs < 0.5 ? "now" : "−" + secs.toFixed(1) + "s")
-    const tw = Math.max(l1.length * 7.8, l2.length * 6.1) + 20
-    const tx = hx + 12 + tw > p.x + p.w ? hx - 12 - tw : hx + 12
-    const ty = clamp(hy - 52, p.y, p.y + p.h - 44)
-    g.rrect(tx, ty, tw, 42, 8, { fill: C.tip + "f2", stroke: color + "88", width: 1 })
-    g.text(tx + 10, ty + 18, l1, { size: 13, weight: 700, color: C.text, mono: true })
-    g.text(tx + 10, ty + 33, l2, { size: 10, color: C.muted, mono: true })
-    g.restore()
+    faded(g, appear, ha, () => {
+      g.path(dash(hx, p.y, p.y + p.h, 3, 3, true), { stroke: C.muted + "aa", width: 1 })
+      g.line(p.x, hy, p.x + p.w, hy, { stroke: color + "33", width: 1 })
+      g.circle(hx, hy, 8, { fill: color + "33" })
+      g.circle(hx, hy, 4, { fill: C.bg, stroke: color, width: 2 })
+      const secs = (head - t) / 1000
+      const l1 = fmt(i, v) + " " + kpi.unit
+      const l2 = dayClock(wall.local - (head - t)) + "  ·  " + (secs < 0.5 ? "now" : "−" + secs.toFixed(1) + "s")
+      const tw = Math.max(l1.length * 7.8, l2.length * 6.1) + 20
+      const tx = hx + 12 + tw > p.x + p.w ? hx - 12 - tw : hx + 12
+      const ty = clamp(hy - 52, p.y, p.y + p.h - 44)
+      g.rrect(tx, ty, tw, 42, 8, { fill: C.tip + "f2", stroke: color + "88", width: 1 })
+      g.text(tx + 10, ty + 18, l1, { size: 13, weight: 700, color: C.text, mono: true })
+      g.text(tx + 10, ty + 33, l2, { size: 10, color: C.muted, mono: true })
+    })
   }
   g.restore()
 }
