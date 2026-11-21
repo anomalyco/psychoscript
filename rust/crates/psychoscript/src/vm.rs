@@ -255,7 +255,9 @@ pub struct Vm {
     pub coroutines: Vec<Coroutine>,
     pub logs: Vec<String>,
     pub host: crate::host::RunHost,
-    pub limits: Limits,
+    /// Boxed: it sits among the fields the dispatch loop never reads, and a larger one moved `stack` out of the
+    /// range of arm64's paired loads (see `layout::stack_is_near`).
+    pub limits: Box<Limits>,
     pub start: Instant,
     /// Steps left before `budget_out`: the nearer of the reference's fuel and this VM's own check of the clock and of
     /// suspend requests, both kept in `host.meter`.
@@ -388,7 +390,7 @@ impl Vm {
             coroutines: Vec::new(),
             logs: Vec::new(),
             host,
-            limits,
+            limits: Box::new(limits),
             start: Instant::now(),
             budget: HANDOVER_FUEL,
             fatal: None,
@@ -4530,5 +4532,20 @@ pub(crate) fn delegate_continue(code: &[Op], at: usize) -> usize {
     match code.get(at) {
         Some(Op::Jump(t)) if matches!(code.get(*t as usize), Some(Op::YieldStar(_))) => *t as usize,
         _ => at,
+    }
+}
+
+#[cfg(test)]
+mod layout {
+    /// The dispatch loop pushes and pops `Vm::stack` on nearly every instruction. On arm64 the pointer and length are
+    /// loaded and stored as a pair, whose offset must be at most 504 bytes; past that each access takes an extra
+    /// instruction, about 7% on a numeric loop. A field added to `Vm` (or grown) may move it there: box it instead.
+    #[test]
+    fn stack_is_near() {
+        let at = std::mem::offset_of!(super::Vm, stack);
+        assert!(
+            at + std::mem::size_of::<Vec<crate::value::Slot>>() <= 512,
+            "Vm::stack is at offset {at}; keep it within 488"
+        );
     }
 }

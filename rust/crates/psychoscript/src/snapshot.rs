@@ -367,7 +367,7 @@ pub fn capture(vm: &Vm, c: &Capture) -> Result<Snapshot, Refusal> {
     let base = vm.snapshot_base;
     let program = crate::run::compile(c.code, &mut crate::strings::Strings::new())
         .map_err(|e| Refusal::Other(e.message))?;
-    let limits = vm.limits;
+    let limits = *vm.limits;
     let metadata = vm.host.run.metadata();
     let mut header = json!({
         "build": build_id(),
@@ -912,7 +912,7 @@ fn baseline(vm: &Vm, code: &str) -> R<Vec<J>> {
         h.translate,
         h.run.clone(),
     );
-    let mut fresh = Vm::new(host, vm.limits, atoms);
+    let mut fresh = Vm::new(host, *vm.limits, atoms);
     fresh.setup();
     crate::builtins::ensure_globals(&mut fresh, &program.globals);
     host::install(&mut fresh, &program.globals);
