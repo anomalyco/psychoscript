@@ -175,6 +175,8 @@ struct Shared {
     stopping: bool,
     /// Why a native render ended the run.
     failed: Option<Error>,
+    /// What host calls threw located.
+    thrown: json::Thrown,
 }
 
 impl Shared {
@@ -209,8 +211,8 @@ impl Shared {
                         if name == "type" || name == "node" || name == "failure" {
                             continue;
                         }
-                        let value =
-                            json::write_checked(value).ok_or_else(|| json::carried(1, POST))?;
+                        let value = json::write_checked(value)
+                            .ok_or_else(|| self.thrown.throw(json::carried(1, POST)))?;
                         out.push(',');
                         out.push_str(&serde_json::Value::from(name.to_string_lossy()).to_string());
                         out.push(':');
@@ -223,7 +225,9 @@ impl Shared {
                     let tree = match walked {
                         Ok(tree) => tree,
                         Err(WalkError::View(reason)) => return Err(self.fail(reason.to_owned())),
-                        Err(WalkError::Function) => return Err(json::carried(1, POST)),
+                        Err(WalkError::Function) => {
+                            return Err(self.thrown.throw(json::carried(1, POST)));
+                        }
                         Err(WalkError::Uri) => return Err(uri_error()),
                     };
                     reply = HostValue::Bool(tree.has_handlers);
@@ -263,8 +267,8 @@ impl Shared {
                         if name == "type" || name == "key" {
                             continue;
                         }
-                        let value =
-                            json::write_checked(value).ok_or_else(|| json::carried(1, POST))?;
+                        let value = json::write_checked(value)
+                            .ok_or_else(|| self.thrown.throw(json::carried(1, POST)))?;
                         out.push(',');
                         out.push_str(&serde_json::Value::from(name.to_string_lossy()).to_string());
                         out.push(':');
@@ -278,7 +282,8 @@ impl Shared {
         }
         let message = match native {
             Some(message) => message,
-            None => json::write_checked(message).ok_or_else(|| json::carried(1, POST))?,
+            None => json::write_checked(message)
+                .ok_or_else(|| self.thrown.throw(json::carried(1, POST)))?,
         };
         if self.admit() {
             self.push(&format!(r#"{{"type":"post","message":{message}}}"#));
@@ -328,6 +333,11 @@ fn fields(v: &HostValue) -> &[(HostString, HostValue)] {
         HostValue::Object(fields) => fields,
         _ => &[],
     }
+}
+
+/// A host call's check, its error thrown located.
+fn thrown(shared: &Mutex<Shared>, checked: Result<(), String>) -> Result<(), HostValue> {
+    checked.map_err(|m| lock(shared).thrown.throw(m))
 }
 
 /// What the program called `__host.post` as, for its errors.
@@ -433,6 +443,7 @@ impl LiveRun {
             slice: None,
             stopping: false,
             failed: None,
+            thrown: json::Thrown::default(),
         }));
         let mut runtime = runtime(&shared, input_name);
         if options.native {
@@ -485,9 +496,11 @@ impl LiveRun {
                             Ok(data) => LiveExit::Finished {
                                 result_json: data.to_json_string(),
                             },
-                            Err(d) => LiveExit::Failed {
-                                error: Error::from_diagnostic(d, None),
-                            },
+                            Err(d) => {
+                                let mut error = Error::from_diagnostic(d, None);
+                                lock(&self.shared).thrown.name(&mut error);
+                                LiveExit::Failed { error }
+                            }
                         },
                         (None, Ok(RunOutcome::Suspended(_)) | Err(_)) => LiveExit::Stopped,
                     };
@@ -717,8 +730,11 @@ fn runtime(shared: &Arc<Mutex<Shared>>, input_name: String) -> Runtime {
         let s = shared.clone();
         let name = input_name.clone();
         let input = HostFunction::new(move |args: Vec<HostValue>, _call| -> HostResult {
-            json::unmarked(&args, &name, 0)?;
-            let text = lock(&s).input.clone();
+            let mut s = lock(&s);
+            if let Err(m) = json::unmarked(&args, &name, 0) {
+                return Err(s.thrown.throw(m));
+            }
+            let text = s.input.clone();
             Ok(Input::parse(&text).unwrap_or_default())
         });
         let s = shared.clone();
@@ -727,18 +743,23 @@ fn runtime(shared: &Arc<Mutex<Shared>>, input_name: String) -> Runtime {
             if s.stopping {
                 return Err(HostValue::Interrupt);
             }
-            json::unmarked(&args, POST, 1)?;
+            if let Err(m) = json::unmarked(&args, POST, 1) {
+                return Err(s.thrown.throw(m));
+            }
             s.post(args.first().unwrap_or(&HostValue::Undefined))
         });
         let s = shared.clone();
         let now = HostFunction::new(move |args: Vec<HostValue>, _call| -> HostResult {
-            json::unmarked(&args, "__host.now", 0)?;
-            Ok(HostValue::Number(lock(&s).now_ms()))
+            let mut s = lock(&s);
+            if let Err(m) = json::unmarked(&args, "__host.now", 0) {
+                return Err(s.thrown.throw(m));
+            }
+            Ok(HostValue::Number(s.now_ms()))
         });
         let s = shared.clone();
         let receive = HostFunction::new_async(move |args: Vec<HostValue>, _call| {
             let s = s.clone();
-            let mut checked = Some(json::unmarked(&args, "__host.receive", 0));
+            let mut checked = Some(thrown(&s, json::unmarked(&args, "__host.receive", 0)));
             std::future::poll_fn(move |cx| {
                 if let Some(Err(e)) = checked.take() {
                     return Poll::Ready(Err(e));
@@ -775,7 +796,7 @@ fn runtime(shared: &Arc<Mutex<Shared>>, input_name: String) -> Runtime {
                 .unwrap_or(0.0)
                 .max(0.0);
             let key = call.key();
-            let mut checked = Some(json::unmarked(&args, "__host.sleep", 0));
+            let mut checked = Some(thrown(&s, json::unmarked(&args, "__host.sleep", 0)));
             std::future::poll_fn(move |cx| {
                 if let Some(Err(e)) = checked.take() {
                     return Poll::Ready(Err(e));
@@ -802,7 +823,7 @@ fn runtime(shared: &Arc<Mutex<Shared>>, input_name: String) -> Runtime {
         .idempotent();
         let s = shared.clone();
         let fetch = HostFunction::new_async(move |args: Vec<HostValue>, _call| {
-            let started = json::unmarked(&args, "__host.fetch", 0)
+            let started = thrown(&s, json::unmarked(&args, "__host.fetch", 0))
                 .map_err(Err)
                 .and_then(|()| start_fetch(&s, args.first()).map_err(Ok));
             async move {

@@ -244,14 +244,14 @@ __host.post({ type: "result", interactive, still, caught })
         json!({ "type": "result", "interactive": true, "still": false, "caught": [
             "No canvas with key \"nope\" in the rendered view",
             "Canvas \"sky\" is drawn by its wgsl; it takes no draw commands",
-            "TypeError: Argument 1 to __host.post contains a function, which cannot be passed to the host.",
-            "TypeError: Argument 1 to __host.post contains a function, which cannot be passed to the host.",
-            "TypeError: Argument 1 to __host.post contains a function, which cannot be passed to the host.",
-            "TypeError: Argument 1 to __host.post contains a function, which cannot be passed to the host.",
-            "TypeError: Argument 1 to __host.post contains a function, which cannot be passed to the host.",
-            "TypeError: Argument 2 to __host.post contains a function, which cannot be passed to the host.",
-            "TypeError: Argument 1 to __host.now contains a function, which cannot be passed to the host.",
-            "TypeError: Argument 1 to __host.sleep contains a function, which cannot be passed to the host.",
+            "Error: Argument 1 to __host.post contains a function, which cannot be passed to the host.",
+            "Error: Argument 1 to __host.post contains a function, which cannot be passed to the host.",
+            "Error: Argument 1 to __host.post contains a function, which cannot be passed to the host.",
+            "Error: Argument 1 to __host.post contains a function, which cannot be passed to the host.",
+            "Error: Argument 1 to __host.post contains a function, which cannot be passed to the host.",
+            "Error: Argument 2 to __host.post contains a function, which cannot be passed to the host.",
+            "Error: Argument 1 to __host.now contains a function, which cannot be passed to the host.",
+            "Error: Argument 1 to __host.sleep contains a function, which cannot be passed to the host.",
         ] })
     );
     assert_eq!(out.len(), 5);
@@ -276,6 +276,47 @@ fn widget(source: &str) -> (Vec<Value>, Option<LiveExit>) {
         .unwrap();
     let out = posts(&settle(&mut run));
     (out, run.exit().cloned())
+}
+
+/// Uncaught, a function where none may go fails the run as the runtime's TypeError, at the call. (An async host call's
+/// rejection isn't located by the runtime: `__host.sleep`'s has no position.)
+#[test]
+fn a_function_posted_where_none_may_go_fails_the_run_at_the_call() {
+    for (call, line) in [
+        ("widget.send({ f: () => 1 })", 2),
+        ("__host.post({ type: \"send\", value: 1 }, () => 1)", 2),
+        ("await __host.sleep(() => 1)", 0),
+    ] {
+        let (_, exit) = widget(&format!("async function main() {{\n  {call}\n}}"));
+        let Some(LiveExit::Failed { error }) = exit else {
+            panic!("{call}: {exit:?}")
+        };
+        assert!(
+            error.reason().starts_with("TypeError: Argument ")
+                && error
+                    .reason()
+                    .contains(" contains a function, which cannot be passed to the host.")
+                && error.location().is_some() == (line > 0),
+            "{call}: {error}"
+        );
+        if line > 0 && !call.starts_with("widget.") {
+            assert_eq!(
+                error.location().map(|(l, _)| l),
+                Some(prelude_lines() + 1 + line),
+                "{call}"
+            );
+        }
+    }
+}
+
+/// The prelude's lines; it ends with a newline, so with the joining one the widget template starts two lines on.
+fn prelude_lines() -> u32 {
+    std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/wire/prelude.js"),
+    )
+    .unwrap()
+    .lines()
+    .count() as u32
 }
 
 #[test]

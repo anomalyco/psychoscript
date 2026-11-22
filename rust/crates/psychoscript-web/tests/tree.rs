@@ -260,12 +260,7 @@ fn every_fixture_runs_natively_to_its_view_result_or_error() {
                 assert_eq!(output, f.json["result"], "{}: the result", f.name);
             }
             Err(e) => {
-                let mut want = error["message"].as_str().unwrap_or("(no error)");
-                // The function errors are thrown from `__widget_emit` as the runtime's `TypeError`, which the Rust
-                // runtime doesn't locate at the call yet (only its own failures): all but the position must match.
-                if want.contains("contains a function") && e.location().is_none() {
-                    want = want.rsplit_once(" (line ").map_or(want, |(head, _)| head);
-                }
+                let want = error["message"].as_str().unwrap_or("(no error)");
                 assert_eq!(
                     (matches!(e, Error::View { .. }), e.reason()),
                     (error["view"] == true, want),

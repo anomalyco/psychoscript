@@ -40,8 +40,9 @@ run's, its functions left out as JSON leaves them, with `view` (the emitted view
 `native: true` builds each posted `render`'s tree (`post` returns whether it has handlers) and maps a `draw`'s `key` to
 its canvas's id. A key that isn't a string, number or boolean, or a view over 100 levels, fails with type `view` (a step
 once it has run; a live run at once); a function anywhere but a node's handler props, in any host call's argument,
-throws the runtime's `TypeError` `Argument <n> to <name> contains a function, which cannot be passed to the host.` from
-the call. `tests/tree.rs` runs the 53 conformance fixtures (`tests/fixtures/wire`, opencode widgets 523750c6a).
+fails the call with `Argument <n> to <name> contains a function, which cannot be passed to the host.`. It is thrown as
+a failure the runtime locates at the call (a sync call's; an async call's rejection has no position), which the program
+catches as an `Error`; uncaught, the run's error names it `TypeError` as the runtime's own does. `tests/tree.rs` runs the 53 conformance fixtures (`tests/fixtures/wire`, opencode widgets 523750c6a).
 
 A live run has `__host.post/receive/sleep/now/fetch` as in `psychoscript-mobile` (and `widgets-live.md`), but nothing
 runs by itself: the host calls `pump` after a delivery, a fetch answer, a resume, or when the returned timer is due,

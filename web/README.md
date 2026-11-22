@@ -130,7 +130,8 @@ The host sorts every error into one of two kinds:
   invalid view or draw output, WGSL that fails validation (WebGPU's compiler or naga) or is over 16 KB, the 250 ms
   step, the 50 ms live slice, the post rate (240/s) and the send rate (10/s), a view that breaks a rule of views (a
   key not a string, number or boolean; more than 100 levels), a function where none may go (anywhere in a view but a
-  node's `onPress`/`onChange`/`onPointer`, in a post or a host call: the runtime's `TypeError`), an older widget
+  node's `onPress`/`onChange`/`onPointer`, in a post or a host call: `TypeError: Argument <n> to <name> contains a
+  function, …`), an older widget
   protocol. The widget shows them (error card, or inline under the last good view) and calls `onReport({ phase,
   message, line?, column? })` once per distinct error; `phase` is `init`, `event`, `draw`, `main`, `view` (the rules
   of views) or `shader`, and `line`/`column` are in the widget template's source (the

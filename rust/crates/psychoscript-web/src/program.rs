@@ -60,7 +60,12 @@ impl Program {
         if let Some(reason) = emitted.failure {
             return Err(Error::View { reason });
         }
-        let mut out = result?.to_json_string();
+        let mut out = result
+            .map_err(|mut e| {
+                emitted.thrown.name(&mut e);
+                e
+            })?
+            .to_json_string();
         if let Some(view) = emitted.view
             && out.ends_with('}')
         {
@@ -98,10 +103,18 @@ impl Program {
             .globals(move |_run| {
                 let slot = slot.clone();
                 let input_name = name.clone();
+                let thrown = emit.clone();
                 let mut globals = vec![(
                     name.clone(),
                     HostFunction::new(move |args: Vec<HostValue>, _call| -> HostResult {
-                        json::unmarked(&args, &input_name, 0)?;
+                        if let (Err(m), Some(e)) = (json::unmarked(&args, &input_name, 0), &thrown)
+                        {
+                            return Err(e
+                                .lock()
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .thrown
+                                .throw(m));
+                        }
                         Ok(slot.lock().unwrap_or_else(PoisonError::into_inner).read())
                     }),
                 )];
@@ -137,17 +150,21 @@ impl Program {
 /// The host global a native step hands its view to.
 const EMIT: &str = "__widget_emit";
 
-/// What a native step's `__widget_emit` took: the view's wire JSON, or why the view failed.
+/// What a native step's `__widget_emit` took: the view's wire JSON, or why the view failed; and what its host calls
+/// threw.
 #[derive(Default)]
 struct Emitted {
     view: Option<String>,
     failure: Option<String>,
+    thrown: json::Thrown,
 }
 
 impl Emitted {
     /// `__widget_emit(view, failure?)`: a string `failure` fails the view with it; else the view is walked.
     fn take(&mut self, args: &[HostValue]) -> HostResult {
-        json::unmarked(args, EMIT, 1)?;
+        if let Err(m) = json::unmarked(args, EMIT, 1) {
+            return Err(self.thrown.throw(m));
+        }
         if let Some(HostValue::String(failure)) = args.get(1) {
             self.failure = Some(failure.to_string_lossy().into_owned());
             return Ok(HostValue::Undefined);
@@ -156,7 +173,7 @@ impl Emitted {
         match Walk::new().run(args.first().unwrap_or(&HostValue::Undefined), &mut out) {
             Ok(_) => self.view = Some(out),
             Err(WalkError::View(reason)) => self.failure = Some(reason.to_owned()),
-            Err(WalkError::Function) => return Err(json::carried(1, EMIT)),
+            Err(WalkError::Function) => return Err(self.thrown.throw(json::carried(1, EMIT))),
             Err(WalkError::Uri) => return Err(uri_error()),
         }
         Ok(HostValue::Undefined)
