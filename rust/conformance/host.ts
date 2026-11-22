@@ -32,6 +32,8 @@
 // - `Box(item)`: sync, `constructible: true`; gives `{ item }`.
 // - `Later(item)`: sync, `constructible: true`; gives `Effect.succeed({ item })`.
 // - `refuse()`: sync; fails with `Host.fail("Refused", "Not today", ["Ask again."])`.
+// - `mistyped(n)`: sync; throws `Host.error("TypeError", "Not a name: <n>")`.
+// - `bounded(n)`: async; fails with `Effect.fail(Host.error(<n>, "Out of range"))`, where `n` names the class.
 // - `api`: `Host.namespace`; `keys([])` is `["issues"]`, `keys` of any other path `["list"]`; `resolve(["issues",
 //   "list"])` is an async function giving `["#1"]`, any other path `Host.missing("No api.<path>", ["Try
 //   api.issues.list."], "NotFound")`.
@@ -119,6 +121,12 @@ const make = (entry: Entry) => {
         Box: Host.fn(([item]: ReadonlyArray<unknown>) => ({ item }), { constructible: true }),
         Later: Host.fn(([item]: ReadonlyArray<unknown>) => Effect.succeed({ item }), { constructible: true }),
         refuse: Host.fn((_: ReadonlyArray<unknown>) => Effect.fail(Host.fail("Refused", "Not today", ["Ask again."]))),
+        mistyped: Host.fn(([n]: ReadonlyArray<unknown>) => {
+          throw Host.error("TypeError", `Not a name: ${n}`)
+        }),
+        bounded: Host.fn(([n]: ReadonlyArray<unknown>) => Effect.fail(Host.error(n as "RangeError", "Out of range")), {
+          type: "async",
+        }),
         api: Host.namespace({
           keys: (path: ReadonlyArray<string>) => (path.length === 0 ? ["issues"] : ["list"]),
           resolve: (path: ReadonlyArray<string>) =>
@@ -269,6 +277,13 @@ const executes: Array<Entry> = [
   { code: `try { api.nope() } catch (e) { return [e.name, e.message, e instanceof Error] }` },
   { code: `refuse()` },
   { code: `try { refuse() } catch (e) { return [e.name, e.message] }` },
+  // Host.error: an error of its class, located at the call.
+  { code: `const n = 1\n  mistyped(n)` },
+  { code: `await null\nawait bounded("RangeError")` },
+  { code: `try { mistyped(2) } catch (e) { return [e instanceof TypeError, e.constructor === TypeError, e.name, e.message, e.stack, Object.keys(e)] }` },
+  {
+    code: `const kinds = ["Error", "TypeError", "RangeError", "SyntaxError", "ReferenceError", "EvalError", "URIError", "AggregateError", "Other"]\nreturn await Promise.all(kinds.map((k) => bounded(k).catch((e) => [e.constructor.name, e.name, e.message, e.stack, e instanceof Error, Object.keys(e)])))`,
+  },
   {
     code: `const out = []; for (const k in api) out.push(k); const x = api.issues; return [out, api.issues === api.issues, x === x, String(api.issues)]`,
   },
@@ -450,6 +465,9 @@ const suspensions: Array<Entry> = [
   // run.metadata across a suspend; the globals are made again on resume.
   { code: `count(); count(); await wait(); return count()`, runId: "m" },
   { code: `count(); count(); await wait(); return count()`, runId: "m", compiled: true },
+  // Host.error located at the call once resumed.
+  { code: `const n = await wait()\ntry { mistyped(n) } catch (e) { return [e.stack, await bounded("RangeError").catch((e) => e.stack)] }`, runId: "m" },
+  { code: `const n = await wait()\nawait bounded("RangeError")`, runId: "m" },
   // An idempotent call in progress runs again on resume, under the same key.
   { code: `note(1); const a = await wait(); note(2); return [a, await wait()]`, runId: "i" },
   { code: `const ps = [wait(), load(1), wait()]; return await Promise.all(ps)`, runId: "i" },

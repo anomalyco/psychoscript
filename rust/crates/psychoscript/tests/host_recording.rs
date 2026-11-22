@@ -11,8 +11,8 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
 use psychoscript::{
-    Data, Diagnostic, DurableFunction, Failure, HostFunction, HostValue, Json, Limits, Namespace,
-    Outcome, ProgramOptions, Resolved, Returned, RunOutcome, Runtime, Translate,
+    Data, Diagnostic, DurableFunction, Failure, HostError, HostFunction, HostValue, Json, Limits,
+    Namespace, Outcome, ProgramOptions, Resolved, Returned, RunOutcome, Runtime, Translate,
     TranslateFunctions, TranslatePromises, to_bytes,
 };
 use serde_json::json;
@@ -238,6 +238,27 @@ fn globals(state: &State, run: &psychoscript::Run) -> Vec<(String, HostValue)> {
                 Err(Failure::new("Refused", "Not today")
                     .suggestions(["Ask again."])
                     .into())
+            })),
+        ),
+        (
+            "mistyped".into(),
+            one(HostFunction::new(|args, _| -> psychoscript::HostResult {
+                let n = match args.first() {
+                    Some(HostValue::Number(n)) => n.to_string(),
+                    Some(HostValue::String(s)) => s.to_string_lossy().into_owned(),
+                    _ => String::new(),
+                };
+                Err(HostError::located("TypeError", format!("Not a name: {n}")))
+            })),
+        ),
+        (
+            "bounded".into(),
+            one(HostFunction::new_async(|args, _| async move {
+                let name = match args.first() {
+                    Some(HostValue::String(s)) => s.clone(),
+                    _ => "".into(),
+                };
+                Err(HostError::located(name, "Out of range"))
             })),
         ),
         (

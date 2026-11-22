@@ -284,6 +284,11 @@ pub enum HostValue {
     Error(Box<HostError>),
     /// A failure with its own diagnostic kind, which a host function throws: see [`Failure`].
     Failure(Failure),
+    /// An error a host function throws (`Err(HostError::located(name, message))`) that the program catches as the
+    /// standard error class `name`, located at the call, the reference's `Host.error`: its `stack` names the call
+    /// and, uncaught, the run's message gives the call's line and column. Only its name and message cross; as a
+    /// value, it is an [`HostValue::Error`].
+    Located(Box<HostError>),
     /// Milliseconds since the epoch; `NaN` is an invalid date.
     Date(f64),
     RegExp {
@@ -452,7 +457,7 @@ impl HostValue {
                         .collect(),
                 ),
             },
-            HostValue::Error(e) => {
+            HostValue::Error(e) | HostValue::Located(e) => {
                 let mut map = serde_json::Map::new();
                 map.insert(
                     "name".into(),
@@ -553,6 +558,12 @@ impl HostError {
             cause: None,
             fields: Vec::new(),
         }
+    }
+
+    /// The reference's `Host.error`: an error of the standard class `name` (`TypeError`, `RangeError`, `Error`, ...;
+    /// other names make an `Error`) that a host function throws, located at the call: see [`HostValue::Located`].
+    pub fn located(name: impl Into<HostString>, message: impl Into<HostString>) -> HostValue {
+        HostValue::Located(Box::new(Self::named(name, message)))
     }
 
     pub fn with_cause(mut self, cause: impl Into<HostValue>) -> Self {

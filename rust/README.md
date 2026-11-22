@@ -44,6 +44,7 @@ let mesh = HostFunction::new(|_, _| HostValue::TypedArray(TypedArray::from_f32(&
 | `Runtime.make({ globals, modules, limits, translate })` | `Runtime::make().globals(..).modules(..).limits(..).translate(..)` |
 | `Host.fn`, `Host.durableFn`, `Host.namespace` | `HostFunction`, `DurableFunction`, `Namespace` |
 | `Host.fail`, `Host.missing` | `Failure::new`, `Failure::missing` |
+| `Host.error(name, message)` | `HostError::located(name, message)` (`HostValue::Located`) |
 | `runtime.execute`, `runtime.program`, `runtime.compile`, `runtime.resume` | `execute`/`execute_async`, `program`, `compile`, `resume`/`resume_bytes` |
 | `toBytes`, `fromBytes` | `to_bytes`, `from_bytes` |
 | a host typed array or `ArrayBuffer` (a view of the program's bytes) | `HostValue::TypedArray(TypedArray)` |

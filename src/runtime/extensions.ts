@@ -4,6 +4,7 @@ import {
   Fn,
   functionMarker,
   HostWork,
+  isLocatedError,
   Namespace,
   promiseControllers,
   type Snapshot,
@@ -11,7 +12,7 @@ import {
 import type { HostTarget } from "../host.js"
 import { BufferObj } from "../stdlib/buffer.js"
 import { StreamingResponse } from "../streaming-response.js"
-import { errorMessage, errorType } from "./errors.js"
+import { errorMessage, errorType, locate } from "./errors.js"
 import type { Interpreter } from "./interpreter.js"
 import { createErrorValue } from "./intrinsics.js"
 import { member } from "./intrinsic-names.js"
@@ -439,6 +440,8 @@ export const hostGlobals = <R>(
     ) {
       return reason
     }
+    // `Host.error`'s: an error of its class, which the call locates.
+    if (isLocatedError(reason)) return locate(reason)
     try {
       return new Throw(fromHost(reason, label))
     } catch (error) {

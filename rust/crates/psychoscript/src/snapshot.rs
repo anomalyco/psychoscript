@@ -946,7 +946,7 @@ fn collect_functions(v: &HostValue, out: &mut Vec<HostFunction>) {
         }),
         HostValue::Set(items) => items.iter().for_each(|i| collect_functions(i, out)),
         // An error's own functions are dropped when it crosses; only its cause can hold some.
-        HostValue::Error(e) => {
+        HostValue::Error(e) | HostValue::Located(e) => {
             if let Some(c) = &e.cause {
                 collect_functions(c, out);
             }
@@ -1051,6 +1051,7 @@ fn scalar_node(v: &HostValue) -> J {
         HostValue::Durable(_) | HostValue::Namespace(_) => json!(["f", "", 0]),
         HostValue::FunctionMarker => json!(["fm"]),
         HostValue::Failure(f) => json!(["fail", f.kind, text(&f.message), texts(&f.suggestions)]),
+        HostValue::Located(e) => json!(["loc", text(&e.name), text(&e.message)]),
         HostValue::Date(t) => json!(["date", num(*t)]),
         HostValue::RegExp { source, flags } => json!(["re", text(source), flags]),
         HostValue::Url(href) => json!(["url", href]),
@@ -1318,6 +1319,7 @@ fn host_scalar(j: &J) -> R<HostValue> {
                 crate::Failure::new(string(at(j, 1)?)?, text_from(at(j, 2)?)?)
                     .suggestions(texts_from(at(j, 3)?)?),
             ),
+            Some("loc") => HostError::located(text_from(at(j, 1)?)?, text_from(at(j, 2)?)?),
             Some("date") => HostValue::Date(unnum(a.get(1).unwrap_or(&J::Null))?),
             Some("re") => HostValue::RegExp {
                 source: text_from(at(j, 1)?)?,
@@ -2450,5 +2452,22 @@ fn restore_host(vm: &mut Vm, dec: &Dec, j: &J, base: Base) -> R<()> {
 pub fn restart_calls(vm: &mut Vm) {
     for r in std::mem::take(&mut vm.host.restarts) {
         host::restart(vm, r);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_located_error_keeps_its_class_and_message_when_saved() {
+        let saved = host_value(&HostError::located("RangeError", "too big"));
+        let HostValue::Located(e) = host_value_from(&saved).unwrap() else {
+            panic!("expected a located error back");
+        };
+        assert_eq!(
+            (e.name.as_str(), e.message.as_str()),
+            (Some("RangeError"), Some("too big"))
+        );
     }
 }
