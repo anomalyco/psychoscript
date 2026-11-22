@@ -63,9 +63,9 @@ impl Program {
 
     /// Runs the program as [`Program::run`] does, with `encoder`'s emit global (`encoder.emit_name()`), and returns
     /// the bytes `encoder` wrote for the value the program passed to it (its last call's) instead of the completion
-    /// value. Functions in that value are left out, as JSON leaves them out. Fails with `Runtime`
-    /// (`InvalidDataValue`) when the encoder can't write the value or the program never called the global;
-    /// `max_output_bytes` limits the bytes.
+    /// value. Program functions in that value come as markers. Fails with `Runtime` of the encoder's kind, located
+    /// at the call, when it can't write the value, and with `InvalidDataValue` when the program never called the
+    /// global; `max_output_bytes` limits the bytes.
     #[uniffi::method(default(options))]
     pub fn run_bytes(
         &self,
@@ -213,7 +213,8 @@ impl Program {
         Ok(bytes)
     }
 
-    /// Runs the program with its input function and, with `emit`, the encoder's emit global writing into its slot.
+    /// Runs the program with its input function and, with `emit`, the encoder's emit global writing into its slot,
+    /// program functions in its argument as markers.
     fn execute(
         &self,
         slot: Slot,
@@ -225,7 +226,7 @@ impl Program {
         let emit = emit.map(|(e, out)| (e.0.clone(), out));
         let translate = Translate {
             functions: match emit {
-                Some(_) => TranslateFunctions::Drop,
+                Some(_) => TranslateFunctions::Mark,
                 None => TranslateFunctions::Error,
             },
             ..Translate::default()
@@ -241,7 +242,9 @@ impl Program {
                     let name = encoder.emit_name().to_owned();
                     let f = HostFunction::new(move |args: Vec<HostValue>, _call| -> HostResult {
                         let v = args.first().unwrap_or(&HostValue::Undefined);
-                        let bytes = encoder.encode_output(v).map_err(|f| out.thrown.throw(f))?;
+                        let bytes = encoder
+                            .encode_output(v)
+                            .map_err(|f| out.thrown.throw(HostValue::Failure(f)))?;
                         *out.bytes.lock().unwrap_or_else(PoisonError::into_inner) = Some(bytes);
                         Ok(HostValue::Undefined)
                     });
@@ -266,8 +269,9 @@ impl Program {
 impl Program {
     /// Starts the program as a [`LiveRun`] on a thread of its own, with `input_json` behind its input function and
     /// `__host` (`post`, `receive`, `sleep`, `now`, `fetch`) to talk to `handler`; `fetch` goes through `transport`
-    /// to the hosts `options.https_hosts` allows. With `encoder`, posts reach `handler.on_posts_bytes` as its bytes
-    /// (never `on_posts`), and one it can't write throws `InvalidDataValue` at the post. Fails with `InvalidInput`.
+    /// to the hosts `options.https_hosts` allows. With `encoder`, program functions in posts come as markers, posts
+    /// reach `handler.on_posts_bytes` as its bytes (never `on_posts`), `post` returns what the encoder says, and a
+    /// post it can't write throws at the post. Fails with `InvalidInput`.
     #[uniffi::method(default(transport = None, encoder = None, options))]
     pub fn start_live(
         &self,

@@ -5,8 +5,9 @@
 //! cargo run --release -p psychoscript-mobile --example wire_bench [filter]
 //! ```
 //!
-//! - Steps: a session holding `data` (as the README suggests); JSON is `session.run` and the client's
-//!   `serde_json` + `StepOutput::from_value`, binary is `session.run_bytes` and `widget_wire::decode_output`.
+//! - Steps: a session holding `data` (as the README suggests); JSON is `session.run` (the prelude builds the tree)
+//!   and the client's `serde_json` + `StepOutput::from_value`, binary is `session.run_bytes` of a native host (the
+//!   encoder builds the tree) and `widget_wire::decode_output`.
 //! - Live: from delivering a frame to the program's next frame request, the posts decoded on the run's thread (JSON:
 //!   `serde_json` + Rune's readers; binary: `decode_post`). `live-gpu` posts a 64 KB vertex buffer and 64 B of uniforms
 //!   per frame as a GPU batch: JSON numbers (all a JSON post can carry) against the typed arrays' bytes.
@@ -22,8 +23,9 @@ use serde_json::{Value, json};
 use widget_wire::{Arg, DrawOutput, Node, StepOutput, decode_output, decode_post};
 
 const STEP: &str = "\nreturn __widget_step(__input())";
-const EMIT: &str = "\n__widget_emit(__widget_step(__input()))";
+const EMIT: &str = "\n__widget_emit(__widget_step(__input(), true))";
 const LIVE: &str = "\nreturn await __widget_live(__input())";
+const NATIVE_LIVE: &str = "\nreturn await __widget_live(__input(), true)";
 
 fn fixture(path: &str) -> String {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/workloads/");
@@ -68,7 +70,7 @@ fn steps(filter: &str) {
             continue;
         }
         let source = format!(
-            "{prelude}{}",
+            "{prelude}\n{}",
             fixture(&format!("templates/{}.js", w["program"].as_str().unwrap()))
         );
         let mut own: Value =
@@ -264,37 +266,41 @@ fn live(filter: &str) {
     let prelude = fixture("prelude.js");
     println!("\n| live (per frame) | JSON | binary | change | bytes/frame JSON → binary |");
     println!("| --- | ---: | ---: | ---: | ---: |");
-    let mut list: Vec<(String, String, String, String)> = w["live"]
+    let mut list: Vec<(String, String, String, String, String)> = w["live"]
         .as_array()
         .unwrap()
         .iter()
         .map(|w| {
             let name = w["name"].as_str().unwrap().to_owned();
-            let source = format!(
-                "{prelude}{}{LIVE}",
-                fixture(&format!("templates/{}.js", w["program"].as_str().unwrap()))
-            );
+            let template = fixture(&format!("templates/{}.js", w["program"].as_str().unwrap()));
             let input = fixture(&format!("inputs/{name}.json"));
-            (name, source, input.clone(), input)
+            (
+                name,
+                format!("{prelude}\n{template}{LIVE}"),
+                format!("{prelude}\n{template}{NATIVE_LIVE}"),
+                input.clone(),
+                input,
+            )
         })
         .collect();
     list.push((
         "live-gpu".into(),
         GPU.into(),
+        GPU.into(),
         r#"{"typed":false}"#.into(),
         r#"{"typed":true}"#.into(),
     ));
-    for (name, source, input_json, input_bin) in list {
+    for (name, source_json, source_bin, input_json, input_bin) in list {
         if !name.contains(filter) {
             continue;
         }
         let (mut json, mut bin) = (Vec::new(), Vec::new());
         let (mut bj, mut bb) = (0.0, 0.0);
         for _ in 0..3 {
-            let (t, b) = live_run(&source, &input_json, None, 300);
+            let (t, b) = live_run(&source_json, &input_json, None, 300);
             json.push(t);
             bj = b;
-            let (t, b) = live_run(&source, &input_bin, Some(ValueEncoder::widget()), 300);
+            let (t, b) = live_run(&source_bin, &input_bin, Some(ValueEncoder::widget()), 300);
             bin.push(t);
             bb = b;
         }

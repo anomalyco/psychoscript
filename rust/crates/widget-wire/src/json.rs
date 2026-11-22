@@ -59,6 +59,7 @@ pub(crate) fn skipped(v: &HostValue) -> bool {
             | HostValue::Function(_)
             | HostValue::Durable(_)
             | HostValue::Namespace(_)
+            | HostValue::FunctionMarker
             | HostValue::Interrupt
     )
 }

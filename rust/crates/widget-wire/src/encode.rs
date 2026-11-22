@@ -10,7 +10,7 @@ use crate::draw::{
     Cap, Color, Fill, Gradient, GradientShape, MAX_COMMANDS, Paint, TextAlign, TextOptions, Token,
 };
 use crate::json;
-use crate::native::{Found, IsMarker};
+use crate::native::{Canvas, Found, IsMarker};
 use crate::schema::*;
 
 /// Why a value can't be written: a program error in the phase its kind names (`widgets-binary.md`, Errors).
@@ -91,6 +91,11 @@ impl LivePosts {
     /// What the last render found: its handler ids and canvases.
     pub fn last_render(&self) -> &Found {
         &self.last
+    }
+
+    /// Takes the canvases of a render before a snapshot (`last_render().canvases`), for draws after a restore.
+    pub fn restore_canvases(&mut self, canvases: Vec<Canvas>) {
+        self.last.canvases = canvases;
     }
 
     /// `message` as bytes, or `None` when `keep` is false (a post dropped over the rate: a render is still walked),
@@ -253,7 +258,8 @@ fn plain(v: &HostValue) -> bool {
         | HostValue::Null
         | HostValue::Bool(_)
         | HostValue::Number(_)
-        | HostValue::String(_) => true,
+        | HostValue::String(_)
+        | HostValue::FunctionMarker => true,
         HostValue::Array(items) => items.iter().flatten().all(plain),
         HostValue::Object(fields) => fields.iter().all(|(_, v)| plain(v)),
         _ => false,
@@ -285,7 +291,8 @@ fn json_view(v: &HostValue) -> HostValue {
         | HostValue::Null
         | HostValue::Bool(_)
         | HostValue::Number(_)
-        | HostValue::String(_) => v.clone(),
+        | HostValue::String(_)
+        | HostValue::FunctionMarker => v.clone(),
         other => other
             .to_json()
             .map_or(HostValue::Undefined, |j| HostValue::from_json(&j)),

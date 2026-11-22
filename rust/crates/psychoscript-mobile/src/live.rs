@@ -21,11 +21,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use psychoscript::{
     Compiled, Data, HostFunction, HostResult, HostString, HostValue, Limits, ProgramOptions, Run,
-    RunOutcome, Runtime, Snapshot, Suspender, from_bytes, to_bytes,
+    RunOutcome, Runtime, Snapshot, Suspender, Translate, TranslateFunctions, from_bytes, to_bytes,
 };
 
 use crate::cpu::ThreadClock;
-use crate::encoder::{EncodeValues, Thrown, ValueEncoder};
+use crate::encoder::{EncodePosts, Thrown, ValueEncoder};
 use crate::error::PsychoScriptError;
 use crate::fetch::{self, FetchTransport, Rejection, Request};
 use crate::json::{self, Input};
@@ -381,8 +381,8 @@ pub(crate) struct Control {
     options: LiveOptions,
     input_name: String,
     transport: Option<Arc<dyn FetchTransport>>,
-    /// Posts as its bytes, not JSON; the failure it threw at a post.
-    encoder: Option<Arc<dyn EncodeValues>>,
+    /// With an encoder, posts as its bytes, not JSON; the failure it threw at a post.
+    encoded: Option<Mutex<Box<dyn EncodePosts>>>,
     thrown: Thrown,
     state: Mutex<State>,
     /// The psychoscript run of the current thread, for its metadata.
@@ -419,7 +419,7 @@ impl Control {
             options,
             input_name,
             transport,
-            encoder: encoder.map(|e| e.0.clone()),
+            encoded: encoder.map(|e| Mutex::new(e.0.live())),
             thrown: Thrown::default(),
             state: Mutex::new(State::Starting),
             run: Mutex::new(None),
@@ -570,90 +570,99 @@ impl Control {
     fn runtime(self: &Arc<Self>, input: Option<Arc<str>>, restored: bool) -> Runtime {
         let control = self.clone();
         let name = self.input_name.clone();
+        let translate = Translate {
+            functions: match self.encoded {
+                Some(_) => TranslateFunctions::Mark,
+                None => TranslateFunctions::Error,
+            },
+            ..Translate::default()
+        };
         let limits = Limits {
             max_heap_bytes: self.options.max_heap_bytes,
             ..Default::default()
         };
-        Runtime::make().limits(limits).globals(move |run| {
-            let text: Arc<str> = match &input {
-                Some(text) => {
-                    run.set_metadata(control.metadata(text));
-                    text.clone()
-                }
-                None => control.restore_metadata(&run.metadata(), restored),
-            };
-            *lock(&control.run) = Some(run.clone());
-            let c = control.clone();
-            let input = HostFunction::new(move |_args, _call| -> HostResult {
-                c.interrupted()?;
-                c.computing();
-                let _host = HostSection::enter(&c);
-                Ok(Input::parse(&text).unwrap_or_default())
-            });
-            let c = control.clone();
-            let post = HostFunction::new(move |args: Vec<HostValue>, _call| -> HostResult {
-                c.interrupted()?;
-                c.computing();
-                let _host = HostSection::enter(&c);
-                c.post(args.first().unwrap_or(&HostValue::Undefined))?;
-                Ok(HostValue::Undefined)
-            });
-            let c = control.clone();
-            let now = HostFunction::new(move |_args, _call| -> HostResult {
-                c.interrupted()?;
-                c.computing();
-                let _host = HostSection::enter(&c);
-                Ok(HostValue::Number(c.now_ms()))
-            });
-            let c = control.clone();
-            let receive = HostFunction::new_async(move |_args, _call| {
-                let c = c.clone();
-                let mut at = At::Inside;
-                std::future::poll_fn(move |cx| {
-                    let at = std::mem::replace(&mut at, At::Between);
-                    c.around(at, cx, |cx| c.poll_receive(cx, at))
+        Runtime::make()
+            .limits(limits)
+            .translate(translate)
+            .globals(move |run| {
+                let text: Arc<str> = match &input {
+                    Some(text) => {
+                        run.set_metadata(control.metadata(text));
+                        text.clone()
+                    }
+                    None => control.restore_metadata(&run.metadata(), restored),
+                };
+                *lock(&control.run) = Some(run.clone());
+                let c = control.clone();
+                let input = HostFunction::new(move |_args, _call| -> HostResult {
+                    c.interrupted()?;
+                    c.computing();
+                    let _host = HostSection::enter(&c);
+                    Ok(Input::parse(&text).unwrap_or_default())
+                });
+                let c = control.clone();
+                let post = HostFunction::new(move |args: Vec<HostValue>, _call| -> HostResult {
+                    c.interrupted()?;
+                    c.computing();
+                    let _host = HostSection::enter(&c);
+                    c.post(args.first().unwrap_or(&HostValue::Undefined))
+                });
+                let c = control.clone();
+                let now = HostFunction::new(move |_args, _call| -> HostResult {
+                    c.interrupted()?;
+                    c.computing();
+                    let _host = HostSection::enter(&c);
+                    Ok(HostValue::Number(c.now_ms()))
+                });
+                let c = control.clone();
+                let receive = HostFunction::new_async(move |_args, _call| {
+                    let c = c.clone();
+                    let mut at = At::Inside;
+                    std::future::poll_fn(move |cx| {
+                        let at = std::mem::replace(&mut at, At::Between);
+                        c.around(at, cx, |cx| c.poll_receive(cx, at))
+                    })
                 })
+                .idempotent();
+                let c = control.clone();
+                let sleep = HostFunction::new_async(move |args: Vec<HostValue>, call| {
+                    let c = c.clone();
+                    let ms = args
+                        .first()
+                        .and_then(HostValue::as_f64)
+                        .filter(|n| !n.is_nan())
+                        .unwrap_or(0.0)
+                        .max(0.0);
+                    let key = call.key();
+                    let mut at = At::Inside;
+                    std::future::poll_fn(move |cx| {
+                        let at = std::mem::replace(&mut at, At::Between);
+                        c.around(at, cx, |cx| c.poll_sleep(&key, ms, cx, at))
+                    })
+                })
+                .idempotent();
+                let c = control.clone();
+                let fetch = HostFunction::new_async(move |args: Vec<HostValue>, _call| {
+                    let slot = c.start_fetch(args.first());
+                    let c = c.clone();
+                    let mut at = At::Inside;
+                    std::future::poll_fn(move |cx| {
+                        let at = std::mem::replace(&mut at, At::Between);
+                        c.around(at, cx, |cx| c.poll_fetch(&slot, cx, at))
+                    })
+                });
+                let host = HostValue::object([
+                    ("post", HostValue::Function(post.named("post").length(1))),
+                    ("receive", HostValue::Function(receive.named("receive"))),
+                    ("sleep", HostValue::Function(sleep.named("sleep").length(1))),
+                    ("now", HostValue::Function(now.named("now"))),
+                    ("fetch", HostValue::Function(fetch.named("fetch").length(1))),
+                ]);
+                [
+                    (name.clone(), HostValue::Function(input.named(name.clone()))),
+                    ("__host".to_owned(), host),
+                ]
             })
-            .idempotent();
-            let c = control.clone();
-            let sleep = HostFunction::new_async(move |args: Vec<HostValue>, call| {
-                let c = c.clone();
-                let ms = args
-                    .first()
-                    .and_then(HostValue::as_f64)
-                    .filter(|n| !n.is_nan())
-                    .unwrap_or(0.0)
-                    .max(0.0);
-                let key = call.key();
-                let mut at = At::Inside;
-                std::future::poll_fn(move |cx| {
-                    let at = std::mem::replace(&mut at, At::Between);
-                    c.around(at, cx, |cx| c.poll_sleep(&key, ms, cx, at))
-                })
-            })
-            .idempotent();
-            let c = control.clone();
-            let fetch = HostFunction::new_async(move |args: Vec<HostValue>, _call| {
-                let slot = c.start_fetch(args.first());
-                let c = c.clone();
-                let mut at = At::Inside;
-                std::future::poll_fn(move |cx| {
-                    let at = std::mem::replace(&mut at, At::Between);
-                    c.around(at, cx, |cx| c.poll_fetch(&slot, cx, at))
-                })
-            });
-            let host = HostValue::object([
-                ("post", HostValue::Function(post.named("post").length(1))),
-                ("receive", HostValue::Function(receive.named("receive"))),
-                ("sleep", HostValue::Function(sleep.named("sleep").length(1))),
-                ("now", HostValue::Function(now.named("now"))),
-                ("fetch", HostValue::Function(fetch.named("fetch").length(1))),
-            ]);
-            [
-                (name.clone(), HostValue::Function(input.named(name.clone()))),
-                ("__host".to_owned(), host),
-            ]
-        })
     }
 
     fn interrupted(&self) -> Result<(), HostValue> {
@@ -901,10 +910,14 @@ impl Control {
                 .paused
                 .map_or_else(wall_ms, |(_, wall)| wall);
             let sleeps = self.sleeps_data();
+            let encoded = self.encoded.as_ref().map(|e| lock(e).save());
             run.update_metadata(|m| {
                 set_field(m, "clock", number(clock));
                 set_field(m, "pausedAt", number(paused_at));
                 set_field(m, "sleeps", sleeps);
+                if let Some(saved) = encoded {
+                    set_field(m, "encoder", saved);
+                }
             });
         }
         match self.suspend(Why::Snapshot)? {
@@ -963,9 +976,11 @@ impl Control {
 
     // ---------- host functions ----------
 
-    /// Queues a post; an encoder's failure is thrown at it, as an invalid post is a program error.
-    fn post(&self, message: &HostValue) -> Result<(), HostValue> {
-        {
+    /// Queues a post and returns what `post` gives the program: `undefined`, or with an encoder what it says (a
+    /// native widget render: whether the view has handlers). An encoder's failure is thrown at the post.
+    fn post(&self, message: &HostValue) -> HostResult {
+        // Over the rate a post is dropped; an encoder still sees it (a render's handlers count).
+        let keep = {
             let mut posts = lock(&self.posts);
             if posts.window.elapsed() >= Duration::from_secs(1) {
                 *posts = Posts {
@@ -984,30 +999,36 @@ impl Control {
                         self.options.max_posts_per_second
                     ));
                 }
-                return Ok(());
+                false
+            } else {
+                true
             }
-        }
-        let first = match &self.encoder {
-            Some(encoder) => {
-                let bytes = encoder
-                    .encode_post(message)
-                    .map_err(|f| self.thrown.throw(f))?;
+        };
+        let (first, ret) = match &self.encoded {
+            Some(encoded) => {
+                let (bytes, ret) = lock(encoded)
+                    .post(message, keep)
+                    .map_err(|e| self.thrown.throw(e))?;
+                let Some(bytes) = bytes else {
+                    return Ok(ret);
+                };
                 let mut outbox = lock(&self.outbox);
                 outbox.bytes.push(bytes);
-                outbox.bytes.len() == 1
+                (outbox.bytes.len() == 1, ret)
             }
+            None if !keep => return Ok(HostValue::Undefined),
             None => {
                 let text = json::write(message);
                 let mut outbox = lock(&self.outbox);
                 outbox.json.push(text);
-                outbox.json.len() == 1
+                (outbox.json.len() == 1, HostValue::Undefined)
             }
         };
         // The host calls the program waits on now get polled again once it stops, which hands the posts over.
         if first {
             self.wake_all();
         }
-        Ok(())
+        Ok(ret)
     }
 
     /// Hands the queued posts to the host in one call.
@@ -1219,6 +1240,9 @@ impl Control {
                     );
                 }
             }
+        }
+        if let (Some(encoded), Some(saved)) = (&self.encoded, field("encoder")) {
+            lock(encoded).load(saved);
         }
         if restored {
             let paused_at = field("pausedAt").and_then(as_f64).unwrap_or_else(wall_ms);
