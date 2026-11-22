@@ -17,6 +17,14 @@ use serde_json::{Value, json};
 use widget_wire::{Arg, DrawOutput, Node, Output, Post, StepOutput, decode_output, decode_post};
 
 const PRELUDE: &str = include_str!("fixtures/workloads/prelude.js");
+/// The prelude of 523750c6a, which still built the tree in the script (`__widget_step`, `__widget_live(input)`): the
+/// JSON path the binary one is held to (opencode keeps it as `packages/widget/test/fixtures/scripted-prelude.js`).
+const SCRIPTED: &str = include_str!("fixtures/workloads/prelude-scripted.js");
+
+/// `source` on the scripted prelude.
+fn scripted(source: &str) -> String {
+    source.replacen(PRELUDE, SCRIPTED, 1)
+}
 const STEP: &str = "\nreturn __widget_step(__input())";
 const EMIT: &str = "\nreturn __widget_native_step(__input())";
 const LIVE: &str = "\nreturn await __widget_live(__input())";
@@ -96,7 +104,7 @@ fn step_workloads_decode_as_their_json() {
     for (name, source) in workloads("step") {
         let input = fixture(&format!("inputs/{name}.json"));
         let json: Value = serde_json::from_str(
-            &program(format!("{source}{STEP}"))
+            &program(format!("{}{STEP}", scripted(&source)))
                 .run(input.clone(), options.clone())
                 .unwrap(),
         )
@@ -183,7 +191,7 @@ impl EncodeValues for Both {
     fn emit_name(&self) -> &str {
         "__emit"
     }
-    fn step(&self) -> Box<dyn EncodeStep> {
+    fn step(&self, _input: &HostValue) -> Box<dyn EncodeStep> {
         unreachable!()
     }
     fn live(&self) -> Box<dyn EncodePosts> {
@@ -223,7 +231,7 @@ fn live_workloads_post_what_their_json_posts() {
             slice_budget_ms: 60_000,
             ..LiveOptions::default()
         };
-        let run = program(format!("{source}{LIVE}"))
+        let run = program(format!("{}{LIVE}", scripted(&source)))
             .start_live(input, h, options, None, Some(ValueEncoder::new(Both)))
             .unwrap();
         let (mut frames, mut posts) = (0, 0);
@@ -440,10 +448,32 @@ fn run_bytes(source: &str, options: RunOptions) -> Result<Vec<u8>, PsychoScriptE
     program(source.into()).run_bytes("{}".into(), ValueEncoder::widget(), options)
 }
 
+fn draw_bytes(source: &str) -> Result<Vec<u8>, PsychoScriptError> {
+    program(source.into()).run_bytes(
+        r#"{"phase":"draw"}"#.into(),
+        ValueEncoder::widget(),
+        RunOptions::default(),
+    )
+}
+
 #[test]
-fn run_bytes_failures_are_program_errors() {
-    // A draw step's result that isn't a valid draw: phase `draw`, no line (it's the result).
-    let e = run_bytes("return { commands: [[\"blur\"]] }", RunOptions::default()).unwrap_err();
+fn draw_steps_emit_their_commands() {
+    // Read as JSON reads them: functions left out of objects (a paint's) and `null` in arrays, `undefined` props left
+    // out; the run's result is ignored.
+    let bytes = draw_bytes(
+        "__widget_emit([[\"rect\", 0, 0, 1, 1, { fill: \"accent\", stroke: () => 1, width: undefined }], [\"text\", 0, 0, () => 1]])\nreturn 5",
+    )
+    .unwrap();
+    let Output::Draw(d) = decode_output(&bytes).unwrap() else {
+        panic!()
+    };
+    let json = DrawOutput::from_value(&json!({ "commands": [
+        ["rect", 0, 0, 1, 1, { "fill": "accent" }], ["text", 0, 0, null]
+    ] }))
+    .unwrap();
+    assert_eq!(d, json.commands);
+    // Checked as a draw output after the run, with no line; the run's own failure first.
+    let e = draw_bytes("__widget_emit([[\"blur\"]])").unwrap_err();
     let PsychoScriptError::Runtime {
         kind, reason, line, ..
     } = e
@@ -452,6 +482,34 @@ fn run_bytes_failures_are_program_errors() {
     };
     assert_eq!((kind.as_str(), line), ("InvalidDraw", None));
     assert!(reason.contains("unknown draw command \"blur\""), "{reason}");
+    let e = draw_bytes("__widget_emit([[\"blur\"]])\nthrow new TypeError(\"x\")").unwrap_err();
+    assert!(
+        matches!(&e, PsychoScriptError::Runtime { kind, .. } if kind == "ExecutionFailure"),
+        "{e:?}"
+    );
+    let e = draw_bytes("return { commands: [] }").unwrap_err();
+    assert!(
+        matches!(&e, PsychoScriptError::Runtime { kind, .. } if kind == "InvalidDraw"),
+        "{e:?}"
+    );
+}
+
+#[test]
+fn run_bytes_failures_are_program_errors() {
+    // A step's emitted view with a draw's commands: an unknown node, not a draw.
+    let e = run_bytes(
+        "__widget_emit([[\"blur\"]])\nreturn 1",
+        RunOptions::default(),
+    )
+    .unwrap_err();
+    let PsychoScriptError::Runtime {
+        kind, reason, line, ..
+    } = e
+    else {
+        panic!("{e:?}")
+    };
+    assert_eq!((kind.as_str(), line), ("InvalidDataValue", None));
+    assert!(reason.contains("a step must return an object"), "{reason}");
 
     let e = run_bytes("return { state: 1 }", RunOptions::default()).unwrap_err();
     assert!(
@@ -747,7 +805,7 @@ fn native_live_workloads_post_the_prelude_trees() {
     for (name, source) in workloads("live") {
         let input = fixture(&format!("inputs/{name}.json"));
         let built = drive(
-            &format!("{source}{LIVE}"),
+            &format!("{}{LIVE}", scripted(&source)),
             &input,
             Some(ValueEncoder::new(Built)),
             20,
@@ -789,7 +847,7 @@ impl EncodeValues for Built {
     fn emit_name(&self) -> &str {
         "__widget_emit"
     }
-    fn step(&self) -> Box<dyn EncodeStep> {
+    fn step(&self, _input: &HostValue) -> Box<dyn EncodeStep> {
         unreachable!()
     }
     fn live(&self) -> Box<dyn EncodePosts> {

@@ -105,18 +105,45 @@ impl From<crate::native::Stop> for CallError {
     }
 }
 
-/// A native host's step (`widgets.md`, Native hosts): `__widget_emit(view, failure?)` gives the view as built, which
-/// is walked as it is encoded, and the run's result the rest of the output ([`NativeStep::finish`]).
+/// A native host's step (`widgets.md`, Native hosts). In an `init` or `event` step, `__widget_emit(view, failure?)`
+/// gives the view as built, which is walked as it is encoded, and the run's result the rest of the output
+/// ([`NativeStep::finish`]). In a `draw` step, `__widget_emit(commands)` gives the commands, and the run has no result.
 #[derive(Debug, Default)]
 pub struct NativeStep {
+    draw: bool,
     view: Option<Vec<u8>>,
     failure: Option<String>,
+    commands: Option<Result<Vec<u8>, EncodeError>>,
 }
 
 impl NativeStep {
+    /// A step of the phase the host asked for: `draw`, or `init` and `event`.
+    pub fn new(draw: bool) -> NativeStep {
+        NativeStep {
+            draw,
+            ..NativeStep::default()
+        }
+    }
+
     /// `__widget_emit`'s arguments. A view breaking Keys and depth (or a failure the prelude passes) is kept for
-    /// [`NativeStep::failure`], not thrown.
+    /// [`NativeStep::failure`], not thrown; so is a draw's failure, for [`NativeStep::finish`].
     pub fn emit(&mut self, args: &[HostValue]) -> Result<(), CallError> {
+        if self.draw {
+            // Read as JSON reads them (markers left out of objects, `null` in arrays), then checked as a draw output.
+            let commands = args.first().unwrap_or(&HostValue::Undefined);
+            let commands = match crate::native::marked(commands) {
+                true => Cow::Owned(unmark(commands)),
+                false => as_json(commands),
+            };
+            let mut out = vec![VERSION];
+            self.commands = Some(draw_section(&commands, &mut out).map(|()| out).map_err(
+                |message| EncodeError {
+                    kind: INVALID_DRAW,
+                    message,
+                },
+            ));
+            return Ok(());
+        }
         let view = args.first().unwrap_or(&HostValue::Undefined);
         let failure = args.get(1).unwrap_or(&HostValue::Undefined);
         if let Some(arg) = args.iter().skip(2).position(crate::native::marked) {
@@ -151,19 +178,19 @@ impl NativeStep {
         self.failure.as_deref()
     }
 
-    /// The step's bytes from the run's result (markers in it left out, as JSON leaves functions out): `01 S` with the
-    /// emitted view, or for a draw step (no view emitted) `01 D` from `{ commands }`.
+    /// The step's bytes: `01 S` from the run's result (markers in it left out, as JSON leaves functions out) and the
+    /// emitted view, or for a draw step `01 D` from the emitted commands.
     pub fn finish(&self, result: &Data) -> Result<Vec<u8>, EncodeError> {
         let fail = |kind| move |message| EncodeError { kind, message };
+        if self.draw {
+            return self
+                .commands
+                .clone()
+                .unwrap_or_else(|| Err(fail(INVALID_DRAW)("draw commands must be a list".into())));
+        }
         let mut out = vec![VERSION];
         let Some(view) = &self.view else {
-            return match result.get("commands") {
-                Some(commands) => {
-                    draw_section(&data_host(commands), &mut out).map_err(fail(INVALID_DRAW))?;
-                    Ok(out)
-                }
-                None => Err(fail(INVALID_DATA)("The step gave no view".into())),
-            };
+            return Err(fail(INVALID_DATA)("The step gave no view".into()));
         };
         if !matches!(result, Data::Object(_)) {
             return Err(fail(INVALID_DATA)(
@@ -195,21 +222,27 @@ impl NativeStep {
     }
 }
 
-/// A run's result as a host value.
-fn data_host(d: &Data) -> HostValue {
-    match d {
-        Data::Null => HostValue::Null,
-        Data::FunctionMarker => HostValue::Undefined,
-        Data::Bool(b) => HostValue::Bool(*b),
-        Data::Number(n) => HostValue::Number(n.as_f64().unwrap_or(f64::NAN)),
-        Data::String(s) => HostValue::String(s.clone()),
-        Data::Array(items) => HostValue::Array(items.iter().map(|i| Some(data_host(i))).collect()),
-        Data::Object(fields) => HostValue::Object(
-            fields
+/// `v` as JSON reads it: function markers left out of objects and `null` in arrays, other values as their JSON.
+fn unmark(v: &HostValue) -> HostValue {
+    match v {
+        HostValue::Array(items) => HostValue::Array(
+            items
                 .iter()
-                .map(|(k, v)| (k.clone(), data_host(v)))
+                .map(|i| match i {
+                    Some(HostValue::FunctionMarker) => Some(HostValue::Null),
+                    i => i.as_ref().map(unmark),
+                })
                 .collect(),
         ),
+        HostValue::Object(fields) => HostValue::Object(
+            fields
+                .iter()
+                .filter(|(_, v)| !matches!(v, HostValue::FunctionMarker))
+                .map(|(k, v)| (k.clone(), unmark(v)))
+                .collect(),
+        ),
+        HostValue::FunctionMarker => HostValue::Undefined,
+        v => json_view(v),
     }
 }
 

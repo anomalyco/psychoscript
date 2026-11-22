@@ -212,8 +212,9 @@ impl Program {
         encoder: &ValueEncoder,
     ) -> Result<Vec<u8>, PsychoScriptError> {
         self.check(encoder)?;
+        let input = slot.first.as_ref().unwrap_or(&HostValue::Undefined);
         let out = Arc::new(Emitted {
-            step: Mutex::new(encoder.0.step()),
+            step: Mutex::new(encoder.0.step(input)),
             thrown: Thrown::default(),
         });
         let result = self.execute(slot, &options, Some((encoder, out.clone())));
