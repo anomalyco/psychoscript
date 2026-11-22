@@ -146,8 +146,9 @@ except typed arrays (below).
   body streams (`text()`, `json()`, `bytes()`, `body` readers, `for await`).
 - **Typed arrays** cross without a copy, so a host can upload vertex or uniform data to a GPU as it is: a
   `Float32Array`, `Uint16Array`, `Uint32Array`, `Int32Array` or `Float64Array` argument arrives as a host typed array
-  over the program's own bytes (an `ArrayBuffer` as the host `ArrayBuffer`), and one a host function returns becomes
-  the program's over the same bytes. Writes on either side show on the other, so read the bytes during the call. A
+  over the program's own bytes (an `ArrayBuffer` as the host `ArrayBuffer`). They are lent for the duration of the
+  call: read or write them before it returns, and don't keep them. A typed array a host function returns becomes the
+  program's: bytes the host made, or a typed array the same call got, which is the program's buffer again. A
   `Uint8Array` still crosses as a copy.
 - **`translate`** (runtime option): what happens to a program function or promise inside an argument. By default both
   fail the call; `{ functions: "drop", promises: "await" }` drops functions (as `JSON.stringify` does) and awaits

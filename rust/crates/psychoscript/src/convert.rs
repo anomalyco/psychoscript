@@ -848,9 +848,8 @@ fn stringify_walk(
                 if depth == 0 {
                     let buf = fr.get(vm, J_OUT).as_obj();
                     let text = match buf.map(|b| &mut vm.heap[b as usize].kind) {
-                        Some(Kind::Bytes(b)) => {
-                            let mut bytes = std::mem::take(&mut *b.bytes());
-                            b.len = 0;
+                        Some(Kind::Storage(b)) => {
+                            let mut bytes = std::mem::take(b);
                             bytes.extend_from_slice(out.as_bytes());
                             // Only whole strings were written to it.
                             String::from_utf8(bytes).unwrap_or_default()
@@ -943,15 +942,13 @@ fn flush(vm: &mut Vm, fr: crate::native::Frame, out: &mut String) {
     let buf = match fr.get(vm, J_OUT).as_obj() {
         Some(b) => b,
         None => {
-            let bytes = crate::builtins::bytes::Bytes::new(Vec::new(), false);
-            let b = vm.alloc(Obj::new(None, Kind::Bytes(Box::new(bytes))));
+            let b = vm.alloc(Obj::new(None, Kind::Storage(Vec::new())));
             fr.set(vm, J_OUT, Value::Obj(b));
             b
         }
     };
-    if let Kind::Bytes(b) = &mut vm.heap[buf as usize].kind {
-        b.bytes().extend_from_slice(out.as_bytes());
-        b.len += out.len();
+    if let Some(b) = vm.heap.bytes_of(buf) {
+        b.extend_from_slice(out.as_bytes());
     }
     out.clear();
 }
@@ -963,7 +960,7 @@ fn flushed(vm: &Vm, fr: crate::native::Frame) -> usize {
         .as_obj()
         .map(|b| &vm.heap[b as usize].kind)
     {
-        Some(Kind::Bytes(b)) => b.len,
+        Some(Kind::Storage(b)) => b.len(),
         _ => 0,
     }
 }

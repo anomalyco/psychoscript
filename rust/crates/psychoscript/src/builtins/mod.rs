@@ -428,12 +428,12 @@ pub fn builtin_string(vm: &mut Vm, v: &Value) -> Result<String, Value> {
         Kind::Date(t) => date::display(*t),
         Kind::RegExp(_) => regexp::inspect(vm, id),
         Kind::Bytes(b) if b.elem == bytes::Elem::ArrayBuffer => "[object ArrayBuffer]".to_owned(),
-        Kind::Bytes(b) if b.elem != bytes::Elem::U8 => bytes::join_nums(b, ","),
+        Kind::Bytes(b) if b.elem != bytes::Elem::U8 => bytes::join_nums(vm, b, ","),
         Kind::Bytes(b) if b.buffer => {
-            crate::strings::external_text(String::from_utf8_lossy(&b.to_vec()).into_owned())
+            crate::strings::external_text(String::from_utf8_lossy(&b.to_vec(vm)).into_owned())
         }
         Kind::Bytes(b) => {
-            let parts: Vec<String> = b.to_vec().iter().map(u8::to_string).collect();
+            let parts: Vec<String> = b.to_vec(vm).iter().map(u8::to_string).collect();
             parts.join(",")
         }
         Kind::Error(_) => {

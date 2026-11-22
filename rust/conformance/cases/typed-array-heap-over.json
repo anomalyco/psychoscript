@@ -1,7 +1,7 @@
 {
   "bindings": {},
   "limits": {
-    "max_heap_bytes": 4191
+    "max_heap_bytes": 4127
   },
   "ok": false,
   "kind": "MemoryLimitExceeded",

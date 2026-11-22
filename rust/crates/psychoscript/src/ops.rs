@@ -352,7 +352,7 @@ impl Vm {
                     Kind::Bytes(b) if b.elem != crate::builtins::bytes::Elem::ArrayBuffer => {
                         let i = *n as usize;
                         if i as f64 == *n {
-                            return Ok(b.num(i).map_or(Value::Undef, Value::Num));
+                            return Ok(b.num(self, i).map_or(Value::Undef, Value::Num));
                         }
                     }
                     _ => {}
@@ -857,10 +857,11 @@ impl Vm {
             && let Kind::Bytes(b) = &self.heap[*id as usize].kind
             && b.elem != crate::builtins::bytes::Elem::ArrayBuffer
         {
+            let b = **b;
             // A typed array's element, written in place; out of range writes nothing.
             let i = *n as usize;
             if i as f64 == *n {
-                b.set_num(i, *x);
+                b.set_num(self, i, *x);
                 return Ok(());
             }
         }

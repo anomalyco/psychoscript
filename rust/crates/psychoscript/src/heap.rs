@@ -139,7 +139,6 @@ pub(crate) fn measure(vm: &Vm) -> u64 {
         cells: vec![false; vm.cells.len()],
         strings: vec![false; vm.atoms.bufs.len()],
         texts: FxHashSet::default(),
-        buffers: FxHashSet::default(),
         work: Vec::new(),
         bytes: 0,
     };
@@ -169,10 +168,8 @@ pub(crate) fn measure(vm: &Vm) -> u64 {
         }
         w.bytes += object_bytes(vm, o);
         // A typed array's storage counts once, whole, however many views and `ArrayBuffer`s share it.
-        if let Kind::Bytes(b) = &o.kind
-            && w.buffers.insert(Arc::as_ptr(&b.buf) as usize)
-        {
-            w.bytes += b.bytes().len() as u64;
+        if let Kind::Storage(data) = &o.kind {
+            w.bytes += data.len() as u64;
         }
         // An error's `stack` text counts as part of the error, a function's `name` and `length` as part of it.
         let skip: &[Option<&Atom>] = match &o.kind {
@@ -207,7 +204,8 @@ fn object_bytes(vm: &Vm, o: &Obj) -> u64 {
     };
     let own = OBJECT_BYTES + PROPERTY_BYTES * props as u64;
     match &o.kind {
-        Kind::Accessor(_) => 0,
+        // An accessor's own object is part of its property; a buffer's storage counts as its bytes.
+        Kind::Accessor(_) | Kind::Storage(_) => 0,
         // The program's body, which the reference runs with no function object.
         Kind::Closure(c) if vm.protos.first().is_some_and(|p| Arc::ptr_eq(p, &c.proto)) => 0,
         Kind::Array(items) | Kind::Arguments(items) => own + ELEMENT_BYTES * items.len() as u64,
@@ -225,7 +223,6 @@ struct Walk<'v> {
     cells: Vec<bool>,
     strings: Vec<bool>,
     texts: FxHashSet<(&'v str, Option<&'v [u16]>)>,
-    buffers: FxHashSet<usize>,
     work: Vec<Id>,
     bytes: u64,
 }

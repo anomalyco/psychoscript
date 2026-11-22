@@ -18,12 +18,14 @@ let outcome = runtime.execute("return double(21)");
 The API is the Rust form of `src/index.ts`; host work is a `Future` instead of an Effect, and values cross the
 boundary as copies (`HostValue`, with strings as lossless `HostString`s), except typed arrays.
 
-An `ArrayBuffer` or a typed array other than Uint8Array crosses as `HostValue::TypedArray(TypedArray)`, a handle on
-the program's own bytes: borrow them in place with `with_bytes(|bytes: &[u8]| ..)` (for instance to upload them to a
-GPU) or `with_bytes_mut`, and read `kind()`, `len()` and `byte_len()`. Return one, made with
-`TypedArray::new(TypedKind::F32, bytes)` (which takes the `Vec<u8>` without copying) or received earlier, and the
-program gets a typed array of that kind over the same bytes. Elements are little-endian; a write after the call shows
-in the program.
+An `ArrayBuffer` or a typed array other than Uint8Array crosses as `HostValue::TypedArray(TypedArray)`. A synchronous
+host function borrows the program's own bytes for the duration of the call, with no copy: read them in place with
+`with_bytes(|bytes: &[u8]| ..)` (for instance to upload them to a GPU) or write them with `with_bytes_mut`; `kind()`,
+`len()` and `byte_len()` describe the view. Once the call returns the handle is empty. An async or durable host
+function gets a copy, as the program runs on meanwhile. Return `TypedArray::new(TypedKind::F32, bytes)`, which takes
+the `Vec<u8>` without copying and gives it to the program, or a handle the same call got, which is the program's buffer
+again. Elements are little-endian. Inside the run, a typed array's bytes are a heap object its views reference by id,
+so element access takes no lock.
 
 ```rust
 use psychoscript::{HostFunction, HostValue, TypedArray, TypedKind};

@@ -1,7 +1,7 @@
 {
   "bindings": {},
   "limits": {
-    "max_heap_bytes": 4192
+    "max_heap_bytes": 4128
   },
   "ok": true,
   "value": 1000,

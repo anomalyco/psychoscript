@@ -658,9 +658,11 @@ contiguous byte buffer, little-endian.
 - [x] Spread, destructuring, `for...of`, and `Array.from`. `Array.isArray` is false; `Object.prototype.toString` gives
       `[object Float32Array]`; `JSON.stringify` gives `{"0":1.5,...}` and an `ArrayBuffer` `{}`; `console.log` prints
       `Float32Array(n) [...]` and `ArrayBuffer { byteLength: n }`; `structuredClone` copies.
-- [x] Host functions get the typed arrays other than Uint8Array, and `ArrayBuffer`s, as views of the same bytes (the
-      host's own typed array or ArrayBuffer; in Rust `HostValue::TypedArray`), and a typed array a host function
-      returns stays a view of its bytes; the result boundary rejects them with a hint to pass the values instead. Their
+- [x] Host functions get the typed arrays other than Uint8Array, and `ArrayBuffer`s, as the program's own bytes, lent
+      for the duration of the call (the host's typed array or ArrayBuffer; in Rust `HostValue::TypedArray`, empty once
+      the call returns, and a copy for an async or durable function). A typed array a host function returns becomes
+      the program's: bytes it made, or one the same call got, which is the program's buffer again. The result boundary
+      rejects them with a hint to pass the values instead. Their
       storage counts against `maxHeapBytes` once per buffer. Snapshots keep them, and which views share a buffer.
 - [x] Fast element access: an indexed read or write with a number goes straight to the bytes, in Rust and in the
       reference.

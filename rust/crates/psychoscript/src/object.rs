@@ -550,6 +550,9 @@ pub enum Kind {
     /// A Date's time value.
     Date(f64),
     Bytes(Box<crate::builtins::bytes::Bytes>),
+    /// A typed array buffer's bytes, which its views and its `ArrayBuffer` (`Bytes`) reference by id. Programs never
+    /// see it. Its prototype slot holds its `ArrayBuffer` object once one is made, so every view gives the same one.
+    Storage(Vec<u8>),
     TextDecoder(Box<crate::builtins::bytes::Decoder>),
     WeakMap(Box<OrderedMap>),
     WeakSet(Box<OrderedMap>),

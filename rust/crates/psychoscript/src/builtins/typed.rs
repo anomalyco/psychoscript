@@ -1,11 +1,9 @@
 //! `ArrayBuffer` and the typed arrays besides Uint8Array (`bytes.rs`): Uint16Array, Uint32Array, Int32Array,
 //! Float32Array and Float64Array. Every typed array is a `Kind::Bytes` view of elements on one contiguous byte buffer,
-//! which its `ArrayBuffer` and its other views share; elements are read and written little-endian, with float32
-//! rounding and integer wrapping as in JS.
+//! a `Kind::Storage` heap object which its `ArrayBuffer` and its other views reference by id; elements are read and
+//! written little-endian, with float32 rounding and integer wrapping as in JS.
 
-use super::bytes::{
-    Bytes, Elem, Sink, array_buffer_of, as_typed, bytes_ref, collect, join_nums, rel_index,
-};
+use super::bytes::{Bytes, Elem, Sink, as_typed, bytes_ref, collect, join_nums, rel_index};
 use super::{arg, incompatible};
 use crate::object::*;
 use crate::ops::{MAX_ARRAY_LEN, MAX_STRING_LEN};
@@ -130,7 +128,7 @@ fn buffer_slice(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
     let len = bytes_ref(vm, id).len;
     let s = rel_index(vm, &arg(args, 0), len, 0)?;
     let e = rel_index(vm, &arg(args, 1), len, len)?.max(s);
-    let data = bytes_ref(vm, id).bytes()[s..e].to_vec();
+    let data = bytes_ref(vm, id).data(vm)[s..e].to_vec();
     Ok(super::bytes::new_typed(vm, data, Elem::ArrayBuffer))
 }
 
@@ -173,14 +171,12 @@ pub fn from_buffer(vm: &mut Vm, elem: Elem, buf: Id, offset: &Value, length: &Va
             }
         }
     };
-    let b = bytes_ref(vm, buf);
     let view = Bytes {
-        buf: b.buf.clone(),
+        store: bytes_ref(vm, buf).store,
         start: start as usize,
         len,
         buffer: false,
         elem,
-        owner: Some(buf),
     };
     let proto = vm.realm.std.typed_proto(elem);
     Ok(Value::Obj(
@@ -289,7 +285,7 @@ fn t_at(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
         return Ok(Value::Undef);
     }
     Ok(bytes_ref(vm, id)
-        .num(i as usize)
+        .num(vm, i as usize)
         .map_or(Value::Undef, Value::Num))
 }
 
@@ -297,14 +293,13 @@ fn t_slice(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
     let id = this_typed(vm, &this, callee, "slice")?;
     let (s, e) = range(vm, id, args)?;
     let b = bytes_ref(vm, id);
-    let (data, elem) = (b.view(s, e, false).to_vec(), b.elem);
+    let (data, elem) = (b.view(s, e, false).to_vec(vm), b.elem);
     Ok(super::bytes::new_typed(vm, data, elem))
 }
 
 fn t_subarray(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
     let id = this_typed(vm, &this, callee, "subarray")?;
     let (s, e) = range(vm, id, args)?;
-    array_buffer_of(vm, id);
     let b = bytes_ref(vm, id);
     let view = b.view(s, e, false);
     let proto = vm.realm.std.typed_proto(view.elem);
@@ -336,10 +331,9 @@ fn t_fill(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
     let size = b.elem.size();
     let mut one = [0u8; 8];
     b.elem.write(v, &mut one);
-    let mut bytes = b.bytes();
+    let bytes = b.data_mut(vm);
     for i in s..e.max(s) {
-        let at = b.start + i * size;
-        bytes[at..at + size].copy_from_slice(&one[..size]);
+        bytes[i * size..(i + 1) * size].copy_from_slice(&one[..size]);
     }
     Ok(this)
 }
@@ -348,15 +342,9 @@ fn t_reverse(vm: &mut Vm, this: Value, _args: &[Value], callee: Id) -> Res {
     let id = this_typed(vm, &this, callee, "reverse")?;
     let b = bytes_ref(vm, id);
     let size = b.elem.size();
-    let (start, end) = (b.start, b.start + b.byte_len());
-    let mut bytes = b.bytes();
-    let reversed: Vec<u8> = bytes[start..end]
-        .chunks_exact(size)
-        .rev()
-        .flatten()
-        .copied()
-        .collect();
-    bytes[start..end].copy_from_slice(&reversed);
+    let bytes = b.data_mut(vm);
+    let reversed: Vec<u8> = bytes.chunks_exact(size).rev().flatten().copied().collect();
+    bytes.copy_from_slice(&reversed);
     Ok(this)
 }
 
@@ -375,7 +363,7 @@ fn t_index_of(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
     let Some(x) = search(&arg(args, 0)) else {
         return Ok(Value::Num(-1.0));
     };
-    let data = bytes_ref(vm, id).nums();
+    let data = bytes_ref(vm, id).nums(vm);
     Ok(Value::Num(
         (from..len)
             .find(|i| data[*i] == x)
@@ -398,7 +386,7 @@ fn t_last_index_of(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res 
     if from < 0.0 {
         return Ok(Value::Num(-1.0));
     }
-    let data = bytes_ref(vm, id).nums();
+    let data = bytes_ref(vm, id).nums(vm);
     Ok(Value::Num(
         (0..=from as usize)
             .rev()
@@ -414,7 +402,7 @@ fn t_includes(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
     let Some(x) = search(&arg(args, 0)) else {
         return Ok(Value::Bool(false));
     };
-    let data = bytes_ref(vm, id).nums();
+    let data = bytes_ref(vm, id).nums(vm);
     Ok(Value::Bool(
         data[from.min(len)..]
             .iter()
@@ -431,7 +419,7 @@ fn t_join(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
             vm.text(s).to_owned()
         }
     };
-    let out = join_nums(bytes_ref(vm, id), &sep);
+    let out = join_nums(vm, &bytes_ref(vm, id), &sep);
     if out.len() > MAX_STRING_LEN {
         return Err(vm.range_error("Invalid string length"));
     }
@@ -440,7 +428,7 @@ fn t_join(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
 
 fn t_to_string(vm: &mut Vm, this: Value, _args: &[Value], callee: Id) -> Res {
     let id = this_typed(vm, &this, callee, "toString")?;
-    let out = join_nums(bytes_ref(vm, id), ",");
+    let out = join_nums(vm, &bytes_ref(vm, id), ",");
     Ok(vm.string_val(out))
 }
 
@@ -461,25 +449,37 @@ fn t_entries(vm: &mut Vm, this: Value, _args: &[Value], callee: Id) -> Res {
     t_iter(vm, &this, callee, "entries", IterKind::Entries)
 }
 
-/// A typed array (or `ArrayBuffer`) over the bytes a host function returned, without copying them.
-pub fn from_host(vm: &mut Vm, t: &crate::TypedArray) -> Value {
+/// A typed array (or `ArrayBuffer`) over the bytes a host function returned, without copying them: the program's own
+/// buffer again for a handle the call got, or the host's bytes, which become the program's.
+pub fn from_host(vm: &mut Vm, t: &crate::TypedArray, label: &str) -> Res {
     super::ensure(vm, super::LAZY_BYTES);
-    let total = t
-        .buf
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .len();
-    if let Some(m) = vm.heap_meter.as_deref_mut() {
-        m.debt += total as u64;
-    }
+    let known = vm.lends.iter().find(|(_, h)| h.same(&t.buf));
+    let store = match known {
+        Some((store, _)) => *store,
+        None => {
+            let data = std::mem::take(&mut *t.buf.lock());
+            let store = super::bytes::new_storage(vm, data);
+            vm.lends.push((store, t.buf.clone()));
+            store
+        }
+    };
     let view = Bytes {
-        buf: t.buf.clone(),
+        store,
         start: t.start,
         len: t.len,
         buffer: false,
         elem: t.kind,
-        owner: None,
     };
+    if view.start + view.byte_len() > super::bytes::storage(vm, store).len() {
+        return Err(vm.type_error(&format!(
+            "{label} returned a {} whose bytes are gone: a typed array a host function gets is only valid during that call.",
+            t.kind.name()
+        )));
+    }
     let proto = vm.realm.std.typed_proto(t.kind);
-    Value::Obj(vm.alloc(Obj::new(Some(proto), Kind::Bytes(Box::new(view)))))
+    let id = vm.alloc(Obj::new(Some(proto), Kind::Bytes(Box::new(view))));
+    if t.kind == Elem::ArrayBuffer && vm.heap[store as usize].proto.is_none() {
+        vm.heap[store as usize].proto = Some(id);
+    }
+    Ok(Value::Obj(id))
 }

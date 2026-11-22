@@ -1157,7 +1157,7 @@ fn crypto_get_random_values(vm: &mut Vm, _this: Value, args: &[Value], _: Id) ->
     let data = random_bytes(vm, len);
     if let Some(b) = super::bytes::as_bytes(vm, &target) {
         for (i, v) in data.into_iter().enumerate() {
-            b.put(i, v);
+            b.put(vm, i, v);
         }
     }
     Ok(target)
@@ -1201,7 +1201,7 @@ fn clone_value(vm: &mut Vm, v: &Value, memo: &mut Vec<(Id, Id)>) -> Res {
         Kind::Set(_) => Plan::Map(true),
         Kind::Date(t) => Plan::Date(*t),
         Kind::RegExp(_) => Plan::RegExp,
-        Kind::Bytes(b) => Plan::Bytes(b.to_vec(), b.elem),
+        Kind::Bytes(b) => Plan::Bytes(b.to_vec(vm), b.elem),
         Kind::Error(_) => Plan::Error,
         Kind::Array(items) => Plan::Array(items.len()),
         Kind::Ordinary | Kind::Arguments(_) | Kind::TextDecoder(_) => Plan::Object,

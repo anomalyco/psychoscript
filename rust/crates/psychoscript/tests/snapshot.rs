@@ -572,9 +572,10 @@ fn a_state_is_refused_by_another_build_other_host_globals_or_a_changed_source() 
             .message
             .contains("Invalid snapshot")
     );
+    // A typed array buffer's storage whose bytes are not hex.
     for bad in ["é", "abc", "zz"] {
         let mut bytes = state.clone();
-        bytes.0["state"]["buffers"] = json!([bad]);
+        bytes.0["state"]["heap"] = json!([[null, 0, [], ["st", bad]]]);
         assert!(rt.resume(&bytes).is_err(), "{bad}");
     }
 }

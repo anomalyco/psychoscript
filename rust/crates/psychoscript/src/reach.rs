@@ -335,11 +335,9 @@ impl<F: FnMut(Ref)> Tracer<'_, F> {
             | Kind::TextDecoder(_)
             | Kind::Headers(_) => {}
             Kind::StrIter { s, .. } => self.val(&Value::Str(*s)),
-            Kind::Bytes(b) => {
-                if let Some(owner) = b.owner {
-                    self.id(owner);
-                }
-            }
+            Kind::Bytes(b) => self.id(b.store),
+            // Its prototype slot, traced above, is its `ArrayBuffer`.
+            Kind::Storage(_) => {}
             Kind::Namespace(ns) => {
                 self.atom(ns.name);
                 if !ns.is_root() {

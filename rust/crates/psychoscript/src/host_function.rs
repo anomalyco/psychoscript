@@ -153,20 +153,38 @@ impl fmt::Debug for HostString {
 /// The kind of a [`TypedArray`]: one of the typed arrays, or an `ArrayBuffer`.
 pub use crate::builtins::bytes::Elem as TypedKind;
 
-/// An `ArrayBuffer` or typed array on the host's side, sharing its bytes with the program: no copy is made either way.
+/// The bytes behind a [`TypedArray`], which a call shares among the views of one buffer.
+#[derive(Clone, Default)]
+pub(crate) struct SharedBytes(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl SharedBytes {
+    pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, Vec<u8>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(crate) fn same(&self, other: &SharedBytes) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// An `ArrayBuffer` or typed array on the host's side.
 ///
-/// A host function receives one for each `ArrayBuffer`, Uint16Array, Uint32Array, Int32Array, Float32Array and
-/// Float64Array among its arguments (a Uint8Array still arrives as [`HostValue::Bytes`], a copy), and reads or writes
-/// the bytes in place with [`TypedArray::with_bytes`] and [`TypedArray::with_bytes_mut`], for instance to upload them
-/// to a GPU. A host function may return one, from bytes it owns ([`TypedArray::new`]) or one it received, and the
-/// program gets a typed array (or `ArrayBuffer`) of that kind over the same bytes.
+/// A host function gets one for each `ArrayBuffer`, Uint16Array, Uint32Array, Int32Array, Float32Array and
+/// Float64Array among its arguments (a Uint8Array still arrives as [`HostValue::Bytes`], a copy). A synchronous host
+/// function borrows the program's own bytes for the duration of the call, with no copy: read them with
+/// [`TypedArray::with_bytes`], for instance to upload them to a GPU, or write them with [`TypedArray::with_bytes_mut`].
+/// After the call returns the handle is empty: the bytes are the program's again. An async or durable host function
+/// gets a copy, as the program runs on while it works.
 ///
-/// The bytes are the program's while it runs: a write after the call returned shows in the program, and a handle kept
-/// past the run keeps them alive. Elements are little-endian, as on every platform JS runs on.
+/// A host function may return one: bytes it owns ([`TypedArray::new`] takes the `Vec` without copying), which become
+/// the program's, or one it got during the same call, which is the program's buffer again. Elements are
+/// little-endian, as on every platform JS runs on.
 #[derive(Clone)]
 pub struct TypedArray {
     pub(crate) kind: TypedKind,
-    pub(crate) buf: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    pub(crate) buf: SharedBytes,
     /// Where the view starts, in bytes, and how many elements it has.
     pub(crate) start: usize,
     pub(crate) len: usize,
@@ -182,7 +200,7 @@ impl TypedArray {
         let len = bytes.len() / kind.size();
         Some(TypedArray {
             kind,
-            buf: std::sync::Arc::new(std::sync::Mutex::new(bytes)),
+            buf: SharedBytes(std::sync::Arc::new(std::sync::Mutex::new(bytes))),
             start: 0,
             len,
         })
@@ -211,23 +229,19 @@ impl TypedArray {
         self.len * self.kind.size()
     }
 
-    /// Calls `f` with the view's bytes, borrowed in place.
+    /// Calls `f` with the view's bytes, borrowed in place: during the call that got it, or of bytes the host made.
+    /// Empty otherwise.
     pub fn with_bytes<R>(&self, f: impl FnOnce(&[u8]) -> R) -> R {
-        let b = self
-            .buf
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        f(&b[self.start..self.start + self.byte_len()])
+        let b = self.buf.lock();
+        f(b.get(self.start..self.start + self.byte_len())
+            .unwrap_or(&[]))
     }
 
-    /// Calls `f` with the view's bytes, borrowed in place for writing.
+    /// Calls `f` with the view's bytes, borrowed in place for writing, as [`TypedArray::with_bytes`] does.
     pub fn with_bytes_mut<R>(&self, f: impl FnOnce(&mut [u8]) -> R) -> R {
-        let mut b = self
-            .buf
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut b = self.buf.lock();
         let end = self.start + self.byte_len();
-        f(&mut b[self.start..end])
+        f(b.get_mut(self.start..end).unwrap_or(&mut []))
     }
 
     /// The view's bytes, copied.

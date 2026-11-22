@@ -200,8 +200,6 @@ export const uint8ArrayGlobal = <R>(ctx: Interpreter<R>) => {
       2,
       (thisValue, args) => {
         const target = self(thisValue, "subarray")
-        // A Buffer's views keep to themselves, as Buffer's own subarray does.
-        if (target.constructor === Bytes) arrayBufferOf(builtins, target.bytes)
         return target.derive(builtins, target.bytes.subarray(optNumber(args[0]), optNumber(args[1])))
       },
     ],
@@ -384,7 +382,6 @@ export const typedArrayGlobal = <R>(ctx: Interpreter<R>, name: Exclude<TypedArra
       2,
       (thisValue, args) => {
         const target = self(thisValue, "subarray")
-        arrayBufferOf(builtins, target.bytes)
         return target.derive(builtins, target.bytes.subarray(optIndex(args[0]), optIndex(args[1])))
       },
     ],

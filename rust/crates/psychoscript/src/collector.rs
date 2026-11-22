@@ -118,6 +118,16 @@ impl Heap {
         }
     }
 
+    /// The bytes of storage object `i` (`Kind::Storage`), past the barrier: bytes hold no references, so writing them
+    /// changes nothing marking must see.
+    #[inline(always)]
+    pub(crate) fn bytes_of(&mut self, i: Id) -> Option<&mut Vec<u8>> {
+        match &mut self.objs.get_mut(i as usize)?.kind {
+            Kind::Storage(data) => Some(data),
+            _ => None,
+        }
+    }
+
     #[inline(always)]
     pub fn push(&mut self, o: Obj) {
         self.objs.push(o);
