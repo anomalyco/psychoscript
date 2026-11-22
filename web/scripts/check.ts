@@ -392,6 +392,73 @@ for (const [query, backend] of [["?only=shader-demo", "webgpu"], ["?only=shader-
   await page.close()
 }
 
+// ---------- stack: a HUD over a plain GPU canvas, as tall as its canvas at any width ----------
+{
+  // Console's HUD artifact: a wgsl canvas with no key or handler fills the stack; the canvas element's own aspect
+  // (300 x 150 until sized) once set the stack's height when wide.
+  const source = `const WGSL = \`fn shade(frag: vec2f) -> vec4f { return vec4f(frag / widget.resolution, 0.5, 1.0); }\`
+function init() { return { boost: 0 } }
+function view(state, data) {
+  return ui.stack({}, [
+    ui.canvas({ wgsl: WGSL, height: 220, values: [state.boost, 0, 0, 0], fps: 60, place: "fill", alt: "Waves" }),
+    ui.column({ place: "top-left", inset: 14, gap: 0 }, [
+      ui.text(data.title, { style: "title" }),
+      ui.text("Boost level " + state.boost, { style: "caption", tone: "muted" }),
+    ]),
+    ui.button("Boost", { place: "bottom-right", inset: 14, variant: "primary", onPress: (s) => ({ ...s, boost: s.boost + 1 }) }),
+  ])
+}`
+  for (const width of [1280, 700]) {
+    const { page, errors } = await open("?only=confirm", { width, height: 900 })
+    await page.evaluate((source) => {
+      const d = (window as unknown as { __demo: { host: { mount(el: HTMLElement, o: object): unknown }; prelude: string } }).__demo
+      const slot = document.createElement("div")
+      slot.className = "slot"
+      slot.dataset.name = "hud-shape"
+      slot.style.gridColumn = "1 / -1"
+      document.getElementById("widgets")!.prepend(slot)
+      d.host.mount(slot, { program: d.prelude + "\n" + source, data: { title: "HUD" }, mode: "step", theme: "dark" })
+    }, source)
+    const w = widget(page, "hud-shape")
+    await rendered(w)
+    await w.locator(".pw-surface[data-backend]").waitFor({ timeout: 8000 }).catch(() => {})
+    await page.waitForTimeout(500)
+    const geo = () =>
+      w.evaluate((el) => {
+        const r = (e: Element | null) => {
+          const b = e!.getBoundingClientRect()
+          return { x: Math.round(b.left), y: Math.round(b.top), r: Math.round(b.right), b: Math.round(b.bottom) }
+        }
+        const root = el.shadowRoot!
+        return {
+          stack: r(root.querySelector(".pw-stack")),
+          canvas: r(root.querySelector(".pw-stack > .pw-surface")),
+          hud: r(root.querySelector(".pw-stack > .pw-col")),
+          button: r(root.querySelector(".pw-stack > .pw-btn")),
+        }
+      })
+    const placed = (g: Awaited<ReturnType<typeof geo>>) =>
+      JSON.stringify(g.canvas) === JSON.stringify(g.stack) &&
+      g.hud.x === g.stack.x + 14 && g.hud.y === g.stack.y + 14 &&
+      g.button.r === g.stack.r - 14 && g.button.b === g.stack.b - 14
+    const g = await geo()
+    check(g.stack.b - g.stack.y === 220 && placed(g), `stack (HUD, ${width} px): 220 tall like its fill canvas, HUD and button in their corners`, g)
+    await w.hover()
+    await w.locator(".pw-expand").click()
+    await page.waitForFunction(() => document.fullscreenElement !== null, undefined, { timeout: 3000 }).catch(() => {})
+    await page.waitForTimeout(800)
+    const f = await geo()
+    check(f.stack.b - f.stack.y > 500 && placed(f), `stack (HUD, ${width} px): in full screen it grows with its canvas, corners kept`, f)
+    await page.keyboard.press("Escape")
+    await page.waitForFunction(() => document.fullscreenElement === null, undefined, { timeout: 3000 }).catch(() => {})
+    await page.waitForTimeout(500)
+    const back = await geo()
+    check(back.stack.b - back.stack.y === 220 && placed(back), `stack (HUD, ${width} px): back inline at 220`, back)
+    check(errors.length === 0, `stack (HUD, ${width} px): no page errors`, errors)
+    await page.close()
+  }
+}
+
 // ---------- never draw at zero size ----------
 {
   const { page, errors } = await open("?only=confirm")

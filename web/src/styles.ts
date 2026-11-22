@@ -128,7 +128,7 @@ export const CSS: string = /* css */ `
 .pw-dot { width: 6px; height: 6px; border-radius: 50%; background: rgba(255,255,255,.5); box-shadow: 0 0 2px rgba(0,0,0,.4); padding: 0; border: 0; pointer-events: auto; cursor: pointer; }
 .pw-dot.pw-on { background: #fff; }
 .pw-surface { position: relative; width: 100%; min-width: 0; }
-.pw-surface canvas { display: block; width: 100%; height: 100%; touch-action: none; border-radius: calc(var(--pw-radius) - 2px); }
+.pw-surface canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; touch-action: none; border-radius: calc(var(--pw-radius) - 2px); }
 .pw-surface .pw-alt { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 8px; text-align: center; color: var(--pw-muted); font-size: 12px; background: var(--pw-surface); border-radius: calc(var(--pw-radius) - 2px); }
 .pw-surface .pw-poster { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: calc(var(--pw-radius) - 2px); }
 .pw-surface .pw-alt-error { justify-content: flex-start; align-items: flex-end; color: var(--pw-error); background: transparent; font-family: var(--pw-mono); font-size: 11px; }
