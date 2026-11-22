@@ -348,6 +348,20 @@ return [thrown instanceof RangeError, thrown.message, sent instanceof Promise, a
   { code: `const a = []; while (true) a.push(inc(a.length))`, limits: { maxHeapBytes: 1000000 } },
   { code: `note(1); Math.kept = new Array(1000).fill("y".repeat(100000)); return 1`, limits: { maxHeapBytes: 216080 } },
   { code: `note(1); Math.kept = new Array(1000).fill("y".repeat(100000)); return 1`, limits: { maxHeapBytes: 216079 } },
+  // limits.maxValueDepth: a value N deep crosses, N + 1 deep fails, each way; the walk the result takes for a promise
+  // allows at least 100; JSON.stringify copies to the same depth. Deep values are recorded by digest, as a recording
+  // must stay within the 128 levels of nesting the Rust JSON reader takes.
+  { code: `const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; note(deep(4)); try { note(deep(5)) } catch (e) { return [e.name, e.message] }`, limits: { maxValueDepth: 4 } },
+  { code: `const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; const a = new Box(deep(3)).item; try { Box(deep(4)) } catch (e) { return [a, e.name, e.message] }`, limits: { maxValueDepth: 4 } },
+  { code: `const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; return deep(4)`, limits: { maxValueDepth: 4 } },
+  { code: `const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; return deep(5)`, limits: { maxValueDepth: 4 } },
+  { code: `const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; return [Promise.resolve(1), deep(60)]`, limits: { maxValueDepth: 4 } },
+  { code: `const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; return [Promise.resolve(1), deep(109)]`, limits: { maxValueDepth: 110 } },
+  { code: `const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; return [Promise.resolve(1), deep(101)]` },
+  { code: `const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; const ok = JSON.stringify(deep(4)).length; try { JSON.stringify(deep(5)) } catch (e) { return [ok, e.name, e.message] }`, limits: { maxValueDepth: 4 } },
+  { code: `const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; refuses(deep(256)); const back = await load(deep(256)); return [JSON.stringify(back).length, JSON.stringify(deep(256)) === JSON.stringify(back)]`, limits: { maxValueDepth: 256 } },
+  { code: `const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; return deep(100)`, limits: { maxValueDepth: 100 } },
+  { code: `const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; return deep(257)`, limits: { maxValueDepth: 256 } },
   // Warnings: rejections nothing handled.
   { code: `Promise.reject(new Error("x")); return 1` },
   { code: `const p = Promise.reject(1); await null; p.catch(() => 0); return 2` },
@@ -448,6 +462,10 @@ const suspensions: Array<Entry> = [
   { code: `return (await job()) + 1`, runId: "d" },
   { code: `return (await job()) + 1`, runId: "d", compiled: true },
   { code: `const a = job(1, { b: [2] }); const b = job(); return [await a, await b, count()]`, runId: "d" },
+  // A raised limits.maxValueDepth: a deep argument is saved and the call made again on resume, and the resumed run
+  // keeps the limit.
+    { code: `const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; await wait(deep(200)); return JSON.stringify(await load(deep(200))).length`, runId: "i", limits: { maxValueDepth: 200 } },
+  { code: `const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; await wait(); return deep(201)`, runId: "i", limits: { maxValueDepth: 200 } },
   // functions: "mark" keeps a call's markers across a suspend.
   { code: `return (await job({ on() {} }, [() => 1, 2])) + 1`, runId: "d", translate: mark },
   { code: `return [await wait({ on() {} }, [() => 1]), 1]`, runId: "i", translate: mark },

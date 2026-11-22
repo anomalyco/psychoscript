@@ -5,6 +5,7 @@ import { fromBytes, header, type Snapshot, SnapshotError, toBytes } from "../sna
 import { normalizeError } from "./errors.js"
 import { hostGlobals } from "./extensions.js"
 import { HeapMeter } from "./heap.js"
+import { DEFAULT_VALUE_DEPTH } from "./limits.js"
 import { createBuiltins } from "./intrinsics.js"
 import { Interpreter } from "./interpreter.js"
 import type { Value } from "./objects.js"
@@ -111,6 +112,7 @@ export type Limits = {
   readonly timeoutMs: number | undefined
   readonly maxOutputBytes: number | undefined
   readonly maxHeapBytes?: number | undefined
+  readonly maxValueDepth?: number | undefined
 }
 
 type Globals<R> = (ctx: Interpreter<R>) => ReadonlyArray<readonly [string, Value]>
@@ -204,6 +206,7 @@ export const resumeProgram = <R>(
           timeoutMs: saw.limits.timeoutMs ?? undefined,
           maxOutputBytes: saw.limits.maxOutputBytes ?? undefined,
           maxHeapBytes: saw.limits.maxHeapBytes ?? undefined,
+          maxValueDepth: saw.limits.maxValueDepth ?? undefined,
         },
       }
       const run: Run = { id: saw.runId, metadata: saw.metadata }
@@ -247,13 +250,16 @@ const instantiate = <R>(
   bindings?: Readonly<Record<string, Json>>,
   restored = false,
 ): Interpreter<R> => {
+  const valueDepth = setup.limits.maxValueDepth ?? DEFAULT_VALUE_DEPTH
   const ctx = new Interpreter<R>({
     builtins: createBuiltins(),
     logs: [],
     modules: setup.modules,
     globals: (ctx) => [
       ...(setup.programGlobals?.(ctx) ?? []),
-      ...(setup.globals === undefined ? [] : hostGlobals(ctx, setup.globals(run), setup.translate, setup.adapt)),
+      ...(setup.globals === undefined
+        ? []
+        : hostGlobals(ctx, setup.globals(run), setup.translate, setup.adapt, valueDepth)),
     ],
     bindings:
       bindings === undefined
@@ -262,6 +268,7 @@ const instantiate = <R>(
   })
   if (roundTrip) ctx.vm.tripEvery = ROUND_TRIP_TICKS
   ctx.vm.markFunctions = setup.translate?.functions === "mark"
+  ctx.vm.valueDepth = valueDepth
   const maxHeapBytes = setup.limits.maxHeapBytes
   if (maxHeapBytes !== undefined) ctx.vm.heap = new HeapMeter(maxHeapBytes, restored)
   return ctx
@@ -476,6 +483,7 @@ export class Running<R> {
           timeoutMs: limits.timeoutMs ?? null,
           maxOutputBytes: limits.maxOutputBytes ?? null,
           ...(limits.maxHeapBytes === undefined ? {} : { maxHeapBytes: limits.maxHeapBytes }),
+          ...(limits.maxValueDepth === undefined ? {} : { maxValueDepth: limits.maxValueDepth }),
         },
         activeMs: this.activeBefore + Date.now() - this.startedAt,
         metadata: this.run_.metadata,

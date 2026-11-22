@@ -371,6 +371,43 @@ impl HostValue {
 
     /// The value as JSON, the way `JSON.stringify` would see it: functions and `undefined` vanish.
     pub fn to_json(&self) -> Option<Json> {
+        // Only arrays, Sets and objects recurse here, in plain loops, so each level's frame stays small however deep
+        // the value (see `tests/value_depth.rs`).
+        Some(match self {
+            HostValue::Array(items) => {
+                let mut out = Vec::with_capacity(items.len());
+                for item in items {
+                    out.push(match item {
+                        Some(item) => item.to_json().unwrap_or(Json::Null),
+                        None => Json::Null,
+                    });
+                }
+                Json::Array(out)
+            }
+            HostValue::Set(items) => {
+                let mut out = Vec::with_capacity(items.len());
+                for item in items {
+                    out.push(item.to_json().unwrap_or(Json::Null));
+                }
+                Json::Array(out)
+            }
+            HostValue::Object(fields) => {
+                let mut out = serde_json::Map::new();
+                for (k, v) in fields {
+                    if let Some(j) = v.to_json() {
+                        out.insert(k.to_string_lossy().into_owned(), j);
+                    }
+                }
+                Json::Object(out)
+            }
+            other => return other.leaf_json(),
+        })
+    }
+
+    /// `to_json` of a value that holds no others it writes.
+    // Apart in a debug build, to keep the frames of a deep value small; inlined in a release build.
+    #[cfg_attr(debug_assertions, inline(never))]
+    fn leaf_json(&self) -> Option<Json> {
         Some(match self {
             HostValue::Undefined
             | HostValue::Function(_)
@@ -385,28 +422,7 @@ impl HostValue {
                 serde_json::Number::from_f64(*n).map_or(Json::Null, Json::Number)
             }
             HostValue::String(s) => Json::String(s.to_string_lossy().into_owned()),
-            HostValue::Array(items) => Json::Array(
-                items
-                    .iter()
-                    .map(|i| {
-                        i.as_ref()
-                            .and_then(HostValue::to_json)
-                            .unwrap_or(Json::Null)
-                    })
-                    .collect(),
-            ),
-            HostValue::Set(items) => Json::Array(
-                items
-                    .iter()
-                    .map(|i| i.to_json().unwrap_or(Json::Null))
-                    .collect(),
-            ),
-            HostValue::Object(fields) => Json::Object(
-                fields
-                    .iter()
-                    .filter_map(|(k, v)| v.to_json().map(|j| (k.to_string_lossy().into_owned(), j)))
-                    .collect(),
-            ),
+            HostValue::Array(_) | HostValue::Set(_) | HostValue::Object(_) => return None,
             HostValue::Map(_)
             | HostValue::RegExp { .. }
             | HostValue::SearchParams(_)

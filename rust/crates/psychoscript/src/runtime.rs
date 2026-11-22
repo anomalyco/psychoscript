@@ -244,7 +244,8 @@ impl Runtime {
     ///
     /// # Panics
     ///
-    /// When `timeout_ms` or `max_heap_bytes` is `Some(0)`, which the reference refuses with a `RangeError`.
+    /// When `timeout_ms` or `max_heap_bytes` is `Some(0)`, or `max_value_depth` is `Some(0)` or more than
+    /// [`MAX_VALUE_DEPTH_LIMIT`](crate::MAX_VALUE_DEPTH_LIMIT), which the reference refuses with a `RangeError`.
     pub fn limits(mut self, limits: Limits) -> Self {
         assert!(
             limits.timeout_ms != Some(0),
@@ -253,6 +254,13 @@ impl Runtime {
         assert!(
             limits.max_heap_bytes != Some(0),
             "maxHeapBytes must be a safe integer greater than or equal to 1."
+        );
+        assert!(
+            limits
+                .max_value_depth
+                .is_none_or(|d| (1..=crate::MAX_VALUE_DEPTH_LIMIT).contains(&d)),
+            "maxValueDepth must be an integer from 1 to {}.",
+            crate::MAX_VALUE_DEPTH_LIMIT
         );
         self.setup.limits = limits;
         self

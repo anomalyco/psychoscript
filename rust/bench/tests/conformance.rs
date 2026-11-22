@@ -35,6 +35,9 @@ fn check(name: &str, code: &str, expected: &Json, future: bool) -> Result<(), St
             .as_u64()
             .map(|n| n as usize),
         max_heap_bytes: expected["limits"]["max_heap_bytes"].as_u64(),
+        max_value_depth: expected["limits"]["max_value_depth"]
+            .as_u64()
+            .map(|n| n as usize),
     };
     let translate = Translate {
         functions: match expected["translate"]["functions"].as_str() {

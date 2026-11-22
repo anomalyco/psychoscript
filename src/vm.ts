@@ -14,7 +14,7 @@ import {
   memoryLimitMessage,
   setCharging,
 } from "./runtime/heap.js"
-import { checkArrayLength, checkStringLength } from "./runtime/limits.js"
+import { checkArrayLength, checkStringLength, DEFAULT_VALUE_DEPTH } from "./runtime/limits.js"
 import {
   AsyncIteratorSymbol,
   type AstNode,
@@ -127,6 +127,7 @@ import {
   internalCode,
   registerVmIntrinsics,
   tryFastBoundaryOrJson,
+  walkDepth,
   VmIntrinsic,
 } from "./prelude/internal.js"
 import {
@@ -296,6 +297,8 @@ export class Vm {
   heapAtReturn: number | undefined = undefined
   /** The runtime's `translate: { functions: "mark" }`: a function in the result is `Host.functionMarker`. */
   markFunctions = false
+  /** The runtime's `limits.maxValueDepth`: how deep the result and `JSON.stringify` copy. */
+  valueDepth = DEFAULT_VALUE_DEPTH
 
   constructor(readonly ctx: Interpreter<unknown>) {
     this.scheduler = new VmScheduler(this)
@@ -2487,7 +2490,14 @@ export class Vm {
     if (!isThenable(value)) {
       let fast: ReturnType<typeof tryFastBoundaryOrJson>
       try {
-        fast = tryFastBoundaryOrJson(this.ctx.builtins, value, true, VISIT_BUDGET, this.markFunctions)
+        fast = tryFastBoundaryOrJson(
+          this.ctx.builtins,
+          value,
+          true,
+          VISIT_BUDGET,
+          this.markFunctions,
+          this.valueDepth,
+        )
       } catch (error) {
         this.frames.pop()
         this.release(frame)
@@ -2503,7 +2513,7 @@ export class Vm {
     }
     this.frames.pop()
     this.release(frame)
-    this.pushInternal(internalCode("$vmResult"), [value], undefined, Mode.BOUNDARY_OUT)
+    this.pushInternal(internalCode("$vmResult"), [value, walkDepth(this.valueDepth)], undefined, Mode.BOUNDARY_OUT)
     return true
   }
 
@@ -2998,7 +3008,7 @@ export class Vm {
           string | number | undefined,
         ]
         if (replacer === undefined && properties === undefined) {
-          const fast = tryFastBoundaryOrJson(builtins, value, false, VISIT_BUDGET)
+          const fast = tryFastBoundaryOrJson(builtins, value, false, VISIT_BUDGET, false, this.valueDepth)
           if (fast.ok) {
             const text = JSON.stringify(fast.json, null, indent)
             if (text !== undefined) checkStringLength(text.length)
@@ -3008,7 +3018,13 @@ export class Vm {
         }
         this.pushInternalCall(
           "$vmJsonWalk",
-          [replacer, value, properties !== undefined ? new Arr(builtins.Array, properties) : null, indent],
+          [
+            replacer,
+            value,
+            properties !== undefined ? new Arr(builtins.Array, properties) : null,
+            indent,
+            walkDepth(this.valueDepth),
+          ],
           site ?? callerFrame.origin,
         )
         return 1
