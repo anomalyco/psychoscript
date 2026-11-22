@@ -41,6 +41,7 @@ enum Event {
 struct Handler(Mutex<Sender<Event>>);
 
 impl LiveHandler for Handler {
+    fn on_posts_bytes(&self, _messages: Vec<Vec<u8>>) {}
     fn on_posts(&self, messages_json: Vec<String>) {
         let tx = self.0.lock().unwrap();
         for m in messages_json {
@@ -75,7 +76,7 @@ fn start_run(options: LiveOptions) -> (Arc<LiveRun>, Receiver<Event>) {
     let program = Program::new(LOOP.into(), "__input".into()).unwrap();
     let (h, rx) = handler();
     let run = program
-        .start_live(r#"{"n":7}"#.into(), h, options, None)
+        .start_live(r#"{"n":7}"#.into(), h, options, None, None)
         .unwrap();
     assert_eq!(post(&rx), serde_json::json!({ "type": "hello", "n": 7 }));
     (run, rx)
@@ -239,8 +240,15 @@ fn pauses_and_resumes() {
     assert!(matches!(next(&rx), Event::Exit(LiveExit::Stopped)));
 
     let (h, rx) = handler();
-    let restored =
-        LiveRun::restore(bytes, h, "__input".into(), LiveOptions::default(), None).unwrap();
+    let restored = LiveRun::restore(
+        bytes,
+        h,
+        "__input".into(),
+        LiveOptions::default(),
+        None,
+        None,
+    )
+    .unwrap();
     assert_eq!(post(&rx)["type"], "resumed");
     restored
         .deliver(r#"{"type":"frame","at":9}"#.into())
@@ -257,6 +265,7 @@ fn pauses_and_resumes() {
             handler().0,
             "__input".into(),
             LiveOptions::default(),
+            None,
             None
         ),
         Err(PsychoScriptError::Snapshot { .. })
@@ -311,7 +320,7 @@ fn start_fetching(hosts: Option<&[&str]>, fake: Arc<Fake>) -> (Arc<LiveRun>, Rec
         ..Default::default()
     };
     let run = program
-        .start_live(r#"{"n":1}"#.into(), h, options, Some(fake))
+        .start_live(r#"{"n":1}"#.into(), h, options, Some(fake), None)
         .unwrap();
     post(&rx);
     (run, rx)
@@ -531,7 +540,9 @@ fn start_source(source: &str, options: LiveOptions) -> (Arc<LiveRun>, Receiver<E
     let program = Program::new(source.into(), "__input".into()).unwrap();
     let (h, rx) = handler();
     (
-        program.start_live("null".into(), h, options, None).unwrap(),
+        program
+            .start_live("null".into(), h, options, None, None)
+            .unwrap(),
         rx,
     )
 }
@@ -626,7 +637,7 @@ fn local_network_in_dev_mode() {
         ..Default::default()
     };
     let run = program
-        .start_live("{}".into(), h, options, Some(fake.clone()))
+        .start_live("{}".into(), h, options, Some(fake.clone()), None)
         .unwrap();
     post(&rx);
     assert_eq!(kind(&run, &rx, "http://localhost:4097/x"), "local");
@@ -676,6 +687,7 @@ fn caps_the_heap() {
 struct Batches(Mutex<Sender<Vec<String>>>);
 
 impl LiveHandler for Batches {
+    fn on_posts_bytes(&self, _messages: Vec<Vec<u8>>) {}
     fn on_posts(&self, messages_json: Vec<String>) {
         let _ = self.0.lock().unwrap().send(messages_json);
     }
@@ -705,6 +717,7 @@ while (true) {
             Box::new(Batches(Mutex::new(tx))),
             LiveOptions::default(),
             None,
+            None,
         )
         .unwrap();
     let next = || rx.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -721,6 +734,7 @@ while (true) {
 struct Slow(Mutex<Sender<Vec<String>>>);
 
 impl LiveHandler for Slow {
+    fn on_posts_bytes(&self, _messages: Vec<Vec<u8>>) {}
     fn on_posts(&self, messages_json: Vec<String>) {
         std::thread::sleep(Duration::from_millis(100));
         let _ = self.0.lock().unwrap().send(messages_json);
@@ -754,6 +768,7 @@ while (true) {
             Box::new(Slow(Mutex::new(tx))),
             LiveOptions::default(),
             None,
+            None,
         )
         .unwrap();
     for t in 0..6 {
@@ -776,6 +791,7 @@ while (true) {
             "null".into(),
             Box::new(Slow(Mutex::new(tx))),
             LiveOptions::default(),
+            None,
             None,
         )
         .unwrap();
