@@ -110,7 +110,7 @@ impl std::fmt::Debug for Run {
 }
 
 /// How a host call's arguments carry program values the host can't hold, the reference's `Translate`. Every host
-/// function in the runtime gets its arguments this way; results are not affected.
+/// function in the runtime gets its arguments this way; the run's result only takes [`TranslateFunctions::Mark`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Translate {
     pub functions: TranslateFunctions,
@@ -126,6 +126,9 @@ pub enum TranslateFunctions {
     /// Leaves it out, as `JSON.stringify` does: an object's key is left out, an array's item is `null`, and an
     /// argument is `undefined`.
     Drop,
+    /// Puts [`HostValue::FunctionMarker`](crate::HostValue::FunctionMarker) in its place, and
+    /// [`Data::FunctionMarker`] in the run's result where a function would vanish too.
+    Mark,
 }
 
 /// A program promise inside an argument.

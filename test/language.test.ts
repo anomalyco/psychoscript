@@ -294,6 +294,91 @@ describe("translate", () => {
     if (!result.ok) expect(result.error.message).toContain("un-awaited Promise")
   })
 
+  test("functions: mark puts Host.functionMarker where each function was", async () => {
+    const { runtime, calls } = translating({ functions: "mark", promises: "await" })
+    const marker = Host.functionMarker
+    await value(
+      runtime,
+      `const e = new Error("x"); e.f = () => 1
+keep({ q: "x", format(v) { return v }, nested: { f: Math.max, list: [class A {}, keep.bind(null)] } }, [1, () => 2, keep], () => 3, new Map([["k", () => 1]]), new Set([() => 1]), e, Promise.resolve({ p() {} }))`,
+    )
+    expect(calls).toEqual([
+      [
+        { q: "x", format: marker, nested: { f: marker, list: [marker, marker] } },
+        [1, marker, marker],
+        marker,
+        new Map([["k", marker]]),
+        new Set([marker]),
+        expect.any(Error),
+        { p: marker },
+      ],
+    ])
+    expect(Object.keys(calls[0]![0] as object)).toEqual(["q", "format", "nested"])
+    expect((calls[0]![5] as { f: unknown }).f).toBe(marker)
+    expect(JSON.stringify(calls[0]!.slice(0, 2))).toBe(`[{"q":"x","nested":{"list":[null,null]}},[1,null,null]]`)
+    const back = Runtime.make({
+      translate: { functions: "mark" },
+      globals: () => ({ echo: Host.fn(([v]) => v) }),
+    })
+    const result = await run(back, `echo({ f() {} })`)
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.error.message).toContain("echo.f produced a function marker, which the program cannot hold.")
+    }
+  })
+
+  test("functions: mark marks the result's functions, on the fast path and in the walk", async () => {
+    const { runtime } = translating({ functions: "mark" })
+    const marker = Host.functionMarker
+    // `unknown`, as a literal's `marker` widens to `symbol`, which `Data` doesn't take.
+    const result = (code: string): Promise<unknown> => value(runtime, code)
+    expect(await result(`return { a: 1, onPress() {}, list: [() => 1, 2], s: new Set([keep]) }`)).toEqual({
+      a: 1,
+      onPress: marker,
+      list: [marker, 2],
+      s: [marker],
+    })
+    expect(await result(`return [{ p: later(1).then(() => ({ f() {} })), t: { toJSON: () => () => 1 } }]`)).toEqual([
+      { p: { f: marker }, t: marker },
+    ])
+    expect(await result(`return () => 1`)).toBe(marker)
+    expect(await value(translating({ functions: "drop" }).runtime, `return { f() {}, list: [() => 1] }`)).toEqual({
+      list: [null],
+    })
+    expect(await result(`return JSON.stringify({ f() {}, list: [() => 1] })`)).toBe(`{"list":[null]}`)
+  })
+
+  test("functions: mark keeps the markers in a call's arguments across a suspend", async () => {
+    const waiting = latch()
+    const done = latch<number>()
+    const seen: Array<ReadonlyArray<unknown>> = []
+    const runtime = Runtime.make({
+      translate: { functions: "mark" },
+      globals: () => ({
+        job: Host.durableFn({
+          start: () => Effect.succeed("k"),
+          wait: (_, call) =>
+            Effect.andThen(
+              Effect.sync(() => (seen.push(call.args), waiting.resolve())),
+              Effect.promise(() => done.promise),
+            ),
+          cancel: () => Effect.void,
+        }),
+      }),
+    })
+    const program = runtime.program(`return await job({ on() {} }, [() => 1])`)
+    const fiber = Effect.runFork(program.run())
+    await waiting.promise
+    const suspended = await Effect.runPromise(program.suspend())
+    if (suspended.ok !== "suspended") throw new Error("expected a suspended run")
+    await Effect.runPromise(Fiber.join(fiber))
+    const resumed = Effect.runPromise(runtime.resume(toBytes(suspended.state)).run())
+    done.resolve(1)
+    expect(await resumed).toMatchObject({ ok: true, value: 1 })
+    const marked = [{ on: Host.functionMarker }, [Host.functionMarker]]
+    expect(seen).toEqual([marked, marked])
+  })
+
   test("promises: await waits for every promise inside the arguments and uses its value", async () => {
     const { runtime, calls } = translating({ promises: "await" })
     expect(

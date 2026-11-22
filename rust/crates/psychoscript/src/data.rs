@@ -14,13 +14,21 @@ pub enum Data {
     Array(Vec<Data>),
     /// Keys in the order the program's object had them.
     Object(Vec<(HostString, Data)>),
+    /// A function in a run's result under [`TranslateFunctions::Mark`](crate::TranslateFunctions::Mark), the
+    /// reference's `Host.functionMarker`. Its JSON leaves it out, as `JSON.stringify` does the function: an object's
+    /// key is left out, an array's item and a whole result are `null`.
+    FunctionMarker,
 }
+
+/// How the result's JSON carries a [`Data::FunctionMarker`] out of the run: a string no run text can be, as a lone
+/// `MARK` starts no carrier escape (see `strings`).
+pub(crate) const FUNCTION_MARKER: &str = "\u{10FFFF}";
 
 impl Data {
     /// The data as a `serde_json::Value`, with U+FFFD for each unpaired surrogate.
     pub fn to_json(&self) -> Json {
         match self {
-            Data::Null => Json::Null,
+            Data::Null | Data::FunctionMarker => Json::Null,
             Data::Bool(b) => Json::Bool(*b),
             Data::Number(n) => Json::Number(n.clone()),
             Data::String(s) => Json::String(s.to_string_lossy().into_owned()),
@@ -28,6 +36,7 @@ impl Data {
             Data::Object(fields) => Json::Object(
                 fields
                     .iter()
+                    .filter(|(_, v)| !matches!(v, Data::FunctionMarker))
                     .map(|(k, v)| (k.to_string_lossy().into_owned(), v.to_json()))
                     .collect(),
             ),
@@ -56,6 +65,7 @@ impl Data {
             Json::Null => Data::Null,
             Json::Bool(b) => Data::Bool(b),
             Json::Number(n) => Data::Number(n),
+            Json::String(s) if s == FUNCTION_MARKER => Data::FunctionMarker,
             Json::String(s) => Data::String(HostString::from_run_text(&s)),
             Json::Array(items) => Data::Array(items.into_iter().map(Data::from_run_json).collect()),
             Json::Object(map) => Data::Object(
@@ -83,7 +93,7 @@ impl Data {
 
     fn write(&self, out: &mut String) {
         match self {
-            Data::Null => out.push_str("null"),
+            Data::Null | Data::FunctionMarker => out.push_str("null"),
             Data::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
             Data::Number(n) => out.push_str(&Json::Number(n.clone()).to_string()),
             Data::String(s) => write_string(out, s),
@@ -99,7 +109,10 @@ impl Data {
             }
             Data::Object(fields) => {
                 out.push('{');
-                for (i, (k, v)) in fields.iter().enumerate() {
+                let fields = fields
+                    .iter()
+                    .filter(|(_, v)| !matches!(v, Data::FunctionMarker));
+                for (i, (k, v)) in fields.enumerate() {
                     if i > 0 {
                         out.push(',');
                     }
@@ -185,6 +198,7 @@ impl Data {
         use crate::HostValue;
         match self {
             Data::Null => HostValue::Null,
+            Data::FunctionMarker => HostValue::FunctionMarker,
             Data::Bool(b) => HostValue::Bool(*b),
             Data::Number(n) => HostValue::Number(n.as_f64().unwrap_or(f64::NAN)),
             Data::String(s) => HostValue::String(s.clone()),

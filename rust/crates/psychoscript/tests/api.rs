@@ -3,8 +3,8 @@
 use std::sync::{Arc, Mutex};
 
 use psychoscript::{
-    DiagnosticKind, HostFunction, HostString, HostValue, Json, Limits, ProgramOptions, Runtime,
-    Translate, TranslateFunctions,
+    Data, DiagnosticKind, HostFunction, HostString, HostValue, Json, Limits, ProgramOptions,
+    Runtime, Translate, TranslateFunctions,
 };
 use serde_json::json;
 
@@ -90,6 +90,80 @@ fn host_arguments_and_results_are_copies() {
     assert!(seen.get("f").is_none());
     assert!(
         matches!(seen.get("n"), Some(HostValue::Array(n)) if matches!(n[..], [Some(HostValue::Number(x))] if x.is_nan()))
+    );
+}
+
+#[test]
+fn marked_functions_cross_as_markers_and_leave_json() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let kept = seen.clone();
+    let rt = Runtime::make()
+        .translate(Translate {
+            functions: TranslateFunctions::Mark,
+            ..Translate::default()
+        })
+        .globals(move |_| {
+            let kept = kept.clone();
+            [(
+                "view",
+                HostFunction::new(move |args, _| {
+                    kept.lock().unwrap().extend(args);
+                    HostValue::Undefined
+                }),
+            )]
+        });
+    let outcome = run(
+        &rt,
+        "view({ type: 'button', onPress() {}, children: [{ onPress: () => 1 }, 2] })",
+    );
+    assert!(outcome.result.is_ok());
+    let seen = seen.lock().unwrap()[0].clone();
+    assert!(matches!(
+        seen.get("onPress"),
+        Some(HostValue::FunctionMarker)
+    ));
+    assert!(
+        matches!(seen.get("children"), Some(HostValue::Array(c)) if matches!(&c[0], Some(o) if matches!(o.get("onPress"), Some(HostValue::FunctionMarker))))
+    );
+    assert_eq!(
+        seen.to_json().unwrap(),
+        json!({ "type": "button", "children": [{}, 2] })
+    );
+    assert_eq!(
+        HostValue::array([HostValue::FunctionMarker])
+            .to_json()
+            .unwrap(),
+        json!([null])
+    );
+    // The result marks its functions too.
+    let result = run(
+        &rt,
+        "return { type: 'button', onPress() {}, children: [() => 1, 2] }",
+    )
+    .result
+    .unwrap();
+    assert_eq!(
+        result,
+        Data::Object(vec![
+            ("type".into(), Data::from("button")),
+            ("onPress".into(), Data::FunctionMarker),
+            (
+                "children".into(),
+                Data::Array(vec![Data::FunctionMarker, Data::from(json!(2))])
+            ),
+        ])
+    );
+    assert_eq!(
+        result.to_json(),
+        json!({ "type": "button", "children": [null, 2] })
+    );
+    assert_eq!(
+        result.to_json_string(),
+        r#"{"type":"button","children":[null,2]}"#
+    );
+    assert_eq!(
+        run(&rt, "return () => 1").result.unwrap(),
+        Data::FunctionMarker
     );
 }
 

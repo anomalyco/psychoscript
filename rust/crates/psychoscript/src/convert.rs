@@ -22,6 +22,7 @@ pub fn from_data(vm: &mut Vm, d: &crate::Data) -> Value {
     use crate::Data;
     match d {
         Data::Null => Value::Null,
+        Data::FunctionMarker => Value::Undef,
         Data::Bool(b) => Value::Bool(*b),
         Data::Number(n) => Value::Num(n.as_f64().unwrap_or(f64::NAN)),
         Data::String(s) => vm.string_val(s.to_run_text()),
@@ -73,7 +74,7 @@ fn to_json_inner(
         Value::Obj(id) => {
             let id = *id;
             if vm.heap[id as usize].is_callable() {
-                return Ok(None);
+                return Ok(crate::cross::marked(vm));
             }
             if stack.contains(&id) {
                 return Err(vm.type_error("Converting circular structure to JSON"));

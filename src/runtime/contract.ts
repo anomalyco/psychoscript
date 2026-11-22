@@ -69,6 +69,14 @@ export class Interrupted extends Error {
   }
 }
 
+/**
+ * What a program function in a host call's argument or in the run's result crosses as under
+ * `translate: { functions: "mark" }`: one symbol for every function, with nothing to call and no identity, so a host
+ * sees where the functions were (`value === Host.functionMarker`). `JSON.stringify` leaves it out, as it would the
+ * function. It cannot be passed back.
+ */
+export const functionMarker: unique symbol = Symbol("psychoscript.function")
+
 /** A host function; see `Host.fn`. */
 export class Fn<R = never> {
   declare readonly requirements?: (_: never) => R

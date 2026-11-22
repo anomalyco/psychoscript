@@ -16,6 +16,7 @@ export type DurableCall = Call & { readonly args: ReadonlyArray<unknown> }
 
 export type { Snapshot, Type }
 export { DurableFn, Fn, Namespace }
+export { functionMarker } from "./runtime/contract.js"
 
 export type Options =
   | {
@@ -48,7 +49,10 @@ export type Options =
 
 export { HostFailure as Failure }
 
-/** A host function: `f` gets the program's arguments, as they crossed, and the call, and returns a value or a Promise. */
+/**
+ * A host function: `f` gets the program's arguments, as they crossed (only under `translate: { functions: "mark" }`
+ * with `functionMarker` where a function was), and the call, and returns a value or a Promise.
+ */
 export const fn = (f: (args: ReadonlyArray<any>, call: Call) => unknown, options: Options = {}): Fn =>
   new Fn(
     f,

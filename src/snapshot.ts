@@ -61,6 +61,7 @@ const vmSpecs = (): ReadonlyArray<ClassSpec> =>
         "redo",
         "heap",
         "heapAtReturn",
+        "markFunctions",
       ],
       reset: restoreStack,
     },

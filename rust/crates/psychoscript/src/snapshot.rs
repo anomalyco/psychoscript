@@ -991,6 +991,7 @@ fn host_value(v: &HostValue) -> J {
         HostValue::Function(f) => json!(["f", f.name(), f.length]),
         HostValue::Durable(_) | HostValue::Namespace(_) => json!(["f", "", 0]),
         HostValue::Interrupt => json!(["u"]),
+        HostValue::FunctionMarker => json!(["fm"]),
         HostValue::Failure(f) => json!(["fail", f.kind, text(&f.message), texts(&f.suggestions)]),
         HostValue::Date(t) => json!(["date", num(*t)]),
         HostValue::RegExp { source, flags } => json!(["re", text(source), flags]),
@@ -1093,6 +1094,7 @@ fn host_value_from(j: &J) -> R<HostValue> {
         J::Array(a) => match a.first().and_then(J::as_str) {
             Some("s16") => HostValue::String(text_from(j)?),
             Some("u") => HostValue::Undefined,
+            Some("fm") => HostValue::FunctionMarker,
             Some("n") => HostValue::Number(unnum(a.get(1).unwrap_or(&J::Null))?),
             Some("a") => HostValue::Array(
                 list(a.get(1))?

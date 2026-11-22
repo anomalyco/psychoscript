@@ -145,6 +145,7 @@ fn constructor(v: &HostValue) -> &'static str {
         HostValue::Map(_) => "Map",
         HostValue::Set(_) => "Set",
         HostValue::Function(_) | HostValue::Durable(_) | HostValue::Namespace(_) => "Function",
+        HostValue::FunctionMarker => "Symbol",
         HostValue::Error(_) | HostValue::Failure(_) => "Error",
         HostValue::Date(_) => "Date",
         HostValue::RegExp { .. } => "RegExp",
@@ -403,6 +404,7 @@ fn runtimes_made_with_different_globals_and_module_names_match_the_reference() {
         let translate = Translate {
             functions: match case["translate"]["functions"].as_str() {
                 Some("drop") => TranslateFunctions::Drop,
+                Some("mark") => TranslateFunctions::Mark,
                 _ => TranslateFunctions::Error,
             },
             promises: match case["translate"]["promises"].as_str() {
@@ -474,6 +476,7 @@ fn described_diagnostic(d: &psychoscript::Diagnostic) -> Json {
 fn described_data(d: &Data) -> Json {
     match d {
         Data::Null => Json::Null,
+        Data::FunctionMarker => json!({ "functionMarker": true }),
         Data::Bool(b) => json!(b),
         Data::Number(n) => Json::Number(n.clone()),
         Data::String(s) => reference::text(s),
