@@ -125,7 +125,7 @@ pub fn describe(v: &HostValue) -> Json {
                 .map(|i| i.as_ref().map_or(json!({ "hole": true }), describe))
                 .collect::<Vec<_>>()
         }),
-        HostValue::Error(e) => {
+        HostValue::Error(e) | HostValue::Located(e) => {
             let mut error = serde_json::Map::new();
             error.insert("name".into(), text(&e.name));
             error.insert("message".into(), text(&e.message));

@@ -142,6 +142,9 @@ except typed arrays (below).
 - **`Host.namespace({ keys, resolve })`**: a lazy object for large catalogs. `resolve(path)` returns the function for
   `ns.a.b(...)`, or `Host.missing(message, suggestions)`.
 - **`Host.fail(kind, message, suggestions)`**: throw it to give the program an error with your own `kind`.
+- **`Host.error(name, message)`**: throw it (or reject, or fail an Effect with it) to give the program a real error of a
+  standard class (`TypeError`, `RangeError`, `Error`, ...) located at the call: its `stack` names the call, and
+  uncaught the run fails with `TypeError: message (line L, col C)`.
 - **`StreamingResponse`**: return `new StreamingResponse(response)` to give the program a `Response`-like object whose
   body streams (`text()`, `json()`, `bytes()`, `body` readers, `for await`).
 - **Typed arrays** cross without a copy, so a host can upload vertex or uniform data to a GPU as it is: a

@@ -1,7 +1,16 @@
 export * as Host from "./host-function.js"
 
 import type { Json } from "./data.js"
-import { type Call as RunCall, DurableFn, Fn, Namespace, type Snapshot, type Type } from "./runtime/contract.js"
+import {
+  type Call as RunCall,
+  DurableFn,
+  Fn,
+  locatedError,
+  Namespace,
+  type Snapshot,
+  type Type,
+} from "./runtime/contract.js"
+import type { ErrorType } from "./runtime/intrinsics.js"
 import { HostFailure } from "./runtime/model.js"
 
 // Host functions a program calls as globals. Arguments cross into the host as copies (`Date`, `Map`, `Set`,
@@ -92,6 +101,14 @@ export const namespace = (options: {
 /** A failure with its own diagnostic `kind` and `suggestions`, to throw from a host function. */
 export const fail = (kind: string, message: string, suggestions?: ReadonlyArray<string>): HostFailure =>
   new HostFailure(kind, message, suggestions)
+
+/**
+ * A failure the program catches as the standard error class `name` (`TypeError`, `RangeError`, `Error`, ...): throw it
+ * from a host function, reject with it, or fail an Effect with it. The program's error is located at the call, so its
+ * `stack` names the call and, uncaught, the run's message gives the call's line and column. Returned as a value, it is
+ * an error like any other.
+ */
+export const error = (name: ErrorType, message: string): Error => locatedError(name, message)
 
 /** What `resolve` gives for a path with no function: calling it throws this failure. */
 export const missing = (message: string, suggestions?: ReadonlyArray<string>, kind = "ExecutionFailure"): HostFailure =>

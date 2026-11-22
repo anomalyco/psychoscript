@@ -8,9 +8,9 @@ use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use psychoscript::{
-    DurableFunction, Failure, HostFunction, HostString, HostValue, Json, Limits, Namespace,
-    Outcome, ProgramOptions, Returned, RunOutcome, Runtime, Translate, TranslateFunctions,
-    TranslatePromises, to_bytes,
+    DurableFunction, Failure, HostError, HostFunction, HostString, HostValue, Json, Limits,
+    Namespace, Outcome, ProgramOptions, Returned, RunOutcome, Runtime, Translate,
+    TranslateFunctions, TranslatePromises, to_bytes,
 };
 use serde_json::json;
 
@@ -1011,4 +1011,56 @@ fn a_state_saved_from_a_compiled_program_is_its_sources_and_resumes_like_it() {
             .unwrap(),
     );
     assert_eq!(outcome.result.unwrap(), json!(42));
+}
+
+#[test]
+fn a_located_host_error_is_caught_as_its_class_and_located_at_the_call() {
+    let bad = || HostError::located("TypeError", "bad arg");
+    let forms = [
+        HostFunction::new(move |_, _| -> psychoscript::HostResult { Err(bad()) }),
+        HostFunction::new(move |_, _| Returned::Pending(Box::pin(async move { Err(bad()) }))),
+        HostFunction::new(move |_, _| Returned::Block(Box::pin(async move { Err(bad()) }))),
+        HostFunction::new_async(move |_, _| async move { Err(bad()) }),
+        HostFunction::new(move |_, _| -> psychoscript::HostResult { Err(bad()) }).thenable(),
+    ];
+    for f in forms {
+        let rt = Runtime::make().globals(move |_| [("f", HostValue::from(f.clone()))]);
+        assert_eq!(
+            value(
+                &rt,
+                "try { await f() } catch (e) { return [e instanceof TypeError, e.constructor === TypeError, e.message, e.stack] }",
+            ),
+            json!([
+                true,
+                true,
+                "bad arg",
+                "TypeError: bad arg\n    at <program>:1:13"
+            ])
+        );
+        let e = error(&rt, "await null\nawait f()");
+        assert_eq!(
+            (e.kind.name(), e.message_lossy(), e.location),
+            (
+                "ExecutionFailure",
+                "TypeError: bad arg (line 2, col 7)".into(),
+                Some((2, 7))
+            )
+        );
+    }
+    // Returned as a value, it is an error like any other.
+    let rt = Runtime::make().globals(|_| {
+        [(
+            "f",
+            HostValue::from(HostFunction::new(|_, _| {
+                HostError::located("TypeError", "bad arg")
+            })),
+        )]
+    });
+    assert_eq!(
+        value(
+            &rt,
+            "const e = f(); return [e instanceof TypeError, e.message, e.stack]"
+        ),
+        json!([true, "bad arg", "TypeError: bad arg"])
+    );
 }

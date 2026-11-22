@@ -682,7 +682,7 @@ pub fn settle(vm: &mut Vm, p: Id, s: Settlement) {
                 }
                 Err(HostValue::Interrupt) => interrupt(vm),
                 Err(thrown) => {
-                    let e = thrown_value(vm, &thrown, &label);
+                    let e = thrown_value(vm, &thrown, &label, site);
                     vm.reject(p, e);
                 }
             }
@@ -690,9 +690,20 @@ pub fn settle(vm: &mut Vm, p: Id, s: Settlement) {
     }
 }
 
-/// What a host function threw, as the program sees it: a failure keeps its kind and suggestions.
-fn thrown_value(vm: &mut Vm, thrown: &HostValue, label: &str) -> Value {
+/// What a host function threw, as the program sees it: a failure keeps its kind and suggestions, and a
+/// [`HostValue::Located`] is an error of its class located at `site`, the call's.
+fn thrown_value(vm: &mut Vm, thrown: &HostValue, label: &str, site: Option<u32>) -> Value {
     match thrown {
+        HostValue::Located(e) => {
+            let proto = error_proto(vm, e.name.as_str().unwrap_or_default());
+            let e = vm.failure(
+                proto,
+                &e.message.to_run_text(),
+                DiagnosticKind::ExecutionFailure,
+            );
+            locate_at(vm, &e, site);
+            e
+        }
         HostValue::Failure(f) => failure_value(
             vm,
             DiagnosticKind::named(&f.kind),
@@ -945,7 +956,10 @@ fn sync_result(
                 .inspect_err(|e| locate_at(vm, e, site))?;
             Ok(if f.thenable { promise_like(vm, v) } else { v })
         }
-        Returned::Now(Err(thrown)) => Err(thrown_value(vm, &thrown, &target.label)),
+        Returned::Now(Err(thrown)) => {
+            let site = vm.call_offset();
+            Err(thrown_value(vm, &thrown, &target.label, site))
+        }
         Returned::Pending(work) => {
             let site = vm.call_offset();
             let p = vm.new_promise();
@@ -1737,7 +1751,7 @@ fn from_host(
         HostValue::Array(items) => array_from_host(vm, items, label, place, depth),
         HostValue::Object(fields) => object_from_host(vm, fields, label, place, depth),
         HostValue::Map(_) | HostValue::Set(_) => collection_from_host(vm, v, label, place, depth),
-        HostValue::Error(e) => error_from_host(vm, e, label, depth),
+        HostValue::Error(e) | HostValue::Located(e) => error_from_host(vm, e, label, depth),
         _ => leaf_from_host(vm, v, label, place, depth),
     }
 }
@@ -1850,9 +1864,9 @@ fn collection_from_host(
 }
 
 #[inline(never)]
-fn error_from_host(vm: &mut Vm, e: &HostError, label: &str, depth: usize) -> Result<Value, Value> {
-    let next = |key: &str| format!("{label}.{key}");
-    let proto = match e.name.as_str().unwrap_or_default() {
+/// The prototype of the standard error class `name`, or `Error`'s.
+fn error_proto(vm: &mut Vm, name: &str) -> Id {
+    match name {
         "TypeError" => vm.realm.type_error_proto,
         "RangeError" => vm.realm.range_error_proto,
         "SyntaxError" => vm.realm.syntax_error_proto,
@@ -1870,7 +1884,12 @@ fn error_from_host(vm: &mut Vm, e: &HostError, label: &str, depth: usize) -> Res
             }
         }
         _ => vm.realm.error_proto,
-    };
+    }
+}
+
+fn error_from_host(vm: &mut Vm, e: &HostError, label: &str, depth: usize) -> Result<Value, Value> {
+    let next = |key: &str| format!("{label}.{key}");
+    let proto = error_proto(vm, e.name.as_str().unwrap_or_default());
     let err = vm.make_error(proto, &e.message.to_run_text());
     if let Value::Obj(id) = err {
         if let Some(cause) = &e.cause
@@ -1986,7 +2005,8 @@ fn leaf_from_host(
         | HostValue::Object(_)
         | HostValue::Map(_)
         | HostValue::Set(_)
-        | HostValue::Error(_) => Value::Undef,
+        | HostValue::Error(_)
+        | HostValue::Located(_) => Value::Undef,
     })
 }
 
@@ -2449,6 +2469,7 @@ pub(crate) fn namespace_keys(vm: &mut Vm, id: Id) -> Result<Vec<HostString>, Val
     };
     listed.map_err(|thrown| {
         let label = vm.ns_label(&ns);
-        thrown_value(vm, &thrown, &label)
+        let site = vm.call_offset();
+        thrown_value(vm, &thrown, &label, site)
     })
 }
