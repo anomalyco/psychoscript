@@ -67,7 +67,7 @@ async function rendered(w: Locator): Promise<"view" | "error" | "timeout"> {
 /** Painted pixels on each Canvas2D canvas of `w` (WebGPU/WebGL canvases are skipped). */
 const painted = (w: Locator) =>
   w.evaluate((el) =>
-    [...el.shadowRoot!.querySelectorAll(".pw-surface[data-kind=canvas] canvas")].flatMap((c) => {
+    [...el.shadowRoot!.querySelectorAll(".pw-surface[data-kind='2d'] canvas")].flatMap((c) => {
       const ctx = c.getContext("2d")
       if (!ctx || c.width === 0) return []
       const d = ctx.getImageData(0, 0, c.width, c.height).data
@@ -90,7 +90,7 @@ const expandShown = (w: Locator) =>
     const state = await rendered(w)
     check(state === "view", `${name}: renders`, state === "view" ? undefined : state)
     if ((await w.locator(".pw-surface").count()) > 0) surfaces.add(name)
-    if ((await w.locator(".pw-surface[data-kind=canvas]").count()) > 0 && name !== "minigame") {
+    if ((await w.locator(".pw-surface[data-kind='2d']").count()) > 0 && name !== "minigame") {
       await page.waitForTimeout(150)
       const px = await painted(w)
       check(px.length > 0 && px.every((n) => n > 100), `${name}: canvas drawn`, px)
@@ -308,6 +308,110 @@ for (const [query, backend] of [["?only=shader-demo", "webgpu"], ["?only=shader-
   check(m !== null && m[1] === "1" && m[3] === "1" && Number(m[2]) >= 1 && Number(m[2]) <= 8, `shader (${backend}): pointer down, moves (at most one a frame) and up reach the program`, text)
   check(/hover [1-9]/.test(text), `shader (${backend}): hover moves (down: false) before the press`, text)
   check(errors.length === 0, `shader (${backend}): no page errors`, errors)
+  await page.close()
+}
+
+// ---------- stack: a HUD over a GPU canvas ----------
+{
+  const { page, errors } = await open("?only=hud-demo")
+  const w = widget(page, "hud-demo")
+  await rendered(w)
+  await w.locator(".pw-surface[data-backend]").waitFor({ timeout: 8000 }).catch(() => {})
+  const geo = () =>
+    w.evaluate((el) => {
+      const r = (e: Element | null) => {
+        const b = e!.getBoundingClientRect()
+        return { x: Math.round(b.left), y: Math.round(b.top), r: Math.round(b.right), b: Math.round(b.bottom) }
+      }
+      const root = el.shadowRoot!
+      return {
+        stack: r(root.querySelector(".pw-stack")),
+        canvas: r(root.querySelector(".pw-stack > .pw-surface")),
+        hud: r(root.querySelector(".pw-stack > .pw-col")),
+        button: r(root.querySelector(".pw-stack > .pw-btn")),
+        kind: (root.querySelector(".pw-surface") as HTMLElement).dataset.kind,
+      }
+    })
+  const g = await geo()
+  check(g.kind === "gpu", "stack: a canvas with wgsl is a GPU canvas", g.kind)
+  check(
+    JSON.stringify(g.canvas) === JSON.stringify(g.stack) && g.stack.b - g.stack.y === 220,
+    "stack: the fill canvas takes the whole stack, as tall as the tallest child (220)",
+    g,
+  )
+  check(g.hud.x === g.stack.x + 12 && g.hud.y === g.stack.y + 12, "stack: the HUD sits top-left, inset 12", g.hud)
+  check(g.button.r === g.stack.r - 12 && g.button.b === g.stack.b - 12, "stack: the button sits bottom-right, inset 12", g.button)
+  const caption = async () => (await w.locator(".pw-code").textContent()) ?? ""
+  const until = async (re: RegExp) => {
+    const end = Date.now() + 3000
+    let t = await caption()
+    while (Date.now() < end && !re.test(t)) {
+      await page.waitForTimeout(50)
+      t = await caption()
+    }
+    return t
+  }
+  await w.locator(".pw-stack > .pw-btn").click()
+  let t = await until(/button presses 1/)
+  check(/canvas taps 0 · button presses 1/.test(t), "stack: the button on top takes its tap", t)
+  await page.mouse.click((g.stack.x + g.stack.r) / 2, (g.stack.y + g.stack.b) / 2)
+  t = await until(/canvas taps 1/)
+  check(/canvas taps 1 · button presses 1/.test(t), "stack: a tap on empty space reaches the canvas below", t)
+  const title = (await w.locator(".pw-stack .pw-title").boundingBox())!
+  await page.mouse.click(title.x + 10, title.y + title.height / 2)
+  t = await until(/canvas taps 2/)
+  check(/canvas taps 2 · button presses 1/.test(t), "stack: text lets taps through to the canvas", t)
+  // Clicked away first: no focus ring or hint in the picture.
+  await page.mouse.click(5, 5)
+  await page.mouse.move(5, 5)
+  await page.waitForTimeout(400)
+  if (shots) await page.locator('.slot[data-name="hud-demo"]').screenshot({ path: `${shots}/canvas-stack/web.png` })
+  // Full screen: the stack grows like a canvas and its fill canvas with it; the button stays in its corner.
+  await w.hover()
+  await w.locator(".pw-expand").click()
+  await page.waitForFunction(() => document.fullscreenElement !== null, undefined, { timeout: 3000 }).catch(() => {})
+  await page.waitForTimeout(800)
+  const f = await geo()
+  check(
+    f.stack.b - f.stack.y > 500 && JSON.stringify(f.canvas) === JSON.stringify(f.stack) && f.button.b === f.stack.b - 12 && f.button.r === f.stack.r - 12,
+    "stack: in full screen it grows, its fill canvas with it, the button still bottom-right",
+    f,
+  )
+  await page.keyboard.press("Escape")
+  await page.waitForTimeout(400)
+  check(errors.length === 0, "stack: no page errors", errors)
+  await page.close()
+}
+
+// ---------- never draw at zero size ----------
+{
+  const { page, errors } = await open("?only=confirm")
+  const got = await page.evaluate(async () => {
+    const d = (window as unknown as { __demo: { host: { mount(el: HTMLElement, o: object): { setTheme(t: string): void; destroy(): void } }; fixtures: Record<string, { source: string; data: unknown; mode: string }>; prelude: string } }).__demo
+    const slot = document.createElement("div")
+    slot.style.width = "420px"
+    document.body.prepend(slot)
+    const draws: number[] = []
+    const f = d.fixtures.chart!
+    const w = d.host.mount(slot, { program: d.prelude + "\n" + f.source, data: f.data, onMetrics: (m: { kind: string }) => m.kind === "draw" && draws.push(1) })
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+    await sleep(1500)
+    const before = draws.length
+    slot.style.width = "0px"
+    await sleep(300)
+    const zeroStart = draws.length
+    w.setTheme("light") // asks every canvas to draw again
+    await sleep(800)
+    const whileZero = draws.length - zeroStart
+    slot.style.width = "420px"
+    await sleep(800)
+    const after = draws.length - zeroStart - whileZero
+    w.destroy()
+    slot.remove()
+    return { before, whileZero, after }
+  })
+  check(got.before > 0 && got.whileZero === 0 && got.after > 0, "canvas: no draw while it has zero width; it draws again once sized", got)
+  check(errors.length === 0, "zero size: no page errors", errors)
   await page.close()
 }
 

@@ -2,7 +2,7 @@
 
 The web host for OpenCode widgets (`specs/v2/widgets.md`, `widgets-live.md`, `widgets-fullscreen.md` in opencode): the
 Rust PsychoScript compiled to WebAssembly, run in Web Workers, rendered with plain DOM (no framework), Canvas2D for
-`canvas`, and WebGPU (WebGL2 fallback) for `shader`. The web counterpart of Rune desktop and the mobile apps.
+2D `canvas`es, WebGPU (WebGL2 fallback) for GPU canvases (`canvas` with `wgsl`), and `stack` layers. The web counterpart of Rune desktop and the mobile apps.
 
 ## Consume it
 
@@ -85,26 +85,32 @@ Behavior, per the contract:
 - `canvas`: Canvas2D, drawn on `requestAnimationFrame` only while `fps > 0` (or `duration` not reached) and
   visible; draw steps run in the worker, at most one in flight; 8 ms / 2,000 commands budget, three overruns in a row
   stop the animation and keep the last frame. A resize repaints the last commands at once, then draws again.
-- `shader`: WGSL straight to WebGPU; without it WebGL2 with naga's GLSL ES 3.00 (the naga module loads only then).
+- GPU canvas (`canvas` with `wgsl`, `values` ≤ 16 floats; `fps` defaults to 60): WGSL straight to WebGPU; without it WebGL2 with naga's GLSL ES 3.00 (the naga module loads only then).
   New `values` (a live program re-rendering every frame) update the uniforms only: same element, same pipeline.
   Over 50 ms of GPU time a frame three frames in a row stops it (measured on WebGPU only). A failing shader shows
   `poster` or `alt` with the error.
-- `canvas` and `shader` with an `id` (the prelude gives one to nodes with `onPointer` or a `key`) send `pointer`
+- Canvases are never drawn or rendered while they have a zero width or height; `Frame.width`/`height` are > 0.
+- `stack` layers its children in one cell (first at the bottom): a child's area is the stack minus its `inset`;
+  `place` aligns its natural size there (`top-left` default … `bottom-right`), `fill` stretches it (a canvas then draws
+  at that size). The stack is as tall as its tallest child plus insets. Children let the pointer through to the layer
+  below (text, markdown, images, a canvas without an `id`, empty space) except controls, cards and carousels with an
+  `id`, and canvases with an `id`. In full screen a stack with a canvas grows like one.
+- Canvases (2D or GPU) with an `id` (the prelude gives one to nodes with `onPointer` or a `key`) send `pointer`
   events, which the prelude routes to `onPointer`: `down`, `up`, and `move`
   at most once a frame, with `down: true` while a button is held and, on desktop and web, hover moves
   `{ kind: "move", x, y, down: false, width, height }` while the pointer is over the node (touch has no hover).
 - Full screen (widgets-fullscreen.md): an expand button in the top-right corner (on hover/focus; always on touch)
   when the root node has `fullscreen: true`, or it isn't `false` and the widget is live or its view has a `canvas` or
-  `shader`. It uses the Fullscreen API on the widget's element (Esc exits); the program gets
+  stack with one. It uses the Fullscreen API on the widget's element (Esc exits); the program gets
   `{ id: "", type: "fullscreen", value }` (`onFullscreen` / `widget.on("fullscreen")`) and `Frame.fullscreen` is set.
   The root fills the screen minus a 16 px padding on every side (canvases inside it too) and every `canvas` and
-  `shader` shares the remaining height equally (its `height` is the minimum; `fill: false` keeps it at its `height`);
+  stack with a canvas shares the remaining height equally (its `height` is the minimum; `fill: false` keeps it at its `height`);
   taller content scrolls. The only chrome is the close button, always visible, floating 32 x 32 CSS px, 8 px from the
   screen's top and right edges, over the padded root's corner (no capability chip, no focus hint). The program is told
   where it is: the `fullscreen` event carries `close` (the button's area in root coordinates, `{ x: W - 24, y: -8,
   width: 32, height: 32 }` for a root `W` wide, `null` when leaving; sent again when the root's size changes), and
   `Frame.close` and absolute canvas or
-  shader `pointer` values carry it in that node's coordinates when it overlaps the node. Esc and the browser's back
+  GPU canvas `pointer` values carry it in that node's coordinates when it overlaps the node. Esc and the browser's back
   close full screen whatever holds the keyboard or the pointer (entering pushes a history entry; `popstate` closes),
   releasing both; closing it any other way takes that history entry back off.
 
@@ -146,7 +152,7 @@ calls `onAsk(error)` (the embedder calls `report` with `ask: true`; "Asking the 
 - Pointer capture: root `capture: "pointer"` (step or live) or a live program posting `{ type: "capture", value: true }`
   (what the prelude's `widget.capturePointer()` posts; `releasePointer()` posts `value: false`). Granted on the next
   click inside the widget with the Pointer Lock API (cursor hidden); then `{ id, type: "pointer", value: { kind: "move",
-  dx, dy } }` at most once a frame and `{ kind: "down" | "up", button }`, with `id` the first canvas/shader `id` in the
+  dx, dy } }` at most once a frame and `{ kind: "down" | "up", button }`, with `id` the first canvas `id` in the
   view (else `""`). The program gets `{ id: "", type: "capture", value: true }` when granted.
 - Esc is never delivered. One Esc releases both (the browser itself ends Pointer Lock on Esc; that also drops focus),
   as do leaving full screen, the window losing focus, submit/dismiss and `destroy()`. The program gets

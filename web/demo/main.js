@@ -17,6 +17,7 @@ const demo = { log: [], metrics: {}, perWidget: {}, widgets: {}, host }
 window.__demo = demo
 demo.WidgetHost = WidgetHost
 demo.fixtures = fixtures
+demo.prelude = prelude
 
 const log = (text) => {
   const li = document.createElement("li")

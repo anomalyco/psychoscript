@@ -254,7 +254,7 @@ async function main(data) {
   while (true) {
     widget.render(ui.column({ gap: 1 }, [
       ui.text(data.title, { style: "title" }),
-      ui.shader(WGSL, { key: "orb", height: 160, fps: 0, values: [widget.now() / 1000, s.x, s.y, s.pressed], alt: "A glowing orb that follows the pointer", onPointer }),
+      ui.canvas({ key: "orb", wgsl: WGSL, height: 160, fps: 0, values: [widget.now() / 1000, s.x, s.y, s.pressed], alt: "A glowing orb that follows the pointer", onPointer }),
       ui.text("frames " + s.frames + " · down " + s.down + " · move " + s.move + " · up " + s.up + " · hover " + s.hover, { style: "caption", tone: "muted" }),
     ]))
     await widget.frame()
@@ -278,7 +278,49 @@ async function main(data) {
     source: `const WGSL = "fn shade(frag: vec2f) -> vec4f {\\n  return vec4f(nope, 1.0);\\n}"
 
 function view(state, data) {
-  return ui.column({ gap: 1 }, [ui.text(data.title, { style: "title" }), ui.shader(WGSL, { height: 80, alt: "A broken shader" })])
+  return ui.column({ gap: 1 }, [ui.text(data.title, { style: "title" }), ui.canvas({ wgsl: WGSL, height: 80, alt: "A broken shader" })])
+}`,
+  },
+  "hud-demo": {
+    mode: "step",
+    data: { title: "Starfield" },
+    source: `// A HUD over a GPU canvas: a stack with the canvas filling it, text at the top left and a button at the bottom
+// right. The button takes its taps; taps anywhere else (the text included) reach the canvas.
+const WGSL = \`fn shade(frag: vec2f) -> vec4f {
+  let uv = frag / widget.resolution;
+  let t = widget.time * 0.3;
+  var c = mix(vec3f(0.03, 0.04, 0.12), vec3f(0.15, 0.05, 0.25), uv.y);
+  let cell = floor(frag / 18.0);
+  let h = fract(sin(dot(cell, vec2f(12.9898, 78.233))) * 43758.5453);
+  let twinkle = 0.5 + 0.5 * sin(t * 6.0 + h * 40.0);
+  let star = step(0.93, h) * twinkle * (1.0 - smoothstep(0.0, 2.2, distance(fract(frag / 18.0) * 18.0, vec2f(9.0))));
+  c += vec3f(star);
+  let hit = widget.values[0].yz * widget.scale;
+  c += vec3f(0.3, 0.6, 1.0) * widget.values[0].w * exp(-pow(distance(frag, hit) / (40.0 * widget.scale), 2.0));
+  return vec4f(c, 1.0);
+}\`
+
+function init() {
+  return { taps: 0, presses: 0, at: [0, 0] }
+}
+
+function view(state, data) {
+  return ui.stack({}, [
+    ui.canvas({
+      key: "sky",
+      wgsl: WGSL,
+      place: "fill",
+      height: 220,
+      values: [state.taps, state.at[0], state.at[1], state.taps > 0 ? 1 : 0],
+      alt: "A starfield",
+      onPointer: (state, p) => (p.kind === "down" ? { ...state, taps: state.taps + 1, at: [p.x, p.y] } : state),
+    }),
+    ui.column({ place: "top-left", inset: 12, gap: 0 }, [
+      ui.text(data.title, { style: "title" }),
+      ui.text("canvas taps " + state.taps + " · button presses " + state.presses, { style: "code" }),
+    ]),
+    ui.button("Fire", { place: "bottom-right", inset: 12, variant: "primary", onPress: (state) => ({ ...state, presses: state.presses + 1 }) }),
+  ])
 }`,
   },
   "runaway-demo": {
