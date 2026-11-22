@@ -12,6 +12,10 @@
 - `limits.maxHeapBytes`: an optional cap on what a run can still reach, measured in a fixed size model rather than
   process memory, so garbage never counts and the result is the same everywhere. A run over it stops with the new
   diagnostic kind `MemoryLimitExceeded`; a suspended run keeps its limit.
+- `limits.maxValueDepth`: how deep a value may nest where it crosses to or from the host (result, arguments, return
+  values) and in `JSON.stringify`; 32 by default as before, at most 256. In the Rust implementation these copies take
+  a fraction of the stack they did (a debug build's argument copy a fifth), and a saved call's argument no longer has
+  a depth past which the state can't be read back; snapshots from earlier builds don't resume.
 - `translate: { functions: "mark" }`: a program function inside a host call's argument, or in the run's result,
   crosses as `Host.functionMarker` (Rust: `HostValue::FunctionMarker`, `Data::FunctionMarker`) instead of failing
   the call or being left out.

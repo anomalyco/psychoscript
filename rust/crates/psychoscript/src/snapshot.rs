@@ -28,7 +28,7 @@ use crate::vm::{
 use crate::{DiagnosticKind, Json, Limits};
 
 /// Bumped whenever the shape of saved state changes.
-pub const FORMAT: u64 = 1;
+pub const FORMAT: u64 = 2;
 
 /// A run's saved state: plain JSON, with a `header` that says where it can resume.
 #[derive(Clone, Debug, PartialEq)]
@@ -387,6 +387,9 @@ pub fn capture(vm: &Vm, c: &Capture) -> Result<Snapshot, Refusal> {
     });
     if let Some(n) = limits.max_heap_bytes {
         header["limits"]["maxHeapBytes"] = json!(n);
+    }
+    if let Some(n) = limits.max_value_depth {
+        header["limits"]["maxValueDepth"] = json!(n);
     }
     Ok(Snapshot(
         json!({ "format": FORMAT, "header": header, "state": state }),
@@ -791,6 +794,13 @@ impl Enc<'_> {
                     }
                     _ => (false, v.clone()),
                 };
+                // The reference saves a value with no data form (a live response) as a `Lost`, which can't cross into
+                // the program once the run resumes: the call fails there, at the place that names it.
+                if ok && let Some(at_label) = lost_path(&data, label) {
+                    let message =
+                        format!("{at_label} produced a Lost, which the program cannot hold.");
+                    return Ok(json!([p, "lost", message, site]));
+                }
                 json!([p, "host", ok, label, owner, hooked, host_value(&data), site])
             }
             Settlement::Interrupted => json!([p, "interrupted"]),
@@ -959,38 +969,86 @@ fn plain(v: &HostValue) -> bool {
     }
 }
 
+/// A host value as saved: `["hv", node, ...]`, its nodes in preorder, where a container's node says how many children
+/// follow (an object's and an error's fields each as its key, then its value). It is one level of JSON however deep the
+/// value is, so reading it back neither recurses nor meets the JSON reader's nesting limit (see `host_value_from`).
 fn host_value(v: &HostValue) -> J {
+    let mut nodes = vec![J::from("hv")];
+    host_nodes(v, &mut nodes);
+    J::Array(nodes)
+}
+
+fn host_nodes(v: &HostValue, out: &mut Vec<J>) {
+    // Only containers recurse here; every other node is made apart, so each level's frame stays small (see
+    // `tests/value_depth.rs`).
     match v {
-        HostValue::Undefined => json!(["u"]),
+        HostValue::Array(items) => {
+            out.push(count_node("a", items.len()));
+            for item in items {
+                match item {
+                    Some(item) => host_nodes(item, out),
+                    None => out.push(hole_node()),
+                }
+            }
+        }
+        HostValue::Object(fields) => {
+            out.push(count_node("o", fields.len()));
+            field_nodes(fields, out);
+        }
+        HostValue::Map(entries) => {
+            out.push(count_node("m", entries.len()));
+            for (k, v) in entries {
+                host_nodes(k, out);
+                host_nodes(v, out);
+            }
+        }
+        HostValue::Set(items) => {
+            out.push(count_node("set", items.len()));
+            items.iter().for_each(|i| host_nodes(i, out));
+        }
+        HostValue::Error(e) => {
+            out.push(error_node(e));
+            if let Some(c) = &e.cause {
+                host_nodes(c, out);
+            }
+            field_nodes(&e.fields, out);
+        }
+        _ => out.push(scalar_node(v)),
+    }
+}
+
+#[inline(never)]
+fn count_node(tag: &str, n: usize) -> J {
+    json!([tag, n])
+}
+
+#[inline(never)]
+fn hole_node() -> J {
+    json!(["hole"])
+}
+
+#[inline(never)]
+fn error_node(e: &HostError) -> J {
+    json!([
+        "e",
+        text(&e.name),
+        text(&e.message),
+        e.cause.is_some(),
+        e.fields.len()
+    ])
+}
+
+/// The node of a host value that holds no others.
+#[inline(never)]
+fn scalar_node(v: &HostValue) -> J {
+    match v {
+        HostValue::Undefined | HostValue::Interrupt => json!(["u"]),
         HostValue::Null => J::Null,
         HostValue::Bool(b) => J::Bool(*b),
         HostValue::Number(n) => json!(["n", num(*n)]),
         HostValue::String(s) => text(s),
-        HostValue::Array(items) => json!([
-            "a",
-            items
-                .iter()
-                .map(|i| i.as_ref().map_or(json!(["hole"]), host_value))
-                .collect::<Vec<_>>()
-        ]),
-        HostValue::Object(fields) => json!([
-            "o",
-            fields
-                .iter()
-                .map(|(k, v)| json!([text(k), host_value(v)]))
-                .collect::<Vec<_>>()
-        ]),
-        HostValue::Map(entries) => json!([
-            "m",
-            entries
-                .iter()
-                .map(|(k, v)| json!([host_value(k), host_value(v)]))
-                .collect::<Vec<_>>()
-        ]),
-        HostValue::Set(items) => json!(["set", items.iter().map(host_value).collect::<Vec<_>>()]),
         HostValue::Function(f) => json!(["f", f.name(), f.length]),
         HostValue::Durable(_) | HostValue::Namespace(_) => json!(["f", "", 0]),
-        HostValue::Interrupt => json!(["u"]),
         HostValue::FunctionMarker => json!(["fm"]),
         HostValue::Failure(f) => json!(["fail", f.kind, text(&f.message), texts(&f.suggestions)]),
         HostValue::Date(t) => json!(["date", num(*t)]),
@@ -1002,38 +1060,37 @@ fn host_value(v: &HostValue) -> J {
         HostValue::Buffer(b) => json!(["buf", bytes_hex(b)]),
         HostValue::TypedArray(t) => json!(["ta", t.kind.code(), bytes_hex(&t.to_vec())]),
         HostValue::Response(_) => json!(["resp"]),
-        HostValue::Error(e) => json!([
-            "e",
-            text(&e.name),
-            text(&e.message),
-            e.cause.as_ref().map_or(J::Null, |c| host_value(c)),
-            e.fields
-                .iter()
-                .map(|(k, v)| json!([text(k), host_value(v)]))
-                .collect::<Vec<_>>()
-        ]),
+        HostValue::Array(_)
+        | HostValue::Object(_)
+        | HostValue::Map(_)
+        | HostValue::Set(_)
+        | HostValue::Error(_) => J::Null,
     }
 }
 
-/// Where a saved host value holds a live response, named as the reference names what crosses: `label.key` in an
-/// object, `label[i]` in an array, `label` in a Map or Set.
-fn lost_path(j: &J, label: &str) -> Option<String> {
-    let J::Array(a) = j else {
-        return None;
-    };
-    let items = || a.get(1).and_then(J::as_array).into_iter().flatten();
-    match a.first().and_then(J::as_str)? {
-        "resp" => Some(label.to_owned()),
-        "a" => items()
+fn field_nodes(fields: &[(crate::HostString, HostValue)], out: &mut Vec<J>) {
+    for (k, v) in fields {
+        out.push(text(k));
+        host_nodes(v, out);
+    }
+}
+
+/// Where a host value holds a live response, named as the reference names what crosses: `label.key` in an object,
+/// `label[i]` in an array, `label` in a Map or Set.
+fn lost_path(v: &HostValue, label: &str) -> Option<String> {
+    match v {
+        HostValue::Response(_) => Some(label.to_owned()),
+        HostValue::Array(items) => items
+            .iter()
             .enumerate()
-            .find_map(|(i, item)| lost_path(item, &format!("{label}[{i}]"))),
-        "o" => items().find_map(|p| {
-            let key = p.get(0).and_then(J::as_str).unwrap_or("");
-            lost_path(p.get(1)?, &format!("{label}.{key}"))
-        }),
-        "m" => items()
-            .find_map(|p| lost_path(p.get(0)?, label).or_else(|| lost_path(p.get(1)?, label))),
-        "set" => items().find_map(|item| lost_path(item, label)),
+            .find_map(|(i, item)| lost_path(item.as_ref()?, &format!("{label}[{i}]"))),
+        HostValue::Object(fields) => fields
+            .iter()
+            .find_map(|(k, v)| lost_path(v, &format!("{label}.{}", k.to_string_lossy()))),
+        HostValue::Map(entries) => entries
+            .iter()
+            .find_map(|(k, v)| lost_path(k, label).or_else(|| lost_path(v, label))),
+        HostValue::Set(items) => items.iter().find_map(|item| lost_path(item, label)),
         _ => None,
     }
 }
@@ -1086,7 +1143,165 @@ fn text_from(j: &J) -> R<crate::HostString> {
     }
 }
 
+/// A container `host_value_from` is filling: what it holds so far, and how many children it still takes.
+enum Open {
+    Array(Vec<Option<HostValue>>, usize),
+    /// An object, with the key its next value goes under once read.
+    Object(
+        Vec<(crate::HostString, HostValue)>,
+        Option<crate::HostString>,
+        usize,
+    ),
+    /// A Map, with the key its next value goes under once read.
+    Map(Vec<(HostValue, HostValue)>, Option<HostValue>, usize),
+    Set(Vec<HostValue>, usize),
+    /// An error, whether its cause is still to come (it comes first), and the key of its next field once read.
+    Error(Box<HostError>, bool, Option<crate::HostString>, usize),
+}
+
+impl Open {
+    fn left(&self) -> usize {
+        match self {
+            Open::Array(_, n) | Open::Object(_, _, n) | Open::Map(_, _, n) | Open::Set(_, n) => *n,
+            Open::Error(_, cause, _, n) => *n + usize::from(*cause),
+        }
+    }
+
+    /// Whether its next node is a key, which is text rather than a value.
+    fn wants_key(&self) -> bool {
+        matches!(
+            self,
+            Open::Object(_, None, _) | Open::Error(_, false, None, _)
+        )
+    }
+
+    fn key(&mut self, k: crate::HostString) {
+        if let Open::Object(_, key, _) | Open::Error(_, _, key, _) = self {
+            *key = Some(k);
+        }
+    }
+
+    /// Takes its next child, which only an array's may be a hole (`None`).
+    fn take(&mut self, v: Option<HostValue>) -> R<()> {
+        let hole = || invalid("a host value has a hole outside an array.");
+        match self {
+            Open::Array(items, n) => {
+                items.push(v);
+                *n -= 1;
+            }
+            Open::Object(fields, key, n) => {
+                fields.push((key.take().ok_or_else(hole)?, v.ok_or_else(hole)?));
+                *n -= 1;
+            }
+            Open::Map(entries, key, n) => {
+                let v = v.ok_or_else(hole)?;
+                match key.take() {
+                    None => *key = Some(v),
+                    Some(k) => {
+                        entries.push((k, v));
+                        *n -= 1;
+                    }
+                }
+            }
+            Open::Set(items, n) => {
+                items.push(v.ok_or_else(hole)?);
+                *n -= 1;
+            }
+            Open::Error(e, cause, key, n) => {
+                let v = v.ok_or_else(hole)?;
+                if std::mem::take(cause) {
+                    e.cause = Some(Box::new(v));
+                } else {
+                    e.fields.push((key.take().ok_or_else(hole)?, v));
+                    *n -= 1;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn close(self) -> HostValue {
+        match self {
+            Open::Array(items, _) => HostValue::Array(items),
+            Open::Object(fields, ..) => HostValue::Object(fields),
+            Open::Map(entries, ..) => HostValue::Map(entries),
+            Open::Set(items, _) => HostValue::Set(items),
+            Open::Error(e, ..) => HostValue::Error(e),
+        }
+    }
+}
+
+/// A saved host value back (see `host_value`), without recursing. One nested deeper than any value a run may cross
+/// (`MAX_VALUE_DEPTH_LIMIT`) is refused, as using it would recurse that deep.
 fn host_value_from(j: &J) -> R<HostValue> {
+    let malformed = || invalid("a host value is malformed.");
+    let mut nodes = match j {
+        J::Array(a) if a.first().and_then(J::as_str) == Some("hv") => a[1..].iter(),
+        _ => return Err(malformed()),
+    };
+    let mut open: Vec<Open> = Vec::new();
+    loop {
+        let node = nodes.next().ok_or_else(malformed)?;
+        if let Some(top) = open.last_mut()
+            && top.wants_key()
+        {
+            top.key(text_from(node)?);
+            continue;
+        }
+        let count = |i: usize| uint(at(node, i)?).map(|n| n as usize);
+        let tag = node.as_array().and_then(|a| a.first()).and_then(J::as_str);
+        let opened = match tag {
+            Some("a") => Some(Open::Array(Vec::new(), count(1)?)),
+            Some("o") => Some(Open::Object(Vec::new(), None, count(1)?)),
+            Some("m") => Some(Open::Map(Vec::new(), None, count(1)?)),
+            Some("set") => Some(Open::Set(Vec::new(), count(1)?)),
+            Some("e") => {
+                let error = HostError {
+                    name: text_from(at(node, 1)?)?,
+                    message: text_from(at(node, 2)?)?,
+                    cause: None,
+                    fields: Vec::new(),
+                };
+                Some(Open::Error(
+                    Box::new(error),
+                    boolean(at(node, 3)?)?,
+                    None,
+                    count(4)?,
+                ))
+            }
+            _ => None,
+        };
+        let mut done = match opened {
+            Some(o) if o.left() > 0 => {
+                if open.len() >= crate::MAX_VALUE_DEPTH_LIMIT {
+                    return Err(invalid("a host value is nested too deeply."));
+                }
+                open.push(o);
+                continue;
+            }
+            Some(o) => Some(o.close()),
+            None if tag == Some("hole") => None,
+            None => Some(host_scalar(node)?),
+        };
+        // The value is complete: it goes into what holds it, which may be complete in turn.
+        loop {
+            let Some(top) = open.last_mut() else {
+                return match (done, nodes.next()) {
+                    (Some(v), None) => Ok(v),
+                    _ => Err(malformed()),
+                };
+            };
+            top.take(done.take())?;
+            if top.left() > 0 {
+                break;
+            }
+            done = open.pop().map(Open::close);
+        }
+    }
+}
+
+/// A host value that holds no others, as `host_nodes` saved it.
+fn host_scalar(j: &J) -> R<HostValue> {
     Ok(match j {
         J::Null => HostValue::Null,
         J::Bool(b) => HostValue::Bool(*b),
@@ -1096,33 +1311,6 @@ fn host_value_from(j: &J) -> R<HostValue> {
             Some("u") => HostValue::Undefined,
             Some("fm") => HostValue::FunctionMarker,
             Some("n") => HostValue::Number(unnum(a.get(1).unwrap_or(&J::Null))?),
-            Some("a") => HostValue::Array(
-                list(a.get(1))?
-                    .iter()
-                    .map(|i| match i {
-                        J::Array(x) if x.first().and_then(J::as_str) == Some("hole") => Ok(None),
-                        other => host_value_from(other).map(Some),
-                    })
-                    .collect::<R<_>>()?,
-            ),
-            Some("o") => HostValue::Object(
-                list(a.get(1))?
-                    .iter()
-                    .map(|p| Ok((text_from(at(p, 0)?)?, host_value_from(at(p, 1)?)?)))
-                    .collect::<R<_>>()?,
-            ),
-            Some("m") => HostValue::Map(
-                list(a.get(1))?
-                    .iter()
-                    .map(|p| Ok((host_value_from(at(p, 0)?)?, host_value_from(at(p, 1)?)?)))
-                    .collect::<R<_>>()?,
-            ),
-            Some("set") => HostValue::Set(
-                list(a.get(1))?
-                    .iter()
-                    .map(host_value_from)
-                    .collect::<R<_>>()?,
-            ),
             Some("f") => HostValue::Function(host::lost_function(
                 a.get(1).and_then(J::as_str).unwrap_or(""),
             )),
@@ -1149,20 +1337,8 @@ fn host_value_from(j: &J) -> R<HostValue> {
                 )
             }
             Some("buf") => HostValue::Buffer(hex_bytes(&string(at(j, 1)?)?)?),
-            // A live response has no data form; a settlement holding one is restored as `lost_path` says.
+            // A live response has no data form; a settlement holding one is saved as lost (see `lost_path`).
             Some("resp") => HostValue::Undefined,
-            Some("e") => HostValue::Error(Box::new(HostError {
-                name: text_from(at(j, 1)?)?,
-                message: text_from(at(j, 2)?)?,
-                cause: match at(j, 3)? {
-                    J::Null => None,
-                    c => Some(Box::new(host_value_from(c)?)),
-                },
-                fields: list(a.get(4))?
-                    .iter()
-                    .map(|p| Ok((text_from(at(p, 0)?)?, host_value_from(at(p, 1)?)?)))
-                    .collect::<R<_>>()?,
-            })),
             _ => return Err(invalid("a host value has an unknown tag.")),
         },
         J::Number(_) | J::Object(_) => return Err(invalid("a host value is malformed.")),
@@ -1912,6 +2088,16 @@ pub fn header(snapshot: &Snapshot) -> R<Restored> {
             timeout_ms: opt("timeoutMs")?,
             max_output_bytes: opt("maxOutputBytes")?.map(|n| n as usize),
             max_heap_bytes: limits.get("maxHeapBytes").and_then(J::as_u64),
+            max_value_depth: match limits.get("maxValueDepth") {
+                None => None,
+                // Checked as `Runtime::limits` checks it: past the bound, the copies could run out of stack.
+                Some(d) => Some(
+                    d.as_u64()
+                        .map(|d| d as usize)
+                        .filter(|d| (1..=crate::MAX_VALUE_DEPTH_LIMIT).contains(d))
+                        .ok_or_else(|| invalid("the value depth is out of range."))?,
+                ),
+            },
         },
         active_ms: field(budget, "activeMs")?.as_u64().unwrap_or(0),
     })
@@ -2108,13 +2294,7 @@ fn restore_settlement(vm: &mut Vm, dec: &Dec, j: &J) -> R<(Id, Settlement)> {
             let owner = opt_string(at(j, 4)?)?;
             let hooked = boolean(at(j, 5)?)?;
             let saved = at(j, 6)?;
-            // The reference saves a value with no data form (a live response) as a `Lost`, which can't cross into the
-            // program once the run resumes: the call fails there, at the place that names it.
             let site = j.get(7).and_then(J::as_u64).map(|s| s as u32);
-            if ok && let Some(at_label) = lost_path(saved, &label) {
-                let message = format!("{at_label} produced a Lost, which the program cannot hold.");
-                return Ok((p, Settlement::Lost(message, site)));
-            }
             let mut v = host_value_from(saved)?;
             if hooked && let Some(owner) = &owner {
                 v = decode(vm, owner, v)?;

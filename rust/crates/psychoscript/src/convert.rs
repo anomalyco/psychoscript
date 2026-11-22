@@ -9,7 +9,29 @@ use crate::value::{Id, Slot, Value, write_num};
 use crate::vm::{Res, Vm};
 use crate::{DiagnosticKind, Json};
 
-pub const MAX_VALUE_DEPTH: usize = 32;
+/// The deepest nesting a value may have where it crosses between the program and the host, and `JSON.stringify`
+/// copies on its fast path, unless [`Limits::max_value_depth`](crate::Limits::max_value_depth) says otherwise.
+pub const DEFAULT_VALUE_DEPTH: usize = 32;
+/// The most [`Limits::max_value_depth`](crate::Limits::max_value_depth) may be. The copies recurse on the native stack
+/// once a level; at this depth they fit the stack a run has (measured in `tests/value_depth.rs`).
+pub const MAX_VALUE_DEPTH_LIMIT: usize = 256;
+/// The depth the walk that runs a program's `toJSON`s and awaits promises allows, at the least.
+const WALK_DEPTH: usize = 100;
+/// How deep `console.log` formats a value.
+const MAX_CONSOLE_DEPTH: usize = 32;
+
+impl Vm {
+    /// The run's `max_value_depth`.
+    #[inline]
+    pub(crate) fn value_depth(&self) -> usize {
+        self.limits.max_value_depth.unwrap_or(DEFAULT_VALUE_DEPTH)
+    }
+
+    /// The depth the walk allows: its own, or the run's `max_value_depth` when that is deeper.
+    pub(crate) fn walk_depth(&self) -> usize {
+        self.value_depth().max(WALK_DEPTH)
+    }
+}
 
 /// A string of the result as run text (a carrier keeps unpaired surrogates: see `strings`), which `Data` decodes
 /// once the result has crossed.
@@ -79,8 +101,9 @@ fn to_json_inner(
             if stack.contains(&id) {
                 return Err(vm.type_error("Converting circular structure to JSON"));
             }
-            if stack.len() >= MAX_VALUE_DEPTH {
-                return Err(invalid_data(vm, "Data is nested more than 32 levels deep."));
+            if stack.len() >= vm.value_depth() {
+                let msg = format!("Data is nested more than {} levels deep.", vm.value_depth());
+                return Err(invalid_data(vm, &msg));
             }
             stack.push(id);
             vm.densify(id)?;
@@ -234,6 +257,8 @@ struct Mode {
     stamp: u32,
     seen: std::cell::RefCell<rustc_hash::FxHashSet<Id>>,
     revisits: std::cell::Cell<u32>,
+    /// The run's value depth, past which the walk stops.
+    max: usize,
 }
 
 /// The visits of objects seen already the reference's native walk allows (its `VISIT_BUDGET`): it gives up at the
@@ -247,6 +272,7 @@ impl Mode {
             stamp: vm.start_json_walk().unwrap_or(0),
             seen: Default::default(),
             revisits: std::cell::Cell::new(REVISITS),
+            max: vm.value_depth(),
         }
     }
 
@@ -324,6 +350,8 @@ fn native_to_json(vm: &mut Vm, f: &Value) -> bool {
 
 /// The native walk: writes `v` (`holder[key]`) and says whether it wrote anything.
 #[allow(clippy::too_many_arguments)]
+// Without `?`, whose temporaries each take a slot of a debug build's frame, at every level of a value.
+#[allow(clippy::question_mark)]
 fn write_json(
     vm: &mut Vm,
     out: &mut String,
@@ -334,18 +362,61 @@ fn write_json(
     stack: &mut Vec<Id>,
     gap: &str,
 ) -> Result<bool, Value> {
-    if mode.restart.get() {
-        return Ok(false);
+    // Its parts are apart, so that the frames each level of a value takes stay small (see `tests/value_depth.rs`).
+    let id = match write_head(vm, out, key, v, opts, mode, stack, gap) {
+        Ok(Written::Open(id)) => id,
+        Ok(Written::Done(written)) => return Ok(written),
+        Err(e) => return Err(e),
+    };
+    stack.push(id);
+    let inner = format!("{gap}{}", opts.indent);
+    let r = if matches!(vm.heap[id as usize].kind, Kind::Array(_)) {
+        write_items(vm, out, id, opts, mode, stack, gap, &inner)
+    } else {
+        write_fields(vm, out, id, opts, mode, stack, gap, &inner)
+    };
+    if let Err(e) = r {
+        return Err(e);
     }
-    // Every value is checked, a primitive too: the native walk stops past depth 32.
-    if stack.len() > 32 {
-        return Err(vm.range_error("Value exceeds the maximum depth of 32."));
+    stack.pop();
+    if out.len() > crate::ops::MAX_STRING_LEN {
+        return Err(vm.range_error("Invalid string length"));
+    }
+    Ok(true)
+}
+
+/// What `write_head` did with a value: wrote it (or nothing, `false`), or found the object it opens.
+enum Written {
+    Done(bool),
+    Open(Id),
+}
+
+#[allow(clippy::too_many_arguments)]
+// Apart in a debug build, to keep the frames of a deep value small; inlined in a release build.
+#[cfg_attr(debug_assertions, inline(never))]
+fn write_head(
+    vm: &mut Vm,
+    out: &mut String,
+    key: Key,
+    v: Value,
+    opts: &Stringify,
+    mode: &Mode,
+    stack: &mut Vec<Id>,
+    gap: &str,
+) -> Result<Written, Value> {
+    if mode.restart.get() {
+        return Ok(Written::Done(false));
+    }
+    // Every value is checked, a primitive too: the native walk stops past the run's value depth.
+    if stack.len() > mode.max {
+        let msg = format!("Value exceeds the maximum depth of {}.", mode.max);
+        return Err(vm.range_error(&msg));
     }
     if let Value::Obj(id) = v
         && mode.revisited(vm, id)
     {
         mode.restart.set(true);
-        return Ok(false);
+        return Ok(Written::Done(false));
     }
     // Program getters run in the internal walk, as the reference's fast path leaves them to its prelude walk.
     if let Value::Obj(id) = v {
@@ -356,7 +427,7 @@ fn write_json(
                 && (vm.has_program_getter(id, nk) || vm.has_program_getter(id, mk)))
         {
             mode.restart.set(true);
-            return Ok(false);
+            return Ok(Written::Done(false));
         }
     }
     let mut v = apply_to_json(vm, &v, key, Some(mode))?;
@@ -370,7 +441,7 @@ fn write_json(
             let mode = Mode::new(vm);
             let r = write_json(vm, out, key, v, opts, &mode, stack, gap);
             mode.end(vm);
-            return r;
+            return r.map(Written::Done);
         }
     }
     match &v {
@@ -380,15 +451,15 @@ fn write_json(
         Value::Str(s) => quote_str(vm, out, *s),
         // The reference's walk takes a symbol for an object with no fields.
         Value::Sym(_) => out.push_str("{}"),
-        Value::Undef | Value::Uninit => return Ok(false),
+        Value::Undef | Value::Uninit => return Ok(Written::Done(false)),
         Value::Obj(id) => {
             let id = *id;
             if vm.heap[id as usize].is_callable() {
-                return Ok(false);
+                return Ok(Written::Done(false));
             }
             if matches!(vm.heap[id as usize].kind, Kind::Promise(_)) {
                 mode.restart.set(true);
-                return Ok(false);
+                return Ok(Written::Done(false));
             }
             if stack.contains(&id) {
                 return Err(vm.type_error("Converting circular structure to JSON"));
@@ -396,75 +467,101 @@ fn write_json(
             if stack.len() > 512 {
                 return Err(vm.range_error("Maximum call stack size exceeded"));
             }
-            stack.push(id);
-            let inner = format!("{gap}{}", opts.indent);
-            let is_array = matches!(vm.heap[id as usize].kind, Kind::Array(_));
-            if is_array {
+            if matches!(vm.heap[id as usize].kind, Kind::Array(_)) {
                 vm.densify(id)?;
-                let len = match &vm.heap[id as usize].kind {
-                    Kind::Array(items) => items.len(),
-                    _ => 0,
-                };
-                if len == 0 {
-                    out.push_str("[]");
-                } else {
-                    out.push('[');
-                    for i in 0..len {
-                        if i > 0 {
-                            out.push(',');
-                        }
-                        if !opts.indent.is_empty() {
-                            out.push('\n');
-                            out.push_str(&inner);
-                        }
-                        let item = array_item(vm, id, i);
-                        if !write_json(vm, out, Key::Index(i), item, opts, mode, stack, &inner)? {
-                            out.push_str("null");
-                        }
-                    }
-                    if !opts.indent.is_empty() {
-                        out.push('\n');
-                        out.push_str(gap);
-                    }
-                    out.push(']');
-                }
-            } else {
-                let entries = json_entries(vm, id, opts.allow.as_deref());
-                out.push('{');
-                let mut first = true;
-                for (k, val) in entries {
-                    let mark = out.len();
-                    if !first {
-                        out.push(',');
-                    }
-                    if !opts.indent.is_empty() {
-                        out.push('\n');
-                        out.push_str(&inner);
-                    }
-                    quote_str(vm, out, vm.atoms.atom_str(k));
-                    out.push(':');
-                    if !opts.indent.is_empty() {
-                        out.push(' ');
-                    }
-                    if write_json(vm, out, Key::Atom(k), val, opts, mode, stack, &inner)? {
-                        first = false;
-                    } else {
-                        out.truncate(mark);
-                    }
-                }
-                if !first && !opts.indent.is_empty() {
-                    out.push('\n');
-                    out.push_str(gap);
-                }
-                out.push('}');
             }
-            stack.pop();
+            return Ok(Written::Open(id));
         }
     }
     if out.len() > crate::ops::MAX_STRING_LEN {
         return Err(vm.range_error("Invalid string length"));
     }
-    Ok(true)
+    Ok(Written::Done(true))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_items(
+    vm: &mut Vm,
+    out: &mut String,
+    id: Id,
+    opts: &Stringify,
+    mode: &Mode,
+    stack: &mut Vec<Id>,
+    gap: &str,
+    inner: &str,
+) -> Result<(), Value> {
+    let len = match &vm.heap[id as usize].kind {
+        Kind::Array(items) => items.len(),
+        _ => 0,
+    };
+    if len == 0 {
+        out.push_str("[]");
+        return Ok(());
+    }
+    out.push('[');
+    for i in 0..len {
+        if i > 0 {
+            out.push(',');
+        }
+        if !opts.indent.is_empty() {
+            out.push('\n');
+            out.push_str(inner);
+        }
+        let item = array_item(vm, id, i);
+        match write_json(vm, out, Key::Index(i), item, opts, mode, stack, inner) {
+            Ok(true) => {}
+            Ok(false) => out.push_str("null"),
+            Err(e) => return Err(e),
+        }
+    }
+    if !opts.indent.is_empty() {
+        out.push('\n');
+        out.push_str(gap);
+    }
+    out.push(']');
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_fields(
+    vm: &mut Vm,
+    out: &mut String,
+    id: Id,
+    opts: &Stringify,
+    mode: &Mode,
+    stack: &mut Vec<Id>,
+    gap: &str,
+    inner: &str,
+) -> Result<(), Value> {
+    let entries = json_entries(vm, id, opts.allow.as_deref());
+    out.push('{');
+    let mut first = true;
+    for (k, val) in entries {
+        let mark = out.len();
+        if !first {
+            out.push(',');
+        }
+        if !opts.indent.is_empty() {
+            out.push('\n');
+            out.push_str(inner);
+        }
+        quote_str(vm, out, vm.atoms.atom_str(k));
+        out.push(':');
+        if !opts.indent.is_empty() {
+            out.push(' ');
+        }
+        match write_json(vm, out, Key::Atom(k), val, opts, mode, stack, inner) {
+            Ok(true) => first = false,
+            Ok(false) => out.truncate(mark),
+            Err(e) => return Err(e),
+        }
+    }
+    if !first && !opts.indent.is_empty() {
+        out.push('\n');
+        out.push_str(gap);
+    }
+    out.push('}');
+    Ok(())
 }
 
 #[inline(always)]
@@ -771,8 +868,9 @@ fn stringify_walk(
         stage = match stage {
             Stage::Visit => {
                 // `$Throw` in `visit`, a native that throws and so costs nothing.
-                if depth > 100 {
-                    return Err(vm.range_error("Value exceeds the maximum depth of 100."));
+                if depth > vm.walk_depth() {
+                    let msg = format!("Value exceeds the maximum depth of {}.", vm.walk_depth());
+                    return Err(vm.range_error(&msg));
                 }
                 // `holder[key]`, read as the walk reaches it.
                 let (holder, key) = (fr.get(vm, J_HOLDER), fr.get(vm, J_KEY));
@@ -1539,7 +1637,7 @@ fn format_inner(vm: &mut Vm, out: &mut String, v: &Value, seen: &mut Vec<Id>) {
         Value::Sym(s) => out.push_str(crate::ops::symbol_text(*s)),
         Value::Obj(id) => {
             let id = *id;
-            if seen.len() > MAX_VALUE_DEPTH {
+            if seen.len() > MAX_CONSOLE_DEPTH {
                 out.push_str("...");
                 return;
             }

@@ -2,7 +2,7 @@ import { type Data, fromJson } from "../data.js"
 import { conversions } from "../runtime/callback.js"
 import type { Builtins } from "../runtime/intrinsics.js"
 import { functionMarker } from "../runtime/contract.js"
-import { checkStringLength, MAX_VALUE_DEPTH } from "../runtime/limits.js"
+import { checkStringLength, DEFAULT_VALUE_DEPTH, WALK_DEPTH } from "../runtime/limits.js"
 import { invalidData, rangeError, typeError } from "../runtime/model.js"
 import {
   Arr,
@@ -189,10 +189,10 @@ function $vmReplay(callable, target, args, constructing, replay, read, req) {
 
 // A JSON walk's step for one value, holder[key]: its JSON as program data, or undefined when it is left out. A promise
 // is yielded at the host boundary, which resumes the walk with its value.
-function $vmJsonVisitor(boundary, replacer, properties) {
+function $vmJsonVisitor(boundary, replacer, properties, maxDepth) {
   const ancestors = []
   function* visit(holder, key, depth) {
-    if (depth > 100) $Throw("RangeError", "Value exceeds the maximum depth of 100.")
+    if (depth > maxDepth) $Throw("RangeError", "Value exceeds the maximum depth of " + maxDepth + ".")
     let val = holder[key]
     if ($IsPromise(val)) {
       if (!boundary) {
@@ -239,8 +239,8 @@ function $vmJsonVisitor(boundary, replacer, properties) {
   return visit
 }
 
-function $vmJsonWalk(replacer, value, properties, indent) {
-  const json = $vmJsonVisitor(false, replacer, properties)({ "": value }, "", 0).next().value
+function $vmJsonWalk(replacer, value, properties, indent, maxDepth) {
+  const json = $vmJsonVisitor(false, replacer, properties, maxDepth)({ "": value }, "", 0).next().value
   return $JsonFinish(false, json, properties, indent)
 }
 
@@ -299,9 +299,9 @@ async function $vmHostWait(promises, callee, args, read) {
   return $vmReplay(callee, undefined, args, false, [], read, undefined)
 }
 
-async function $vmResult(value) {
+async function $vmResult(value, maxDepth) {
   const root = $IsThenable(value) ? await value : value
-  const walk = $vmJsonVisitor(true, undefined, null)({ "": root }, "", 0)
+  const walk = $vmJsonVisitor(true, undefined, null, maxDepth)({ "": root }, "", 0)
   let step = walk.next()
   while (!step.done) step = walk.next(await step.value)
   return $JsonFinish(true, step.value, null, undefined)
@@ -501,6 +501,7 @@ export const tryFastBoundaryOrJson = (
   boundary: boolean,
   revisitBudget = 2048,
   mark = false,
+  maxDepth = DEFAULT_VALUE_DEPTH,
 ): { readonly ok: true; readonly json: Data | undefined } | { readonly ok: false } => {
   if (value === undefined) return { ok: true, json: undefined }
   if (value === null || typeof value === "string" || typeof value === "boolean") return { ok: true, json: value }
@@ -549,7 +550,7 @@ export const tryFastBoundaryOrJson = (
     cur: Value,
     depth: number,
   ): { readonly ok: true; readonly json: Data | undefined } | { readonly ok: false } => {
-    if (depth > MAX_VALUE_DEPTH) throw rangeError(`Value exceeds the maximum depth of ${MAX_VALUE_DEPTH}.`)
+    if (depth > maxDepth) throw rangeError(`Value exceeds the maximum depth of ${maxDepth}.`)
     if (cur === undefined) return { ok: true, json: undefined }
     if (typeofValue(cur) === "function") {
       return { ok: true, json: mark ? (functionMarker) : undefined }
@@ -631,6 +632,9 @@ export const tryFastBoundaryOrJson = (
 
   return visit(value, 0)
 }
+
+/** The depth the walk allows: its own, or the runtime's `limits.maxValueDepth` when that is deeper. */
+export const walkDepth = (valueDepth: number): number => Math.max(WALK_DEPTH, valueDepth)
 
 /** Why a typed array or ArrayBuffer cannot be a result. */
 const boundaryMessage = (value: Bytes | ArrayBufferObj): string => {

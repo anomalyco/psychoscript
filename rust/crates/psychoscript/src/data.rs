@@ -32,14 +32,23 @@ impl Data {
             Data::Bool(b) => Json::Bool(*b),
             Data::Number(n) => Json::Number(n.clone()),
             Data::String(s) => Json::String(s.to_string_lossy().into_owned()),
-            Data::Array(items) => Json::Array(items.iter().map(Data::to_json).collect()),
-            Data::Object(fields) => Json::Object(
-                fields
-                    .iter()
-                    .filter(|(_, v)| !matches!(v, Data::FunctionMarker))
-                    .map(|(k, v)| (k.to_string_lossy().into_owned(), v.to_json()))
-                    .collect(),
-            ),
+            // Plain loops rather than iterator chains, whose frames a debug build stacks up each level.
+            Data::Array(items) => {
+                let mut out = Vec::with_capacity(items.len());
+                for item in items {
+                    out.push(item.to_json());
+                }
+                Json::Array(out)
+            }
+            Data::Object(fields) => {
+                let mut out = serde_json::Map::new();
+                for (k, v) in fields {
+                    if !matches!(v, Data::FunctionMarker) {
+                        out.insert(k.to_string_lossy().into_owned(), v.to_json());
+                    }
+                }
+                Json::Object(out)
+            }
         }
     }
 
@@ -67,12 +76,20 @@ impl Data {
             Json::Number(n) => Data::Number(n),
             Json::String(s) if s == FUNCTION_MARKER => Data::FunctionMarker,
             Json::String(s) => Data::String(HostString::from_run_text(&s)),
-            Json::Array(items) => Data::Array(items.into_iter().map(Data::from_run_json).collect()),
-            Json::Object(map) => Data::Object(
-                map.into_iter()
-                    .map(|(k, v)| (HostString::from_run_text(&k), Data::from_run_json(v)))
-                    .collect(),
-            ),
+            Json::Array(items) => {
+                let mut out = Vec::with_capacity(items.len());
+                for item in items {
+                    out.push(Data::from_run_json(item));
+                }
+                Data::Array(out)
+            }
+            Json::Object(map) => {
+                let mut out = Vec::with_capacity(map.len());
+                for (k, v) in map {
+                    out.push((HostString::from_run_text(&k), Data::from_run_json(v)));
+                }
+                Data::Object(out)
+            }
         }
     }
 

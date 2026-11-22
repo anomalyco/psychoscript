@@ -15,7 +15,7 @@ import { errorMessage, errorType } from "./errors.js"
 import type { Interpreter } from "./interpreter.js"
 import { createErrorValue } from "./intrinsics.js"
 import { member } from "./intrinsic-names.js"
-import { MAX_ARRAY_LENGTH, MAX_VALUE_DEPTH } from "./limits.js"
+import { DEFAULT_VALUE_DEPTH, MAX_ARRAY_LENGTH } from "./limits.js"
 import { AsyncIteratorSymbol, HostFailure, PendingThrow, rangeError, Throw, typeError } from "./model.js"
 import { native } from "./native.js"
 import {
@@ -85,6 +85,8 @@ export const hostGlobals = <R>(
   globals: Readonly<Record<string, unknown>>,
   translate: Required<Translate> = { functions: "error", promises: "error" },
   adapt?: (value: unknown, call: Call) => unknown,
+  // The runtime's `limits.maxValueDepth`.
+  maxDepth = DEFAULT_VALUE_DEPTH,
 ): ReadonlyArray<readonly [string, Value]> => {
   // A plain host function is called like a `sync` host function that takes functions.
   const plain = (value: Function) =>
@@ -118,7 +120,7 @@ export const hostGlobals = <R>(
     waiting: Array<PromiseObj> | undefined,
     back: Array<Function> | undefined,
   ): unknown => {
-    if (depth > MAX_VALUE_DEPTH) throw typeError(`${label} exceeds the maximum value depth of ${MAX_VALUE_DEPTH}.`)
+    if (depth > maxDepth) throw typeError(`${label} exceeds the maximum value depth of ${maxDepth}.`)
     if (isPrimitive(value)) return value
     const host = value instanceof Obj ? hosted.get(value) : undefined
     if (back !== undefined && host !== undefined) {
@@ -177,7 +179,7 @@ export const hostGlobals = <R>(
     native(builtins, { runtime: "host", name: `get ${name}`, call: () => read() })
 
   const fromHost = (value: unknown, label: string, depth = 0, seen = new Set<object>(), place: Place = {}): Value => {
-    if (depth > MAX_VALUE_DEPTH) throw typeError(`${label} exceeds the maximum value depth of ${MAX_VALUE_DEPTH}.`)
+    if (depth > maxDepth) throw typeError(`${label} exceeds the maximum value depth of ${maxDepth}.`)
     if (isPrimitive(value)) return value
     if (place.global !== undefined) {
       if (value instanceof Namespace) return namespace(value, label, place.global)

@@ -1329,6 +1329,7 @@ fn host_args(
             seen: &mut seen,
             waiting: &mut waiting,
             back: back.as_deref_mut(),
+            max: vm.value_depth(),
         };
         let v = to_host(vm, a, 0, &mut cx)?;
         out.push(v.unwrap_or(HostValue::Undefined));
@@ -1361,6 +1362,8 @@ struct ToHost<'a> {
     seen: &'a mut Vec<Id>,
     waiting: &'a mut Vec<Value>,
     back: Option<&'a mut bool>,
+    /// The run's value depth.
+    max: usize,
 }
 
 impl ToHost<'_> {
@@ -1437,30 +1440,62 @@ fn to_host(
     depth: usize,
     cx: &mut ToHost,
 ) -> Result<Option<HostValue>, Value> {
-    if depth > crate::convert::MAX_VALUE_DEPTH {
-        let msg = format!(
-            "{} exceeds the maximum value depth of {}.",
-            cx.label(),
-            crate::convert::MAX_VALUE_DEPTH
-        );
-        return Err(vm.type_error(&msg));
+    // Written without `?`, whose temporaries each take a slot of this frame in a debug build.
+    let (id, copy) = match visit(vm, v, depth, cx) {
+        Ok(Visit::Open(id, copy)) => (id, copy),
+        Ok(Visit::Done(out)) => return Ok(out),
+        Ok(Visit::Await(id, result)) => return awaited_to_host(vm, id, result, depth, cx),
+        Err(e) => return Err(e),
+    };
+    cx.seen.push(id);
+    match copy(vm, id, depth, cx) {
+        Ok(out) => {
+            cx.seen.pop();
+            Ok(Some(out))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+// `to_host`'s parts, apart so that the frame each level of a value takes stays small (see `tests/value_depth.rs`).
+
+/// How `to_host` copies an object it opens.
+type Copy = fn(&mut Vm, Id, usize, &mut ToHost) -> Result<HostValue, Value>;
+
+/// What `to_host` does with a value: its copy, or the object it opens and how it copies it, or a fulfilled promise
+/// whose value it copies.
+enum Visit {
+    Done(Option<HostValue>),
+    Open(Id, Copy),
+    Await(Id, Value),
+}
+
+// Apart in a debug build, to keep the frames of a deep value small; inlined in a release build.
+#[cfg_attr(debug_assertions, inline(never))]
+fn visit(vm: &mut Vm, v: &Value, depth: usize, cx: &mut ToHost) -> Result<Visit, Value> {
+    if depth > cx.max {
+        let max = cx.max;
+        return Err(cannot_cross(
+            vm,
+            cx,
+            format_args!("exceeds the maximum value depth of {max}."),
+        ));
     }
     let id = match v {
-        Value::Undef | Value::Uninit => return Ok(Some(HostValue::Undefined)),
-        Value::Null => return Ok(Some(HostValue::Null)),
-        Value::Bool(b) => return Ok(Some(HostValue::Bool(*b))),
-        Value::Num(n) => return Ok(Some(HostValue::Number(*n))),
+        Value::Undef | Value::Uninit => return Ok(Visit::Done(Some(HostValue::Undefined))),
+        Value::Null => return Ok(Visit::Done(Some(HostValue::Null))),
+        Value::Bool(b) => return Ok(Visit::Done(Some(HostValue::Bool(*b)))),
+        Value::Num(n) => return Ok(Visit::Done(Some(HostValue::Number(*n)))),
         Value::Str(s) => {
-            return Ok(Some(HostValue::String(HostString::from_run_text(
-                vm.text(*s),
-            ))));
+            let s = HostString::from_run_text(vm.text(*s));
+            return Ok(Visit::Done(Some(HostValue::String(s))));
         }
         Value::Sym(_) => {
-            let msg = format!(
-                "{} contains a symbol, which cannot be passed to the host.",
-                cx.label()
-            );
-            return Err(vm.type_error(&msg));
+            return Err(cannot_cross(
+                vm,
+                cx,
+                format_args!("contains a symbol, which cannot be passed to the host."),
+            ));
         }
         Value::Obj(id) => *id,
     };
@@ -1468,43 +1503,195 @@ fn to_host(
         && let Some(f) = hosted(vm, id)
     {
         *back = true;
-        return Ok(Some(HostValue::Function(f)));
+        return Ok(Visit::Done(Some(HostValue::Function(f))));
     }
     if vm.host.translate.functions != TranslateFunctions::Error
         && vm.heap[id as usize].is_callable()
     {
-        return Ok((vm.host.translate.functions == TranslateFunctions::Mark)
-            .then_some(HostValue::FunctionMarker));
+        let mark = vm.host.translate.functions == TranslateFunctions::Mark;
+        return Ok(Visit::Done(mark.then_some(HostValue::FunctionMarker)));
     }
     if cx.seen.contains(&id) {
-        return Err(vm.type_error(&format!("{} contains a circular value.", cx.label())));
+        return Err(cannot_cross(
+            vm,
+            cx,
+            format_args!("contains a circular value."),
+        ));
     }
     if vm.host.translate.promises == TranslatePromises::Await
         && let Kind::Promise(p) = &vm.heap[id as usize].kind
     {
         let PromiseState::Fulfilled(result) = p.state else {
             cx.waiting.push(*v);
-            return Ok(Some(HostValue::Undefined));
+            return Ok(Visit::Done(Some(HostValue::Undefined)));
         };
-        cx.seen.push(id);
-        let out = to_host(vm, &result, depth + 1, cx)?;
-        cx.seen.pop();
-        return Ok(out);
+        return Ok(Visit::Await(id, result));
     }
     if vm.heap[id as usize].is_callable() || crate::cross::opaque(&vm.heap[id as usize].kind) {
-        let msg = format!(
-            "{} contains {}, which cannot be passed to the host.",
-            cx.label(),
-            describe(vm, v)
-        );
-        return Err(vm.type_error(&msg));
+        let what = describe(vm, v);
+        return Err(cannot_cross(
+            vm,
+            cx,
+            format_args!("contains {what}, which cannot be passed to the host."),
+        ));
     }
-    cx.seen.push(id);
-    // A child left out of a Map or a Set is undefined there.
-    let kept = |vm: &mut Vm, item: &Value, cx: &mut ToHost| {
-        to_host(vm, item, depth + 1, cx).map(Option::unwrap_or_default)
+    let copy: Copy = match &vm.heap[id as usize].kind {
+        Kind::Array(_) => array_to_host,
+        Kind::Map(_) | Kind::Set(_) => collection_to_host,
+        Kind::Error(_) => error_to_host,
+        Kind::Date(_)
+        | Kind::RegExp(_)
+        | Kind::Url(_)
+        | Kind::SearchParams(_)
+        | Kind::Headers(_)
+        | Kind::Bytes(_) => leaf_to_host,
+        _ => fields_to_host,
     };
-    let out = match &vm.heap[id as usize].kind {
+    Ok(Visit::Open(id, copy))
+}
+
+/// Why a value can't cross to the host: `Argument 1 to f` and what follows.
+#[cold]
+#[inline(never)]
+fn cannot_cross(vm: &mut Vm, cx: &ToHost, what: std::fmt::Arguments) -> Value {
+    let msg = format!("{} {what}", cx.label());
+    vm.type_error(&msg)
+}
+
+/// A promise's value under `promises: await`, or the promise for the call to wait for.
+#[inline(never)]
+fn awaited_to_host(
+    vm: &mut Vm,
+    id: Id,
+    result: Value,
+    depth: usize,
+    cx: &mut ToHost,
+) -> Result<Option<HostValue>, Value> {
+    cx.seen.push(id);
+    let out = to_host(vm, &result, depth + 1, cx)?;
+    cx.seen.pop();
+    Ok(out)
+}
+
+// Without `?`, whose temporaries each take a slot of a debug build's frame, at every level of a value.
+#[allow(clippy::question_mark)]
+fn array_to_host(vm: &mut Vm, id: Id, depth: usize, cx: &mut ToHost) -> Result<HostValue, Value> {
+    if vm.heap[id as usize].flags & SPARSE != 0
+        && let Err(e) = vm.densify(id)
+    {
+        return Err(e);
+    }
+    let items = match &vm.heap[id as usize].kind {
+        Kind::Array(items) => items.clone(),
+        _ => Vec::new(),
+    };
+    let mut out = Vec::with_capacity(items.len());
+    for item in &items {
+        if matches!(item, Value::Uninit) {
+            out.push(None);
+            continue;
+        }
+        match to_host(vm, item, depth + 1, cx) {
+            Ok(item) => out.push(Some(item.unwrap_or(HostValue::Null))),
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(HostValue::Array(out))
+}
+
+fn fields_to_host(vm: &mut Vm, id: Id, depth: usize, cx: &mut ToHost) -> Result<HostValue, Value> {
+    let mut out = Vec::new();
+    for (k, val) in vm.own_entries(id) {
+        let key = HostString::from_run_text(vm.atoms.text(k));
+        if key == "__proto__" || vm.setter_only(id, k) {
+            continue;
+        }
+        match to_host(vm, &val, depth + 1, cx) {
+            Ok(Some(item)) => out.push((key, item)),
+            Ok(None) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(HostValue::Object(out))
+}
+
+/// A Map or a Set: a child left out is undefined there.
+#[inline(never)]
+fn collection_to_host(
+    vm: &mut Vm,
+    id: Id,
+    depth: usize,
+    cx: &mut ToHost,
+) -> Result<HostValue, Value> {
+    let (is_map, entries): (bool, Vec<(Value, Value)>) = match &vm.heap[id as usize].kind {
+        Kind::Map(m) => (true, m.iter().copied().collect()),
+        Kind::Set(m) => (false, m.iter().copied().collect()),
+        _ => (false, Vec::new()),
+    };
+    let mut kept =
+        |vm: &mut Vm, item: &Value| to_host(vm, item, depth + 1, cx).map(Option::unwrap_or_default);
+    Ok(if is_map {
+        let mut out = Vec::with_capacity(entries.len());
+        for (k, val) in &entries {
+            let k = kept(vm, k)?;
+            out.push((k, kept(vm, val)?));
+        }
+        HostValue::Map(out)
+    } else {
+        let mut out = Vec::with_capacity(entries.len());
+        for (k, _) in &entries {
+            out.push(kept(vm, k)?);
+        }
+        HostValue::Set(out)
+    })
+}
+
+#[inline(never)]
+fn error_to_host(vm: &mut Vm, id: Id, depth: usize, cx: &mut ToHost) -> Result<HostValue, Value> {
+    let (name, message) = crate::convert::error_parts(vm, id);
+    let name = crate::cross::host_error_name(vm, id, name);
+    let mut error = HostError::named(
+        HostString::from_run_text(&name),
+        HostString::from_run_text(&message),
+    );
+    let cause_key = vm.names.cause;
+    // A field that cannot cross is left behind, so the error itself always arrives.
+    let left_behind = |vm: &mut Vm, item: &Value, cx: &mut ToHost| {
+        let at = cx.seen.len();
+        match to_host(vm, item, depth + 1, cx) {
+            Ok(item) => Ok(item),
+            Err(e) if vm.fatal.is_some() => Err(e),
+            Err(_) => {
+                cx.seen.truncate(at);
+                Ok(None)
+            }
+        }
+    };
+    if vm.has_own(id, cause_key) && !vm.setter_only(id, cause_key) {
+        let cause = vm.get_obj(id, cause_key);
+        if let Some(c) = left_behind(vm, &cause, cx)? {
+            error.cause = Some(Box::new(c));
+        }
+    }
+    for (k, val) in vm.own_entries(id) {
+        let key = HostString::from_run_text(vm.atoms.text(k));
+        if key.as_str().is_some_and(crate::cross::uncrossed)
+            || k == cause_key
+            || vm.setter_only(id, k)
+        {
+            continue;
+        }
+        if let Some(item) = left_behind(vm, &val, cx)? {
+            error.fields.push((key, item));
+        }
+    }
+    Ok(HostValue::Error(Box::new(error)))
+}
+
+/// A value that holds no others it copies.
+#[inline(never)]
+fn leaf_to_host(vm: &mut Vm, id: Id, _: usize, _: &mut ToHost) -> Result<HostValue, Value> {
+    Ok(match &vm.heap[id as usize].kind {
         Kind::Date(t) => HostValue::Date(*t),
         Kind::RegExp(r) => HostValue::RegExp {
             source: HostString::from_run_text(&r.source),
@@ -1530,96 +1717,8 @@ fn to_host(
                 HostValue::Bytes(data)
             }
         }
-        Kind::Array(_) if vm.heap[id as usize].flags & SPARSE != 0 => {
-            vm.densify(id)?;
-            cx.seen.pop();
-            return to_host(vm, v, depth, cx);
-        }
-        Kind::Array(items) => {
-            let items = items.clone();
-            let mut out = Vec::with_capacity(items.len());
-            for item in &items {
-                out.push(match item {
-                    Value::Uninit => None,
-                    item => Some(to_host(vm, item, depth + 1, cx)?.unwrap_or(HostValue::Null)),
-                });
-            }
-            HostValue::Array(out)
-        }
-        Kind::Map(m) | Kind::Set(m) => {
-            let is_map = matches!(vm.heap[id as usize].kind, Kind::Map(_));
-            let entries: Vec<(Value, Value)> = m.iter().copied().collect();
-            if is_map {
-                let mut out = Vec::with_capacity(entries.len());
-                for (k, val) in &entries {
-                    let k = kept(vm, k, cx)?;
-                    out.push((k, kept(vm, val, cx)?));
-                }
-                HostValue::Map(out)
-            } else {
-                let mut out = Vec::with_capacity(entries.len());
-                for (k, _) in &entries {
-                    out.push(kept(vm, k, cx)?);
-                }
-                HostValue::Set(out)
-            }
-        }
-        Kind::Error(_) => {
-            let (name, message) = crate::convert::error_parts(vm, id);
-            let name = crate::cross::host_error_name(vm, id, name);
-            let mut error = HostError::named(
-                HostString::from_run_text(&name),
-                HostString::from_run_text(&message),
-            );
-            let cause_key = vm.names.cause;
-            // A field that cannot cross is left behind, so the error itself always arrives.
-            let left_behind = |vm: &mut Vm, item: &Value, cx: &mut ToHost| {
-                let at = cx.seen.len();
-                match to_host(vm, item, depth + 1, cx) {
-                    Ok(item) => Ok(item),
-                    Err(e) if vm.fatal.is_some() => Err(e),
-                    Err(_) => {
-                        cx.seen.truncate(at);
-                        Ok(None)
-                    }
-                }
-            };
-            if vm.has_own(id, cause_key) && !vm.setter_only(id, cause_key) {
-                let cause = vm.get_obj(id, cause_key);
-                if let Some(c) = left_behind(vm, &cause, cx)? {
-                    error.cause = Some(Box::new(c));
-                }
-            }
-            for (k, val) in vm.own_entries(id) {
-                let key = HostString::from_run_text(vm.atoms.text(k));
-                if key.as_str().is_some_and(crate::cross::uncrossed)
-                    || k == cause_key
-                    || vm.setter_only(id, k)
-                {
-                    continue;
-                }
-                if let Some(item) = left_behind(vm, &val, cx)? {
-                    error.fields.push((key, item));
-                }
-            }
-            HostValue::Error(Box::new(error))
-        }
-        _ => {
-            let mut out = Vec::new();
-            for (k, val) in vm.own_entries(id) {
-                let key = HostString::from_run_text(vm.atoms.text(k));
-                if key == "__proto__" || vm.setter_only(id, k) {
-                    continue;
-                }
-                if let Some(item) = to_host(vm, &val, depth + 1, cx)? {
-                    out.push((key, item));
-                }
-            }
-            HostValue::Object(out)
-        }
-    };
-    cx.seen.pop();
-    Ok(Some(out))
+        _ => HostValue::Undefined,
+    })
 }
 
 /// A host value copied in, from where it is (`place`).
@@ -1630,14 +1729,188 @@ fn from_host(
     place: &Place,
     depth: usize,
 ) -> Result<Value, Value> {
-    if depth > crate::convert::MAX_VALUE_DEPTH {
-        let msg = format!(
-            "{label} exceeds the maximum value depth of {}.",
-            crate::convert::MAX_VALUE_DEPTH
-        );
-        return Err(vm.type_error(&msg));
+    if depth > vm.value_depth() {
+        return Err(cannot_hold(vm, label, "exceeds the maximum value depth of"));
     }
+    // Apart, so that the frame each level of a value takes stays small (see `tests/value_depth.rs`).
+    match v {
+        HostValue::Array(items) => array_from_host(vm, items, label, place, depth),
+        HostValue::Object(fields) => object_from_host(vm, fields, label, place, depth),
+        HostValue::Map(_) | HostValue::Set(_) => collection_from_host(vm, v, label, place, depth),
+        HostValue::Error(e) => error_from_host(vm, e, label, depth),
+        _ => leaf_from_host(vm, v, label, place, depth),
+    }
+}
+
+/// `label exceeds the maximum value depth of N.`
+#[cold]
+#[inline(never)]
+fn cannot_hold(vm: &mut Vm, label: &str, what: &str) -> Value {
+    let msg = format!("{label} {what} {}.", vm.value_depth());
+    vm.type_error(&msg)
+}
+
+// Without `?`, whose temporaries each take a slot of a debug build's frame, at every level of a value.
+#[allow(clippy::question_mark)]
+fn array_from_host(
+    vm: &mut Vm,
+    items: &[Option<HostValue>],
+    label: &str,
+    place: &Place,
+    depth: usize,
+) -> Result<Value, Value> {
+    if items.len() > 10_000_000 {
+        let msg = format!(
+            "{label} produced an array of {} items; at most 10000000 can cross.",
+            items.len()
+        );
+        return Err(vm.range_error(&msg));
+    }
+    let mut out = Vec::with_capacity(items.len());
+    for (i, item) in items.iter().enumerate() {
+        let Some(item) = item else {
+            out.push(Value::Uninit);
+            continue;
+        };
+        match from_host(
+            vm,
+            item,
+            &format!("{label}[{i}]"),
+            &place.child(None),
+            depth + 1,
+        ) {
+            Ok(v) => out.push(v),
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(vm.new_array(out))
+}
+
+// Without `?`, whose temporaries each take a slot of a debug build's frame, at every level of a value.
+#[allow(clippy::question_mark)]
+fn object_from_host(
+    vm: &mut Vm,
+    fields: &[(HostString, HostValue)],
+    label: &str,
+    place: &Place,
+    depth: usize,
+) -> Result<Value, Value> {
+    let id = vm.new_object();
+    for (k, item) in fields {
+        let path = format!("{label}.{}", k.to_string_lossy());
+        match from_host(vm, item, &path, &place.child(Some(k)), depth + 1) {
+            Ok(val) => {
+                let key = vm.atoms.intern(&k.to_run_text());
+                vm.define(id, key, val);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(Value::Obj(id))
+}
+
+#[inline(never)]
+fn collection_from_host(
+    vm: &mut Vm,
+    v: &HostValue,
+    label: &str,
+    place: &Place,
+    depth: usize,
+) -> Result<Value, Value> {
+    Ok(match v {
+        HostValue::Map(entries) => {
+            let proto = vm.realm.map_proto;
+            let id = vm.alloc(Obj::new(Some(proto), Kind::Map(Box::default())));
+            for (k, item) in entries {
+                let k = from_host(vm, k, label, &place.child(None), depth + 1)?;
+                let item = from_host(vm, item, label, &place.child(None), depth + 1)?;
+                let mk = vm.map_key(&k);
+                let entry_key = vm.map_entry_key(mk, k);
+                if let Kind::Map(m) = &mut vm.heap[id as usize].kind {
+                    m.set(mk, entry_key, item);
+                }
+            }
+            Value::Obj(id)
+        }
+        HostValue::Set(items) => {
+            let proto = vm.realm.set_proto;
+            let id = vm.alloc(Obj::new(Some(proto), Kind::Set(Box::default())));
+            for item in items {
+                let k = from_host(vm, item, label, &place.child(None), depth + 1)?;
+                let mk = vm.map_key(&k);
+                let entry_key = vm.map_entry_key(mk, k);
+                if let Kind::Set(m) = &mut vm.heap[id as usize].kind {
+                    m.set(mk, entry_key, Value::Undef);
+                }
+            }
+            Value::Obj(id)
+        }
+        _ => Value::Undef,
+    })
+}
+
+#[inline(never)]
+fn error_from_host(vm: &mut Vm, e: &HostError, label: &str, depth: usize) -> Result<Value, Value> {
     let next = |key: &str| format!("{label}.{key}");
+    let proto = match e.name.as_str().unwrap_or_default() {
+        "TypeError" => vm.realm.type_error_proto,
+        "RangeError" => vm.realm.range_error_proto,
+        "SyntaxError" => vm.realm.syntax_error_proto,
+        "ReferenceError" => vm.realm.reference_error_proto,
+        "AggregateError" => vm.realm.aggregate_error_proto,
+        name @ ("URIError" | "EvalError") => {
+            crate::builtins::ensure_global(vm, name);
+            let g = vm.atoms.intern(name);
+            match vm.global_map.get(&g).copied() {
+                Some(Value::Obj(c)) => {
+                    let key = vm.names.prototype;
+                    vm.get_obj(c, key).as_obj().unwrap_or(vm.realm.error_proto)
+                }
+                _ => vm.realm.error_proto,
+            }
+        }
+        _ => vm.realm.error_proto,
+    };
+    let err = vm.make_error(proto, &e.message.to_run_text());
+    if let Value::Obj(id) = err {
+        if let Some(cause) = &e.cause
+            && let Ok(c) = from_host(vm, cause, &next("cause"), &Place::default(), depth + 1)
+        {
+            let key = vm.names.cause;
+            vm.define_hidden(id, key, c);
+        }
+        for (k, item) in &e.fields {
+            if matches!(
+                k.as_str(),
+                Some("stack" | "message" | "constructor" | "toString" | "__proto__")
+            ) {
+                continue;
+            }
+            if matches!(
+                item,
+                HostValue::Function(_) | HostValue::Durable(_) | HostValue::Namespace(_)
+            ) {
+                continue;
+            }
+            let shown = k.to_string_lossy();
+            if let Ok(val) = from_host(vm, item, &next(&shown), &Place::default(), depth + 1) {
+                let key = vm.atoms.intern(&k.to_run_text());
+                vm.define(id, key, val);
+            }
+        }
+    }
+    Ok(err)
+}
+
+// Apart in a debug build, to keep the frames of a deep value small; inlined in a release build.
+#[cfg_attr(debug_assertions, inline(never))]
+fn leaf_from_host(
+    vm: &mut Vm,
+    v: &HostValue,
+    label: &str,
+    place: &Place,
+    depth: usize,
+) -> Result<Value, Value> {
     Ok(match v {
         HostValue::Undefined | HostValue::Interrupt => Value::Undef,
         HostValue::Null => Value::Null,
@@ -1680,39 +1953,6 @@ fn from_host(
             f.message.clone(),
             f.suggestions.clone(),
         ),
-        HostValue::Array(items) => {
-            if items.len() > 10_000_000 {
-                let msg = format!(
-                    "{label} produced an array of {} items; at most 10000000 can cross.",
-                    items.len()
-                );
-                return Err(vm.range_error(&msg));
-            }
-            let mut out = Vec::with_capacity(items.len());
-            for (i, item) in items.iter().enumerate() {
-                out.push(match item {
-                    Some(item) => from_host(
-                        vm,
-                        item,
-                        &format!("{label}[{i}]"),
-                        &place.child(None),
-                        depth + 1,
-                    )?,
-                    None => Value::Uninit,
-                });
-            }
-            vm.new_array(out)
-        }
-        HostValue::Object(fields) => {
-            let id = vm.new_object();
-            for (k, item) in fields {
-                let shown = k.to_string_lossy();
-                let val = from_host(vm, item, &next(&shown), &place.child(Some(k)), depth + 1)?;
-                let key = vm.atoms.intern(&k.to_run_text());
-                vm.define(id, key, val);
-            }
-            Value::Obj(id)
-        }
         HostValue::Date(t) => {
             crate::builtins::date::new_date(vm, crate::builtins::date::time_clip(*t))
         }
@@ -1742,86 +1982,11 @@ fn from_host(
         HostValue::Buffer(data) => crate::builtins::bytes::new_bytes(vm, data.clone(), true),
         HostValue::TypedArray(t) => crate::builtins::typed::from_host(vm, t, label)?,
         HostValue::Response(response) => response_from_host(vm, response, label, place, depth)?,
-        HostValue::Map(entries) => {
-            let proto = vm.realm.map_proto;
-            let id = vm.alloc(Obj::new(Some(proto), Kind::Map(Box::default())));
-            for (k, item) in entries {
-                let k = from_host(vm, k, label, &place.child(None), depth + 1)?;
-                let item = from_host(vm, item, label, &place.child(None), depth + 1)?;
-                let mk = vm.map_key(&k);
-                let entry_key = vm.map_entry_key(mk, k);
-                if let Kind::Map(m) = &mut vm.heap[id as usize].kind {
-                    m.set(mk, entry_key, item);
-                }
-            }
-            Value::Obj(id)
-        }
-        HostValue::Set(items) => {
-            let proto = vm.realm.set_proto;
-            let id = vm.alloc(Obj::new(Some(proto), Kind::Set(Box::default())));
-            for item in items {
-                let k = from_host(vm, item, label, &place.child(None), depth + 1)?;
-                let mk = vm.map_key(&k);
-                let entry_key = vm.map_entry_key(mk, k);
-                if let Kind::Set(m) = &mut vm.heap[id as usize].kind {
-                    m.set(mk, entry_key, Value::Undef);
-                }
-            }
-            Value::Obj(id)
-        }
-        HostValue::Error(e) => {
-            let proto = match e.name.as_str().unwrap_or_default() {
-                "TypeError" => vm.realm.type_error_proto,
-                "RangeError" => vm.realm.range_error_proto,
-                "SyntaxError" => vm.realm.syntax_error_proto,
-                "ReferenceError" => vm.realm.reference_error_proto,
-                "AggregateError" => vm.realm.aggregate_error_proto,
-                name @ ("URIError" | "EvalError") => {
-                    crate::builtins::ensure_global(vm, name);
-                    let g = vm.atoms.intern(name);
-                    match vm.global_map.get(&g).copied() {
-                        Some(Value::Obj(c)) => {
-                            let key = vm.names.prototype;
-                            vm.get_obj(c, key).as_obj().unwrap_or(vm.realm.error_proto)
-                        }
-                        _ => vm.realm.error_proto,
-                    }
-                }
-                _ => vm.realm.error_proto,
-            };
-            let err = vm.make_error(proto, &e.message.to_run_text());
-            if let Value::Obj(id) = err {
-                if let Some(cause) = &e.cause
-                    && let Ok(c) =
-                        from_host(vm, cause, &next("cause"), &Place::default(), depth + 1)
-                {
-                    let key = vm.names.cause;
-                    vm.define_hidden(id, key, c);
-                }
-                for (k, item) in &e.fields {
-                    if matches!(
-                        k.as_str(),
-                        Some("stack" | "message" | "constructor" | "toString" | "__proto__")
-                    ) {
-                        continue;
-                    }
-                    if matches!(
-                        item,
-                        HostValue::Function(_) | HostValue::Durable(_) | HostValue::Namespace(_)
-                    ) {
-                        continue;
-                    }
-                    let shown = k.to_string_lossy();
-                    if let Ok(val) =
-                        from_host(vm, item, &next(&shown), &Place::default(), depth + 1)
-                    {
-                        let key = vm.atoms.intern(&k.to_run_text());
-                        vm.define(id, key, val);
-                    }
-                }
-            }
-            err
-        }
+        HostValue::Array(_)
+        | HostValue::Object(_)
+        | HostValue::Map(_)
+        | HostValue::Set(_)
+        | HostValue::Error(_) => Value::Undef,
     })
 }
 

@@ -17,10 +17,6 @@ use crate::object::*;
 use crate::value::{Id, Slot, Value};
 use crate::vm::{NATIVE_FUEL, Reaction, Res, Vm};
 
-/// The depth the fast path allows.
-const FAST_DEPTH: u32 = 32;
-/// The depth the walk allows.
-const WALK_DEPTH: u32 = 100;
 /// The visits of objects seen already the fast path allows (`VISIT_BUDGET`): it gives up at the last.
 const REVISITS: u32 = 2048;
 
@@ -100,6 +96,7 @@ pub fn fast(vm: &mut Vm, v: &Value) -> Result<Fast, Value> {
         seen: FxHashSet::default(),
         ancestors: Vec::new(),
         revisits: REVISITS,
+        max: vm.value_depth() as u32,
     };
     Ok(match walk.visit(vm, v, 0)? {
         Some(j) => Fast::Json(j),
@@ -154,39 +151,67 @@ struct FastWalk {
     seen: FxHashSet<Id>,
     ancestors: Vec<Id>,
     revisits: u32,
+    /// The depth it allows: the run's `max_value_depth`.
+    max: u32,
+}
+
+/// What `FastWalk::step` makes of a value: its JSON (`None` for undefined), a need for the walk, or the object whose
+/// children it copies next.
+enum Visited {
+    Done(Option<Json>),
+    Walk,
+    Open(Id),
 }
 
 impl FastWalk {
-    /// A value's JSON, `Some(None)` for undefined; `None` when the walk is needed.
+    /// A value's JSON, `Some(None)` for undefined; `None` when the walk is needed. Its parts are apart, and written
+    /// without `?`, so that the frames each level of a value takes stay small (see `tests/value_depth.rs`).
     fn visit(
         &mut self,
         vm: &mut Vm,
         cur: &Value,
         depth: u32,
     ) -> Result<Option<Option<Json>>, Value> {
-        if depth > FAST_DEPTH {
-            return Err(
-                vm.range_error(&format!("Value exceeds the maximum depth of {FAST_DEPTH}."))
-            );
+        let id = match self.step(vm, cur, depth) {
+            Ok(Visited::Open(id)) => id,
+            Ok(Visited::Done(j)) => return Ok(Some(j)),
+            Ok(Visited::Walk) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        self.ancestors.push(id);
+        let r = if matches!(vm.heap[id as usize].kind, Kind::Array(_) | Kind::Set(_)) {
+            self.items(vm, id, depth)
+        } else {
+            self.fields(vm, id, depth)
+        };
+        self.ancestors.pop();
+        r
+    }
+
+    // Apart in a debug build, to keep the frames of a deep value small; inlined in a release build.
+    #[cfg_attr(debug_assertions, inline(never))]
+    fn step(&mut self, vm: &mut Vm, cur: &Value, depth: u32) -> Result<Visited, Value> {
+        if depth > self.max {
+            let msg = format!("Value exceeds the maximum depth of {}.", self.max);
+            return Err(vm.range_error(&msg));
         }
         let id = match cur {
-            Value::Undef | Value::Uninit => return Ok(Some(None)),
-            Value::Num(n) => return Ok(Some(Some(number(*n)))),
-            Value::Null => return Ok(Some(Some(Json::Null))),
-            Value::Bool(b) => return Ok(Some(Some(Json::Bool(*b)))),
+            Value::Undef | Value::Uninit => return Ok(Visited::Done(None)),
+            Value::Num(n) => return Ok(Visited::Done(Some(number(*n)))),
+            Value::Null => return Ok(Visited::Done(Some(Json::Null))),
+            Value::Bool(b) => return Ok(Visited::Done(Some(Json::Bool(*b)))),
             Value::Str(s) => {
-                return Ok(Some(Some(Json::String(crate::convert::host_string(
-                    vm, *s,
-                )))));
+                let s = crate::convert::host_string(vm, *s);
+                return Ok(Visited::Done(Some(Json::String(s))));
             }
-            Value::Sym(_) => return Ok(Some(Some(Json::Object(serde_json::Map::new())))),
+            Value::Sym(_) => return Ok(Visited::Done(Some(Json::Object(serde_json::Map::new())))),
             Value::Obj(id) => *id,
         };
         if vm.heap[id as usize].is_callable() {
-            return Ok(Some(marked(vm)));
+            return Ok(Visited::Done(marked(vm)));
         }
         if matches!(vm.heap[id as usize].kind, Kind::Promise(_)) {
-            return Ok(None);
+            return Ok(Visited::Walk);
         }
         // Program getters run in the walk.
         let (tk, nk, mk) = (vm.names.to_json, vm.names.name, vm.names.message);
@@ -195,12 +220,12 @@ impl FastWalk {
             || (matches!(vm.heap[id as usize].kind, Kind::Error(_))
                 && (vm.has_program_getter(id, nk) || vm.has_program_getter(id, mk)))
         {
-            return Ok(None);
+            return Ok(Visited::Walk);
         }
         if !self.seen.insert(id) {
             self.revisits -= 1;
             if self.revisits == 0 {
-                return Ok(None);
+                return Ok(Visited::Walk);
             }
         }
         let plain = is_plain(vm, id);
@@ -211,85 +236,82 @@ impl FastWalk {
             vm.get(cur, tj)?
         };
         if vm.is_callable(&to_json) {
-            return Ok(builtin_to_json(vm, id, &to_json).map(Some));
+            return Ok(match builtin_to_json(vm, id, &to_json) {
+                Some(j) => Visited::Done(Some(j)),
+                None => Visited::Walk,
+            });
         }
         match &vm.heap[id as usize].kind {
             Kind::Bytes(_) => {
-                return crate::builtins::exotic::json_value(vm, cur, true).map(|_| None);
+                crate::builtins::exotic::json_value(vm, cur, true)?;
+                return Ok(Visited::Walk);
             }
             Kind::SearchParams(_) | Kind::Headers(_) => {
                 let v = crate::builtins::exotic::json_value(vm, cur, true)?;
-                return Ok(Some(Some(plain_json(vm, &v).unwrap_or(Json::Null))));
+                return Ok(Visited::Done(Some(
+                    plain_json(vm, &v).unwrap_or(Json::Null),
+                )));
             }
             _ => {}
         }
         if self.ancestors.contains(&id) {
             return Err(vm.type_error("Converting circular structure to JSON."));
         }
-        self.ancestors.push(id);
-        let r = self.children(vm, id, depth);
-        self.ancestors.pop();
-        r
+        if matches!(vm.heap[id as usize].kind, Kind::Array(_))
+            && let Err(e) = vm.densify(id)
+        {
+            return Err(e);
+        }
+        Ok(Visited::Open(id))
     }
 
-    fn children(&mut self, vm: &mut Vm, id: Id, depth: u32) -> Result<Option<Option<Json>>, Value> {
-        let items = match &vm.heap[id as usize].kind {
-            Kind::Array(_) => {
-                vm.densify(id)?;
-                match &vm.heap[id as usize].kind {
-                    Kind::Array(items) => Some(
-                        items
-                            .iter()
-                            .map(|v| {
-                                if matches!(v, Value::Uninit) {
-                                    Value::Undef
-                                } else {
-                                    *v
-                                }
-                            })
-                            .collect::<Vec<_>>(),
-                    ),
-                    _ => Some(Vec::new()),
-                }
-            }
-            Kind::Set(m) => Some(m.iter().map(|(k, _)| *k).collect()),
-            _ => None,
+    /// An array's items, or a Set's, as a JSON array.
+    fn items(&mut self, vm: &mut Vm, id: Id, depth: u32) -> Result<Option<Option<Json>>, Value> {
+        let items: Vec<Value> = match &vm.heap[id as usize].kind {
+            Kind::Array(items) => items
+                .iter()
+                .map(|v| match v {
+                    Value::Uninit => Value::Undef,
+                    v => *v,
+                })
+                .collect(),
+            Kind::Set(m) => m.iter().map(|(k, _)| *k).collect(),
+            _ => Vec::new(),
         };
-        if let Some(items) = items {
-            let mut out = Vec::with_capacity(items.len());
-            for item in items {
-                match self.visit(vm, &item, depth + 1)? {
-                    None => return Ok(None),
-                    Some(j) => out.push(j.unwrap_or(Json::Null)),
-                }
+        let mut out = Vec::with_capacity(items.len());
+        for item in items {
+            match self.visit(vm, &item, depth + 1) {
+                Ok(Some(j)) => out.push(j.unwrap_or(Json::Null)),
+                Ok(None) => return Ok(None),
+                Err(e) => return Err(e),
             }
-            return Ok(Some(Some(Json::Array(out))));
         }
-        let mut out = serde_json::Map::new();
+        Ok(Some(Some(Json::Array(out))))
+    }
+
+    /// An object's own enumerable data, an error's name and message first.
+    fn fields(&mut self, vm: &mut Vm, id: Id, depth: u32) -> Result<Option<Option<Json>>, Value> {
+        let mut entries = Vec::new();
         if matches!(vm.heap[id as usize].kind, Kind::Error(_)) {
             for k in [vm.names.name, vm.names.message] {
-                let v = vm.get_obj(id, k);
-                match self.visit(vm, &v, depth + 1)? {
-                    None => return Ok(None),
-                    Some(Some(j)) => {
-                        out.insert(vm.atoms.text(k).to_owned(), j);
-                    }
-                    Some(None) => {}
-                }
+                entries.push((k, vm.get_obj(id, k)));
             }
         }
-        for (k, v) in vm.own_entries(id) {
+        entries.extend(vm.own_entries(id));
+        let mut out = serde_json::Map::new();
+        for (k, v) in entries {
             let name = vm.atoms.text(k);
             if name == "__proto__" {
                 continue;
             }
             let name = name.to_owned();
-            match self.visit(vm, &v, depth + 1)? {
-                None => return Ok(None),
-                Some(Some(j)) => {
+            match self.visit(vm, &v, depth + 1) {
+                Ok(Some(Some(j))) => {
                     out.insert(name, j);
                 }
-                Some(None) => {}
+                Ok(Some(None)) => {}
+                Ok(None) => return Ok(None),
+                Err(e) => return Err(e),
             }
         }
         Ok(Some(Some(Json::Object(out))))
@@ -334,36 +356,48 @@ fn builtin_to_json(vm: &mut Vm, id: Id, f: &Value) -> Option<Json> {
 /// The reference's `toPlainJson`: what the walk built, as host JSON; `None` for undefined. A function here is one the
 /// result marks: the walk leaves out every other.
 fn plain_json(vm: &Vm, v: &Value) -> Option<Json> {
+    let id = match v {
+        Value::Obj(id) => *id,
+        v => return plain_scalar(vm, v),
+    };
+    // Only arrays and objects recurse here, in plain loops, so each level's frame stays small (see
+    // `tests/value_depth.rs`).
+    Some(match &vm.heap[id as usize].kind {
+        Kind::Array(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for i in items {
+                out.push(plain_json(vm, i).unwrap_or(Json::Null));
+            }
+            Json::Array(out)
+        }
+        _ if vm.heap[id as usize].is_callable() => {
+            Json::String(crate::data::FUNCTION_MARKER.to_owned())
+        }
+        _ => {
+            let mut out = serde_json::Map::new();
+            for p in &vm.heap[id as usize].props.items {
+                if p.flags & ENUMERABLE == 0 || p.key <= SYM_ASYNC_ITERATOR {
+                    continue;
+                }
+                if let Some(j) = plain_json(vm, &p.value) {
+                    out.insert(vm.atoms.text(p.key).to_owned(), j);
+                }
+            }
+            Json::Object(out)
+        }
+    })
+}
+
+// Apart in a debug build, to keep the frames of a deep value small; inlined in a release build.
+#[cfg_attr(debug_assertions, inline(never))]
+fn plain_scalar(vm: &Vm, v: &Value) -> Option<Json> {
     Some(match v {
         Value::Undef | Value::Uninit => return None,
         Value::Null => Json::Null,
         Value::Bool(b) => Json::Bool(*b),
         Value::Num(n) => crate::convert::json_number(*n),
         Value::Str(s) => Json::String(crate::convert::host_string(vm, *s)),
-        Value::Sym(_) => Json::Object(serde_json::Map::new()),
-        Value::Obj(id) => match &vm.heap[*id as usize].kind {
-            Kind::Array(items) => Json::Array(
-                items
-                    .iter()
-                    .map(|i| plain_json(vm, i).unwrap_or(Json::Null))
-                    .collect(),
-            ),
-            _ if vm.heap[*id as usize].is_callable() => {
-                Json::String(crate::data::FUNCTION_MARKER.to_owned())
-            }
-            _ => {
-                let mut out = serde_json::Map::new();
-                for p in &vm.heap[*id as usize].props.items {
-                    if p.flags & ENUMERABLE == 0 || p.key <= SYM_ASYNC_ITERATOR {
-                        continue;
-                    }
-                    if let Some(j) = plain_json(vm, &p.value) {
-                        out.insert(vm.atoms.text(p.key).to_owned(), j);
-                    }
-                }
-                Json::Object(out)
-            }
-        },
+        Value::Sym(_) | Value::Obj(_) => Json::Object(serde_json::Map::new()),
     })
 }
 
@@ -695,10 +729,9 @@ fn run(vm: &mut Vm, c: &mut Cross, mut act: Act, mut root_awaited: bool) -> Resu
             Act::Read => {
                 let top = c.stack.last().expect("visit");
                 // `$Throw`, a native that throws and so costs nothing.
-                if top.depth > WALK_DEPTH {
-                    return Err(vm.range_error(&format!(
-                        "Value exceeds the maximum depth of {WALK_DEPTH}."
-                    )));
+                if top.depth as usize > vm.walk_depth() {
+                    let msg = format!("Value exceeds the maximum depth of {}.", vm.walk_depth());
+                    return Err(vm.range_error(&msg));
                 }
                 let (holder, key) = (top.holder, top.key);
                 vm.op_access = true;

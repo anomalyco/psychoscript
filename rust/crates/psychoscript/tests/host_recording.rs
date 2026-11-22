@@ -335,6 +335,9 @@ fn runtime(entry: &Json, state: &State) -> Runtime {
             .as_u64()
             .map(|n| n as usize),
         max_heap_bytes: entry["limits"]["maxHeapBytes"].as_u64(),
+        max_value_depth: entry["limits"]["maxValueDepth"]
+            .as_u64()
+            .map(|n| n as usize),
     };
     let state = state.clone();
     Runtime::make()

@@ -1,4 +1,5 @@
 import type { Interpreter } from "../runtime/interpreter.js"
+import { MAX_VALUE_DEPTH_LIMIT } from "../runtime/limits.js"
 import { type Encoded, type Json, type Record, SnapshotError } from "./codec.js"
 
 export { SnapshotError }
@@ -51,6 +52,8 @@ export type Header = {
     readonly maxOutputBytes: number | null
     /** Absent when the run has no heap limit. */
     readonly maxHeapBytes?: number | null
+    /** Absent when the run has the default depth. */
+    readonly maxValueDepth?: number
   }
   /** What the run has used so far, across every resume: active milliseconds. */
   readonly budget: { readonly activeMs: number }
@@ -90,6 +93,14 @@ const json = (value: unknown, what: string): Json => {
 
 const limit = (value: unknown, what: string): number | null => (value === null ? null : number(value, what))
 
+// A saved depth is checked as `Runtime.make` checks it: past the bound, the copies could run out of stack.
+const depth = (value: unknown): number => {
+  if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > MAX_VALUE_DEPTH_LIMIT) {
+    fail(`the value depth ${String(value)} is not an integer from 1 to ${MAX_VALUE_DEPTH_LIMIT}.`)
+  }
+  return value as number
+}
+
 /** A saved state's header, checked in full, before anything is restored. */
 export const header = (saved: unknown): Header => validate(saved).header
 
@@ -117,6 +128,7 @@ export const validate = (saved: unknown): Snapshot => {
       timeoutMs: limit(limits.timeoutMs, "timeoutMs"),
       maxOutputBytes: limit(limits.maxOutputBytes, "maxOutputBytes"),
       ...(limits.maxHeapBytes === undefined ? {} : { maxHeapBytes: limit(limits.maxHeapBytes, "maxHeapBytes") }),
+      ...(limits.maxValueDepth === undefined ? {} : { maxValueDepth: depth(limits.maxValueDepth) }),
     },
     budget: { activeMs: number(budget.activeMs, "the active time") },
     metadata: json(header.metadata, "the metadata"),

@@ -10,6 +10,11 @@ pub struct Limits {
     /// The most bytes the run's heap may hold: everything it can still reach, in the size model the reference
     /// shares (see `heap.rs`), not the process's memory. A run over it stops with `MemoryLimitExceeded`.
     pub max_heap_bytes: Option<u64>,
+    /// The deepest nesting a value may have where it crosses between the program and the host: the result, a host
+    /// call's arguments and what it returns. `JSON.stringify` copies to the same depth. `None` is 32; at most
+    /// [`MAX_VALUE_DEPTH_LIMIT`](crate::MAX_VALUE_DEPTH_LIMIT), as the copies recurse on the native stack once a
+    /// level. A value nested deeper fails with a `TypeError` (a `RangeError` for the result and `JSON.stringify`).
+    pub max_value_depth: Option<usize>,
 }
 
 /// A diagnostic's kind: the language's own, or one a host function's failure names ([`Failure`](crate::Failure)),
