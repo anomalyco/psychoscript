@@ -551,7 +551,22 @@ impl Vm {
         if self.atoms.bufs.len() >= MAX_STRINGS {
             self.out_of_memory();
         }
+        if self.heap_meter.is_some() {
+            self.charge_concat(parts);
+        }
         Value::Str(self.atoms.concat(parts))
+    }
+
+    /// Charges the heap meter with what a concatenation copies: every part into a new buffer, or the parts after the
+    /// first when it appends to the first one's buffer in place.
+    #[cold]
+    fn charge_concat(&mut self, parts: &[StrId]) {
+        let total: usize = parts.iter().map(|p| self.atoms.byte_len(*p)).sum();
+        let kept = match parts.first() {
+            Some(&f) if self.atoms.appends_in_place(f) => self.atoms.byte_len(f),
+            _ => 0,
+        };
+        self.charge_heap(2 * (total - kept) as u64);
     }
 
     #[inline]
@@ -3521,6 +3536,7 @@ impl Vm {
                             continue 'outer;
                         }
                         let items = tri!(self.iterate_to_vec(&src));
+                        self.charge_heap(items.len() as u64 * crate::heap::ELEMENT_BYTES);
                         if let Value::Obj(id) = self.top()
                             && let Kind::Array(arr) = &mut self.heap[id as usize].kind
                         {

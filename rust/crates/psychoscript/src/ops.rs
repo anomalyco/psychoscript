@@ -682,8 +682,11 @@ impl Vm {
                         self.sparse_set(id, key, i, val);
                         return Ok(());
                     }
-                    items.resize(i, Value::Uninit);
-                    items.push(val);
+                    if i == items.len() {
+                        items.push(val);
+                    } else {
+                        self.write_past_end(id, i, val);
+                    }
                     return Ok(());
                 }
                 if key == length {
@@ -700,7 +703,9 @@ impl Vm {
                     if flags & SPARSE != 0 {
                         self.unsparse(id, n as usize);
                     } else if let Kind::Array(items) = &mut self.heap[id as usize].kind {
+                        let grown = (n as usize).saturating_sub(items.len()) as u64;
                         items.resize(n as usize, Value::Uninit);
+                        self.charge_heap(grown * crate::heap::ELEMENT_BYTES);
                     }
                     return Ok(());
                 }
@@ -895,6 +900,19 @@ impl Vm {
         self.set(v, a, val)
     }
 
+    /// Writes element `i` of dense array `id` past its end, holes before it, charged to the heap meter.
+    #[cold]
+    #[inline(never)]
+    fn write_past_end(&mut self, id: Id, i: usize, val: Value) {
+        let Kind::Array(items) = &mut self.heap[id as usize].kind else {
+            return;
+        };
+        let grown = i + 1 - items.len();
+        items.resize(i, Value::Uninit);
+        items.push(val);
+        self.charge_elements(grown);
+    }
+
     /// Defines an own enumerable data property, as object literals do.
     #[inline(never)]
     pub fn define(&mut self, id: Id, key: Atom, val: Value) {
@@ -905,8 +923,11 @@ impl Vm {
             if i < items.len() {
                 items[i] = val;
             } else if i < MAX_ARRAY_LEN && o.flags & SPARSE == 0 {
-                items.resize(i, Value::Uninit);
-                items.push(val);
+                if i == items.len() {
+                    items.push(val);
+                } else {
+                    self.write_past_end(id, i, val);
+                }
             } else {
                 self.sparse_set(id, key, i, val);
             }
@@ -1404,7 +1425,10 @@ impl Vm {
                 )
                 .map(|_| ());
         }
-        self.copy_props(target, v, &[])
+        let before = self.heap[target as usize].props.len();
+        self.copy_props(target, v, &[])?;
+        self.charge_props(target, before);
+        Ok(())
     }
 
     /// Whether copying `v`'s properties calls a program getter, which a frame calls (see `Vm::copy_by_frame`); the

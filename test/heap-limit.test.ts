@@ -80,6 +80,28 @@ describe("maxHeapBytes", () => {
     }
   })
 
+  test("bulk growth is charged as it happens", async () => {
+    // Each grows its heap far over the limit and lets it go before it ends: only a measurement on the way stops it.
+    const big = "const big = new Array(4096).fill(0)"
+    const block = "const block = 'x'.repeat(32768)"
+    const props = "const props = {}; for (let k = 0; k < 2048; k++) props['p' + k] = k"
+    for (const [setup, grown] of [
+      [block, "block + i"],
+      [block, "`${block}${i}`"],
+      [big, "[...big]"],
+      [big, "(() => { const t = []; t.push(...big); return t })()"],
+      [big, "(() => { const t = []; t.unshift(...big); return t })()"],
+      [big, "(() => { const t = []; t.splice(0, 0, ...big); return t })()"],
+      ["", "(() => { const t = []; t.length = 4096; return t })()"],
+      ["", "(() => { const t = []; t[4095] = i; return t })()"],
+      [props, "Object.assign({}, props)"],
+      [props, "({ ...props })"],
+    ]) {
+      const code = `${setup}; let keep = []; for (let i = 0; i < 2048; i++) keep.push(${grown}); keep = null; return 1`
+      expect(await kind(capped(4_194_304), code)).toBe("MemoryLimitExceeded")
+    }
+  })
+
   test("a run handing calls to the host is measured too, before they start", async () => {
     const started: Array<string> = []
     const runtime = Runtime.make({

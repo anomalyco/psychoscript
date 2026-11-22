@@ -61,6 +61,19 @@ export let charging: HeapMeter | undefined
 
 export const setCharging = (meter: HeapMeter | undefined): void => {
   charging = meter
+  lastConcat = undefined
+}
+
+// The last concatenation's result while a meter charges: a concatenation onto it appends, as the Rust implementation
+// appends in place, so only the appended part counts; any other copies every part.
+let lastConcat: string | undefined
+
+/** Charges a running run's meter with a string concatenation of `left` and more into `result`. */
+export const chargeConcat = (left: unknown, result: string): void => {
+  const meter = charging
+  if (meter === undefined) return
+  meter.debt += 2 * (left === lastConcat ? result.length - (left as string).length : result.length)
+  lastConcat = result
 }
 
 /** Charges a running run's meter with what was just allocated. */

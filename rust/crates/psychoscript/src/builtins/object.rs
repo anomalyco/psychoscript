@@ -324,6 +324,15 @@ fn object_assign(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
         let sources = args.iter().skip(1).copied().collect();
         return vm.copy_by_frame(crate::accessors::COPY_ASSIGN, target, sources, &[]);
     }
+    let before = vm.heap[t as usize].props.len();
+    let copied = assign_sources(vm, t, args);
+    vm.charge_props(t, before);
+    copied?;
+    Ok(target)
+}
+
+/// `Object.assign`'s copy from each source into `t`, when no program getter or setter runs.
+fn assign_sources(vm: &mut Vm, t: Id, args: &[Value]) -> Result<(), Value> {
     for src in args.iter().skip(1) {
         if src.is_nullish() {
             continue;
@@ -345,7 +354,7 @@ fn object_assign(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
             vm.copy_props(t, src, &[])?;
         }
     }
-    Ok(target)
+    Ok(())
 }
 
 pub(crate) fn object_from_entries(vm: &mut Vm, _this: Value, args: &[Value], callee: Id) -> Res {

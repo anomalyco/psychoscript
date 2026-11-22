@@ -4,7 +4,16 @@ import { conversions } from "./runtime/callback.js"
 import { locate, materialize, stackFrame } from "./runtime/errors.js"
 import type { Interpreter } from "./runtime/interpreter.js"
 import { type Builtins, isErrorType } from "./runtime/intrinsics.js"
-import { charging, FUEL_BYTES, type HeapMeter, memoryLimitMessage, setCharging } from "./runtime/heap.js"
+import {
+  charge,
+  chargeConcat,
+  charging,
+  ELEMENT_BYTES,
+  FUEL_BYTES,
+  type HeapMeter,
+  memoryLimitMessage,
+  setCharging,
+} from "./runtime/heap.js"
 import { checkArrayLength, checkStringLength } from "./runtime/limits.js"
 import {
   AsyncIteratorSymbol,
@@ -1042,6 +1051,7 @@ export class Vm {
                 frame.sp = sp
                 this.failStringLength(s.length)
               }
+              if (charging !== undefined) chargeConcat(a, s)
               regs[sp - 1] = s
               pc++
               continue
@@ -1235,12 +1245,14 @@ export class Vm {
             const n = w >>> 16
             if (n === 2) {
               const b = regs[--sp] as string
-              const s = (regs[sp - 1] as string) + b
+              const left = regs[sp - 1] as string
+              const s = left + b
               if (s.length > 16_777_216) {
                 frame.pc = pc
                 frame.sp = sp
                 this.failStringLength(s.length)
               }
+              if (charging !== undefined) chargeConcat(left, s)
               regs[sp - 1] = s
               pc++
               continue
@@ -2071,6 +2083,7 @@ export class Vm {
       out += regs[i] as string
       if (out.length > 16_777_216) checkStringLength(out.length)
     }
+    if (charging !== undefined) chargeConcat(regs[sp - n], out)
     sp -= n
     regs[sp] = out
     return sp + 1
@@ -2309,10 +2322,12 @@ export class Vm {
     const arr = frame.regs[sp - 1] as Arr
     frame.pc = pc
     frame.sp = sp
+    const before = arr.items.length
     for (let step = rec.step(); !step.done; step = rec.step()) {
       checkArrayLength(arr.items.length + 1)
       arr.items.push(step.value)
     }
+    charge(ELEMENT_BYTES * (arr.items.length - before))
     return pc + 1
   }
 
