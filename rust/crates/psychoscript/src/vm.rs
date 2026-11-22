@@ -3979,6 +3979,25 @@ impl Vm {
                     Op::Return => {
                         let v = self.pop();
                         let frame = self.frames.pop().expect("frame");
+                        // A plain function's return, the common one, needs none of what follows.
+                        if let FrameKind::Normal | FrameKind::Native(..) = frame.kind {
+                            self.stack.truncate(frame.base - 2);
+                            self.handlers.truncate(frame.hbase as usize);
+                            let is_base = frame.is_base;
+                            self.spare_frames.push(frame);
+                            if is_base {
+                                return Ok(Exit::Return(Slot::pack(v)));
+                            }
+                            self.push(v);
+                            continue 'outer;
+                        }
+                        // The program's body ends: its bindings are measured before they go.
+                        if let FrameKind::Async(c) = frame.kind
+                            && self.heap_meter.is_some()
+                            && self.coroutines[c as usize].promise.is_none()
+                        {
+                            self.heap_body_end(v);
+                        }
                         self.stack.truncate(frame.base - 2);
                         self.handlers.truncate(frame.hbase as usize);
                         let result = match frame.kind {

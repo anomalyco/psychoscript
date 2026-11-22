@@ -67,6 +67,19 @@ describe("maxHeapBytes", () => {
     expect(await capped(1_000_000).execute("return 'x'.repeat(400000)")).toMatchObject({ ok: true })
   })
 
+  test("the body's own bindings count as it ends", async () => {
+    const holes = "const kept = new Array(1000); return 1"
+    expect(await capped(16_064).execute(holes)).toMatchObject({ ok: true, value: 1 })
+    expect(await kind(capped(16_063), holes)).toBe("MemoryLimitExceeded")
+    for (const code of [
+      "const kept = []; for (let i = 0; i < 16; i++) kept.push(new Array(1 << 16).fill(i)); return kept.length",
+      "const block = 'x'.repeat(1 << 15); const kept = []; for (let i = 0; i < 128; i++) kept.push(block + i); return kept.length",
+      "const kept = []; await (async () => { await 0; kept.push(new Array(1 << 18)) })(); return kept.length",
+    ]) {
+      expect(await kind(capped(4_000_000), code)).toBe("MemoryLimitExceeded")
+    }
+  })
+
   test("a run handing calls to the host is measured too, before they start", async () => {
     const started: Array<string> = []
     const runtime = Runtime.make({

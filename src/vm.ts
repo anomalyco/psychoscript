@@ -283,6 +283,8 @@ export class Vm {
     | undefined = undefined
   /** The run's `limits.maxHeapBytes` and its pacing, when it has one. Never saved: a restored run measures afresh. */
   heap: HeapMeter | undefined = undefined
+  /** What the heap held as the body returned, with its bindings, once measured (see `finishProgram`). */
+  heapAtReturn: number | undefined = undefined
 
   constructor(readonly ctx: Interpreter<unknown>) {
     this.scheduler = new VmScheduler(this)
@@ -409,9 +411,10 @@ export class Vm {
         continue
       }
       if (this.outcome !== undefined) {
-        // The body ended: what it leaves reachable (its value among it) is measured once more.
+        // The run ended: the heap as the body returned (`finishProgram`), and what the run leaves reachable now.
         if (this.heap !== undefined) {
-          const stop = this.heapLimit()
+          const atReturn = this.heapAtReturn === undefined ? undefined : this.heapLimit(this.heapAtReturn)
+          const stop = atReturn ?? this.heapLimit()
           if (stop !== undefined) return stop
         }
         return { kind: "done", completion: this.outcome }
@@ -454,9 +457,9 @@ export class Vm {
   }
 
   // Measures the heap; over the limit, the run ends here with `MemoryLimitExceeded`, which no handler sees.
-  private heapLimit(): Stop | undefined {
+  private heapLimit(measured?: number): Stop | undefined {
     const heap = this.heap!
-    if (!heap.measured(measureVm(this))) return undefined
+    if (!heap.measured(measured ?? measureVm(this))) return undefined
     const completion = abrupt(new HostFailure("MemoryLimitExceeded", memoryLimitMessage(heap.limit)))
     this.outcome = completion
     this.frames.length = 0
@@ -2462,6 +2465,8 @@ export class Vm {
   }
 
   private finishProgram(frame: Frame, value: Value): boolean {
+    // The body ends: its bindings are measured before they go, with its value.
+    if (this.heap !== undefined) this.heapAtReturn = measureVm(this, [value])
     if (!isThenable(value)) {
       let fast: ReturnType<typeof tryFastBoundaryOrJson>
       try {

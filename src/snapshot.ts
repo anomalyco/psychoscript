@@ -50,7 +50,18 @@ const vmSpecs = (): ReadonlyArray<ClassSpec> =>
       ctor: Vm,
       anchor: "vm",
       fields: ["frames", "templates", "scheduler", "hosts", "depth", "sliced", "outcome"],
-      skip: ["ctx", "pool", "sourceCodes", "intrinsics", "fuel", "sliceStart", "tripEvery", "redo", "heap"],
+      skip: [
+        "ctx",
+        "pool",
+        "sourceCodes",
+        "intrinsics",
+        "fuel",
+        "sliceStart",
+        "tripEvery",
+        "redo",
+        "heap",
+        "heapAtReturn",
+      ],
       reset: restoreStack,
     },
     {
@@ -206,10 +217,10 @@ export const captureVm = (
 }
 
 /** What the run can still reach, in the size model of `limits.maxHeapBytes` (see runtime/heap.ts). */
-export const measureVm = (vm: Vm): number => {
+export const measureVm = (vm: Vm, extra: ReadonlyArray<unknown> = []): number => {
   vm.compact()
   const ctx = vm.ctx
-  return measure([vm, ctx, ...ctx.intrinsics.changed()], vmSpecs(), [ctx.logs, vm.hosts.runId])
+  return measure([vm, ctx, ...ctx.intrinsics.changed(), ...extra], vmSpecs(), [ctx.logs, vm.hosts.runId])
 }
 
 /**

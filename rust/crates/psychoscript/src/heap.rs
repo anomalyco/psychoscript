@@ -107,7 +107,20 @@ impl Vm {
         }
     }
 
-    /// The body ended: what it leaves reachable, its value among it, is measured once more.
+    /// The body is returning `v`: the heap is measured once more, with the body's own bindings still on the stack, and
+    /// `v` among them, as they are as it ends.
+    #[cold]
+    pub(crate) fn heap_body_end(&mut self, v: Value) {
+        if self.fatal.is_some() {
+            return;
+        }
+        self.heap_charge(0);
+        self.push(v);
+        self.heap_measure();
+        self.pop();
+    }
+
+    /// The run ended: what it leaves reachable, its value among it, is measured once more.
     pub(crate) fn heap_final(&mut self) {
         if self.fatal.is_none() && self.heap_meter.is_some() {
             self.heap_measure();
