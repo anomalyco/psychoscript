@@ -91,6 +91,62 @@ fn the_heap_is_measured_in_the_shared_size_model() {
 }
 
 #[test]
+fn the_body_s_own_bindings_count_as_it_ends() {
+    let code = "const kept = new Array(1000); return 1";
+    assert_eq!(capped(16_064).execute(code).result.unwrap(), json!(1));
+    assert_eq!(
+        kind(&capped(16_063), code),
+        DiagnosticKind::MemoryLimitExceeded
+    );
+    for code in [
+        "const kept = []; for (let i = 0; i < 16; i++) kept.push(new Array(1 << 16).fill(i)); return kept.length",
+        "const block = 'x'.repeat(1 << 15); const kept = []; for (let i = 0; i < 128; i++) kept.push(block + i); return kept.length",
+        "const kept = []; await (async () => { await 0; kept.push(new Array(1 << 18)) })(); return kept.length",
+    ] {
+        assert_eq!(
+            kind(&capped(4_000_000), code),
+            DiagnosticKind::MemoryLimitExceeded,
+            "{code}"
+        );
+    }
+}
+
+#[test]
+fn bulk_growth_is_charged_as_it_happens() {
+    // Each grows its heap far over the limit and lets it go before it ends: only a measurement on the way stops it.
+    let big = "const big = new Array(4096).fill(0)";
+    let block = "const block = 'x'.repeat(32768)";
+    let props = "const props = {}; for (let k = 0; k < 2048; k++) props['p' + k] = k";
+    for (setup, grown) in [
+        (block, "block + i"),
+        (block, "`${block}${i}`"),
+        (big, "[...big]"),
+        (big, "(() => { const t = []; t.push(...big); return t })()"),
+        (
+            big,
+            "(() => { const t = []; t.unshift(...big); return t })()",
+        ),
+        (
+            big,
+            "(() => { const t = []; t.splice(0, 0, ...big); return t })()",
+        ),
+        ("", "(() => { const t = []; t.length = 4096; return t })()"),
+        ("", "(() => { const t = []; t[4095] = i; return t })()"),
+        (props, "Object.assign({}, props)"),
+        (props, "({ ...props })"),
+    ] {
+        let code = format!(
+            "{setup}; let keep = []; for (let i = 0; i < 2048; i++) keep.push({grown}); keep = null; return 1"
+        );
+        assert_eq!(
+            kind(&capped(4_194_304), &code),
+            DiagnosticKind::MemoryLimitExceeded,
+            "{code}"
+        );
+    }
+}
+
+#[test]
 fn a_run_handing_calls_to_the_host_is_measured_too_before_they_start() {
     let started = Arc::new(AtomicUsize::new(0));
     let count = started.clone();

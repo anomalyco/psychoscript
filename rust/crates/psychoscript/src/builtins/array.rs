@@ -188,6 +188,14 @@ fn items_mut(vm: &mut Vm, id: Id, growth: Option<i64>) -> Result<&mut Vec<Value>
     array_items(vm, id)
 }
 
+/// Charges the heap meter with the items a method adds at once, past the one item its fuel allowance covers.
+#[inline(always)]
+fn charge_growth(vm: &mut Vm, added: i64) {
+    if added > 1 {
+        vm.charge_elements(added as usize);
+    }
+}
+
 /// The reference's check of what a mutating method's first write would hit on a frozen, sealed or non-extensible
 /// array. `growth` is given by the methods that always write `length`: how many items they add (or remove, when
 /// negative).
@@ -410,6 +418,7 @@ pub(crate) fn from_like_step(vm: &mut Vm, fr: Frame, input: Input) -> Result<Ste
 fn a_push(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
     let id = arr_id(vm, &this, callee)?;
     check_mutable(vm, id, Some(args.len() as i64))?;
+    charge_growth(vm, args.len() as i64);
     for a in args {
         vm.reject_circular(id, a, "Array.push result")?;
     }
@@ -472,6 +481,7 @@ fn a_shift(vm: &mut Vm, this: Value, _args: &[Value], callee: Id) -> Res {
 fn a_unshift(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
     let id = dense_id(vm, &this, callee)?;
     check_mutable(vm, id, Some(args.len() as i64))?;
+    charge_growth(vm, args.len() as i64);
     for a in args {
         vm.reject_circular(id, a, "Array.unshift result")?;
     }
@@ -534,7 +544,9 @@ fn a_splice(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
         for a in &insert {
             vm.reject_circular(id, a, "Array.splice result")?;
         }
-        let items = items_mut(vm, id, Some(insert.len() as i64 - count as i64))?;
+        let growth = insert.len() as i64 - count as i64;
+        charge_growth(vm, growth);
+        let items = items_mut(vm, id, Some(growth))?;
         let removed: Vec<Value> = items.splice(start..start + count, insert).collect();
         Ok(vm.new_array(removed))
     })

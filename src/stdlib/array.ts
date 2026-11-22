@@ -2,6 +2,7 @@ import { Invoke } from "../runtime/signals.js"
 import type { Builtins } from "../runtime/intrinsics.js"
 import { builtinCursor } from "../runtime/operations.js"
 import { constructor, methods, prototypeFrom, receiver, iteratorMethods } from "../runtime/native.js"
+import { charge, ELEMENT_BYTES } from "../runtime/heap.js"
 import { checkArrayLength, checkStringLength, MAX_ARRAY_LENGTH } from "../runtime/limits.js"
 import { invalidData, IteratorSymbol, rangeError, typeError } from "../runtime/model.js"
 import {
@@ -182,6 +183,8 @@ export const arrayGlobal = <R>(ctx: Interpreter<R>) => {
   // non-extensible array. `growth` is given by the methods that always write `length`, even when it is 0; holes a
   // method would fill on a non-extensible array are not checked.
   const mutable = (target: Arr, growth?: number): Arr => {
+    // One item is covered by the native call's fuel allowance; more at once are charged.
+    if ((growth ?? 0) > 1) charge(ELEMENT_BYTES * growth!)
     const length = target.items.length
     if ((growth ?? 0) > 0) rejectAddition(target, length)
     if ((growth ?? 0) < 0 && length > 0 && !target.elements.configurable) {

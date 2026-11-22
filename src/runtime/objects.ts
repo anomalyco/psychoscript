@@ -1,5 +1,5 @@
 import type { Builtins } from "./intrinsics.js"
-import { charging, ELEMENT_BYTES, OBJECT_BYTES } from "./heap.js"
+import { charge, charging, ELEMENT_BYTES, OBJECT_BYTES, PROPERTY_BYTES } from "./heap.js"
 import { checkArrayLength } from "./limits.js"
 import {
   type AstNode,
@@ -1184,6 +1184,8 @@ const writeElement = (target: Indexed, name: string | number | symbol, value: Va
     }
     if (!(at in target.items)) rejectAddition(target, at)
     changed(target)
+    // An append is covered by the fuel allowance; a write past a gap is charged its holes too.
+    if (at > target.items.length) charge(ELEMENT_BYTES * (at + 1 - target.items.length))
     target.items[at] = value
     return true
   }
@@ -1194,6 +1196,7 @@ const writeElement = (target: Indexed, name: string | number | symbol, value: Va
   if (length < target.items.length && !target.elements.configurable) return false
   checkArrayLength(length)
   changed(target)
+  if (length > target.items.length) charge(ELEMENT_BYTES * (length - target.items.length))
   target.items.length = length
   return true
 }
@@ -1420,7 +1423,10 @@ const defineElement = (target: Indexed, at: number, current: Slot | undefined, d
   if (current === undefined || "value" in desc) {
     changed(target)
     if (target instanceof Bytes) target.bytes[at] = coerceToNumber(desc.value)
-    else target.items[at] = desc.value
+    else {
+      if (at > target.items.length) charge(ELEMENT_BYTES * (at + 1 - target.items.length))
+      target.items[at] = desc.value
+    }
   }
   return true
 }
@@ -1516,8 +1522,15 @@ export const record = (proto: Obj, fields: Record<string, Value>): Obj => {
  * on its chain runs.
  */
 export const copyDataProperties = (target: Obj, source: Obj, skip?: ReadonlySet<PropertyKey>): void => {
+  const before = target.props.size
   for (const key of enumerableKeys(source)) {
     if (skip?.has(key)) continue
     define(target, key, getOwn(source, key))
   }
+  chargeProps(target, before)
+}
+
+/** Charges a running run's meter with the own properties `target` gained since it had `before`. */
+export const chargeProps = (target: Obj, before: number): void => {
+  if (target.props.size > before) charge(PROPERTY_BYTES * (target.props.size - before))
 }

@@ -4,7 +4,16 @@ import { conversions } from "./runtime/callback.js"
 import { locate, materialize, stackFrame } from "./runtime/errors.js"
 import type { Interpreter } from "./runtime/interpreter.js"
 import { type Builtins, isErrorType } from "./runtime/intrinsics.js"
-import { charging, FUEL_BYTES, type HeapMeter, memoryLimitMessage, setCharging } from "./runtime/heap.js"
+import {
+  charge,
+  chargeConcat,
+  charging,
+  ELEMENT_BYTES,
+  FUEL_BYTES,
+  type HeapMeter,
+  memoryLimitMessage,
+  setCharging,
+} from "./runtime/heap.js"
 import { checkArrayLength, checkStringLength } from "./runtime/limits.js"
 import {
   AsyncIteratorSymbol,
@@ -283,6 +292,8 @@ export class Vm {
     | undefined = undefined
   /** The run's `limits.maxHeapBytes` and its pacing, when it has one. Never saved: a restored run measures afresh. */
   heap: HeapMeter | undefined = undefined
+  /** What the heap held as the body returned, with its bindings, once measured (see `finishProgram`). */
+  heapAtReturn: number | undefined = undefined
 
   constructor(readonly ctx: Interpreter<unknown>) {
     this.scheduler = new VmScheduler(this)
@@ -409,9 +420,10 @@ export class Vm {
         continue
       }
       if (this.outcome !== undefined) {
-        // The body ended: what it leaves reachable (its value among it) is measured once more.
+        // The run ended: the heap as the body returned (`finishProgram`), and what the run leaves reachable now.
         if (this.heap !== undefined) {
-          const stop = this.heapLimit()
+          const atReturn = this.heapAtReturn === undefined ? undefined : this.heapLimit(this.heapAtReturn)
+          const stop = atReturn ?? this.heapLimit()
           if (stop !== undefined) return stop
         }
         return { kind: "done", completion: this.outcome }
@@ -454,9 +466,9 @@ export class Vm {
   }
 
   // Measures the heap; over the limit, the run ends here with `MemoryLimitExceeded`, which no handler sees.
-  private heapLimit(): Stop | undefined {
+  private heapLimit(measured?: number): Stop | undefined {
     const heap = this.heap!
-    if (!heap.measured(measureVm(this))) return undefined
+    if (!heap.measured(measured ?? measureVm(this))) return undefined
     const completion = abrupt(new HostFailure("MemoryLimitExceeded", memoryLimitMessage(heap.limit)))
     this.outcome = completion
     this.frames.length = 0
@@ -1039,6 +1051,7 @@ export class Vm {
                 frame.sp = sp
                 this.failStringLength(s.length)
               }
+              if (charging !== undefined) chargeConcat(a, s)
               regs[sp - 1] = s
               pc++
               continue
@@ -1232,12 +1245,14 @@ export class Vm {
             const n = w >>> 16
             if (n === 2) {
               const b = regs[--sp] as string
-              const s = (regs[sp - 1] as string) + b
+              const left = regs[sp - 1] as string
+              const s = left + b
               if (s.length > 16_777_216) {
                 frame.pc = pc
                 frame.sp = sp
                 this.failStringLength(s.length)
               }
+              if (charging !== undefined) chargeConcat(left, s)
               regs[sp - 1] = s
               pc++
               continue
@@ -2068,6 +2083,7 @@ export class Vm {
       out += regs[i] as string
       if (out.length > 16_777_216) checkStringLength(out.length)
     }
+    if (charging !== undefined) chargeConcat(regs[sp - n], out)
     sp -= n
     regs[sp] = out
     return sp + 1
@@ -2306,10 +2322,12 @@ export class Vm {
     const arr = frame.regs[sp - 1] as Arr
     frame.pc = pc
     frame.sp = sp
+    const before = arr.items.length
     for (let step = rec.step(); !step.done; step = rec.step()) {
       checkArrayLength(arr.items.length + 1)
       arr.items.push(step.value)
     }
+    charge(ELEMENT_BYTES * (arr.items.length - before))
     return pc + 1
   }
 
@@ -2462,6 +2480,8 @@ export class Vm {
   }
 
   private finishProgram(frame: Frame, value: Value): boolean {
+    // The body ends: its bindings are measured before they go, with its value.
+    if (this.heap !== undefined) this.heapAtReturn = measureVm(this, [value])
     if (!isThenable(value)) {
       let fast: ReturnType<typeof tryFastBoundaryOrJson>
       try {

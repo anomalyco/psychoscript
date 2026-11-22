@@ -551,7 +551,22 @@ impl Vm {
         if self.atoms.bufs.len() >= MAX_STRINGS {
             self.out_of_memory();
         }
+        if self.heap_meter.is_some() {
+            self.charge_concat(parts);
+        }
         Value::Str(self.atoms.concat(parts))
+    }
+
+    /// Charges the heap meter with what a concatenation copies: every part into a new buffer, or the parts after the
+    /// first when it appends to the first one's buffer in place.
+    #[cold]
+    fn charge_concat(&mut self, parts: &[StrId]) {
+        let total: usize = parts.iter().map(|p| self.atoms.byte_len(*p)).sum();
+        let kept = match parts.first() {
+            Some(&f) if self.atoms.appends_in_place(f) => self.atoms.byte_len(f),
+            _ => 0,
+        };
+        self.charge_heap(2 * (total - kept) as u64);
     }
 
     #[inline]
@@ -3521,6 +3536,7 @@ impl Vm {
                             continue 'outer;
                         }
                         let items = tri!(self.iterate_to_vec(&src));
+                        self.charge_heap(items.len() as u64 * crate::heap::ELEMENT_BYTES);
                         if let Value::Obj(id) = self.top()
                             && let Kind::Array(arr) = &mut self.heap[id as usize].kind
                         {
@@ -3979,6 +3995,25 @@ impl Vm {
                     Op::Return => {
                         let v = self.pop();
                         let frame = self.frames.pop().expect("frame");
+                        // A plain function's return, the common one, needs none of what follows.
+                        if let FrameKind::Normal | FrameKind::Native(..) = frame.kind {
+                            self.stack.truncate(frame.base - 2);
+                            self.handlers.truncate(frame.hbase as usize);
+                            let is_base = frame.is_base;
+                            self.spare_frames.push(frame);
+                            if is_base {
+                                return Ok(Exit::Return(Slot::pack(v)));
+                            }
+                            self.push(v);
+                            continue 'outer;
+                        }
+                        // The program's body ends: its bindings are measured before they go.
+                        if let FrameKind::Async(c) = frame.kind
+                            && self.heap_meter.is_some()
+                            && self.coroutines[c as usize].promise.is_none()
+                        {
+                            self.heap_body_end(v);
+                        }
                         self.stack.truncate(frame.base - 2);
                         self.handlers.truncate(frame.hbase as usize);
                         let result = match frame.kind {

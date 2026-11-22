@@ -384,6 +384,22 @@ impl Strings {
         })
     }
 
+    /// Whether a concatenation starting with `first` appends to its buffer in place (`concat`), copying only the rest.
+    pub(crate) fn appends_in_place(&self, first: StrId) -> bool {
+        let f = &self.bufs[first as usize];
+        f.grow != NO_GROW && self.grow[f.grow as usize].len() == (f.aux + f.len) as usize
+    }
+
+    /// The length of `id`'s text in bytes, `get(id).len()` without slicing it.
+    pub(crate) fn byte_len(&self, id: StrId) -> usize {
+        let b = &self.bufs[id as usize];
+        if b.grow == NO_GROW {
+            b.s.len()
+        } else {
+            b.len as usize
+        }
+    }
+
     pub fn concat(&mut self, parts: &[StrId]) -> StrId {
         let Some((&first, rest)) = parts.split_first() else {
             return self.alloc_static("");

@@ -13,9 +13,10 @@
 //!   of their property, an error's `stack` text as part of the error, and a built-in's own texts nothing.
 //!
 //! Measuring walks the reachable heap (`reach.rs`), so it is paced by allocation: the run counts roughly what it
-//! allocated since the last measurement (objects and strings made, array contents, and `FUEL_BYTES` per unit of the
-//! reference's fuel for the rest), and measures again at its next safe point once that could have taken it past the
-//! limit, and always when its body ends. Over the limit, the run stops with `MemoryLimitExceeded`. When the
+//! allocated since the last measurement (objects and strings made, what concatenations copy, array contents, elements
+//! and properties added at once, and `FUEL_BYTES` per unit of the reference's fuel for the rest), and measures again at
+//! its next safe point once that could have taken it past the limit, and always as its body returns (its bindings
+//! still live) and when the run ends. Over the limit, the run stops with `MemoryLimitExceeded`. When the
 //! measurements between the first and the last fall differs from the reference's; what each one finds is the same.
 
 use rustc_hash::FxHashSet;
@@ -85,6 +86,28 @@ impl Vm {
         self.lazy_builtins.extend(len as Id..self.heap.len() as Id);
     }
 
+    /// Charges the heap meter with `bytes` an instruction or built-in adds to an existing array or object, which
+    /// allocates no object or string the arenas' growth would count.
+    #[inline]
+    pub(crate) fn charge_heap(&mut self, bytes: u64) {
+        if let Some(m) = self.heap_meter.as_deref_mut() {
+            m.debt += bytes;
+        }
+    }
+
+    /// Charges the heap meter with `n` elements added to an existing array at once.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn charge_elements(&mut self, n: usize) {
+        self.charge_heap(n as u64 * ELEMENT_BYTES);
+    }
+
+    /// Charges the heap meter with the own properties `id` gained since it had `before`.
+    pub(crate) fn charge_props(&mut self, id: Id, before: usize) {
+        let now = self.heap[id as usize].props.len();
+        self.charge_heap(now.saturating_sub(before) as u64 * PROPERTY_BYTES);
+    }
+
     /// Charges what the arenas grew by, and `fuel` units of the reference's fuel.
     fn heap_charge(&mut self, fuel: u64) {
         let (objects, strings) = (self.heap.len(), self.atoms.bufs.len());
@@ -107,7 +130,20 @@ impl Vm {
         }
     }
 
-    /// The body ended: what it leaves reachable, its value among it, is measured once more.
+    /// The body is returning `v`: the heap is measured once more, with the body's own bindings still on the stack, and
+    /// `v` among them, as they are as it ends.
+    #[cold]
+    pub(crate) fn heap_body_end(&mut self, v: Value) {
+        if self.fatal.is_some() {
+            return;
+        }
+        self.heap_charge(0);
+        self.push(v);
+        self.heap_measure();
+        self.pop();
+    }
+
+    /// The run ended: what it leaves reachable, its value among it, is measured once more.
     pub(crate) fn heap_final(&mut self) {
         if self.fatal.is_none() && self.heap_meter.is_some() {
             self.heap_measure();

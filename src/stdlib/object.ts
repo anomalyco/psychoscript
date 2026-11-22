@@ -20,6 +20,7 @@ import {
   type Value,
   accessorFunction,
   Callable,
+  chargeProps,
   define,
   defineOwnProperty,
   type Descriptor,
@@ -74,13 +75,18 @@ export const objectAssign = <R>(ctx: Interpreter<R>, args: Array<Value>): Value 
     )
   }
   const seen = new Set<object>()
-  for (const from of sources) {
-    for (const key of enumerableKeys(from)) {
-      rejectCircularInsertion(target, getOwn(from, key), "Object.assign result", seen)
-      if (set(target, key, getOwn(from, key)) !== true) {
-        throw typeError(`Cannot assign to read only property '${String(key)}'.`)
+  const before = target.props.size
+  try {
+    for (const from of sources) {
+      for (const key of enumerableKeys(from)) {
+        rejectCircularInsertion(target, getOwn(from, key), "Object.assign result", seen)
+        if (set(target, key, getOwn(from, key)) !== true) {
+          throw typeError(`Cannot assign to read only property '${String(key)}'.`)
+        }
       }
     }
+  } finally {
+    chargeProps(target, before)
   }
   return target
 }

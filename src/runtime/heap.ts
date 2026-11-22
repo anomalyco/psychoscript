@@ -12,8 +12,9 @@
 //   of their property, an error's `stack` text as part of the error, and a built-in's own texts nothing.
 //
 // Measuring walks the reachable heap, so it is paced by allocation: the run counts roughly what it allocated since the
-// last measurement (objects, large strings, array contents, and FUEL_BYTES per unit of fuel for the rest), and
-// measures again at its next safe point once that could have taken it past the limit, and always when its body ends.
+// last measurement (objects, large strings, what concatenations copy, array contents, elements and properties added at
+// once, and FUEL_BYTES per unit of fuel for the rest), and measures again at its next safe point once that could have
+// taken it past the limit, and always as its body returns (its bindings still live) and when the run ends.
 // A run whose reachable heap is over the limit at a measurement stops with `MemoryLimitExceeded`. Each measurement
 // finds the same in both implementations; when they fall between the first and the last differs.
 
@@ -61,6 +62,19 @@ export let charging: HeapMeter | undefined
 
 export const setCharging = (meter: HeapMeter | undefined): void => {
   charging = meter
+  lastConcat = undefined
+}
+
+// The last concatenation's result while a meter charges: a concatenation onto it appends, as the Rust implementation
+// appends in place, so only the appended part counts; any other copies every part.
+let lastConcat: string | undefined
+
+/** Charges a running run's meter with a string concatenation of `left` and more into `result`. */
+export const chargeConcat = (left: unknown, result: string): void => {
+  const meter = charging
+  if (meter === undefined) return
+  meter.debt += 2 * (left === lastConcat ? result.length - (left as string).length : result.length)
+  lastConcat = result
 }
 
 /** Charges a running run's meter with what was just allocated. */

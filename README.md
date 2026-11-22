@@ -260,9 +260,9 @@ defects become an `ExecutionFailure`.
 `maxHeapBytes` measures what the program can still reach, not the process: garbage never counts, and the sizes are
 the same on every platform and in the Rust implementation (64 bytes per object, 32 per property, 16 per array
 element, 16 plus 2 per UTF-16 code unit per distinct string, 1 per byte of typed array storage; see
-`interpreter-support.md`). The heap is measured when
-the body ends and, paced by allocation, while it runs; the run stops there, and no handler sees it. A saved run keeps
-its limit when resumed.
+`interpreter-support.md`). The heap is measured as the body returns (its own bindings included), when the run ends
+and, paced by allocation, while it runs; the run stops there, and no handler sees it. A brief peak between two
+measurements may pass unseen. A saved run keeps its limit when resumed.
 
 Fixed caps: a string at most 2^24 characters, an array at most 10,000,000 elements, at most 10,000 pending promises,
 and values nested at most 32 deep when they cross to or from the host. Exceeding one throws a `RangeError` in the
