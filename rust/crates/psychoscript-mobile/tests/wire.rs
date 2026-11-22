@@ -7,7 +7,7 @@
 
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use psychoscript_mobile::{
     EncodePosts, EncodeStep, EncodeValues, Failure, HostValue, LiveExit, LiveHandler, LiveOptions,
@@ -203,13 +203,13 @@ impl EncodePosts for Both {
     fn post(
         &mut self,
         message: &HostValue,
-        keep: bool,
-    ) -> Result<(Option<Vec<u8>>, HostValue), Reject> {
+        _now: Instant,
+    ) -> Result<(Vec<Vec<u8>>, HostValue), Reject> {
         let bin = widget_wire::encode_post(message)
             .map_err(|e| Reject::Failure(Failure::new(e.kind, e.message)))?;
         let json = message.to_json().unwrap().to_string();
         let both = [&(bin.len() as u32).to_le_bytes()[..], &bin, json.as_bytes()].concat();
-        Ok((keep.then_some(both), HostValue::Undefined))
+        Ok((vec![both], HostValue::Undefined))
     }
 }
 
@@ -340,7 +340,7 @@ fn a_gpu_batch_carries_the_programs_typed_array_bytes() {
 
 #[test]
 fn an_invalid_post_ends_the_live_run_as_a_program_error() {
-    let source = "__host.post({ type: \"frame\" })\n__host.post({ type: \"draw\", id: \"c\", commands: [[\"rect\", 0, 0, 1, NaN, {}]] })\nawait __host.receive()";
+    let source = "__host.post({ type: \"render\", node: { type: \"canvas\", key: \"c\", height: 1 } }); __host.post({ type: \"frame\" })\n__host.post({ type: \"draw\", key: \"c\", commands: [[\"rect\", 0, 0, 1, NaN, {}]] })\nawait __host.receive()";
     let (h, rx) = handler();
     let _run = program(source.into())
         .start_live(
@@ -355,7 +355,7 @@ fn an_invalid_post_ends_the_live_run_as_a_program_error() {
     let Event::Bytes(list) = next(&rx) else {
         panic!("bytes")
     };
-    assert_eq!(decode_post(&list[0]).unwrap(), Post::Frame);
+    assert_eq!(decode_post(&list[1]).unwrap(), Post::Frame);
     let Event::Exit(LiveExit::Failed {
         error: PsychoScriptError::Runtime {
             kind, reason, line, ..
@@ -643,7 +643,7 @@ fn functions_where_none_may_go_fail_the_call_with_the_runtimes_type_error() {
             "Argument 2 to __host.post",
         ),
         (
-            "__host.post({ type: \"draw\", id: \"c\", commands: [[\"save\", () => 1]] })",
+            "__host.post({ type: \"render\", node: { type: \"canvas\", key: \"c\", height: 1 } }); __host.post({ type: \"draw\", key: \"c\", commands: [[\"save\", () => 1]] })",
             "Argument 1 to __host.post",
         ),
         ("__host.now(() => 1)", "Argument 1 to __host.now"),
@@ -789,6 +789,8 @@ fn drive(
         for p in batch {
             if p == Post::Frame {
                 delivered += 1;
+                // Under the post rate, so nothing coalesces: at most a render and a draw a frame, 100 a second.
+                std::thread::sleep(Duration::from_millis(10));
                 run.deliver(frame(delivered)).unwrap();
             }
             posts.push(p);
@@ -859,11 +861,11 @@ impl EncodePosts for Built {
     fn post(
         &mut self,
         message: &HostValue,
-        keep: bool,
-    ) -> Result<(Option<Vec<u8>>, HostValue), Reject> {
+        _now: Instant,
+    ) -> Result<(Vec<Vec<u8>>, HostValue), Reject> {
         let bytes = widget_wire::encode_post(message)
             .map_err(|e| Reject::Failure(Failure::new(e.kind, e.message)))?;
-        Ok((keep.then_some(bytes), HostValue::Undefined))
+        Ok((vec![bytes], HostValue::Undefined))
     }
 }
 
@@ -937,22 +939,108 @@ fn a_native_render_returns_whether_it_has_handlers_and_draws_go_by_key() {
 }
 
 #[test]
-fn a_native_render_dropped_over_the_post_rate_still_counts() {
+fn live_renders_and_draws_wait_for_the_post_rate_and_the_last_ones_go_out() {
+    // 30 renders in a burst while the program then waits: 8 at once, then render 29 alone as its token comes (the
+    // timer wakes the waiting run to hand it over); `post` says at once whether each view has handlers.
     let source = r#"
-      __host.post({ type: "render", node: { type: "text", text: "first" } })
-      const handled = __host.post({ type: "render", node: { type: "button", label: "b", onPress: () => 1 } })
-      await __host.sleep(1100)
-      __host.post({ type: "submit", value: handled })
+      const said = []
+      for (let i = 0; i < 30; i++) said.push(__host.post({ type: "render", node: { type: "button", label: "r" + i, onPress: i % 2 ? () => 1 : undefined } }))
+      __host.post({ type: "frame" })
+      __host.post({ type: "send", value: said })
       await __host.receive()
+      for (let i = 0; i < 30; i++) __host.post({ type: "render", node: { type: "text", text: "s" + i } })
+      __host.post({ type: "submit", value: 1 })
     "#;
-    let options = LiveOptions {
-        max_posts_per_second: 1,
-        ..LiveOptions::default()
+    let label = |p: &Post| match p {
+        Post::Render(Node::Button { label, .. }) => label.clone(),
+        Post::Render(Node::Text { text, .. }) => text.clone(),
+        p => format!("{p:?}"),
     };
-    let (run, rx) = start_native(source, options);
-    assert!(matches!(posts(&rx)[..], [Post::Render(Node::Text { .. })]));
-    assert_eq!(posts(&rx), [Post::Submit(json!(true))]);
+    let (run, rx) = start_native(source, LiveOptions::default());
+    let started = std::time::Instant::now();
+    let mut first: Vec<String> = posts(&rx).iter().map(label).collect();
+    // Render 29 comes as its token does: with these when the burst took over 1/240 s, else alone just after.
+    if first.len() == 10 {
+        first.extend(posts(&rx).iter().map(label));
+    }
+    assert!(started.elapsed() < Duration::from_millis(500));
+    let mut expected: Vec<String> = (0..8).map(|i| format!("r{i}")).collect();
+    let said: Vec<bool> = (0..30).map(|i| i % 2 == 1).collect();
+    let send = Post::Send {
+        value: json!(said),
+        wake: true,
+    };
+    expected.extend(["Frame".into(), format!("{send:?}"), "r29".into()]);
+    assert_eq!(first, expected);
+    // A burst, then `submit` ends the run: the waiting render goes out before it.
+    std::thread::sleep(Duration::from_millis(100));
+    run.deliver(r#"{"type":"go"}"#.into()).unwrap();
+    let mut rest = Vec::new();
+    loop {
+        match next(&rx) {
+            Event::Bytes(list) => rest.extend(list.iter().map(|b| label(&decode_post(b).unwrap()))),
+            Event::Exit(e) => {
+                assert!(matches!(e, LiveExit::Finished { .. }), "{e:?}");
+                break;
+            }
+            Event::Json => panic!(),
+        }
+    }
+    let mut expected: Vec<String> = (0..8).map(|i| format!("s{i}")).collect();
+    expected.extend(["s29".into(), format!("{:?}", Post::Submit(json!(1)))]);
+    assert_eq!(rest, expected);
+}
+
+#[test]
+fn a_draw_post_needs_a_string_key_and_a_stopped_run_drops_what_waits() {
+    for post in [
+        "{ type: \"draw\", key: 1, commands: [] }",
+        "{ type: \"draw\", id: \"0\", commands: [] }",
+    ] {
+        let source = format!(
+            "__host.post({{ type: \"render\", node: {{ type: \"canvas\", key: \"1\", height: 1 }} }})\n__host.post({post})"
+        );
+        let (_run, rx) = start_native(&source, LiveOptions::default());
+        let exit = loop {
+            if let Event::Exit(e) = next(&rx) {
+                break e;
+            }
+        };
+        assert_eq!(
+            exit,
+            LiveExit::Failed {
+                error: PsychoScriptError::Runtime {
+                    kind: "InvalidDataValue".into(),
+                    reason: "A draw post needs a string key".into(),
+                    line: None,
+                    column: None,
+                }
+            },
+            "{post}"
+        );
+    }
+    let source = "for (let i = 0; i < 20; i++) __host.post({ type: \"render\", node: { type: \"text\", text: \"t\" + i } })\nwhile (true) {}";
+    let (run, rx) = start_native(
+        source,
+        LiveOptions {
+            slice_budget_ms: 60_000,
+            ..LiveOptions::default()
+        },
+    );
+    std::thread::sleep(Duration::from_millis(50));
     run.stop();
+    let mut got = 0;
+    loop {
+        match next(&rx) {
+            Event::Bytes(list) => got += list.len(),
+            Event::Exit(e) => {
+                assert_eq!(e, LiveExit::Stopped);
+                break;
+            }
+            Event::Json => panic!(),
+        }
+    }
+    assert_eq!(got, 8, "the waiting render is dropped");
 }
 
 #[test]

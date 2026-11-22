@@ -151,19 +151,15 @@ fn errors_and_budgets() {
     let (run, rx) = start_run(LiveOptions::default());
     run.deliver(r#"{"type":"flood"}"#.into()).unwrap();
     let mut posts = 0;
-    let mut warnings = 0;
-    // 240 a second ("hello" was the first), one warning, the rest dropped.
+    // The runner has no post rate (a widget's is its encoder's): all 301, no warning.
     while let Ok(event) = rx.recv_timeout(Duration::from_millis(300)) {
         match event {
             Event::Post(_) => posts += 1,
-            Event::Warning(w) => {
-                assert!(w.contains("240"), "{w}");
-                warnings += 1;
-            }
+            Event::Warning(w) => panic!("{w}"),
             Event::Exit(e) => panic!("{e:?}"),
         }
     }
-    assert_eq!((posts, warnings), (239, 1));
+    assert_eq!(posts, 301);
     run.stop();
     assert!(matches!(next(&rx), Event::Exit(LiveExit::Stopped)));
 }
@@ -875,9 +871,19 @@ fn paused_at_rest_isnt_stopped() {
 fn busy_while_paused_is_stopped() {
     let (run, rx) = start_source(WORK, LiveOptions::default());
     run.deliver(r#"{"spin":true}"#.into()).unwrap();
-    std::thread::sleep(Duration::from_millis(5));
-    run.pause().unwrap();
-    match exited(&rx, Duration::from_secs(2)) {
+    // Paused once the run took the message and spins; a pause that came first holds it: resume and pause again.
+    let mut exit = None;
+    for _ in 0..20 {
+        std::thread::sleep(Duration::from_millis(5));
+        run.pause().unwrap();
+        // 50 ms of its own CPU time, however loaded the machine.
+        exit = exited(&rx, Duration::from_secs(2));
+        if exit.is_some() {
+            break;
+        }
+        run.resume().unwrap();
+    }
+    match exit {
         Some(LiveExit::Failed {
             error: PsychoScriptError::SliceBudget { .. },
         }) => {}
@@ -909,7 +915,7 @@ fn resume_restarts_the_budget() {
 }
 
 /// The slice budget counts the run thread's CPU time: a thread the OS doesn't schedule isn't computing. With the run's
-/// thread sharing one CPU with seven spinning threads, up to ~25 ms of compute takes ~8 times as long in wall time and
+/// thread sharing one CPU with seven spinning threads, a few ms of compute takes ~8 times as long in wall time and
 /// finishes, while a loop that never waits is still stopped.
 #[cfg(target_os = "linux")]
 #[test]
@@ -935,20 +941,37 @@ fn time_the_thread_isnt_scheduled_doesnt_count_against_the_slice() {
         let run = program.start_live(input, h, options, None, None).unwrap();
         (run, rx)
     };
-    // About 25 ms of compute on this machine, uncontended.
+    // About 10 ms of compute, in this thread's CPU time (whatever else loads the machine): the loop alone, run here. A
+    // live run takes more (up to several times as much in debug builds), still within the 50 ms.
+    let cpu = || {
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: a valid out pointer.
+        unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
+        Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
+    };
+    let alone = |n: u64| {
+        let source = format!("let x = 0\nfor (let i = 0; i < {n}; i++) x += i % 7\nreturn x");
+        let p = Program::new(source, "__input".into()).unwrap();
+        let start = cpu();
+        p.run("null".into(), Default::default()).unwrap();
+        cpu() - start
+    };
     let mut n = 1_000u64;
     loop {
-        let started = Instant::now();
-        let (r, rx) = run(n, false);
-        post(&rx);
-        r.stop();
-        let took = started.elapsed();
-        if took >= Duration::from_millis(25) {
+        let took = alone(n);
+        if took >= Duration::from_millis(10) {
             break;
         }
-        n = (n as f64 * 25.0 / took.as_secs_f64().max(1e-4) / 1000.0).max(n as f64 * 2.0) as u64;
+        n = (n as f64 * 10.0 / (took.as_secs_f64() * 1000.0).max(0.1)).max(n as f64 * 2.0) as u64;
     }
 
+    // The shared timer thread exists before this thread is pinned (else it would start pinned, with the spinners).
+    let (r, rx) = run(1, false);
+    post(&rx);
+    r.stop();
     // This thread, and the threads it starts (the run's, the spinners), on one CPU.
     // SAFETY: a zeroed cpu_set_t is a valid empty set; the calls get valid pointers and its size.
     unsafe {

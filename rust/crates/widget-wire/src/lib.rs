@@ -25,8 +25,8 @@ pub mod step;
 pub use decode::{DecodeError, Output, Post, decode_output, decode_post};
 pub use draw::{Command, DrawOutput};
 pub use encode::{
-    CallError, EncodeError, INVALID_DATA, INVALID_DRAW, INVALID_GPU, INVALID_VIEW, LivePosts,
-    NativeStep, encode_output, encode_post,
+    BURST, CallError, DRAW_KEY, EncodeError, INVALID_DATA, INVALID_DRAW, INVALID_GPU, INVALID_VIEW,
+    LivePosts, NativeStep, POSTS_PER_SECOND, encode_output, encode_post,
 };
 pub use gpu::{Arg, Batch};
 pub use native::{Canvas, DEEP, Found, KEY, LEVELS};

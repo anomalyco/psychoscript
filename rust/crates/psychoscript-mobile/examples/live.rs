@@ -55,11 +55,7 @@ impl LiveHandler for Timing {
 fn main() -> Result<(), Box<dyn Error>> {
     // Wake to post.
     let (tx, posts) = channel();
-    // Unlimited posts: this measures latency, not the 240/s budget.
-    let options = LiveOptions {
-        max_posts_per_second: u32::MAX,
-        ..Default::default()
-    };
+    let options = LiveOptions::default();
     let echo = Program::new(ECHO.into(), "__input".into())?.start_live(
         "null".into(),
         Box::new(Timing(Mutex::new(tx))),

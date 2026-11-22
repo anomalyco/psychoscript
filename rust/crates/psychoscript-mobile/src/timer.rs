@@ -13,6 +13,8 @@ pub(crate) enum Fire {
     Wake(Waker),
     /// A slice's budget: stop the run if that slice is still computing.
     Watch(Weak<Control>),
+    /// An encoder's held-back posts are due: wake the run to hand them over.
+    Due(Weak<Control>),
 }
 
 struct Entry {
@@ -106,6 +108,11 @@ fn run(timer: &Timer) {
                     Fire::Watch(control) => {
                         if let Some(control) = control.upgrade() {
                             control.watch();
+                        }
+                    }
+                    Fire::Due(control) => {
+                        if let Some(control) = control.upgrade() {
+                            control.due();
                         }
                     }
                 }

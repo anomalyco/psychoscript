@@ -9,7 +9,7 @@
 //!   protocol 1's entry, where the prelude builds the tree)
 //!   and the client's `serde_json` + `StepOutput::from_value`, binary is `session.run_bytes` of a native host (the
 //!   encoder builds the tree) and `widget_wire::decode_output`.
-//! - Live: from delivering a frame to the program's next frame request, the posts decoded on the run's thread (JSON:
+//! - Live: at most 120 frames a second (under the post rate), from delivering a frame to the program's next frame request, the posts decoded on the run's thread (JSON:
 //!   `serde_json` + Rune's readers; binary: `decode_post`). `live-gpu` posts a 64 KB vertex buffer and 64 B of uniforms
 //!   per frame as a GPU batch: JSON numbers (all a JSON post can carry) against the typed arrays' bytes.
 //!
@@ -192,10 +192,7 @@ fn live_run(
     frames: usize,
 ) -> (f64, f64) {
     let (tx, rx): (Sender<usize>, Receiver<usize>) = channel();
-    let options = LiveOptions {
-        max_posts_per_second: u32::MAX,
-        ..Default::default()
-    };
+    let options = LiveOptions::default();
     let program = Program::new(source.into(), "__input".into()).unwrap();
     let run = program
         .start_live(
@@ -214,7 +211,15 @@ fn live_run(
     };
     wait();
     let (mut samples, mut bytes) = (Vec::new(), 0);
+    // Frames at 120 Hz at most, so no `render` or `draw` waits for the post rate (`widgets-live.md`): each frame is
+    // timed alone, from its delivery to the next frame request.
+    let paced = Instant::now();
     for i in 0..60 + frames {
+        if let Some(left) = (paced + Duration::from_secs_f64(i as f64 / 120.0))
+            .checked_duration_since(Instant::now())
+        {
+            std::thread::sleep(left);
+        }
         let t = i as f64 / 60.0;
         let frame = format!(
             r#"{{"type":"frame","frame":{{"t":{t},"dt":0.016666666666666666,"width":600,"height":320,"scale":2,"pointer":null,"dark":false}}}}"#

@@ -2,6 +2,7 @@
 //! format, with no JSON text in between except for the generic data that stays JSON.
 
 use std::borrow::Cow;
+use std::time::{Duration, Instant};
 
 use psychoscript::{Data, HostString, HostValue};
 
@@ -93,6 +94,8 @@ pub enum CallError {
     /// The view breaks Keys and depth, or the prelude says so: a program error in phase `view` with this message,
     /// which ends a live run at once; the call doesn't throw.
     View(String),
+    /// A program error that ends a live run at once, the call not throwing (a draw post without a string key).
+    End(EncodeError),
 }
 
 impl From<crate::native::Stop> for CallError {
@@ -246,16 +249,49 @@ fn unmark(v: &HostValue) -> HostValue {
     }
 }
 
-/// A native host's live posts (`widgets-live.md`): each render is walked as it is encoded, and a draw names its canvas
-/// by key, which the last render's canvases map to the canvas's id.
-#[derive(Debug, Default)]
+/// The post rate (`widgets-live.md`, Post rate): a bucket of this many tokens, refilled at [`POSTS_PER_SECOND`].
+pub const BURST: f64 = 8.0;
+pub const POSTS_PER_SECOND: f64 = 240.0;
+const EPSILON: f64 = 1e-9;
+/// The failure of a draw post without a canvas key (an invalid post, phase `main`).
+pub const DRAW_KEY: &str = "A draw post needs a string key";
+
+/// A native host's live posts (`widgets-live.md`): each render is walked as it is encoded, a draw names its canvas by
+/// key, which the last render's canvases map to the canvas's id, and `render` and `draw` posts go to the client under
+/// the post rate. Every post is checked and encoded when the program posts it; only its delivery waits.
+#[derive(Debug)]
 pub struct LivePosts {
     last: Found,
+    per_second: f64,
+    tokens: f64,
+    at: Option<Instant>,
+    /// The counted posts waiting for a token, oldest first: the render (`None`) and a draw per canvas key.
+    waiting: Vec<(Option<String>, Vec<u8>)>,
+    /// A frame request went out and no frame came since.
+    frame: bool,
+}
+
+impl Default for LivePosts {
+    fn default() -> Self {
+        LivePosts::with_rate(POSTS_PER_SECOND)
+    }
 }
 
 impl LivePosts {
     pub fn new() -> LivePosts {
         LivePosts::default()
+    }
+
+    /// Under a post rate of `per_second` (the spec's is [`POSTS_PER_SECOND`]).
+    pub fn with_rate(per_second: f64) -> LivePosts {
+        LivePosts {
+            last: Found::default(),
+            per_second,
+            tokens: BURST,
+            at: None,
+            waiting: Vec::new(),
+            frame: false,
+        }
     }
 
     /// What the last render found: its handler ids and canvases.
@@ -268,13 +304,14 @@ impl LivePosts {
         self.last.canvases = canvases;
     }
 
-    /// `message` as bytes, or `None` when `keep` is false (a post dropped over the rate, still walked and checked),
-    /// and for a render whether its view has a handler, which `post` returns.
+    /// `message`, posted at `now`: the bytes to hand to the client now (none, or several when a `submit` or `dismiss`
+    /// releases the waiting posts ahead of itself), and for a render whether its view has a handler, which `post`
+    /// returns.
     pub fn post(
         &mut self,
         m: &HostValue,
-        keep: bool,
-    ) -> Result<(Option<Vec<u8>>, Option<bool>), CallError> {
+        now: Instant,
+    ) -> Result<(Vec<Vec<u8>>, Option<bool>), CallError> {
         let invalid = |kind| {
             move |e: String| {
                 CallError::Invalid(EncodeError {
@@ -292,33 +329,32 @@ impl LivePosts {
                 !k.as_str().is_some_and(|k| skip.contains(&k)) && crate::native::marked(v)
             })
         };
-        match field(m, "type").and_then(HostValue::as_str) {
+        let ty = field(m, "type").and_then(HostValue::as_str);
+        match ty {
             Some("render") => {
                 if let Some(HostValue::String(f)) = field(m, "failure") {
                     return Err(CallError::View(f.to_string_lossy().into_owned()));
                 }
                 let node = field(m, "node").unwrap_or(&HostValue::Undefined);
                 let mut s = Streams::default();
-                let found = crate::native::walk(keep.then_some(&mut s), node)?;
+                let found = crate::native::walk(Some(&mut s), node)?;
                 if rest_marked(&["node"]) {
                     return Err(CallError::Function { arg: 1 });
                 }
                 let handled = !found.handlers.is_empty();
                 self.last = found;
-                let bytes = keep.then(|| {
-                    let mut out = vec![VERSION, RENDER];
-                    s.finish_into(&mut out);
-                    out
-                });
-                Ok((bytes, Some(handled)))
+                let mut out = vec![VERSION, RENDER];
+                s.finish_into(&mut out);
+                Ok((self.counted(None, out, now), Some(handled)))
             }
-            Some("draw") if field(m, "key").is_some() => {
-                let key = match field(m, "key") {
-                    Some(
-                        k @ (HostValue::String(_) | HostValue::Number(_) | HostValue::Bool(_)),
-                    ) => crate::native::key_string(k).into_owned(),
-                    _ => String::new(),
+            Some("draw") => {
+                let Some(HostValue::String(key)) = field(m, "key") else {
+                    return Err(CallError::End(EncodeError {
+                        kind: INVALID_DATA,
+                        message: DRAW_KEY.into(),
+                    }));
                 };
+                let key = key.to_string_lossy().into_owned();
                 let Some(canvas) = self.last.canvases.iter().find(|c| c.key == key) else {
                     return Err(CallError::Throw(format!(
                         "No canvas with key \"{key}\" in the rendered view"
@@ -332,23 +368,89 @@ impl LivePosts {
                 if rest_marked(&[]) {
                     return Err(CallError::Function { arg: 1 });
                 }
-                if !keep {
-                    return Ok((None, None));
-                }
                 let m = &*as_json(m);
                 let mut out = vec![VERSION, DRAW];
                 put_str(&mut out, &canvas.id);
                 let commands = field(m, "commands")
                     .ok_or_else(|| invalid(INVALID_DRAW)("a draw post needs commands".into()))?;
                 draw_section(commands, &mut out).map_err(invalid(INVALID_DRAW))?;
-                Ok((Some(out), None))
+                Ok((self.counted(Some(key), out, now), None))
             }
             _ if crate::native::marked(m) => Err(CallError::Function { arg: 1 }),
-            _ if keep => encode_post(m)
-                .map(|b| (Some(b), None))
-                .map_err(CallError::Invalid),
-            _ => Ok((None, None)),
+            // A frame request while one is pending changes nothing, but the GPU batch it carries still goes.
+            Some("frame") if self.frame => {
+                match field(m, "gpu").filter(|g| !matches!(g, HostValue::Null)) {
+                    Some(batch) => {
+                        let mut out = vec![VERSION, GPU];
+                        crate::gpu::encode(batch, &mut out).map_err(invalid(INVALID_GPU))?;
+                        Ok((vec![out], None))
+                    }
+                    None => Ok((Vec::new(), None)),
+                }
+            }
+            _ => {
+                let bytes = encode_post(m).map_err(CallError::Invalid)?;
+                self.frame |= ty == Some("frame");
+                let mut out = match ty {
+                    Some("submit" | "dismiss") => self.release(),
+                    _ => Vec::new(),
+                };
+                out.push(bytes);
+                Ok((out, None))
+            }
         }
+    }
+
+    /// A message the client delivered to the program: a `frame` answers the pending frame request.
+    pub fn delivered(&mut self, m: &HostValue) {
+        if field(m, "type").and_then(HostValue::as_str) == Some("frame") {
+            self.frame = false;
+        }
+    }
+
+    /// The waiting posts whose tokens came by `now`, in order.
+    pub fn due(&mut self, now: Instant) -> Vec<Vec<u8>> {
+        self.refill(now);
+        let mut out = Vec::new();
+        while !self.waiting.is_empty() && self.tokens >= 1.0 - EPSILON {
+            self.tokens -= 1.0;
+            out.push(self.waiting.remove(0).1);
+        }
+        out
+    }
+
+    /// When the next waiting post's token comes, if a post waits.
+    pub fn next_due(&self) -> Option<Instant> {
+        let at = self.at?;
+        (!self.waiting.is_empty())
+            .then(|| at + Duration::from_secs_f64((1.0 - self.tokens).max(0.0) / self.per_second))
+    }
+
+    /// Every waiting post, at once, in order: the run ends by `submit`, `dismiss`, `main` returning or a program error.
+    pub fn release(&mut self) -> Vec<Vec<u8>> {
+        self.waiting.drain(..).map(|(_, bytes)| bytes).collect()
+    }
+
+    fn refill(&mut self, now: Instant) {
+        let at = *self.at.get_or_insert(now);
+        let elapsed = now.saturating_duration_since(at).as_secs_f64();
+        self.tokens = (self.tokens + elapsed * self.per_second).min(BURST);
+        self.at = Some(now.max(at));
+    }
+
+    /// A `render` (`key` `None`) or `draw` under the rate: out at once when nothing waits and a token is there, else
+    /// in place of the waiting post of its kind, or last.
+    fn counted(&mut self, key: Option<String>, bytes: Vec<u8>, now: Instant) -> Vec<Vec<u8>> {
+        self.refill(now);
+        if self.waiting.is_empty() && self.tokens >= 1.0 - EPSILON {
+            self.tokens -= 1.0;
+            return vec![bytes];
+        }
+        match self.waiting.iter_mut().find(|(k, _)| *k == key) {
+            Some(entry) => entry.1 = bytes,
+            None => self.waiting.push((key, bytes)),
+        }
+        Vec::new()
     }
 }
 
