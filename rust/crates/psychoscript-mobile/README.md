@@ -59,29 +59,49 @@ Swift errors also get `.reason` on the enum. Kotlin exceptions' `message` lists 
 
 A `ValueEncoder` writes what a program hands its host as bytes in its own format. The crate carries them and knows
 nothing of the format. `ValueEncoder.widget()` (feature `widget-wire`, on by default) is OpenCode widgets' binary
-format (opencode `specs/v2/widgets-binary.md`, crate `widget-wire`) for a native host (`widgets.md`, Native hosts):
-it builds the view tree (ids, keys, handlers) itself while it encodes, from the view as the program built it. Runs
-with an encoder pass program functions to the host as markers (psychoscript `translate: { functions: "mark" }`).
+format (opencode `specs/v2/widgets-binary.md`, crate `widget-wire`) for a native host of widget protocol 2
+(`widgets.md`, Native hosts): it builds the view tree (ids, keys, handlers) itself while it encodes, from the view as
+the program built it. Runs with an encoder pass program functions to the host as markers (psychoscript
+`translate: { functions: "mark" }`).
 
+- **Checked before running.** `runBytes` and `startLive` with an encoder first let it check the program's first line;
+  a refused program doesn't run, and the call fails with `Runtime` of the encoder's kind. The widget encoder runs only
+  protocol 2 (`const __widget_protocol = 2`): an older program fails with kind `OlderProtocol` and the message
+  `This widget was built with an older widget runtime; ask the agent to post it again` (a program error in the phase
+  of the step or run refused: `init`, `event`, `draw`, `main`), a newer one with kind `NewerProtocol` and
+  `This widget needs a newer version of this app` (a client error: show it, don't report it).
 - `program.runBytes(inputJson, encoder, options = RunOptions())`, also on `RunSession`, defines the host global
-  `encoder.emitName()` (`__widget_emit`). The program passes its output to it, and the result is the bytes the encoder
-  wrote for that value (the last call's) instead of the completion value. Functions in the value come as markers (a
-  widget's handlers); elsewhere they're left out, as JSON leaves them out. `maxOutputBytes` limits the bytes. A value the encoder can't write fails the run with `Runtime`
-  of the encoder's kind, with the line and column of the call. A run that never calls the global fails with
-  `Runtime(kind: "InvalidDataValue")`.
+  `encoder.emitName()` (`__widget_emit`) beside the input function, and returns the bytes the encoder makes of what
+  the program passed to the global and of the run's result, instead of the result's JSON. For widgets: the view goes
+  through `__widget_emit`, and `{ state, submit?, dismiss?, send? }` (a draw step's `{ commands }`) is the run's
+  result, so it keeps the JSON path's rules exactly (`toJSON`, an `Error`'s fields, a typed array failing the step).
+  `maxOutputBytes` limits the bytes. Failures (`Runtime`, by kind):
+  - `InvalidView`, no line: the view breaks Keys and depth (`A node's key must be a string, a number or a boolean`,
+    `The view nests more than 100 levels`), whatever the run did after;
+  - `InvalidDraw`, no line: a draw step's commands it can't write;
+  - `ExecutionFailure` `TypeError: Argument <n> to __widget_emit contains a function, which cannot be passed to the
+    host. (line, col)`: a function in the view anywhere but a node's `onPress`, `onChange`, `onPointer`;
+  - `InvalidDataValue` `The step gave no view`: an init or event step that never called `__widget_emit`;
+  - and the run's own failures, as `run` has them.
 - With `startLive(..., encoder:)` (and `LiveRun.restore(..., encoder:)`, with the same encoder), every post reaches
   `handler.onPostsBytes(messages)` as the encoder's bytes, a wake-up's posts in one call, and `onPosts` is never
   called. `__host.post` returns what the encoder says: for a widget `render`, whether the view has handlers (the
   prelude keeps the run going on it), else `undefined`. A post the encoder can't write throws at `__host.post`:
-  uncaught, the run ends with `Failed(Runtime)` of the encoder's kind, located at the post. Posts dropped over the
-  rate still reach the encoder (a render's handlers count) but not the app. What the encoder keeps (a widget's
-  canvases by key) goes into a snapshot.
+  uncaught, the run ends with `Failed(Runtime)` of the encoder's kind, located at the post. A view breaking Keys and
+  depth doesn't throw: the run ends at once with `Failed(Runtime(kind: "InvalidView"))`, no line. Posts dropped over
+  the rate still reach the encoder (a render is walked, its handlers count) but not the app. What the encoder keeps
+  (a widget's canvases by key) goes into a snapshot.
+- A function (marker) in the argument of a host function the encoder doesn't handle, or where the encoder allows none
+  (a post's values, draw commands, `fetch`'s request), fails the call with the runtime's `TypeError`
+  `Argument <n> to <name> contains a function, which cannot be passed to the host.` at the call, as it does without
+  an encoder. (The program sees it as an `Error` with that message: psychoscript gives a host's located failure the
+  name `Error`; the run's failure says `TypeError`.)
 - Widget live draws name their canvas by key (`{ type: "draw", key, commands }`); the encoder sends the canvas's id
   from the last render. An unknown key, or a canvas drawn by its `wgsl`, throws an `Error` at the post that the
   program can catch, as the prelude does.
 - The widget encoder's kinds name the spec's phase for the report: `InvalidView` (phase `view`), `InvalidDraw`
   (`draw`), `InvalidGpu` (`gpu`, a batch in a frame request or on its own). Anything else it can't write (an unknown
-  post type, a step output that isn't an object) is `InvalidDataValue`, an invalid post as today.
+  post type) is `InvalidDataValue`, an invalid post as today.
 
 ## Live runs
 
@@ -371,13 +391,14 @@ val out = program.run("""{"phase":"init","data":$dataJson}""", RunOptions(timeou
 val frame = program.run(drawInputJson, RunOptions(timeoutMs = 8uL))   // a Timeout here counts as a draw overrun
 ```
 
-With the binary format, a native host: the step program ends in `__widget_emit(__widget_step(__input(), true))`
-instead of `return __widget_step(__input())`, a live one in `__widget_live(__input(), true)`, and the app decodes the
-bytes (`widgets-binary.md`) rather than parsing JSON. Live posts arrive in `onPostsBytes`:
+With the binary format (widget protocol 2, a native host): the step program ends in
+`return __widget_native_step(__input())` instead of `return __widget_step(__input())`, a live one in
+`return await __widget_live(__input(), true)`, and the app decodes the bytes (`widgets-binary.md`) rather than parsing
+JSON. Live posts arrive in `onPostsBytes`:
 
 ```swift
 let wire = ValueEncoder.widget()
-let program = try Program(source: served.program + "\n__widget_emit(__widget_step(__input(), true))")
+let program = try Program(source: served.program + "\nreturn __widget_native_step(__input())")
 let liveProgram = try Program(source: served.program + "\nreturn await __widget_live(__input(), true)")
 let bytes = try program.runBytes(inputJson: stepInputJson, encoder: wire, options: step)    // 01 'S' ... or 01 'D' ...
 let run = try liveProgram.startLive(inputJson: input, handler: handler, options: opts, transport: t, encoder: wire)
@@ -385,17 +406,13 @@ let run = try liveProgram.startLive(inputJson: input, handler: handler, options:
 
 ```kotlin
 val wire = ValueEncoder.widget()
-val program = Program(served.program + "\n__widget_emit(__widget_step(__input(), true))")
+val program = Program(served.program + "\nreturn __widget_native_step(__input())")
 val liveProgram = Program(served.program + "\nreturn await __widget_live(__input(), true)")
 val bytes = program.runBytes(stepInputJson, wire, RunOptions(timeoutMs = 250uL))
 val run = liveProgram.startLive(input, handler, opts, transport, wire)          // handler.onPostsBytes(List<ByteArray>)
 ```
 
 `examples/wire_bench.rs` times both paths on opencode's bench workloads (`tests/fixtures/workloads`).
-
-One difference from the JSON path remains in step outputs: `__widget_emit`'s argument crosses as a host value, so a
-custom `toJSON` isn't called (nor an `Error`'s own fields or a typed array written as the JSON result would). Dates,
-URLs, Sets and Maps read the same.
 
 A `shader` node: wrap its `wgsl` in the spec's header and entry point, translate `widget_main`, and draw a full-screen
 triangle. GLES flips `frag.y` in the entry point so templates see a top-left origin everywhere (`resolution` is in

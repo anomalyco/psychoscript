@@ -25,7 +25,7 @@ mod program;
 mod shader;
 mod timer;
 
-pub use encoder::{EncodePosts, EncodeValues, ValueEncoder};
+pub use encoder::{EncodePosts, EncodeStep, EncodeValues, Reject, ValueEncoder};
 pub use error::PsychoScriptError;
 pub use fetch::{
     FetchCompletion, FetchRequest, FetchResponse, FetchTransport, HttpHeader, is_public_address,

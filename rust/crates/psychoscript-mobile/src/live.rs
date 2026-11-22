@@ -25,7 +25,7 @@ use psychoscript::{
 };
 
 use crate::cpu::ThreadClock;
-use crate::encoder::{EncodePosts, Thrown, ValueEncoder};
+use crate::encoder::{EncodePosts, Reject, Thrown, ValueEncoder, marked};
 use crate::error::PsychoScriptError;
 use crate::fetch::{self, FetchTransport, Rejection, Request};
 use crate::json::{self, Input};
@@ -383,6 +383,8 @@ pub(crate) struct Control {
     transport: Option<Arc<dyn FetchTransport>>,
     /// With an encoder, posts as its bytes, not JSON; the failure it threw at a post.
     encoded: Option<Mutex<Box<dyn EncodePosts>>>,
+    /// A program error that ended the run at once (a view the encoder refused).
+    ended: Mutex<Option<PsychoScriptError>>,
     thrown: Thrown,
     state: Mutex<State>,
     /// The psychoscript run of the current thread, for its metadata.
@@ -420,6 +422,7 @@ impl Control {
             input_name,
             transport,
             encoded: encoder.map(|e| Mutex::new(e.0.live())),
+            ended: Mutex::new(None),
             thrown: Thrown::default(),
             state: Mutex::new(State::Starting),
             run: Mutex::new(None),
@@ -525,7 +528,13 @@ impl Control {
         let outcome = program.run_resumable();
         lock(&self.slice).busy = false;
         let why = *lock(&self.why);
+        let ended = lock(&self.ended).take();
         let exit = match outcome {
+            _ if ended.is_some() => LiveExit::Failed {
+                error: ended.unwrap_or(PsychoScriptError::InvalidState {
+                    reason: String::new(),
+                }),
+            },
             Ok(RunOutcome::Suspended(_)) => match why {
                 // `snapshot` keeps the state and joins this thread.
                 Why::Snapshot => return self.flush(),
@@ -594,10 +603,12 @@ impl Control {
                 };
                 *lock(&control.run) = Some(run.clone());
                 let c = control.clone();
-                let input = HostFunction::new(move |_args, _call| -> HostResult {
+                let label = name.clone();
+                let input = HostFunction::new(move |args: Vec<HostValue>, _call| -> HostResult {
                     c.interrupted()?;
                     c.computing();
                     let _host = HostSection::enter(&c);
+                    c.unmarked(&args, 0, &label)?;
                     Ok(Input::parse(&text).unwrap_or_default())
                 });
                 let c = control.clone();
@@ -605,20 +616,26 @@ impl Control {
                     c.interrupted()?;
                     c.computing();
                     let _host = HostSection::enter(&c);
+                    c.unmarked(&args, 1, "__host.post")?;
                     c.post(args.first().unwrap_or(&HostValue::Undefined))
                 });
                 let c = control.clone();
-                let now = HostFunction::new(move |_args, _call| -> HostResult {
+                let now = HostFunction::new(move |args: Vec<HostValue>, _call| -> HostResult {
                     c.interrupted()?;
                     c.computing();
                     let _host = HostSection::enter(&c);
+                    c.unmarked(&args, 0, "__host.now")?;
                     Ok(HostValue::Number(c.now_ms()))
                 });
                 let c = control.clone();
-                let receive = HostFunction::new_async(move |_args, _call| {
+                let receive = HostFunction::new_async(move |args: Vec<HostValue>, _call| {
                     let c = c.clone();
                     let mut at = At::Inside;
+                    let mut marked = c.unmarked(&args, 0, "__host.receive").err();
                     std::future::poll_fn(move |cx| {
+                        if let Some(e) = marked.take() {
+                            return Poll::Ready(Err(e));
+                        }
                         let at = std::mem::replace(&mut at, At::Between);
                         c.around(at, cx, |cx| c.poll_receive(cx, at))
                     })
@@ -635,7 +652,11 @@ impl Control {
                         .max(0.0);
                     let key = call.key();
                     let mut at = At::Inside;
+                    let mut marked = c.unmarked(&args, 0, "__host.sleep").err();
                     std::future::poll_fn(move |cx| {
+                        if let Some(e) = marked.take() {
+                            return Poll::Ready(Err(e));
+                        }
                         let at = std::mem::replace(&mut at, At::Between);
                         c.around(at, cx, |cx| c.poll_sleep(&key, ms, cx, at))
                     })
@@ -643,10 +664,17 @@ impl Control {
                 .idempotent();
                 let c = control.clone();
                 let fetch = HostFunction::new_async(move |args: Vec<HostValue>, _call| {
-                    let slot = c.start_fetch(args.first());
+                    let mut marked = c.unmarked(&args, 0, "__host.fetch").err();
+                    let slot = match marked {
+                        Some(_) => Arc::default(),
+                        None => c.start_fetch(args.first()),
+                    };
                     let c = c.clone();
                     let mut at = At::Inside;
                     std::future::poll_fn(move |cx| {
+                        if let Some(e) = marked.take() {
+                            return Poll::Ready(Err(e));
+                        }
                         let at = std::mem::replace(&mut at, At::Between);
                         c.around(at, cx, |cx| c.poll_fetch(&slot, cx, at))
                     })
@@ -976,6 +1004,30 @@ impl Control {
 
     // ---------- host functions ----------
 
+    /// What a call throws for an encoder's rejection; a program error that ends the run at once interrupts it.
+    fn reject(&self, r: Reject) -> HostValue {
+        if let Reject::End(f) = r {
+            lock(&self.ended).get_or_insert(crate::program::refused(f));
+            self.stopping.store(true, Ordering::SeqCst);
+            return HostValue::Interrupt;
+        }
+        self.thrown
+            .throw(r, "__host.post")
+            .unwrap_or(HostValue::Undefined)
+    }
+
+    /// With an encoder (functions crossing as markers), a marker in an argument from `from` on fails the call as a
+    /// function does without markers.
+    fn unmarked(&self, args: &[HostValue], from: usize, label: &str) -> Result<(), HostValue> {
+        if self.encoded.is_none() {
+            return Ok(());
+        }
+        match args.iter().skip(from).position(marked) {
+            Some(i) => Err(self.thrown.function(label, from + i + 1)),
+            None => Ok(()),
+        }
+    }
+
     /// Queues a post and returns what `post` gives the program: `undefined`, or with an encoder what it says (a
     /// native widget render: whether the view has handlers). An encoder's failure is thrown at the post.
     fn post(&self, message: &HostValue) -> HostResult {
@@ -1006,9 +1058,8 @@ impl Control {
         };
         let (first, ret) = match &self.encoded {
             Some(encoded) => {
-                let (bytes, ret) = lock(encoded)
-                    .post(message, keep)
-                    .map_err(|e| self.thrown.throw(e))?;
+                let posted = lock(encoded).post(message, keep);
+                let (bytes, ret) = posted.map_err(|r| self.reject(r))?;
                 let Some(bytes) = bytes else {
                     return Ok(ret);
                 };

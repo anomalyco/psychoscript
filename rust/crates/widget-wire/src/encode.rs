@@ -3,14 +3,14 @@
 
 use std::borrow::Cow;
 
-use psychoscript::{HostString, HostValue};
+use psychoscript::{Data, HostString, HostValue};
 
 use crate::VERSION;
 use crate::draw::{
     Cap, Color, Fill, Gradient, GradientShape, MAX_COMMANDS, Paint, TextAlign, TextOptions, Token,
 };
 use crate::json;
-use crate::native::{Canvas, Found, IsMarker};
+use crate::native::{Canvas, Found};
 use crate::schema::*;
 
 /// Why a value can't be written: a program error in the phase its kind names (`widgets-binary.md`, Errors).
@@ -35,20 +35,10 @@ pub const INVALID_DRAW: &str = "InvalidDraw";
 pub const INVALID_GPU: &str = "InvalidGpu";
 pub const INVALID_DATA: &str = "InvalidDataValue";
 
-/// A run's output, as the program hands it to the emit global: a draw step's `{ commands }` as `01 D`, an init or
-/// event step's `{ state, view, submit?, dismiss?, send? }` as `01 S`. Fails for an invalid draw (`InvalidDraw`) or
-/// a value that isn't a step output.
+/// A run's output, as one value: a draw step's `{ commands }` as `01 D`, an init or event step's
+/// `{ state, view, submit?, dismiss?, send? }` as `01 S`, the view already the tree clients get. Fails for an invalid
+/// draw (`InvalidDraw`) or a value that isn't a step output. (Protocol 1's output; a native host uses [`NativeStep`].)
 pub fn encode_output(v: &HostValue) -> Result<Vec<u8>, EncodeError> {
-    output(v, None)
-}
-
-/// [`encode_output`] for a native host, whose program runs `__widget_step(input, true)`: the view, as the program
-/// built it, is walked as it is encoded (`widgets.md`, Native hosts), `is_marker` telling its handlers.
-pub fn encode_output_native(v: &HostValue, is_marker: IsMarker) -> Result<Vec<u8>, EncodeError> {
-    output(v, Some(is_marker))
-}
-
-fn output(v: &HostValue, native: Option<IsMarker>) -> Result<Vec<u8>, EncodeError> {
     let v = &*as_json(v);
     let fail = |kind| move |message| EncodeError { kind, message };
     if !matches!(v, HostValue::Object(_)) {
@@ -59,33 +49,180 @@ fn output(v: &HostValue, native: Option<IsMarker>) -> Result<Vec<u8>, EncodeErro
     let mut out = vec![VERSION];
     match field(v, "commands") {
         Some(commands) => draw_section(commands, &mut out).map_err(fail(INVALID_DRAW))?,
-        None => step(v, &mut out, native).map_err(fail(INVALID_VIEW))?,
+        None => {
+            let send = field(v, "send")
+                .filter(|s| matches!(s, HostValue::Object(_)))
+                .map(|s| {
+                    let value = field(s, "value").filter(|v| !json::skipped(v));
+                    (
+                        value.map_or_else(|| "null".into(), json::write),
+                        !matches!(field(s, "wake"), Some(HostValue::Bool(false))),
+                    )
+                });
+            step_head(
+                &mut out,
+                field(v, "state").map(json::write),
+                field(v, "submit")
+                    .filter(|s| !json::skipped(s))
+                    .map(json::write),
+                matches!(field(v, "dismiss"), Some(HostValue::Bool(true))),
+                send,
+            );
+            let mut s = Streams::default();
+            write_node(&mut s, field(v, "view").unwrap_or(&HostValue::Null), 0)
+                .map_err(fail(INVALID_VIEW))?;
+            s.finish_into(&mut out);
+        }
     }
     Ok(out)
 }
 
+/// Why a native host's call fails, besides an invalid value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CallError {
+    /// A program error: the call throws it (uncaught, the run fails with its kind and message, at the call).
+    Invalid(EncodeError),
+    /// A function in argument `arg` (from 1) where none may go: the call throws the runtime's `TypeError`
+    /// `Argument <arg> to <name> contains a function, which cannot be passed to the host.`
+    Function { arg: usize },
+    /// A key `encodeURIComponent` can't write: the call throws `URIError: URI malformed`.
+    Uri,
+    /// An `Error` with this message, which the program can catch (a draw for a key the last render has no canvas
+    /// for, or a GPU canvas).
+    Throw(String),
+    /// The view breaks Keys and depth, or the prelude says so: a program error in phase `view` with this message,
+    /// which ends a live run at once; the call doesn't throw.
+    View(String),
+}
+
+impl From<crate::native::Stop> for CallError {
+    fn from(s: crate::native::Stop) -> Self {
+        match s {
+            crate::native::Stop::View(m) => CallError::View(m.into()),
+            crate::native::Stop::Function => CallError::Function { arg: 1 },
+            crate::native::Stop::Uri => CallError::Uri,
+        }
+    }
+}
+
+/// A native host's step (`widgets.md`, Native hosts): `__widget_emit(view, failure?)` gives the view as built, which
+/// is walked as it is encoded, and the run's result the rest of the output ([`NativeStep::finish`]).
+#[derive(Debug, Default)]
+pub struct NativeStep {
+    view: Option<Vec<u8>>,
+    failure: Option<String>,
+}
+
+impl NativeStep {
+    /// `__widget_emit`'s arguments. A view breaking Keys and depth (or a failure the prelude passes) is kept for
+    /// [`NativeStep::failure`], not thrown.
+    pub fn emit(&mut self, args: &[HostValue]) -> Result<(), CallError> {
+        let view = args.first().unwrap_or(&HostValue::Undefined);
+        let failure = args.get(1).unwrap_or(&HostValue::Undefined);
+        if let Some(arg) = args.iter().skip(2).position(crate::native::marked) {
+            return Err(CallError::Function { arg: arg + 3 });
+        }
+        if let HostValue::String(f) = failure {
+            self.failure = Some(f.to_string_lossy().into_owned());
+            return Ok(());
+        }
+        if crate::native::marked(failure) {
+            return Err(CallError::Function { arg: 2 });
+        }
+        let mut s = Streams::default();
+        match crate::native::walk(Some(&mut s), view) {
+            Ok(_) => {
+                let mut out = Vec::new();
+                s.finish_into(&mut out);
+                self.view = Some(out);
+                self.failure = None;
+                Ok(())
+            }
+            Err(crate::native::Stop::View(m)) => {
+                self.failure = Some(m.into());
+                Ok(())
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// The view's failure, a program error in phase `view` that fails the step whatever the run did.
+    pub fn failure(&self) -> Option<&str> {
+        self.failure.as_deref()
+    }
+
+    /// The step's bytes from the run's result (markers in it left out, as JSON leaves functions out): `01 S` with the
+    /// emitted view, or for a draw step (no view emitted) `01 D` from `{ commands }`.
+    pub fn finish(&self, result: &Data) -> Result<Vec<u8>, EncodeError> {
+        let fail = |kind| move |message| EncodeError { kind, message };
+        let mut out = vec![VERSION];
+        let Some(view) = &self.view else {
+            return match result.get("commands") {
+                Some(commands) => {
+                    draw_section(&data_host(commands), &mut out).map_err(fail(INVALID_DRAW))?;
+                    Ok(out)
+                }
+                None => Err(fail(INVALID_DATA)("The step gave no view".into())),
+            };
+        };
+        if !matches!(result, Data::Object(_)) {
+            return Err(fail(INVALID_DATA)(
+                "a step must return an object with state and view".into(),
+            ));
+        }
+        let get = |d: &'_ Data, k: &str| {
+            d.get(k)
+                .filter(|v| !matches!(v, Data::FunctionMarker))
+                .cloned()
+        };
+        let send = get(result, "send")
+            .filter(|s| matches!(s, Data::Object(_)))
+            .map(|s| {
+                (
+                    get(&s, "value").map_or_else(|| "null".into(), |v| v.to_json_string()),
+                    !matches!(get(&s, "wake"), Some(Data::Bool(false))),
+                )
+            });
+        step_head(
+            &mut out,
+            get(result, "state").map(|v| v.to_json_string()),
+            get(result, "submit").map(|v| v.to_json_string()),
+            matches!(get(result, "dismiss"), Some(Data::Bool(true))),
+            send,
+        );
+        out.extend_from_slice(view);
+        Ok(out)
+    }
+}
+
+/// A run's result as a host value.
+fn data_host(d: &Data) -> HostValue {
+    match d {
+        Data::Null => HostValue::Null,
+        Data::FunctionMarker => HostValue::Undefined,
+        Data::Bool(b) => HostValue::Bool(*b),
+        Data::Number(n) => HostValue::Number(n.as_f64().unwrap_or(f64::NAN)),
+        Data::String(s) => HostValue::String(s.clone()),
+        Data::Array(items) => HostValue::Array(items.iter().map(|i| Some(data_host(i))).collect()),
+        Data::Object(fields) => HostValue::Object(
+            fields
+                .iter()
+                .map(|(k, v)| (k.clone(), data_host(v)))
+                .collect(),
+        ),
+    }
+}
+
 /// A native host's live posts (`widgets-live.md`): each render is walked as it is encoded, and a draw names its canvas
 /// by key, which the last render's canvases map to the canvas's id.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct LivePosts {
-    is_marker: IsMarker,
     last: Found,
 }
 
-/// Why a native post fails: an invalid post (a program error), or an `Error` to throw at the post, which the program
-/// can catch (a draw for a key the last render has no canvas for, or a GPU canvas).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PostError {
-    Invalid(EncodeError),
-    Throw(String),
-}
-
 impl LivePosts {
-    pub fn new(is_marker: IsMarker) -> LivePosts {
-        LivePosts {
-            is_marker,
-            last: Found::default(),
-        }
+    pub fn new() -> LivePosts {
+        LivePosts::default()
     }
 
     /// What the last render found: its handler ids and canvases.
@@ -98,28 +235,41 @@ impl LivePosts {
         self.last.canvases = canvases;
     }
 
-    /// `message` as bytes, or `None` when `keep` is false (a post dropped over the rate: a render is still walked),
+    /// `message` as bytes, or `None` when `keep` is false (a post dropped over the rate, still walked and checked),
     /// and for a render whether its view has a handler, which `post` returns.
     pub fn post(
         &mut self,
         m: &HostValue,
         keep: bool,
-    ) -> Result<(Option<Vec<u8>>, Option<bool>), PostError> {
+    ) -> Result<(Option<Vec<u8>>, Option<bool>), CallError> {
         let invalid = |kind| {
             move |e: String| {
-                PostError::Invalid(EncodeError {
+                CallError::Invalid(EncodeError {
                     kind,
                     message: format!("invalid post: {e}"),
                 })
             }
         };
+        let fields = match m {
+            HostValue::Object(fields) => &fields[..],
+            _ => &[],
+        };
+        let rest_marked = |skip: &[&str]| {
+            fields.iter().any(|(k, v)| {
+                !k.as_str().is_some_and(|k| skip.contains(&k)) && crate::native::marked(v)
+            })
+        };
         match field(m, "type").and_then(HostValue::as_str) {
             Some("render") => {
-                let m = &*as_json(m);
-                let node = field(m, "node").unwrap_or(&HostValue::Null);
+                if let Some(HostValue::String(f)) = field(m, "failure") {
+                    return Err(CallError::View(f.to_string_lossy().into_owned()));
+                }
+                let node = field(m, "node").unwrap_or(&HostValue::Undefined);
                 let mut s = Streams::default();
-                let found = crate::native::walk(keep.then_some(&mut s), node, self.is_marker)
-                    .map_err(invalid(INVALID_VIEW))?;
+                let found = crate::native::walk(keep.then_some(&mut s), node)?;
+                if rest_marked(&["node"]) {
+                    return Err(CallError::Function { arg: 1 });
+                }
                 let handled = !found.handlers.is_empty();
                 self.last = found;
                 let bytes = keep.then(|| {
@@ -130,25 +280,29 @@ impl LivePosts {
                 Ok((bytes, Some(handled)))
             }
             Some("draw") if field(m, "key").is_some() => {
-                let m = &*as_json(m);
                 let key = match field(m, "key") {
-                    Some(HostValue::String(k)) => k.to_string_lossy().into_owned(),
-                    Some(HostValue::Number(n)) => crate::native::js_number(*n),
-                    _ => return Err(invalid(INVALID_DRAW)("a draw's key is a string".into())),
+                    Some(
+                        k @ (HostValue::String(_) | HostValue::Number(_) | HostValue::Bool(_)),
+                    ) => crate::native::key_string(k).into_owned(),
+                    _ => String::new(),
                 };
                 let Some(canvas) = self.last.canvases.iter().find(|c| c.key == key) else {
-                    return Err(PostError::Throw(format!(
+                    return Err(CallError::Throw(format!(
                         "No canvas with key \"{key}\" in the rendered view"
                     )));
                 };
                 if canvas.wgsl {
-                    return Err(PostError::Throw(format!(
+                    return Err(CallError::Throw(format!(
                         "Canvas \"{key}\" is drawn by its wgsl; it takes no draw commands"
                     )));
+                }
+                if rest_marked(&[]) {
+                    return Err(CallError::Function { arg: 1 });
                 }
                 if !keep {
                     return Ok((None, None));
                 }
+                let m = &*as_json(m);
                 let mut out = vec![VERSION, DRAW];
                 put_str(&mut out, &canvas.id);
                 let commands = field(m, "commands")
@@ -156,9 +310,10 @@ impl LivePosts {
                 draw_section(commands, &mut out).map_err(invalid(INVALID_DRAW))?;
                 Ok((Some(out), None))
             }
+            _ if crate::native::marked(m) => Err(CallError::Function { arg: 1 }),
             _ if keep => encode_post(m)
                 .map(|b| (Some(b), None))
-                .map_err(PostError::Invalid),
+                .map_err(CallError::Invalid),
             _ => Ok((None, None)),
         }
     }
@@ -267,6 +422,10 @@ fn plain(v: &HostValue) -> bool {
 }
 
 /// `v` as the JSON path writes it (`HostValue::to_json`), so both read the same values.
+pub(crate) fn json_value(v: &HostValue) -> Cow<'_, HostValue> {
+    as_json(v)
+}
+
 fn as_json(v: &HostValue) -> Cow<'_, HostValue> {
     if plain(v) {
         Cow::Borrowed(v)
@@ -332,42 +491,29 @@ fn lossy(s: &HostString) -> Cow<'_, str> {
 
 // ---- steps and views ----
 
-fn step(v: &HostValue, out: &mut Vec<u8>, native: Option<IsMarker>) -> Result<(), String> {
-    let submit = field(v, "submit").filter(|s| !json::skipped(s));
-    let dismiss = matches!(field(v, "dismiss"), Some(HostValue::Bool(true)));
-    let send = field(v, "send").filter(|s| matches!(s, HostValue::Object(_)));
-    let wake = !matches!(
-        send.and_then(|s| field(s, "wake")),
-        Some(HostValue::Bool(false))
-    );
+/// `S`, its flags and its JSON: `state`, then `submit` and `send`'s value when present, each as JSON text.
+fn step_head(
+    out: &mut Vec<u8>,
+    state: Option<String>,
+    submit: Option<String>,
+    dismiss: bool,
+    send: Option<(String, bool)>,
+) {
+    let wake = send.as_ref().is_some_and(|(_, wake)| *wake);
     out.push(STEP);
     out.push(
         submit.is_some() as u8
             | (dismiss as u8) << 1
             | (send.is_some() as u8) << 2
-            | ((send.is_some() && wake) as u8) << 3,
+            | (wake as u8) << 3,
     );
-    put_str(
-        out,
-        &json::write(field(v, "state").unwrap_or(&HostValue::Null)),
-    );
+    put_str(out, state.as_deref().unwrap_or("null"));
     if let Some(submit) = submit {
-        put_str(out, &json::write(submit));
+        put_str(out, &submit);
     }
-    if let Some(send) = send {
-        put_str(
-            out,
-            &json::write(field(send, "value").unwrap_or(&HostValue::Null)),
-        );
+    if let Some((value, _)) = send {
+        put_str(out, &value);
     }
-    let mut s = Streams::default();
-    let view = field(v, "view").unwrap_or(&HostValue::Null);
-    match native {
-        Some(is_marker) => drop(crate::native::walk(Some(&mut s), view, is_marker)?),
-        None => write_node(&mut s, view, 0)?,
-    }
-    s.finish_into(out);
-    Ok(())
 }
 
 /// Section `N`'s three streams.

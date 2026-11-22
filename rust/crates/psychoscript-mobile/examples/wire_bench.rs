@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 use widget_wire::{Arg, DrawOutput, Node, StepOutput, decode_output, decode_post};
 
 const STEP: &str = "\nreturn __widget_step(__input())";
-const EMIT: &str = "\n__widget_emit(__widget_step(__input(), true))";
+const EMIT: &str = "\nreturn __widget_native_step(__input())";
 const LIVE: &str = "\nreturn await __widget_live(__input())";
 const NATIVE_LIVE: &str = "\nreturn await __widget_live(__input(), true)";
 
@@ -233,7 +233,7 @@ fn live_run(
 
 /// A GPU canvas frame per `widgets-gpu.md` without the prelude (it has no `widget.gpu` yet): two writes and a render
 /// pass of 10 meshes per frame, the batch riding in the frame request.
-const GPU: &str = r#"
+const GPU: &str = r#"const __widget_protocol = 2
 const typed = __input().typed
 const FLOATS = 16384
 const vertices = new Float32Array(FLOATS), uniforms = new Float32Array(16)

@@ -1,11 +1,11 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use psychoscript::{
-    Compiled, Data, HostFunction, HostResult, HostString, HostValue, Limits, Runtime, Translate,
-    TranslateFunctions,
+    Compiled, Data, Failure, HostFunction, HostResult, HostString, HostValue, Limits, Runtime,
+    Translate, TranslateFunctions,
 };
 
-use crate::encoder::{Thrown, ValueEncoder};
+use crate::encoder::{EncodeStep, Thrown, ValueEncoder, marked};
 use crate::error::PsychoScriptError;
 use crate::fetch::FetchTransport;
 use crate::json::Input;
@@ -34,6 +34,8 @@ pub struct RunOptions {
 pub struct Program {
     compiled: Compiled,
     input_name: String,
+    /// The source's first line, which an encoder checks before a run.
+    first_line: Box<str>,
 }
 
 #[uniffi::export]
@@ -44,9 +46,11 @@ impl Program {
         let compiled = Runtime::make()
             .compile(&source)
             .map_err(|d| PsychoScriptError::from_diagnostic(d, None, None))?;
+        let first_line = source.split('\n').next().unwrap_or("").into();
         Ok(Program {
             compiled,
             input_name,
+            first_line,
         })
     }
 
@@ -61,11 +65,11 @@ impl Program {
         self.json(Slot::text(input_json, &options)?, options)
     }
 
-    /// Runs the program as [`Program::run`] does, with `encoder`'s emit global (`encoder.emit_name()`), and returns
-    /// the bytes `encoder` wrote for the value the program passed to it (its last call's) instead of the completion
-    /// value. Program functions in that value come as markers. Fails with `Runtime` of the encoder's kind, located
-    /// at the call, when it can't write the value, and with `InvalidDataValue` when the program never called the
-    /// global; `max_output_bytes` limits the bytes.
+    /// Runs the program as [`Program::run`] does, with `encoder`'s emit global (`encoder.emit_name()`) beside the
+    /// input function, and returns the bytes `encoder` makes of what the program passed to the global and of its
+    /// result, instead of the result's JSON. Program functions cross as markers. A program the encoder refuses
+    /// isn't run (`Runtime` of the encoder's kind); a value it can't write fails with `Runtime` of its kind (at the
+    /// emit call when it throws there); `max_output_bytes` limits the bytes.
     #[uniffi::method(default(options))]
     pub fn run_bytes(
         &self,
@@ -173,11 +177,20 @@ fn object(text: &str, what: &str) -> Result<Vec<(HostString, HostValue)>, Psycho
     }
 }
 
-/// What a run's emit global wrote, and the encoder's failure it threw.
-#[derive(Default)]
+/// A run's emit global's calls, and what the encoder threw.
 struct Emitted {
-    bytes: Mutex<Option<Vec<u8>>>,
+    step: Mutex<Box<dyn EncodeStep>>,
     thrown: Thrown,
+}
+
+/// What a run's error is when the encoder refuses or fails it.
+pub(crate) fn refused(f: Failure) -> PsychoScriptError {
+    PsychoScriptError::Runtime {
+        kind: f.kind,
+        reason: f.message.to_string_lossy().into_owned(),
+        line: None,
+        column: None,
+    }
 }
 
 impl Program {
@@ -187,34 +200,39 @@ impl Program {
         Ok(out)
     }
 
+    /// Checks the program for `encoder` before it runs.
+    pub(crate) fn check(&self, encoder: &ValueEncoder) -> Result<(), PsychoScriptError> {
+        encoder.0.check(&self.first_line).map_err(refused)
+    }
+
     fn bytes(
         &self,
         slot: Slot,
         options: RunOptions,
         encoder: &ValueEncoder,
     ) -> Result<Vec<u8>, PsychoScriptError> {
-        let out = Arc::new(Emitted::default());
-        if let Err(mut e) = self.execute(slot, &options, Some((encoder, out.clone()))) {
-            out.thrown.name(&mut e);
-            return Err(e);
+        self.check(encoder)?;
+        let out = Arc::new(Emitted {
+            step: Mutex::new(encoder.0.step()),
+            thrown: Thrown::default(),
+        });
+        let result = self.execute(slot, &options, Some((encoder, out.clone())));
+        let step = out.step.lock().unwrap_or_else(PoisonError::into_inner);
+        // The emitted view's failure first: it fails the step whatever the run did.
+        if let Some(f) = step.failure() {
+            return Err(refused(f));
         }
-        let bytes = out
-            .bytes
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
-        let bytes = bytes.ok_or_else(|| PsychoScriptError::Runtime {
-            kind: "InvalidDataValue".into(),
-            reason: format!("the program didn't call {}", encoder.0.emit_name()),
-            line: None,
-            column: None,
+        let data = result.map_err(|mut e| {
+            out.thrown.name(&mut e);
+            e
         })?;
+        let bytes = step.finish(&data).map_err(refused)?;
         limit(bytes.len(), "encoded", &options)?;
         Ok(bytes)
     }
 
-    /// Runs the program with its input function and, with `emit`, the encoder's emit global writing into its slot,
-    /// program functions in its argument as markers.
+    /// Runs the program with its input function and, with `emit`, the encoder's emit global, program functions in
+    /// host calls' arguments and the result as markers.
     fn execute(
         &self,
         slot: Slot,
@@ -223,7 +241,7 @@ impl Program {
     ) -> Result<Data, PsychoScriptError> {
         let slot = Arc::new(Mutex::new(slot));
         let name = self.input_name.clone();
-        let emit = emit.map(|(e, out)| (e.0.clone(), out));
+        let emit = emit.map(|(e, out)| (e.0.emit_name().to_owned(), out));
         let translate = Translate {
             functions: match emit {
                 Some(_) => TranslateFunctions::Mark,
@@ -235,20 +253,24 @@ impl Program {
             .translate(translate)
             .globals(move |_run| {
                 let slot = slot.clone();
-                let input = HostFunction::new(move |_args, _call| {
-                    slot.lock().unwrap_or_else(PoisonError::into_inner).read()
+                let thrown = emit.as_ref().map(|(_, out)| out.clone());
+                let label = name.clone();
+                let input = HostFunction::new(move |args: Vec<HostValue>, _call| -> HostResult {
+                    if let (Some(out), Some(arg)) = (&thrown, args.iter().position(marked)) {
+                        return Err(out.thrown.function(&label, arg + 1));
+                    }
+                    Ok(slot.lock().unwrap_or_else(PoisonError::into_inner).read())
                 });
-                let emit = emit.clone().map(|(encoder, out)| {
-                    let name = encoder.emit_name().to_owned();
+                let emit = emit.clone().map(|(emit_name, out)| {
+                    let label = emit_name.clone();
                     let f = HostFunction::new(move |args: Vec<HostValue>, _call| -> HostResult {
-                        let v = args.first().unwrap_or(&HostValue::Undefined);
-                        let bytes = encoder
-                            .encode_output(v)
-                            .map_err(|f| out.thrown.throw(HostValue::Failure(f)))?;
-                        *out.bytes.lock().unwrap_or_else(PoisonError::into_inner) = Some(bytes);
-                        Ok(HostValue::Undefined)
+                        let mut step = out.step.lock().unwrap_or_else(PoisonError::into_inner);
+                        match step.emit(&args) {
+                            Ok(()) => Ok(HostValue::Undefined),
+                            Err(r) => Err(out.thrown.throw(r, &label).unwrap_or_default()),
+                        }
                     });
-                    (name, f)
+                    (emit_name, f)
                 });
                 std::iter::once((name.clone(), input)).chain(emit)
             })
@@ -269,9 +291,10 @@ impl Program {
 impl Program {
     /// Starts the program as a [`LiveRun`] on a thread of its own, with `input_json` behind its input function and
     /// `__host` (`post`, `receive`, `sleep`, `now`, `fetch`) to talk to `handler`; `fetch` goes through `transport`
-    /// to the hosts `options.https_hosts` allows. With `encoder`, program functions in posts come as markers, posts
-    /// reach `handler.on_posts_bytes` as its bytes (never `on_posts`), `post` returns what the encoder says, and a
-    /// post it can't write throws at the post. Fails with `InvalidInput`.
+    /// to the hosts `options.https_hosts` allows. With `encoder`, the encoder checks the program first (a refused one
+    /// isn't started: `Runtime` of its kind), program functions in posts come as markers, posts reach
+    /// `handler.on_posts_bytes` as its bytes (never `on_posts`), `post` returns what the encoder says, and a post it
+    /// can't write throws at the post. Fails with `InvalidInput`.
     #[uniffi::method(default(transport = None, encoder = None, options))]
     pub fn start_live(
         &self,
@@ -281,6 +304,9 @@ impl Program {
         transport: Option<Arc<dyn FetchTransport>>,
         encoder: Option<Arc<ValueEncoder>>,
     ) -> Result<Arc<LiveRun>, PsychoScriptError> {
+        if let Some(encoder) = &encoder {
+            self.check(encoder)?;
+        }
         LiveRun::start(
             self.compiled.clone(),
             self.input_name.clone(),

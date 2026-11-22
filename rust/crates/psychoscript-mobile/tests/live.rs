@@ -909,8 +909,8 @@ fn resume_restarts_the_budget() {
 }
 
 /// The slice budget counts the run thread's CPU time: a thread the OS doesn't schedule isn't computing. With the run's
-/// thread sharing one CPU with three spinning threads, ~25 ms of compute takes ~100 ms of wall time and finishes,
-/// while a loop that never waits is still stopped.
+/// thread sharing one CPU with seven spinning threads, up to ~25 ms of compute takes ~8 times as long in wall time and
+/// finishes, while a loop that never waits is still stopped.
 #[cfg(target_os = "linux")]
 #[test]
 fn time_the_thread_isnt_scheduled_doesnt_count_against_the_slice() {
@@ -960,7 +960,7 @@ fn time_the_thread_isnt_scheduled_doesnt_count_against_the_slice() {
         );
     }
     let done = Arc::new(AtomicBool::new(false));
-    let spinners: Vec<_> = (0..3)
+    let spinners: Vec<_> = (0..7)
         .map(|_| {
             let done = done.clone();
             std::thread::spawn(move || {
