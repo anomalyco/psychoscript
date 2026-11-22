@@ -227,6 +227,18 @@ export const CondKind = {
   NULLISH_METHOD: 5,
 } as const
 
+/** Sub-ops for `Op.GET_GLOBAL` (`a` operand). */
+export const GlobalKind = {
+  /** Read the global; `ReferenceError` if it is not defined. */
+  LOAD: 0,
+  /** `typeof name`: `"undefined"` if it is not defined. */
+  TYPEOF: 1,
+  /** Before assigning: `ReferenceError` if not defined, `TypeError` if constant. */
+  ASSIGN: 2,
+  /** `LOAD` for an identifier that is a whole template substitution (`${name}`); its error says so. */
+  TEMPLATE: 3,
+} as const
+
 /** Sub-ops for `Op.PUT_LOCAL`, `Op.PUT_CELL`, `Op.PUT_UPVAL` (`a` operand). */
 export const PutKind = {
   /** Normal assignment: checks TDZ (`HOLE`). */

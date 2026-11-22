@@ -50,6 +50,7 @@ import {
   CodeFlags,
   CondKind,
   type ErrorSite,
+  GlobalKind,
   ImportKind,
   IterContext,
   Op,
@@ -152,7 +153,7 @@ type ControlEntry =
 const idx = (node: AstNode | undefined | null): number => (node ? (nodeId(node)?.index ?? -1) : -1)
 
 /** Bump when the compiler emits different bytecode for the same source; it is part of the snapshot build id. */
-export const COMPILER_VERSION = 3
+export const COMPILER_VERSION = 4
 
 const compileCache = new Map<string, ReadonlyArray<Code>>()
 const MAX_CACHE_SIZE = 64
@@ -308,21 +309,24 @@ const compileFunctionBody = (
   const emitStoreDecl = (decl: Decl, isInit: boolean, node?: AstNode) =>
     builder.emit(decl.captured ? Op.PUT_CELL : Op.PUT_LOCAL, putKind(decl, isInit), decl.slot, idx(node), -1)
 
-  const emitLoadRef = (ref: ResolvedRef, node: AstNode, isTypeof = false): void => {
+  const emitLoadRef = (ref: ResolvedRef, node: AstNode, isTypeof = false, inTemplate = false): void => {
     if (ref.kind === "local") emitLoadDecl(ref.decl, node)
     else if (ref.kind === "upval") builder.emit(Op.GET_UPVAL, 0, ref.upvalIndex, idx(node), 1)
     else if (internal && !isTypeof) {
       // Internal code can't shadow `undefined`.
       if (ref.name === "undefined") builder.emit(Op.PUSH_UNDEF, 0, 0, idx(node), 1)
       else builder.emit(Op.GET_INTRINSIC, 0, builder.constant(ref.name), idx(node), 1)
-    } else builder.emit(Op.GET_GLOBAL, isTypeof ? 1 : 0, builder.constant(ref.name), idx(node), 1)
+    } else {
+      const kind = isTypeof ? GlobalKind.TYPEOF : inTemplate ? GlobalKind.TEMPLATE : GlobalKind.LOAD
+      builder.emit(Op.GET_GLOBAL, kind, builder.constant(ref.name), idx(node), 1)
+    }
   }
 
   const emitStoreRef = (ref: ResolvedRef, isInit: boolean, node: AstNode): void => {
     if (ref.kind === "local") emitStoreDecl(ref.decl, isInit, node)
     else if (ref.kind === "upval") builder.emit(Op.PUT_UPVAL, putKind(ref.decl, isInit), ref.upvalIndex, idx(node), -1)
     // Global assignment: checks if global exists (`Cannot assign to constant`) or unknown (`Unknown identifier`)
-    else builder.emit(Op.GET_GLOBAL, 2, builder.constant(ref.name), idx(node), -1)
+    else builder.emit(Op.GET_GLOBAL, GlobalKind.ASSIGN, builder.constant(ref.name), idx(node), -1)
   }
 
   const emitScopePrologue = (scope: Scope, resetUncapturedLexicals: boolean): void => {
@@ -1167,6 +1171,11 @@ const compileFunctionBody = (
     }
   }
 
+  const compileSubstitution = (expr: Expression): void => {
+    if (expr.type === "Identifier") emitLoadRef(analysis.refs.get(expr)!, expr, false, true)
+    else compileExpression(expr)
+  }
+
   const compileTemplateLiteral = (node: TemplateLiteral): void => {
     const quasis = node.quasis
     const exprs = node.expressions
@@ -1179,7 +1188,7 @@ const compileFunctionBody = (
         parts++
       }
       if (i >= exprs.length) return
-      compileExpression(exprs[i]!)
+      compileSubstitution(exprs[i]!)
       builder.emit(Op.TO_STRING, 0, 0, idx(exprs[i]), 0)
       parts++
     })
@@ -1200,7 +1209,7 @@ const compileFunctionBody = (
     const argc = 1 + node.quasi.expressions.length
     if (argc <= 254) {
       builder.emit(Op.TEMPLATE, 0, siteConst, idx(node), 1)
-      for (const expr of node.quasi.expressions) compileExpression(expr)
+      for (const expr of node.quasi.expressions) compileSubstitution(expr)
       builder.emit(Op.CALL, argc, 0, idx(node), -(argc + 1))
       return
     }
@@ -1208,7 +1217,7 @@ const compileFunctionBody = (
     builder.emit(Op.TEMPLATE, 0, siteConst, idx(node), 1)
     builder.emit(Op.ARRAY_APPEND, 0, 0, idx(node), -1)
     for (const expr of node.quasi.expressions) {
-      compileExpression(expr)
+      compileSubstitution(expr)
       builder.emit(Op.ARRAY_APPEND, 0, 0, idx(expr), -1)
     }
     builder.emit(Op.CALL_SPREAD, 0, 0, idx(node), -2)

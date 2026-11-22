@@ -125,6 +125,7 @@ import {
   type ConstValue,
   EMPTY_CELLS,
   type ErrorSite,
+  GlobalKind,
   HOLE,
   ImportKind,
   type ImportSite,
@@ -691,7 +692,8 @@ export class Vm {
           case 19: {
             // Op.GET_GLOBAL
             const name = consts[w >>> 16] as string
-            if ((w & 0xff00) === 0) {
+            const mode = (w >>> 8) & 0xff
+            if (mode === GlobalKind.LOAD || mode === GlobalKind.TEMPLATE) {
               const binding = globalScope.get(name)
               if (binding !== undefined) {
                 regs[sp++] = binding.value
@@ -699,7 +701,7 @@ export class Vm {
                 continue
               }
             }
-            regs[sp++] = this.execGetGlobal(frame, (w >>> 8) & 0xff, name, pc, sp)
+            regs[sp++] = this.execGetGlobal(frame, mode, name, pc, sp)
             pc++
             continue
           }
@@ -1559,19 +1561,23 @@ export class Vm {
   private execGetGlobal(frame: Frame, mode: number, name: string, pc: number, sp: number): Value {
     const fcode = frame.code
     const binding = this.ctx.globalScope.get(name)
-    if (mode === 2) {
+    if (mode === GlobalKind.ASSIGN) {
       frame.pc = pc
       frame.sp = sp - 1
       if (binding === undefined) throw referenceError(`Unknown identifier '${name}'.`, fcode.siteAt(pc))
       throw typeError(`Cannot assign to constant '${name}'.`, fcode.siteAt(pc))
     }
     if (binding === undefined) {
-      if (mode === 1) return "undefined"
+      if (mode === GlobalKind.TYPEOF) return "undefined"
       frame.pc = pc
       frame.sp = sp
-      throw referenceError(`Unknown identifier '${name}'.`, fcode.siteAt(pc))
+      const message =
+        mode === GlobalKind.TEMPLATE
+          ? `Unknown identifier '${name}' (in template substitution \`\${${name}}\`; write \`\\\${${name}}\` for literal text).`
+          : `Unknown identifier '${name}'.`
+      throw referenceError(message, fcode.siteAt(pc))
     }
-    return mode === 1 ? typeofValue(binding.value) : binding.value
+    return mode === GlobalKind.TYPEOF ? typeofValue(binding.value) : binding.value
   }
 
   private execArgs(frame: Frame, kind: number, bx: number): unknown {

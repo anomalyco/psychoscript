@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- An unknown identifier that is a whole template substitution (`${f}`) says so in its `ReferenceError` message and
+  how to write it as literal text (`\${f}`). The error and where it is thrown are unchanged.
+
 ## 0.2.1
 
 - `psychoscript/effect`: a plain function the host gives the program (inside a host function's result, such as a

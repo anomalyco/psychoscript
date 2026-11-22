@@ -218,6 +218,47 @@ for (const ns of ["github", "a.github", "a", ""]) {
   })
 })
 
+describe("unknown identifiers", () => {
+  test("outside a template keep the plain message", async () => {
+    expect((await error("return f + 1")).message).toBe("ReferenceError: Unknown identifier 'f'. (line 1, col 8)")
+    expect((await error("return `a${f + 1}`")).message).toBe(
+      "ReferenceError: Unknown identifier 'f'. (line 1, col 12)",
+    )
+  })
+
+  test("a whole template substitution says how to write it as literal text", async () => {
+    const failure = await error("const cmd = `for f in *.txt; do echo ${f}; done`\nreturn cmd")
+    expect(failure.kind).toBe("ExecutionFailure")
+    expect(failure.message).toBe(
+      "ReferenceError: Unknown identifier 'f' (in template substitution `${f}`; write `\\${f}` for literal text). (line 1, col 40)",
+    )
+    expect(failure.location).toEqual({ line: 1, column: 40 })
+  })
+
+  test("is still a catchable ReferenceError, in tagged and nested templates too", async () => {
+    expect(
+      await value(`
+        const caught = (run) => { try { run() } catch (e) { return [e.name, e.message] } }
+        return [
+          caught(() => String.raw\`a\${x}\`),
+          caught(() => \`a\${\`b\${y}\`}\`),
+        ]
+      `),
+    ).toEqual([
+      ["ReferenceError", "Unknown identifier 'x' (in template substitution `${x}`; write `\\${x}` for literal text)."],
+      ["ReferenceError", "Unknown identifier 'y' (in template substitution `${y}`; write `\\${y}` for literal text)."],
+    ])
+  })
+
+  test("defined and escaped substitutions work unchanged", async () => {
+    expect(await value("const f = 'a.txt'; return [`echo ${f}`, String.raw`${f}`, `echo \\${f}`]")).toEqual([
+      "echo a.txt",
+      "a.txt",
+      "echo ${f}",
+    ])
+  })
+})
+
 describe("host errors escaping built-ins", () => {
   test("become the same-named program error", async () => {
     expect(

@@ -709,6 +709,9 @@ Host functions a host opts in through `Host.fn`, `Host.durableFn`, and `Host.nam
 - [x] Source locations on unsupported-syntax diagnostics. The diagnostic names the rejected node type and attaches a
       short orientation to the supported subset; this matrix is the full reference.
 - [x] Host failure messages and underlying causes reach the diagnostic.
+- [x] An unknown identifier that is a whole template substitution, in a plain or tagged template, is the same
+      `ReferenceError` with a hint: ``Unknown identifier 'f' (in template substitution `${f}`; write `\${f}` for
+      literal text).`` Elsewhere the message stays `Unknown identifier 'f'.`
 - [x] Caught errors do not distinguish user throws, interpreter failures, and host failures; a program sees one
       Error-shaped value in `catch`, rejection handlers, and `Promise.allSettled` reasons. It always has `name` and
       `message`, plus `cause` and own data when the failure carried them. This is deliberate: the program should
