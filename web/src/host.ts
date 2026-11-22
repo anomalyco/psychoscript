@@ -722,7 +722,7 @@ class Widget implements MountedWidget {
         for (const p of m.messages) this.posted(p as { type?: string; [k: string]: unknown })
         return
       case "warning":
-        // A broken contract the run survives (the post rate, a draw over 2,000 commands) is a program error.
+        // A broken contract the run survives (a draw over 2,000 commands, dropped) is a program error.
         return m.phase ? this.report(m.phase, { message: m.message }) : this.warn(m.message)
       case "exit":
         return this.exited(m.exit)

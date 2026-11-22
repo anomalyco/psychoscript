@@ -87,6 +87,11 @@ Behavior, per the contract:
   view or the tab is hidden (timers freeze, `now()` stops, events/fetch results held), and receive
   `{ type: "resumed", pausedMs }` when back. A program computing more than 50 ms without awaiting is stopped and
   shows the error with "Restart". Submit/dismiss stops the program; the last view stays read-only.
+- Live post rate (widgets-live.md, Post rate): `render` and `draw` posts take tokens from a bucket of 8 refilled at
+  240 a second; over it they wait, the latest render and the latest draw per canvas key replacing earlier ones, and go
+  out as tokens come, or all at once when the run ends (not when the client stops it). They are checked when posted.
+  Frame requests, `submit`, `dismiss`, `capture` and `send` are never counted. Nothing is dropped and the rate is
+  never an error. A `draw` post without a string `key` ends the run (`A draw post needs a string key`).
 - `onSubmit`/`onDismiss` fire once; the widget turns read-only right away. `onSend` is throttled to 10 a second.
 - `canvas`: Canvas2D, drawn on `requestAnimationFrame` only while `fps > 0` (or `duration` not reached) and
   visible; draw steps run in the worker, at most one in flight; 8 ms / 2,000 commands budget, three overruns in a row
@@ -128,7 +133,7 @@ The host sorts every error into one of two kinds:
 
 - **Program errors** (the widget template's): a parse error or exception (in `init`, a handler or hook, `draw`, `main`), an
   invalid view or draw output, WGSL that fails validation (WebGPU's compiler or naga) or is over 16 KB, the 250 ms
-  step, the 50 ms live slice, the post rate (240/s) and the send rate (10/s), a view that breaks a rule of views (a
+  step, the 50 ms live slice and the send rate (10/s), a draw post without a string `key`, a view that breaks a rule of views (a
   key not a string, number or boolean; more than 100 levels), a function where none may go (anywhere in a view but a
   node's `onPress`/`onChange`/`onPointer`, in a post or a host call: `TypeError: Argument <n> to <name> contains a
   function, …`), an older widget

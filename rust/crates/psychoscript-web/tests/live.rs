@@ -121,17 +121,15 @@ fn deliveries_wait_while_paused() {
     }
 }
 
+/// A generic run has no post rate: the widget rule lives in native runs.
 #[test]
-fn floods_are_cut_with_one_warning() {
-    let mut run = start(LiveOptions {
-        max_posts_per_second: 100,
-        ..Default::default()
-    });
+fn generic_runs_post_without_a_rate() {
+    let mut run = start(LiveOptions::default());
     settle(&mut run);
     run.deliver(r#"{"type":"flood"}"#).unwrap();
     let out = settle(&mut run);
-    assert_eq!(posts(&out).len(), 99);
-    assert_eq!(out.iter().filter(|e| e["type"] == "warning").count(), 1);
+    assert_eq!(posts(&out).len(), 301);
+    assert_eq!(out.iter().filter(|e| e["type"] == "warning").count(), 0);
 }
 
 #[test]
@@ -261,6 +259,225 @@ __host.post({ type: "result", interactive, still, caught })
         ] })
     );
     assert_eq!(out.len(), 5);
+}
+
+/// A live program on the prelude, started natively with a post rate of `rate` a second.
+fn start_widget(source: &str, rate: u32) -> LiveRun {
+    let prelude = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/wire/prelude.js"),
+    )
+    .unwrap();
+    let program = format!("{prelude}\n{source}\nreturn await __widget_live(__input(), true)");
+    Program::new(&program, None)
+        .unwrap()
+        .start_live(
+            r#"{"data":null}"#,
+            LiveOptions {
+                native: true,
+                max_posts_per_second: rate,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+}
+
+/// Pumps `run` as a host does, its timers included, for `ms` or until it ends; returns what it posted meanwhile.
+fn run_for(run: &mut LiveRun, ms: u64) -> Vec<Value> {
+    let mut out = Vec::new();
+    let deadline = Instant::now() + Duration::from_millis(ms);
+    loop {
+        let pump = run.pump(8.0);
+        out.extend(posts(&parse(&run.take_outbox())));
+        if pump == Pump::Ended || Instant::now() >= deadline {
+            return out;
+        }
+        std::thread::sleep(Duration::from_micros(500));
+    }
+}
+
+fn parse(outbox: &str) -> Vec<Value> {
+    let mut reader = serde_json::Deserializer::from_str(outbox);
+    reader.disable_recursion_limit();
+    serde::Deserialize::deserialize(&mut reader).unwrap()
+}
+
+/// The texts of the text views rendered in `out`.
+fn texts(out: &[Value]) -> Vec<String> {
+    out.iter()
+        .filter(|m| m["type"] == "render" && m["node"]["type"] == "text")
+        .map(|m| m["node"]["text"].as_str().unwrap_or_default().to_owned())
+        .collect()
+}
+
+/// The post rate (widgets-live.md): 30 renders at 10 a second: 8 at once (the burst), then the latest alone a tenth of
+/// a second later; ending sends what waits first, before an answer.
+#[test]
+fn renders_over_the_post_rate_wait_and_coalesce() {
+    let mut run = start_widget(
+        "async function main() {\n  for (let i = 0; i < 30; i++) widget.render(ui.text(String(i)))\n  await widget.sleep(1000)\n  widget.submit(1)\n}",
+        10,
+    );
+    let first: Vec<String> = (0..8).map(|i| i.to_string()).collect();
+    let mut out = run_for(&mut run, 60);
+    assert_eq!(texts(&out), first);
+    out.extend(run_for(&mut run, 100));
+    assert_eq!(texts(&out), [first.clone(), vec!["29".into()]].concat());
+    out.extend(run_for(&mut run, 3000));
+    assert_eq!(out.last().unwrap()["type"], "submit");
+    assert!(matches!(run.exit(), Some(LiveExit::Finished { .. })));
+    for last in ["widget.submit(1)", "return"] {
+        let mut run = start_widget(
+            &format!(
+                "async function main() {{\n  for (let i = 0; i < 30; i++) widget.render(ui.text(String(i)))\n  {last}\n}}"
+            ),
+            10,
+        );
+        let out = run_for(&mut run, 3000);
+        assert_eq!(
+            texts(&out),
+            [first.clone(), vec!["29".into()]].concat(),
+            "{last}"
+        );
+        let after: Vec<&str> = out
+            .iter()
+            .skip(9)
+            .filter_map(|m| m["type"].as_str())
+            .collect();
+        let want: &[&str] = if last == "return" { &[] } else { &["submit"] };
+        assert_eq!(after, want, "{last}");
+    }
+    // A client stop drops what waits.
+    let mut run = start_widget(
+        "async function main() {\n  for (let i = 0; i < 30; i++) widget.render(ui.text(String(i)))\n  await widget.sleep(1000)\n}",
+        10,
+    );
+    let out = run_for(&mut run, 30);
+    run.stop();
+    assert_eq!(texts(&out), first);
+    assert_eq!(run.take_outbox(), "[]");
+}
+
+/// Draws coalesce by canvas key; a frame request under load is never counted or held.
+#[test]
+fn a_frame_request_under_load_is_answered_and_draws_coalesce_by_canvas() {
+    let mut run = start_widget(
+        r#"async function main() {
+  widget.render(ui.column([ui.canvas({ key: "a", height: 1 }), ui.canvas({ key: "b", height: 1 })]))
+  for (let i = 0; i < 20; i++) { widget.draw("a", [["alpha", i / 100]]); widget.draw("b", [["alpha", i / 50]]) }
+  const frame = await widget.frame()
+  widget.render(ui.text("frame " + frame.t))
+}"#,
+        10,
+    );
+    let mut out = run_for(&mut run, 20);
+    // The render and 7 draws took the burst; the frame request went out at once, ahead of the waiting draws.
+    let kinds: Vec<&str> = out.iter().map(|m| m["type"].as_str().unwrap()).collect();
+    assert_eq!(
+        kinds,
+        [vec!["render"], vec!["draw"; 7], vec!["frame"]].concat()
+    );
+    run.deliver(r#"{"type":"frame","frame":{"t":1,"dt":0,"width":2,"height":2,"scale":1,"pointer":null,"dark":true,"fullscreen":false,"close":null}}"#)
+        .unwrap();
+    out.extend(run_for(&mut run, 3000));
+    let draws: Vec<Value> = out
+        .iter()
+        .filter(|m| m["type"] == "draw")
+        .map(|m| json!([m["id"], m["commands"]]))
+        .collect();
+    assert_eq!(draws.len(), 9);
+    assert_eq!(
+        draws[7..],
+        [
+            json!(["0/:b", [["alpha", 0.38]]]),
+            json!(["0/:a", [["alpha", 0.19]]])
+        ]
+    );
+    assert_eq!(texts(&out), ["frame 1"]);
+    assert_eq!(out.last().unwrap()["type"], "render");
+    assert!(matches!(run.exit(), Some(LiveExit::Finished { .. })));
+}
+
+/// A 120 Hz game posting a render and two draws a frame (360 a second): every frame request goes out, the counted posts
+/// stay within the rate, and the last frame's view and drawings arrive.
+#[test]
+fn a_game_at_120_hz_runs_every_frame_and_shows_its_last_one() {
+    let mut run = start_widget(
+        r#"async function main() {
+  for (let n = 0; n < 120; n++) {
+    const frame = await widget.frame()
+    widget.render(ui.column([ui.text("n " + n), ui.canvas({ key: "a", height: 1 }), ui.canvas({ key: "b", height: 1 })]))
+    widget.draw("a", [["alpha", n / 1000]])
+    widget.draw("b", [["alpha", n / 200]])
+  }
+}"#,
+        240,
+    );
+    let started = Instant::now();
+    let mut out: Vec<Value> = Vec::new();
+    let (mut frames, mut answered) = (0, 0);
+    let mut counted_in_a_second = 0;
+    while run.exit().is_none() && started.elapsed() < Duration::from_secs(5) {
+        let tick = Instant::now();
+        let posted = run_for(&mut run, 0);
+        frames += posted.iter().filter(|m| m["type"] == "frame").count();
+        if started.elapsed() <= Duration::from_secs(1) {
+            counted_in_a_second += posted
+                .iter()
+                .filter(|m| m["type"] == "render" || m["type"] == "draw")
+                .count();
+        }
+        out.extend(posted);
+        // Each frame request is answered on the next display frame, as the page does.
+        if answered < frames && run.exit().is_none() {
+            answered += 1;
+            run.deliver(&format!(
+                r#"{{"type":"frame","frame":{{"t":{},"dt":0.008,"width":2,"height":2,"scale":1,"pointer":null,"dark":true,"fullscreen":false,"close":null}}}}"#,
+                answered as f64 / 120.0
+            ))
+            .unwrap();
+        }
+        std::thread::sleep(Duration::from_secs_f64(1.0 / 120.0).saturating_sub(tick.elapsed()));
+    }
+    out.extend(run_for(&mut run, 0));
+    assert_eq!(frames, 120);
+    assert!(counted_in_a_second <= 240 + 8 + 3, "{counted_in_a_second}");
+    assert!(
+        matches!(run.exit(), Some(LiveExit::Finished { .. })),
+        "{:?}",
+        run.exit()
+    );
+    let last_render = out.iter().rev().find(|m| m["type"] == "render").unwrap();
+    assert_eq!(last_render["node"]["children"][0]["text"], "n 119");
+    let last_b = out
+        .iter()
+        .rev()
+        .find(|m| m["type"] == "draw" && m["id"] == "0/:b")
+        .unwrap();
+    assert_eq!(last_b["commands"], json!([["alpha", 0.595]]));
+}
+
+/// A draw post without a string key is an invalid post: the run ends.
+#[test]
+fn a_draw_post_without_a_string_key_ends_the_run() {
+    for post in [
+        r#"__host.post({ type: "draw", id: "0", commands: [] })"#,
+        r#"__host.post({ type: "draw", key: 1, commands: [] })"#,
+    ] {
+        let mut run = start_widget(
+            &format!(
+                "async function main() {{\n  widget.render(ui.canvas({{ key: \"c\", height: 1 }}))\n  try {{ {post} }} catch (e) {{ widget.send(\"caught\") }}\n}}"
+            ),
+            240,
+        );
+        let out = run_for(&mut run, 3000);
+        assert_eq!(out.len(), 1, "{post}: {out:?}");
+        match run.exit() {
+            Some(LiveExit::Failed { error }) => {
+                assert_eq!(error.reason(), "A draw post needs a string key", "{post}")
+            }
+            other => panic!("{post}: {other:?}"),
+        }
+    }
 }
 
 /// A live program on the prelude (opencode widgets 523750c6a), run natively.

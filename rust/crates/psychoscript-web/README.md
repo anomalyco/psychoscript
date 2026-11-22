@@ -40,7 +40,9 @@ markers, and this crate builds the tree clients get (`src/tree.rs`). `runStep` r
 run's, its functions left out as JSON leaves them, with `view` (the emitted view's tree) added. `runDraw` runs a draw step
 the same way and gives the commands the program emitted, as JSON reads them (`null` for none). A live run with
 `native: true` builds each posted `render`'s tree (`post` returns whether it has handlers) and maps a `draw`'s `key` to
-its canvas's id. A key that isn't a string, number or boolean, or a view over 100 levels, fails with type `view` (a step
+its canvas's id; its `render` and `draw` posts go out under the post rate (a bucket of 8 refilled at
+`maxPostsPerSecond`, 240; waiting posts coalesce by render and by canvas key, and go out at the run's end unless it is
+stopped), and a `draw` without a string `key` ends the run. A key that isn't a string, number or boolean, or a view over 100 levels, fails with type `view` (a step
 once it has run; a live run at once); a function anywhere but a node's handler props, in any host call's argument,
 throws the runtime's `TypeError` `Argument <n> to <name> contains a function, which cannot be passed to the host.`,
 located at the call (`HostError::located`, sync and async calls alike), as the host's other errors are. `tests/tree.rs` runs the 53 conformance fixtures (`tests/fixtures/wire`, opencode widgets 523750c6a).

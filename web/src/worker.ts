@@ -189,6 +189,8 @@ function finish(wid: number, live: Live) {
 interface Envelope {
   type: "post" | "warning" | "fetch" | "cancel"
   message?: unknown
+  /** A warning's phase when it is a program error the run survives (a draw over 2,000 commands, dropped). */
+  phase?: string
   id?: number
   url?: string
   method?: string
@@ -205,14 +207,9 @@ function flush(wid: number, live: Live) {
   const out = JSON.parse(text) as Envelope[]
   const messages: unknown[] = []
   for (const e of out) {
-    if (e.type === "post") {
-      const m = e.message as { type?: string; commands?: unknown }
-      if (m && m.type === "draw" && Array.isArray(m.commands) && m.commands.length > MAX_COMMANDS) {
-        post({ t: "warning", wid, phase: "draw", message: `a draw of ${m.commands.length} commands, over ${MAX_COMMANDS}, was dropped` })
-        continue
-      }
-      messages.push(m)
-    } else if (e.type === "warning") post({ t: "warning", wid, phase: "main", message: String(e.message) })
+    // Render and draw posts come out under the post rate (widgets-live.md, Post rate), checked when posted.
+    if (e.type === "post") messages.push(e.message)
+    else if (e.type === "warning") post({ t: "warning", wid, phase: e.phase, message: String(e.message) })
     else if (e.type === "fetch") void transfer(wid, live, e)
     else if (e.type === "cancel" && e.id !== undefined) live.fetches.get(e.id)?.abort()
   }
@@ -429,10 +426,8 @@ function handle(m: ToWorker) {
       try {
         live.run.pause()
       } catch {}
-      if (live.timer !== undefined) {
-        clearTimeout(live.timer)
-        live.timer = undefined
-      }
+      // Its sleeps stand still; posts waiting for the post rate still go out (pump says when).
+      schedule(m.wid, live)
       return
     }
     case "resume": {

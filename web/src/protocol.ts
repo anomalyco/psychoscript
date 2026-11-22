@@ -87,7 +87,7 @@ export type FromWorker =
   | { t: "step"; wid: number; phase: "init" | "event"; output?: StepOutput; error?: ErrorInfo; ms: number }
   | { t: "drawn"; wid: number; req: number; commands?: unknown[][]; error?: ErrorInfo; ms: number }
   | { t: "posts"; wid: number; messages: unknown[] }
-  /** `phase`: a program error the run survives (the post rate, an oversized draw), else a plain warning. */
+  /** `phase`: a program error the run survives (an oversized draw), else a plain warning. */
   | { t: "warning"; wid: number; message: string; phase?: string }
   | { t: "exit"; wid: number; exit: LiveExit }
   | { t: "translated"; req: number; code?: string; block?: string; error?: ErrorInfo }

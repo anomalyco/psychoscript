@@ -1044,6 +1044,62 @@ for (const query of ["?only=shader-broken", "?only=shader-broken&gl=1"]) {
   await page.close()
 }
 
+// ---------- live post rate: renders and draws wait and coalesce, frames always get through ----------
+{
+  const { page, errors } = await open("?only=confirm")
+  const got = await page.evaluate(async () => {
+    const d = (window as unknown as { __demo: { host: { mount(el: HTMLElement, o: object): { destroy(): void } }; prelude: string } }).__demo
+    const run = async (name: string, source: string, done: (text: string) => boolean) => {
+      const slot = document.createElement("div")
+      document.body.prepend(slot)
+      const reports: { phase: string; message: string }[] = []
+      const warnings: string[] = []
+      let submitted: unknown
+      const started = performance.now()
+      const w = d.host.mount(slot, {
+        program: d.prelude + "\n" + source,
+        data: null,
+        mode: "live",
+        onReport: (e: { phase: string; message: string }) => reports.push(e),
+        onWarning: (m: string) => warnings.push(m),
+        onSubmit: (v: unknown) => (submitted = v),
+      })
+      const root = () => slot.querySelector(".psychoscript-widget")!.shadowRoot!
+      const text = () => [...root().querySelectorAll(".pw-view .pw-text")].map((t) => t.textContent).join(" | ")
+      while (performance.now() - started < 10000 && !done(text()) && reports.length === 0) await new Promise((r) => setTimeout(r, 20))
+      await new Promise((r) => setTimeout(r, 300))
+      const out = { name, text: text(), reports, warnings, submitted, ms: Math.round(performance.now() - started) }
+      w.destroy()
+      slot.remove()
+      return out
+    }
+    return [
+      // 300 renders at once, over the 240 a second: the last one shows, nothing is reported, the answer comes after it.
+      await run("burst", `async function main() {\n  for (let i = 0; i < 300; i++) widget.render(ui.text("render " + i))\n  widget.submit(1)\n}`, (t) => t === "render 299"),
+      // 300 draws over two canvases, then a frame: the frame request isn't held behind them.
+      await run(
+        "draws",
+        `async function main() {\n  widget.render(ui.column([ui.canvas({ key: "a", height: 4 }), ui.canvas({ key: "b", height: 4 })]))\n  for (let i = 0; i < 150; i++) { widget.draw("a", [["alpha", i / 1000]]); widget.draw("b", [["alpha", i / 500]]) }\n  const frame = await widget.frame()\n  widget.render(ui.text("frame " + (frame.t >= 0)))\n  await widget.sleep(100000)\n}`,
+        (t) => t === "frame true",
+      ),
+      // A game posting a render and two draws a frame for 120 frames: every frame comes, the last view shows.
+      await run(
+        "game",
+        `async function main() {\n  for (let n = 0; n < 120; n++) {\n    await widget.frame()\n    widget.render(ui.column([ui.text("n " + n), ui.canvas({ key: "a", height: 4 }), ui.canvas({ key: "b", height: 4 })]))\n    widget.draw("a", [["alpha", n / 1000]])\n    widget.draw("b", [["alpha", n / 200]])\n  }\n  await widget.sleep(100000)\n}`,
+        (t) => t === "n 119",
+      ),
+      await run("keyless", `async function main() {\n  widget.render(ui.canvas({ key: "c", height: 4 }))\n  __host.post({ type: "draw", id: "0", commands: [] })\n}`, () => false),
+    ]
+  })
+  const by = Object.fromEntries(got.map((g) => [g.name, g]))
+  check(by.burst!.text === "render 299" && by.burst!.submitted === 1 && by.burst!.reports.length === 0 && by.burst!.warnings.length === 0, "post rate: 300 renders at once show the last one, then the answer; no error, no warning", by.burst)
+  check(by.draws!.text === "frame true" && by.draws!.reports.length === 0, "post rate: a frame request under a load of draws is answered", by.draws)
+  check(by.game!.text === "n 119" && by.game!.reports.length === 0, `post rate: a game posting three times a frame runs all 120 frames (${by.game!.ms} ms) and shows its last view`, by.game)
+  check(JSON.stringify(by.keyless!.reports) === JSON.stringify([{ phase: "main", message: "A draw post needs a string key" }]), "post rate: a draw post without a string key ends the run, reported in phase main", by.keyless)
+  check(errors.length === 0, "post rate: no page errors", errors)
+  await page.close()
+}
+
 // ---------- local network in dev mode ----------
 for (const [query, on] of [["?only=local-demo", true], ["?only=local-demo&local=0", false]] as const) {
   const { page, errors } = await open(query)

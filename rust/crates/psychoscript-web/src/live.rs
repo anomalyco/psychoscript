@@ -38,7 +38,7 @@ use crate::tree::{Walk, WalkError};
 pub struct LiveOptions {
     /// Longest the program may compute without waiting on its host; past it the run stops with `SliceBudget`.
     pub slice_budget_ms: u64,
-    /// Posts beyond this many in a second are dropped, with one warning per second.
+    /// A native run's post rate (widgets-live.md, "Post rate"): its token bucket refills at this many tokens a second.
     pub max_posts_per_second: u32,
     /// The `https` capability: hosts `__host.fetch` may reach (exact names, `*.` suffixes, `*` for any). `None`:
     /// every fetch is rejected with `CapabilityDenied`.
@@ -52,6 +52,7 @@ pub struct LiveOptions {
     /// handlers; a `draw` names its canvas by `key`, mapped to the canvas's id from the last render. A render whose view
     /// breaks a rule of views (or that the prelude found too deep to post, `{ type: "render", node: null, failure }`)
     /// ends the run at once with [`Error::View`]. A function anywhere else in a host call's argument fails the call.
+    /// `render` and `draw` posts go out under the post rate ([`Rate`]); a `draw` without a string `key` ends the run.
     pub native: bool,
 }
 
@@ -154,7 +155,8 @@ struct Shared {
     canvases: HashMap<String, (String, bool)>,
     /// `None`: no https capability.
     policy: Option<fetch::Policy>,
-    max_posts: u32,
+    /// Native runs: the post rate.
+    rate: Rate,
     inbox: VecDeque<HostValue>,
     receive: Option<Waker>,
     sleeps: HashMap<String, Sleep>,
@@ -165,16 +167,60 @@ struct Shared {
     base: Instant,
     offset_ms: f64,
     paused: Option<Instant>,
-    posts_window: Instant,
-    posts: u32,
-    warned: bool,
     /// The outbox: comma-separated JSON envelopes.
     out: String,
     /// When the current stretch of compute began, or `None` while waiting on the host.
     slice: Option<Instant>,
     stopping: bool,
-    /// Why a native render ended the run.
+    /// Why a native post ended the run.
     failed: Option<Error>,
+}
+
+/// A native run's post rate (widgets-live.md, "Post rate"): a token bucket of [`BURST`] tokens refilled at `per_second`
+/// by the monotonic clock, paused or not. A `render` or `draw` post takes a token and goes out at once when nothing
+/// waits; otherwise it waits, in place of the waiting post of its kind (the render, or the draw for its canvas key),
+/// and the waiting posts go out in order, one per token, as tokens come; all at once when the run ends, unless the
+/// client stopped it.
+struct Rate {
+    per_second: f64,
+    tokens: f64,
+    at: Instant,
+    /// The waiting posts' envelopes, oldest first: `None` for the render, else the draw's canvas key.
+    waiting: Vec<(Option<String>, String)>,
+}
+
+/// The post rate's burst, and the tolerance for its fractional tokens.
+const BURST: f64 = 8.0;
+const EPSILON: f64 = 1e-9;
+/// The most commands a draw may have (widgets-live.md, "Lifecycle and budgets").
+const MAX_COMMANDS: usize = 2000;
+
+impl Rate {
+    fn refill(&mut self) {
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.at).as_secs_f64();
+        self.tokens = (self.tokens + elapsed * self.per_second).min(BURST);
+        self.at = now;
+    }
+
+    /// Takes a token when one is there.
+    fn take(&mut self) -> bool {
+        self.refill();
+        if self.tokens < 1.0 - EPSILON {
+            return false;
+        }
+        self.tokens -= 1.0;
+        true
+    }
+
+    /// Ms until the next waiting post may go out, while one waits.
+    fn due(&mut self) -> Option<f64> {
+        if self.waiting.is_empty() {
+            return None;
+        }
+        self.refill();
+        Some(((1.0 - self.tokens) * 1000.0 / self.per_second).max(0.0))
+    }
 }
 
 impl Shared {
@@ -193,15 +239,20 @@ impl Shared {
     }
 
     /// Takes a posted message; a native `render` returns whether its view has handlers, a native `draw` with an unknown
-    /// or GPU canvas's key throws. A function where none may go throws; a render that breaks a rule of views ends the run.
+    /// or GPU canvas's key throws. A function where none may go throws; a render that breaks a rule of views, or a draw
+    /// without a string key, ends the run. All of it is checked now, whether the post goes out now or waits.
     fn post(&mut self, message: &HostValue) -> HostResult {
         let mut reply = HostValue::Undefined;
         let mut native = None;
+        // Native `render` and `draw` posts: counted, with what they coalesce by.
+        let mut counted = None;
         if self.native {
             match message.get("type").and_then(HostValue::as_str) {
                 Some("render") => {
                     if let Some(HostValue::String(failure)) = message.get("failure") {
-                        return Err(self.fail(failure.to_string_lossy().into_owned()));
+                        return Err(self.fail(Error::View {
+                            reason: failure.to_string_lossy().into_owned(),
+                        }));
                     }
                     let mut node = String::new();
                     let mut out = String::from(r#"{"type":"render""#);
@@ -222,7 +273,11 @@ impl Shared {
                     );
                     let tree = match walked {
                         Ok(tree) => tree,
-                        Err(WalkError::View(reason)) => return Err(self.fail(reason.to_owned())),
+                        Err(WalkError::View(reason)) => {
+                            return Err(self.fail(Error::View {
+                                reason: reason.to_owned(),
+                            }));
+                        }
                         Err(WalkError::Function) => {
                             return Err(json::carried(1, POST));
                         }
@@ -234,12 +289,17 @@ impl Shared {
                     out.push_str(&node);
                     out.push('}');
                     native = Some(out);
+                    counted = Some(None);
                 }
                 Some("draw") => {
-                    let key = message
-                        .get("key")
-                        .and_then(HostValue::as_str)
-                        .unwrap_or_default();
+                    let Some(key) = message.get("key").and_then(HostValue::as_str) else {
+                        return Err(self.fail(Error::Runtime {
+                            kind: "InvalidPost".into(),
+                            reason: "A draw post needs a string key".into(),
+                            line: None,
+                            column: None,
+                        }));
+                    };
                     let id = match self.canvases.get(key) {
                         None => {
                             return Err(error(
@@ -273,8 +333,25 @@ impl Shared {
                         out.push_str(&value);
                     }
                     out.push('}');
+                    if let Some(HostValue::Array(commands)) = message.get("commands")
+                        && commands.len() > MAX_COMMANDS
+                    {
+                        // Dropped, as an invalid draw output the run survives: a program error in phase `draw`.
+                        let warning = format!(
+                            "a draw of {} commands, over {MAX_COMMANDS}, was dropped",
+                            commands.len()
+                        );
+                        self.push(&format!(
+                            r#"{{"type":"warning","phase":"draw","message":{}}}"#,
+                            serde_json::Value::from(warning)
+                        ));
+                        return Ok(reply);
+                    }
                     native = Some(out);
+                    counted = Some(Some(key.to_owned()));
                 }
+                // An answer goes out after what waits for the rate.
+                Some("submit" | "dismiss") => self.release(),
                 _ => {}
             }
         }
@@ -282,41 +359,46 @@ impl Shared {
             Some(message) => message,
             None => json::write_checked(message).ok_or_else(|| json::carried(1, POST))?,
         };
-        if self.admit() {
-            self.push(&format!(r#"{{"type":"post","message":{message}}}"#));
+        let envelope = format!(r#"{{"type":"post","message":{message}}}"#);
+        match counted {
+            Some(by) => self.counted(by, envelope),
+            None => self.push(&envelope),
         }
         Ok(reply)
     }
 
-    /// Ends the run with a view's failure: what `post` throws, which the program can't catch.
-    fn fail(&mut self, reason: String) -> HostValue {
-        self.failed = Some(Error::View { reason });
-        self.stopping = true;
-        HostValue::Interrupt
+    /// A `render` (`by` `None`) or a canvas's `draw` under the post rate: out now, or waiting in place of the waiting
+    /// post of its kind, else at the end of the queue.
+    fn counted(&mut self, by: Option<String>, envelope: String) {
+        if self.rate.waiting.is_empty() && self.rate.take() {
+            return self.push(&envelope);
+        }
+        match self.rate.waiting.iter_mut().find(|(k, _)| *k == by) {
+            Some(waiting) => waiting.1 = envelope,
+            None => self.rate.waiting.push((by, envelope)),
+        }
     }
 
-    /// Counts a post against the rate: whether it goes out (one warning a second for the rest).
-    fn admit(&mut self) -> bool {
-        if self.posts_window.elapsed() >= Duration::from_secs(1) {
-            self.posts_window = Instant::now();
-            self.posts = 0;
-            self.warned = false;
+    /// Sends the waiting posts the bucket has tokens for, in order.
+    fn drain(&mut self) {
+        while !self.rate.waiting.is_empty() && self.rate.take() {
+            let (_, envelope) = self.rate.waiting.remove(0);
+            self.push(&envelope);
         }
-        self.posts += 1;
-        if self.posts > self.max_posts {
-            if !std::mem::replace(&mut self.warned, true) {
-                let warning = format!(
-                    "the program posted more than {} messages in a second; later ones this second are dropped",
-                    self.max_posts
-                );
-                self.push(&format!(
-                    r#"{{"type":"warning","message":{}}}"#,
-                    serde_json::Value::from(warning)
-                ));
-            }
-            return false;
+    }
+
+    /// Sends every waiting post now, in order.
+    fn release(&mut self) {
+        for (_, envelope) in std::mem::take(&mut self.rate.waiting) {
+            self.push(&envelope);
         }
-        true
+    }
+
+    /// Ends the run with `error`: what `post` throws, which the program can't catch.
+    fn fail(&mut self, error: Error) -> HostValue {
+        self.failed = Some(error);
+        self.stopping = true;
+        HostValue::Interrupt
     }
 
     fn begin_slice(&mut self) {
@@ -418,7 +500,12 @@ impl LiveRun {
                 hosts,
                 local_network: options.allow_local_network,
             }),
-            max_posts: options.max_posts_per_second,
+            rate: Rate {
+                per_second: f64::from(options.max_posts_per_second.max(1)),
+                tokens: BURST,
+                at: now,
+                waiting: Vec::new(),
+            },
             inbox: VecDeque::new(),
             receive: None,
             sleeps: HashMap::new(),
@@ -428,9 +515,6 @@ impl LiveRun {
             base: now,
             offset_ms: 0.0,
             paused: None,
-            posts_window: now,
-            posts: 0,
-            warned: false,
             out: String::new(),
             slice: None,
             stopping: false,
@@ -473,6 +557,7 @@ impl LiveRun {
             if s.slice.is_none() {
                 s.slice = Some(started);
             }
+            s.drain();
             due_sleeps(&mut s)
         };
         for w in wakers {
@@ -516,13 +601,15 @@ impl LiveRun {
                         return Pump::Ended;
                     }
                     if started.elapsed().as_secs_f64() * 1000.0 >= max_ms {
+                        lock(&self.shared).drain();
                         return Pump::Again;
                     }
                 }
                 Poll::Pending => {
                     let mut s = lock(&self.shared);
                     s.slice = None;
-                    return Pump::Wait(next_timer(&s));
+                    s.drain();
+                    return Pump::Wait(next_timer(&mut s));
                 }
             }
         }
@@ -644,7 +731,15 @@ impl LiveRun {
     }
 
     fn end(&mut self, exit: LiveExit) {
-        lock(&self.shared).stopping = true;
+        {
+            let mut s = lock(&self.shared);
+            s.stopping = true;
+            // The last view is never lost: what waits for the post rate goes out, unless the client stopped the run.
+            match exit {
+                LiveExit::Stopped => s.rate.waiting.clear(),
+                _ => s.release(),
+            }
+        }
         // Dropping the run interrupts it and drops its host calls, which cancel their fetches.
         drop(self.future.take());
         let mut s = lock(&self.shared);
@@ -697,15 +792,18 @@ fn due_sleeps(s: &mut Shared) -> Vec<Waker> {
         .collect()
 }
 
-/// Ms until the earliest sleep ends, unless paused.
-fn next_timer(s: &Shared) -> Option<f64> {
+/// Ms until the earliest sleep ends (unless paused) or the next post waiting for the post rate may go out.
+fn next_timer(s: &mut Shared) -> Option<f64> {
+    // Posts waiting for the post rate go out while paused too.
+    let posts = s.rate.due();
     if s.paused.is_some() {
-        return None;
+        return posts;
     }
     let now = s.now_ms();
     s.sleeps
         .values()
         .map(|sleep| (sleep.deadline - now).max(0.0))
+        .chain(posts)
         .min_by(f64::total_cmp)
 }
 
