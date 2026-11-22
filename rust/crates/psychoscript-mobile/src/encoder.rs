@@ -17,8 +17,8 @@ pub trait EncodeValues: Send + Sync {
     }
     /// The host global `run_bytes` defines; the program passes its output, or part of it, to it.
     fn emit_name(&self) -> &str;
-    /// What one `run_bytes` keeps between its emit calls and its result.
-    fn step(&self) -> Box<dyn EncodeStep>;
+    /// What one `run_bytes` keeps between its emit calls and its result, for a run with this input.
+    fn step(&self, input: &HostValue) -> Box<dyn EncodeStep>;
     /// What a live run keeps between its posts.
     fn live(&self) -> Box<dyn EncodePosts>;
 }
@@ -209,8 +209,9 @@ mod widget {
         fn emit_name(&self) -> &str {
             widget_wire::EMIT
         }
-        fn step(&self) -> Box<dyn EncodeStep> {
-            Box::new(widget_wire::NativeStep::default())
+        fn step(&self, input: &HostValue) -> Box<dyn EncodeStep> {
+            let draw = input.get("phase").and_then(HostValue::as_str) == Some("draw");
+            Box::new(widget_wire::NativeStep::new(draw))
         }
         fn live(&self) -> Box<dyn EncodePosts> {
             Box::new(widget_wire::LivePosts::new())

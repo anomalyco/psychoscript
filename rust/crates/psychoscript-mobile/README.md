@@ -72,13 +72,15 @@ the program built it. Runs with an encoder pass program functions to the host as
   `This widget needs a newer version of this app` (a client error: show it, don't report it).
 - `program.runBytes(inputJson, encoder, options = RunOptions())`, also on `RunSession`, defines the host global
   `encoder.emitName()` (`__widget_emit`) beside the input function, and returns the bytes the encoder makes of what
-  the program passed to the global and of the run's result, instead of the result's JSON. For widgets: the view goes
-  through `__widget_emit`, and `{ state, submit?, dismiss?, send? }` (a draw step's `{ commands }`) is the run's
-  result, so it keeps the JSON path's rules exactly (`toJSON`, an `Error`'s fields, a typed array failing the step).
+  the program passed to the global and of the run's result, instead of the result's JSON. For widgets: the encoder
+  reads the step's `phase` from the input. In `init` and `event` steps the view goes through `__widget_emit`, and
+  `{ state, submit?, dismiss?, send? }` is the run's result, so it keeps the JSON path's rules exactly (`toJSON`, an
+  `Error`'s fields, a typed array failing the step). In `draw` steps the commands go through `__widget_emit`, read as
+  JSON reads them (functions left out), and the run has no result.
   `maxOutputBytes` limits the bytes. Failures (`Runtime`, by kind):
   - `InvalidView`, no line: the view breaks Keys and depth (`A node's key must be a string, a number or a boolean`,
     `The view nests more than 100 levels`), whatever the run did after;
-  - `InvalidDraw`, no line: a draw step's commands it can't write;
+  - `InvalidDraw`, no line: a draw step's commands it can't write (after the run; the run's own failure first);
   - `ExecutionFailure` `TypeError: Argument <n> to __widget_emit contains a function, which cannot be passed to the
     host. (line, col)`: a function in the view anywhere but a node's `onPress`, `onChange`, `onPointer`;
   - `InvalidDataValue` `The step gave no view`: an init or event step that never called `__widget_emit`;

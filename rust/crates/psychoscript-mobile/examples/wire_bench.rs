@@ -5,7 +5,8 @@
 //! cargo run --release -p psychoscript-mobile --example wire_bench [filter]
 //! ```
 //!
-//! - Steps: a session holding `data` (as the README suggests); JSON is `session.run` (the prelude builds the tree)
+//! - Steps: a session holding `data` (as the README suggests); JSON is `session.run` (on `prelude-scripted.js`,
+//!   protocol 1's entry, where the prelude builds the tree)
 //!   and the client's `serde_json` + `StepOutput::from_value`, binary is `session.run_bytes` of a native host (the
 //!   encoder builds the tree) and `widget_wire::decode_output`.
 //! - Live: from delivering a frame to the program's next frame request, the posts decoded on the run's thread (JSON:
@@ -57,7 +58,7 @@ fn change(json: f64, bin: f64) -> String {
 
 fn steps(filter: &str) {
     let w: Value = serde_json::from_str(&fixture("workloads.json")).unwrap();
-    let prelude = fixture("prelude.js");
+    let (prelude, scripted) = (fixture("prelude.js"), fixture("prelude-scripted.js"));
     println!(
         "| step | JSON run | JSON decode | JSON total | binary run | binary decode | binary total | change | bytes JSON → binary |"
     );
@@ -69,20 +70,19 @@ fn steps(filter: &str) {
         if !name.contains(filter) {
             continue;
         }
-        let source = format!(
-            "{prelude}\n{}",
-            fixture(&format!("templates/{}.js", w["program"].as_str().unwrap()))
-        );
+        let template = fixture(&format!("templates/{}.js", w["program"].as_str().unwrap()));
         let mut own: Value =
             serde_json::from_str(&fixture(&format!("inputs/{name}.json"))).unwrap();
         let data = own.as_object_mut().unwrap().shift_remove("data").unwrap();
         let (fields, own) = (json!({ "data": data }).to_string(), own.to_string());
-        let session = |tail: &str| {
-            Arc::new(Program::new(format!("{source}{tail}"), "__input".into()).unwrap())
-                .session(fields.clone())
-                .unwrap()
+        let session = |prelude: &str, tail: &str| {
+            Arc::new(
+                Program::new(format!("{prelude}\n{template}{tail}"), "__input".into()).unwrap(),
+            )
+            .session(fields.clone())
+            .unwrap()
         };
-        let (s_json, s_bin) = (session(STEP), session(EMIT));
+        let (s_json, s_bin) = (session(&scripted, STEP), session(&prelude, EMIT));
         let encoder = ValueEncoder::widget();
         let draw = w["phase"] == "draw";
         let text = s_json.run(own.clone(), options.clone()).unwrap();
@@ -263,7 +263,7 @@ while (true) {
 
 fn live(filter: &str) {
     let w: Value = serde_json::from_str(&fixture("workloads.json")).unwrap();
-    let prelude = fixture("prelude.js");
+    let (prelude, scripted) = (fixture("prelude.js"), fixture("prelude-scripted.js"));
     println!("\n| live (per frame) | JSON | binary | change | bytes/frame JSON → binary |");
     println!("| --- | ---: | ---: | ---: | ---: |");
     let mut list: Vec<(String, String, String, String, String)> = w["live"]
@@ -276,7 +276,7 @@ fn live(filter: &str) {
             let input = fixture(&format!("inputs/{name}.json"));
             (
                 name,
-                format!("{prelude}\n{template}{LIVE}"),
+                format!("{scripted}\n{template}{LIVE}"),
                 format!("{prelude}\n{template}{NATIVE_LIVE}"),
                 input.clone(),
                 input,
