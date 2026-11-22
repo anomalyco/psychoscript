@@ -15,10 +15,14 @@ const programs: Record<string, string> = {
   "a UTF-8 decoder with unread bytes after a fatal stream error": `
     const decoder = new TextDecoder('utf8', { fatal: true })
     try { decoder.decode(new Uint8Array([255, 65, 66, 67, 68]), { stream: true }) }
-    catch (error) { return [error.name, decoder.decode()] }`,
+    catch (error) {
+      for (let i = 0; i < 3; i++) await null
+      return [error.name, decoder.decode()]
+    }`,
   "a UTF-8 decoder with pending bytes and a consumed BOM": `
     const decoder = new TextDecoder('utf8', { fatal: true })
     const start = decoder.decode(new Uint8Array([0xef, 0xbb, 0xbf, 0xef]), { stream: true })
+    for (let i = 0; i < 3; i++) await null
     return [start, decoder.decode(new Uint8Array([0xbb, 0xbf]))]`,
   "a Buffer keeps its type and bytes": `
     const buffer = Buffer.from("héllo")
@@ -193,7 +197,7 @@ const refusal = (snapshot: unknown) => {
 describe("snapshots", () => {
   test("hold code by source and function index, with the source's bytecode hash, and never bytecode", () => {
     const snapshot = sliced()
-    expect(snapshot.format).toBe(3)
+    expect(snapshot.format).toBe(5)
     const source = snapshot.header.sources[0]!
     expect(source.id).toBe("main")
     expect(source.bytecode).toBe(hashOf(compileSource(parse(source.code))))

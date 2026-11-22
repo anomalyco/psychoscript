@@ -1,16 +1,18 @@
 import { isSupportedCallback, requireCallback, withReads } from "../runtime/callback.js"
 import type { Builtins } from "../runtime/intrinsics.js"
 import { SORT_RUN, sorted, type SortInto } from "../stdlib/array.js"
-import { finishBytes } from "../stdlib/bytes.js"
+import { checkTypedLength } from "../stdlib/typed-array.js"
 import { weakKey } from "../stdlib/collections.js"
 import { buildPairs } from "../stdlib/url.js"
 import type { Interpreter } from "../runtime/interpreter.js"
-import { checkArrayLength } from "../runtime/limits.js"
-import { AsyncIteratorSymbol, invalidData, IteratorSymbol, PendingThrow } from "../runtime/model.js"
+import { AsyncIteratorSymbol, invalidData, IteratorSymbol, PendingThrow, typeError } from "../runtime/model.js"
 import { native, receiver } from "../runtime/native.js"
 import {
   Arr,
-  Bytes,
+  typedArray,
+  TypedArrayObj,
+  typedArrayTypes,
+  type TypedArrayKind,
   coerceToString,
   data,
   define,
@@ -22,7 +24,6 @@ import {
   ownKeys,
   IteratorObj,
   positionIterator,
-  coerceToNumber,
   get,
   MapObj,
   type NativeResult,
@@ -42,7 +43,7 @@ import { Invoke } from "../runtime/signals.js"
 
 type Helper = readonly [length: number, call: (args: Array<Value>) => NativeResult]
 
-const classes = { Array: Arr, Uint8Array: Bytes, Map: MapObj, Set: SetObj } as const
+const classes = { Array: Arr, TypedArray: TypedArrayObj, Map: MapObj, Set: SetObj } as const
 
 // Bun exposes ES2026 Math.sumPrecise before TypeScript's standard library types.
 declare global {
@@ -125,22 +126,26 @@ export const helpers = (ctx: Interpreter<unknown>): Array<readonly [string, Valu
       },
     ],
     $SumPrecise: [1, ([numbers]) => Math.sumPrecise((numbers as Arr).items as Array<number>)],
-    /** A Uint8Array of the values (see `collectBytes`). */
-    $Bytes: [
-      3,
-      ([values, into, offset]) => {
-        const items = (values as Arr).items
-        checkArrayLength(items.length)
-        return finishBytes(Uint8Array.from(items, coerceToNumber), into as Obj, offset as number)
+    /** Where `collectTyped` writes `length` values: a new typed array of `kind`, or `into` once they fit at `offset`. */
+    $TypedTarget: [
+      4,
+      ([length, into, offset, kind]) => {
+        if (kind === undefined) throw typeError("Abstract class TypedArray not directly constructable")
+        checkTypedLength(length as number, into as Obj, offset as number, kind as TypedArrayKind)
+        if (into instanceof TypedArrayObj) return into
+        return typedArray(into as Obj, new typedArrayTypes[kind as TypedArrayKind](length as number))
       },
     ],
-    /** A Uint8Array of the values, of the same kind as the Uint8Array `source`: a Buffer's map makes a Buffer. */
-    $DerivedBytes: [
+    /** The length a typed array's methods iterate to: its own, never a `length` property. */
+    $Length: [1, ([value]) => (value instanceof TypedArrayObj ? value.array.length : (value as Arr).items.length)],
+    /** A typed array of the values, of the same kind as the typed array `source`: a Buffer's map makes a Buffer. */
+    $DerivedTyped: [
       2,
       ([values, source]) => {
-        const items = (values as Arr).items
-        checkArrayLength(items.length)
-        return (source as Bytes).derive(builtins, Uint8Array.from(items, coerceToNumber))
+        const typed = source as TypedArrayObj
+        const items = (values as Arr).items as Array<number>
+        checkTypedLength(items.length, typed.proto!, 0, typed.tag)
+        return typed.derive(builtins, typedArrayTypes[typed.tag].from(items))
       },
     ],
     /** Headers or URLSearchParams from the pairs `readPairs` read, or from a record. */
@@ -174,7 +179,7 @@ export const helpers = (ctx: Interpreter<unknown>): Array<readonly [string, Valu
     $Sorted: [
       5,
       ([target, into, holes, values, undefs]) =>
-        sorted(builtins, target as Arr | Bytes, into as SortInto, holes as number, [
+        sorted(builtins, target as Arr | TypedArrayObj, into as SortInto, holes as number, [
           ...(values as Arr).items,
           ...Array<Value>(undefs as number).fill(undefined),
         ]),

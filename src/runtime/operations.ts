@@ -23,7 +23,7 @@ import {
   keys,
   Obj,
   parseArrayIndex,
-  Bytes,
+  TypedArrayObj,
   Position,
   PromiseObj,
   set,
@@ -236,7 +236,7 @@ export const builtinCursor = (builtins: Builtins, value: Value): Cursor | undefi
     const cursor = value.cursor
     if (builtins.Array.guard!.protector.intact || !(cursor instanceof Position)) return cursor
     const source = cursor.source
-    return source instanceof Arr || source instanceof Bytes || Array.isArray(source) ? undefined : cursor
+    return source instanceof Arr || source instanceof TypedArrayObj || Array.isArray(source) ? undefined : cursor
   }
   if (typeof value === "string") return new Position(value, "values", builtins.Array)
   return value instanceof Obj ? value.iterator(builtins) : undefined

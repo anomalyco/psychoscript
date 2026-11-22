@@ -272,11 +272,13 @@ async generators and `for await`), classes (fields, static members, getters and 
 literal getters and setters, labels, `try`/`finally`, top-level `await` and `return`, and `import`/`require` of host
 globals by module name. Built-ins: `Object`, `Array`, `String`, `Number`, `Math`, `JSON`, `Date`, `RegExp`, `Map`,
 `Set`, `Promise`, `Iterator` helpers, errors, `URL`, `URLSearchParams`, `Headers`, `TextEncoder`/`TextDecoder`,
-`atob`/`btoa`, `structuredClone`, `crypto.randomUUID`/`getRandomValues`, `Uint8Array`, Node's `Buffer`, and `console`.
+`atob`/`btoa`, `structuredClone`, `crypto.randomUUID`/`getRandomValues`, `ArrayBuffer`, `DataView`, the typed arrays
+(`Int8Array` … `Float64Array`), Node's `Buffer`, and `console`.
 
 Not supported: private members (`#x`), static blocks, `new` on plain functions, `Proxy`/`Reflect`, `Symbol()` (only
-`Symbol.iterator` and `Symbol.asyncIterator` exist), BigInt, typed arrays other than `Uint8Array` (and
-`ArrayBuffer`/`DataView`), `WeakRef`/`FinalizationRegistry`, sloppy mode, `eval`, `export`, and TypeScript syntax.
+`Symbol.iterator` and `Symbol.asyncIterator` exist), BigInt (and `BigInt64Array`/`BigUint64Array`), resizable or
+shared buffers (`SharedArrayBuffer`, `Atomics`), `WeakRef`/`FinalizationRegistry`, sloppy mode, `eval`, `export`, and
+TypeScript syntax.
 Unsupported syntax fails before the program runs, with a hint.
 
 [`interpreter-support.md`](interpreter-support.md) is the detailed support matrix.
@@ -295,7 +297,7 @@ The interpreter is tested against [test262](https://github.com/tc39/test262) at 
 `test/test262/manifest.json`). The files aren't committed and CI doesn't run them yet: sync a local checkout (see
 [`test/test262/README.md`](test/test262/README.md)) and run `bun test test/test262.test.ts`. The sync leaves out
 features that are out of scope by design (prototype mutation, `Proxy`, `eval`, sloppy mode and others). Of the
-22,253 files it keeps, 19,408 pass and 2,845 are skipped as known gaps (`test/test262/skipped.txt`), with no failures.
+23,161 files it keeps, 20,380 pass and 2,781 are skipped as known gaps (`test/test262/skipped.txt`), with no failures.
 
 ## Development
 

@@ -17,6 +17,7 @@ import { headersGlobal } from "../stdlib/headers.js"
 import { iteratorGlobals } from "../stdlib/iterator.js"
 import { coercion } from "../stdlib/value.js"
 import { base64Global, cryptoGlobal, structuredCloneGlobal } from "../stdlib/web.js"
+import { arrayBufferGlobal, dataViewGlobal, typedArrayGlobal } from "../stdlib/typed-array.js"
 import { errorGlobal } from "./errors.js"
 import { errorTypes } from "./intrinsics.js"
 import { constants, constructor, methods, native, receiver } from "./native.js"
@@ -141,7 +142,18 @@ const table: Record<string, Factory> = {
   URL: (ctx) => urlGlobal(ctx),
   URLSearchParams: (ctx) => urlSearchParamsGlobal(ctx),
   Headers: (ctx) => headersGlobal(ctx),
+  ArrayBuffer: (ctx) => arrayBufferGlobal(ctx),
+  DataView: (ctx) => dataViewGlobal(ctx),
+  Int8Array: (ctx) => typedArrayGlobal(ctx, "Int8Array"),
   Uint8Array: (ctx) => uint8ArrayGlobal(ctx),
+  Uint8ClampedArray: (ctx) => typedArrayGlobal(ctx, "Uint8ClampedArray"),
+  Int16Array: (ctx) => typedArrayGlobal(ctx, "Int16Array"),
+  Uint16Array: (ctx) => typedArrayGlobal(ctx, "Uint16Array"),
+  Int32Array: (ctx) => typedArrayGlobal(ctx, "Int32Array"),
+  Uint32Array: (ctx) => typedArrayGlobal(ctx, "Uint32Array"),
+  Float16Array: (ctx) => typedArrayGlobal(ctx, "Float16Array"),
+  Float32Array: (ctx) => typedArrayGlobal(ctx, "Float32Array"),
+  Float64Array: (ctx) => typedArrayGlobal(ctx, "Float64Array"),
   // Built on the host's Buffer, so only where there is one (Node and Bun, not browsers).
   ...(typeof Buffer === "undefined" ? {} : { Buffer: <R>(ctx: Interpreter<R>) => bufferGlobal(ctx) }),
   TextEncoder: (ctx) => textEncoderGlobal(ctx),

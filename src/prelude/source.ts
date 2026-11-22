@@ -22,19 +22,19 @@ function arrayFromLike(source, length, mapper, thisArg) {
   return result
 }
 
-// The callback methods Array and Uint8Array share. They fix the iteration length when they start and read elements
+// The callback methods Array and the typed arrays share. They fix the iteration length when they start and read elements
 // live; they skip holes, but the find methods visit them as undefined. map and filter return the receiver's kind of
 // collection.
 function Array$prototype$map(callback, thisArg = undefined) {
   return mapItems($Receiver(this, "Array", "Array.prototype.map"), callback, thisArg, "Array.map")
 }
-function Uint8Array$prototype$map(callback, thisArg = undefined) {
-  const bytes = $Receiver(this, "Uint8Array", "Uint8Array.prototype.map")
-  return $DerivedBytes(mapItems(bytes, callback, thisArg, "Uint8Array.map"), bytes)
+function TypedArray$prototype$map(callback, thisArg = undefined) {
+  const array = $Receiver(this, "TypedArray", "TypedArray.prototype.map")
+  return $DerivedTyped(toNumbers(mapItems(array, callback, thisArg, "TypedArray.map")), array)
 }
 function mapItems(array, callback, thisArg, label) {
   $Callback(callback, label)
-  const length = array.length
+  const length = $Length(array)
   const result = new Array(length)
   let index = 0
   while (index < length) {
@@ -47,13 +47,13 @@ function mapItems(array, callback, thisArg, label) {
 function Array$prototype$filter(callback, thisArg = undefined) {
   return filterItems($Receiver(this, "Array", "Array.prototype.filter"), callback, thisArg, "Array.filter")
 }
-function Uint8Array$prototype$filter(callback, thisArg = undefined) {
-  const bytes = $Receiver(this, "Uint8Array", "Uint8Array.prototype.filter")
-  return $DerivedBytes(filterItems(bytes, callback, thisArg, "Uint8Array.filter"), bytes)
+function TypedArray$prototype$filter(callback, thisArg = undefined) {
+  const array = $Receiver(this, "TypedArray", "TypedArray.prototype.filter")
+  return $DerivedTyped(filterItems(array, callback, thisArg, "TypedArray.filter"), array)
 }
 function filterItems(array, callback, thisArg, label) {
   $Callback(callback, label)
-  const length = array.length
+  const length = $Length(array)
   const result = []
   let count = 0
   let index = 0
@@ -71,12 +71,12 @@ function filterItems(array, callback, thisArg, label) {
 function Array$prototype$forEach(callback, thisArg = undefined) {
   forEachItem($Receiver(this, "Array", "Array.prototype.forEach"), callback, thisArg, "Array.forEach")
 }
-function Uint8Array$prototype$forEach(callback, thisArg = undefined) {
-  forEachItem($Receiver(this, "Uint8Array", "Uint8Array.prototype.forEach"), callback, thisArg, "Uint8Array.forEach")
+function TypedArray$prototype$forEach(callback, thisArg = undefined) {
+  forEachItem($Receiver(this, "TypedArray", "TypedArray.prototype.forEach"), callback, thisArg, "TypedArray.forEach")
 }
 function forEachItem(array, callback, thisArg, label) {
   $Callback(callback, label)
-  const length = array.length
+  const length = $Length(array)
   let index = 0
   while (index < length) {
     if (index in array) $Call(callback, thisArg, array[index], index, array)
@@ -87,19 +87,19 @@ function forEachItem(array, callback, thisArg, label) {
 function Array$prototype$some(callback, thisArg = undefined) {
   return testItems($Receiver(this, "Array", "Array.prototype.some"), callback, thisArg, "Array.some", false)
 }
-function Uint8Array$prototype$some(callback, thisArg = undefined) {
-  return testItems($Receiver(this, "Uint8Array", "Uint8Array.prototype.some"), callback, thisArg, "Uint8Array.some", false)
+function TypedArray$prototype$some(callback, thisArg = undefined) {
+  return testItems($Receiver(this, "TypedArray", "TypedArray.prototype.some"), callback, thisArg, "TypedArray.some", false)
 }
 function Array$prototype$every(callback, thisArg = undefined) {
   return testItems($Receiver(this, "Array", "Array.prototype.every"), callback, thisArg, "Array.every", true)
 }
-function Uint8Array$prototype$every(callback, thisArg = undefined) {
-  return testItems($Receiver(this, "Uint8Array", "Uint8Array.prototype.every"), callback, thisArg, "Uint8Array.every", true)
+function TypedArray$prototype$every(callback, thisArg = undefined) {
+  return testItems($Receiver(this, "TypedArray", "TypedArray.prototype.every"), callback, thisArg, "TypedArray.every", true)
 }
 // some stops at the first truthy result, every at the first falsy one.
 function testItems(array, callback, thisArg, label, every) {
   $Callback(callback, label)
-  const length = array.length
+  const length = $Length(array)
   let index = 0
   while (index < length) {
     if (index in array && !$Call(callback, thisArg, array[index], index, array) === every) return !every
@@ -111,30 +111,30 @@ function testItems(array, callback, thisArg, label, every) {
 function Array$prototype$find(callback, thisArg = undefined) {
   return findItem($Receiver(this, "Array", "Array.prototype.find"), callback, thisArg, "Array.find", false, false)
 }
-function Uint8Array$prototype$find(callback, thisArg = undefined) {
-  return findItem($Receiver(this, "Uint8Array", "Uint8Array.prototype.find"), callback, thisArg, "Uint8Array.find", false, false)
+function TypedArray$prototype$find(callback, thisArg = undefined) {
+  return findItem($Receiver(this, "TypedArray", "TypedArray.prototype.find"), callback, thisArg, "TypedArray.find", false, false)
 }
 function Array$prototype$findIndex(callback, thisArg = undefined) {
   return findItem($Receiver(this, "Array", "Array.prototype.findIndex"), callback, thisArg, "Array.findIndex", false, true)
 }
-function Uint8Array$prototype$findIndex(callback, thisArg = undefined) {
-  return findItem($Receiver(this, "Uint8Array", "Uint8Array.prototype.findIndex"), callback, thisArg, "Uint8Array.findIndex", false, true)
+function TypedArray$prototype$findIndex(callback, thisArg = undefined) {
+  return findItem($Receiver(this, "TypedArray", "TypedArray.prototype.findIndex"), callback, thisArg, "TypedArray.findIndex", false, true)
 }
 function Array$prototype$findLast(callback, thisArg = undefined) {
   return findItem($Receiver(this, "Array", "Array.prototype.findLast"), callback, thisArg, "Array.findLast", true, false)
 }
-function Uint8Array$prototype$findLast(callback, thisArg = undefined) {
-  return findItem($Receiver(this, "Uint8Array", "Uint8Array.prototype.findLast"), callback, thisArg, "Uint8Array.findLast", true, false)
+function TypedArray$prototype$findLast(callback, thisArg = undefined) {
+  return findItem($Receiver(this, "TypedArray", "TypedArray.prototype.findLast"), callback, thisArg, "TypedArray.findLast", true, false)
 }
 function Array$prototype$findLastIndex(callback, thisArg = undefined) {
   return findItem($Receiver(this, "Array", "Array.prototype.findLastIndex"), callback, thisArg, "Array.findLastIndex", true, true)
 }
-function Uint8Array$prototype$findLastIndex(callback, thisArg = undefined) {
-  return findItem($Receiver(this, "Uint8Array", "Uint8Array.prototype.findLastIndex"), callback, thisArg, "Uint8Array.findLastIndex", true, true)
+function TypedArray$prototype$findLastIndex(callback, thisArg = undefined) {
+  return findItem($Receiver(this, "TypedArray", "TypedArray.prototype.findLastIndex"), callback, thisArg, "TypedArray.findLastIndex", true, true)
 }
 function findItem(array, callback, thisArg, label, last, wantIndex) {
   $Callback(callback, label)
-  const length = array.length
+  const length = $Length(array)
   const step = last ? -1 : 1
   let index = last ? length - 1 : 0
   let item
@@ -150,18 +150,18 @@ function findItem(array, callback, thisArg, label, last, wantIndex) {
 function Array$prototype$reduce(callback, ...initial) {
   return reduceItems($Receiver(this, "Array", "Array.prototype.reduce"), callback, initial, "Array.reduce", false)
 }
-function Uint8Array$prototype$reduce(callback, ...initial) {
-  return reduceItems($Receiver(this, "Uint8Array", "Uint8Array.prototype.reduce"), callback, initial, "Uint8Array.reduce", false)
+function TypedArray$prototype$reduce(callback, ...initial) {
+  return reduceItems($Receiver(this, "TypedArray", "TypedArray.prototype.reduce"), callback, initial, "TypedArray.reduce", false)
 }
 function Array$prototype$reduceRight(callback, ...initial) {
   return reduceItems($Receiver(this, "Array", "Array.prototype.reduceRight"), callback, initial, "Array.reduceRight", true)
 }
-function Uint8Array$prototype$reduceRight(callback, ...initial) {
-  return reduceItems($Receiver(this, "Uint8Array", "Uint8Array.prototype.reduceRight"), callback, initial, "Uint8Array.reduceRight", true)
+function TypedArray$prototype$reduceRight(callback, ...initial) {
+  return reduceItems($Receiver(this, "TypedArray", "TypedArray.prototype.reduceRight"), callback, initial, "TypedArray.reduceRight", true)
 }
 function reduceItems(array, callback, initial, label, right) {
   $Callback(callback, label)
-  const length = array.length
+  const length = $Length(array)
   const step = right ? -1 : 1
   let index = right ? length - 1 : 0
   let accumulator
@@ -399,20 +399,57 @@ function aggregateError(error, errors) {
   return $Define(error, "errors", list, false)
 }
 
-// A Uint8Array's bytes from an iterable: a new one with prototype into, or set into the Uint8Array into at
-// offset. As in TypedArray.from, a mapper sees the original values, after the source is consumed in full.
-function collectBytes(source, name, mapper, thisArg, into, offset) {
-  if (!$IsIterable(source)) $Throw("TypeError", name + " expects a Uint8Array, an array, or an iterable of numbers, received " + $Describe(source) + ".")
-  const values = []
-  for (const item of source) $ArraySet(values, values.length, item)
-  let index = 0
-  if (mapper !== undefined) {
-    while (index < values.length) {
-      values[index] = $Call(mapper, thisArg, values[index], index)
-      index++
-    }
+// A typed array's values from source: into a new one of kind with prototype into, or into the typed array into at
+// offset. With iterate (the constructors and from), a source with an iterator is iterated to a list first; otherwise
+// it is read as an array-like. Each value is read, mapped, converted (ToNumber calls its own valueOf) and written in
+// turn, as in the spec, so a failure part way leaves the values before it written.
+function collectTyped(source, name, mapper, thisArg, into, offset, kind, iterate) {
+  let values
+  let length
+  let method
+  if (iterate) method = source[Symbol.iterator]
+  if (method !== undefined && method !== null) {
+    if (!$IsCallable(method)) $Throw("TypeError", name + ": the source's [Symbol.iterator] is not a function.")
+    values = []
+    for (const item of source) $ArraySet(values, values.length, item)
+    length = values.length
+  } else {
+    length = +source.length
+    length = length > 0 ? (length < 9007199254740991 ? Math.floor(length) : 9007199254740991) : 0
   }
-  return $Bytes(values, into, offset)
+  const target = $TypedTarget(length, into, offset, kind)
+  let index = 0
+  let value
+  while (index < length) {
+    value = values === undefined ? source[index] : values[index]
+    if (mapper !== undefined) value = $Call(mapper, thisArg, value, index)
+    target[offset + index] = +value
+    index++
+  }
+  return target === into ? undefined : target
+}
+
+// ToNumber on each value of a prelude-made array, in place.
+function toNumbers(values) {
+  let index = 0
+  while (index < values.length) {
+    values[index] = +values[index]
+    index++
+  }
+  return values
+}
+
+function TypedArray$prototype$toLocaleString() {
+  const array = $Receiver(this, "TypedArray", "TypedArray.prototype.toLocaleString")
+  const length = $Length(array)
+  let result = ""
+  let index = 0
+  while (index < length) {
+    if (index > 0) result += ","
+    result += String(array[index].toLocaleString())
+    index++
+  }
+  return result
 }
 
 // An arguments object's [Symbol.iterator], as Array.prototype.values reads it: the length and each index, live.

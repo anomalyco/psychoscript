@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- `ArrayBuffer`, `DataView` and the typed arrays `Int8Array`, `Uint8ClampedArray`, `Int16Array`, `Uint16Array`,
+  `Int32Array`, `Uint32Array`, `Float16Array`, `Float32Array` and `Float64Array`, alongside `Uint8Array`, all
+  inheriting from `%TypedArray%`. Views over one `ArrayBuffer` share its memory and its identity, also across a suspend
+  and resume.
+- `Uint8Array` and `Buffer` sit on real `ArrayBuffer`s: `.buffer`, `.byteOffset` and `.byteLength` work, and
+  `Buffer.from(arrayBuffer, offset, length)` views its memory as in Node.
+- Typed array methods follow the spec more closely: `new Uint8Array(1.5)` has length 1 rather than throwing, `set` and
+  the constructors read array-likes, `set` reads its source as an array-like rather than iterating it, and arguments
+  convert through their own `valueOf`. Some messages name `TypedArray` instead of `Uint8Array`.
+- Host functions get any `ArrayBuffer`, typed array or `DataView` as a `Uint8Array` copy of its bytes; host
+  `ArrayBuffer`s still come in as `Uint8Array`s. `TextDecoder.decode` takes any of them, and
+  `crypto.getRandomValues` any integer typed array.
+- Snapshot format 5 (format 4 is taken by the BigInt change): saved runs from earlier builds don't resume.
+
 ## 0.2.1
 
 - `psychoscript/effect`: a plain function the host gives the program (inside a host function's result, such as a

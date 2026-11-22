@@ -326,6 +326,8 @@ built-ins/Array/prototype/findLastIndex/return-abrupt-from-this-length.js  # Exp
 built-ins/Array/prototype/flat/array-like-objects.js  # TypeError: Array.prototype.flat called on incompatible receiver an Arguments.
 built-ins/Array/prototype/flat/call-with-boolean.js  # TypeError: Array.prototype.flat called on incompatible receiver a boolean.
 built-ins/Array/prototype/flat/non-object-ctor-throws.js  # null value Expected a TypeError to be thrown but no exception was thrown at all
+built-ins/Array/prototype/flatMap/array-like-objects-nested.js  # TypeError: Array.prototype.flatMap called on incompatible receiver a data object.
+built-ins/Array/prototype/flatMap/array-like-objects-typedarrays.js  # TypeError: Array.prototype.flatMap called on incompatible receiver an Int32Array.
 built-ins/Array/prototype/flatMap/array-like-objects.js  # TypeError: Array.prototype.flatMap called on incompatible receiver a data object.
 built-ins/Array/prototype/flatMap/call-with-boolean.js  # TypeError: Array.prototype.flatMap called on incompatible receiver a boolean.
 built-ins/Array/prototype/forEach/15.4.4.18-1-10.js  # TypeError: Array.prototype.forEach called on incompatible receiver a data object.
@@ -1481,6 +1483,8 @@ built-ins/Array/prototype/values/returns-iterator-from-object.js  # TypeError: A
 built-ins/Array/prototype/with/length-exceeding-array-length-limit.js  # Expected a RangeError but got a TypeError
 built-ins/Array/prototype/with/length-tolength.js  # TypeError: Array.prototype.with called on incompatible receiver a data object.
 built-ins/Array/prototype/with/this-value-boolean.js  # TypeError: Array.prototype.with called on incompatible receiver a boolean.
+built-ins/ArrayBuffer/isView/arg-is-dataview-subclass-instance.js  # TypeError: Extending the built-in DataView is not supported. Only classes and Error types can be ext
+built-ins/ArrayBuffer/isView/arg-is-typedarray-subclass-instance.js  # TypeError: Extending the built-in Float64Array is not supported. Only classes and Error types can be
 built-ins/ArrayIteratorPrototype/Symbol.toStringTag/value-from-to-string.js  # Expected SameValue(«"[object Array Iterator]"», «"[object Iterator]"») to be true
 built-ins/AsyncFunction/AsyncFunction-construct.js  # TypeError: The Function constructor is not supported; write the function inline.
 built-ins/AsyncFunction/AsyncFunctionPrototype-is-not-callable.js  # Expected SameValue(«"function"», «"object"») to be true
@@ -2056,8 +2060,6 @@ built-ins/Object/seal/seal-asyncarrowfunction.js  # TypeError: The Function cons
 built-ins/Object/seal/seal-asyncfunction.js  # TypeError: The Function constructor is not supported; write the function inline.
 built-ins/Object/seal/seal-asyncgeneratorfunction.js  # TypeError: The Function constructor is not supported; write the function inline.
 built-ins/Object/seal/seal-generatorfunction.js  # TypeError: The Function constructor is not supported; write the function inline.
-built-ins/Object/seal/seal-promise.js  # The program is waiting on a promise that can never settle: nothing else is running, so nothing can r
-built-ins/Object/seal/seal-uint8array.js  # TypeError: A Uint8Array cannot cross to the host; pass text instead, e.g. `new TextDecoder().decode(
 built-ins/Object/values/inherited-properties-omitted.js  # TypeError: Cannot read properties of undefined (reading '…').
 built-ins/Promise/all/S25.4.4.1_A4.1_T1.js  # Expected a TypeError to be thrown but no exception was thrown at all
 built-ins/Promise/all/call-resolve-element-after-return.js  # callCount after call to all() Expected SameValue(«0», «1») to be true
@@ -2332,6 +2334,26 @@ built-ins/ThrowTypeError/property-order.js  # TypeError: Cannot read properties 
 built-ins/ThrowTypeError/throws-type-error.js  # TypeError: Cannot read properties of undefined (reading '…').
 built-ins/ThrowTypeError/unique-per-realm-non-simple.js  # TypeError: Cannot read properties of undefined (reading '…').
 built-ins/ThrowTypeError/unique-per-realm-unmapped-args.js  # TypeError: Cannot read properties of undefined (reading '…').
+built-ins/TypedArray/prototype/filter/speciesctor-get-ctor-abrupt.js  # Expected a Test262Error to be thrown but no exception was thrown at all (Testing with Float64Array a
+built-ins/TypedArray/prototype/filter/speciesctor-get-ctor-inherited.js  # called custom ctor get accessor once Expected SameValue(«0», «1») to be true (Testing with Float64Ar
+built-ins/TypedArray/prototype/filter/speciesctor-get-ctor.js  # called custom ctor get accessor once Expected SameValue(«0», «1») to be true (Testing with Float64Ar
+built-ins/TypedArray/prototype/map/speciesctor-get-ctor-abrupt.js  # Expected a Test262Error to be thrown but no exception was thrown at all (Testing with Float64Array a
+built-ins/TypedArray/prototype/map/speciesctor-get-ctor-inherited.js  # called custom ctor get accessor once Expected SameValue(«0», «1») to be true (Testing with Float64Ar
+built-ins/TypedArray/prototype/map/speciesctor-get-ctor.js  # called custom ctor get accessor once Expected SameValue(«0», «1») to be true (Testing with Float64Ar
+built-ins/TypedArray/prototype/slice/speciesctor-get-ctor-abrupt.js  # Expected a Test262Error to be thrown but no exception was thrown at all (Testing with Float64Array a
+built-ins/TypedArray/prototype/slice/speciesctor-get-ctor-inherited.js  # called custom ctor get accessor once Expected SameValue(«0», «1») to be true (Testing with Float64Ar
+built-ins/TypedArray/prototype/slice/speciesctor-get-ctor.js  # called custom ctor get accessor once Expected SameValue(«0», «1») to be true (Testing with Float64Ar
+built-ins/TypedArray/prototype/subarray/speciesctor-get-ctor-abrupt.js  # Expected a Test262Error to be thrown but no exception was thrown at all (Testing with Float64Array a
+built-ins/TypedArray/prototype/subarray/speciesctor-get-ctor-inherited.js  # called custom ctor get accessor once Expected SameValue(«0», «1») to be true (Testing with Float64Ar
+built-ins/TypedArray/prototype/subarray/speciesctor-get-ctor.js  # called custom ctor get accessor once Expected SameValue(«0», «1») to be true (Testing with Float64Ar
+built-ins/TypedArrayConstructors/from/custom-ctor-returns-other-instance.js  # TypeError: TypedArray.from: this is not a typed array constructor.
+built-ins/TypedArrayConstructors/from/custom-ctor.js  # Expected a Test262Error but got a TypeError (Testing with Float64Array and makePassthrough.)
+built-ins/TypedArrayConstructors/from/new-instance-using-custom-ctor.js  # TypeError: TypedArray.from: this is not a typed array constructor.
+built-ins/TypedArrayConstructors/internals/DefineOwnProperty/desc-value-throws.js  # Expected a Test262Error to be thrown but no exception was thrown at all (Testing with Float64Array a
+built-ins/TypedArrayConstructors/internals/Set/tonumber-value-throws.js  # Expected a Test262Error to be thrown but no exception was thrown at all (Testing with Float64Array a
+built-ins/TypedArrayConstructors/of/custom-ctor-returns-other-instance.js  # TypeError: TypedArray.of: this is not a typed array constructor.
+built-ins/TypedArrayConstructors/of/custom-ctor.js  # Expected a Test262Error but got a TypeError (Testing with Float64Array and makePassthrough.)
+built-ins/TypedArrayConstructors/of/new-instance-using-custom-ctor.js  # TypeError: TypedArray.of: this is not a typed array constructor.
 built-ins/WeakMap/get-set-method-failure.js  # Expected a Test262Error to be thrown but no exception was thrown at all
 built-ins/WeakMap/iterable-with-object-keys.js  # Called WeakMap#set for each object Expected SameValue(«0», «2») to be true
 built-ins/WeakMap/iterator-close-after-set-failure.js  # Expected a Test262Error but got a TypeError
@@ -2409,8 +2431,15 @@ language/expressions/bitwise-xor/S11.10.2_A3_T1.5.js  # TypeError: Binary operat
 language/expressions/class/elements/fields-run-once-on-double-super.js  # Expected a ReferenceError but got a SyntaxError
 language/expressions/class/scope-name-lex-open-heritage.js  # TypeError: Class extends value a function is not a constructor or null.
 language/expressions/class/subclass-builtins/subclass-Array.js  # TypeError: Extending the built-in Array is not supported. Only classes and Error types can be extend
+language/expressions/class/subclass-builtins/subclass-ArrayBuffer.js  # TypeError: Extending the built-in ArrayBuffer is not supported. Only classes and Error types can be 
 language/expressions/class/subclass-builtins/subclass-Boolean.js  # TypeError: Class extends value a function is not a constructor or null.
+language/expressions/class/subclass-builtins/subclass-DataView.js  # TypeError: Extending the built-in DataView is not supported. Only classes and Error types can be ext
 language/expressions/class/subclass-builtins/subclass-Date.js  # TypeError: Extending the built-in Date is not supported. Only classes and Error types can be extende
+language/expressions/class/subclass-builtins/subclass-Float32Array.js  # TypeError: Extending the built-in Float32Array is not supported. Only classes and Error types can be
+language/expressions/class/subclass-builtins/subclass-Float64Array.js  # TypeError: Extending the built-in Float64Array is not supported. Only classes and Error types can be
+language/expressions/class/subclass-builtins/subclass-Int16Array.js  # TypeError: Extending the built-in Int16Array is not supported. Only classes and Error types can be e
+language/expressions/class/subclass-builtins/subclass-Int32Array.js  # TypeError: Extending the built-in Int32Array is not supported. Only classes and Error types can be e
+language/expressions/class/subclass-builtins/subclass-Int8Array.js  # TypeError: Extending the built-in Int8Array is not supported. Only classes and Error types can be ex
 language/expressions/class/subclass-builtins/subclass-Map.js  # TypeError: Extending the built-in Map is not supported. Only classes and Error types can be extended
 language/expressions/class/subclass-builtins/subclass-Number.js  # TypeError: Class extends value a function is not a constructor or null.
 language/expressions/class/subclass-builtins/subclass-Object.js  # TypeError: Extending the built-in Object is not supported. Only classes and Error types can be exten
@@ -2418,6 +2447,10 @@ language/expressions/class/subclass-builtins/subclass-Promise.js  # TypeError: E
 language/expressions/class/subclass-builtins/subclass-RegExp.js  # TypeError: Extending the built-in RegExp is not supported. Only classes and Error types can be exten
 language/expressions/class/subclass-builtins/subclass-Set.js  # TypeError: Extending the built-in Set is not supported. Only classes and Error types can be extended
 language/expressions/class/subclass-builtins/subclass-String.js  # TypeError: Class extends value a function is not a constructor or null.
+language/expressions/class/subclass-builtins/subclass-Uint16Array.js  # TypeError: Extending the built-in Uint16Array is not supported. Only classes and Error types can be 
+language/expressions/class/subclass-builtins/subclass-Uint32Array.js  # TypeError: Extending the built-in Uint32Array is not supported. Only classes and Error types can be 
+language/expressions/class/subclass-builtins/subclass-Uint8Array.js  # TypeError: Extending the built-in Uint8Array is not supported. Only classes and Error types can be e
+language/expressions/class/subclass-builtins/subclass-Uint8ClampedArray.js  # TypeError: Extending the built-in Uint8ClampedArray is not supported. Only classes and Error types c
 language/expressions/class/subclass-builtins/subclass-WeakMap.js  # TypeError: Extending the built-in WeakMap is not supported. Only classes and Error types can be exte
 language/expressions/class/subclass-builtins/subclass-WeakSet.js  # TypeError: Extending the built-in WeakSet is not supported. Only classes and Error types can be exte
 language/expressions/compound-assignment/S11.13.2_A7.10_T1.js  # Expected a DummyError but got a TypeError
@@ -2459,7 +2492,7 @@ language/expressions/delete/S11.4.1_A3.2_T3.js  # TypeError: MyFunction is not a
 language/expressions/delete/S11.4.1_A3.3_T3.js  # TypeError: MyFunction is not a constructor: only classes can be constructed with new. Use a class, o
 language/expressions/delete/S8.12.7_A2_T2.js  # TypeError: Palette is not a constructor: only classes can be constructed with new. Use a class, or c
 language/expressions/delete/non-reference-return-true.js  # TypeError: Only data fields may be deleted.
-language/expressions/delete/super-property-topropertykey.js  # Expected a ReferenceError but got a SyntaxError
+language/expressions/delete/super-property-topropertykey.js  # Expected a ReferenceError but got a Test262Error
 language/expressions/delete/super-property.js  # TypeError: Extending the built-in Object is not supported. Only classes and Error types can be exten
 language/expressions/division/S11.5.2_A3_T1.5.js  # TypeError: Binary operators require data values.
 language/expressions/generators/default-proto.js  # Expected SameValue(«object», «undefined») to be true
@@ -2590,8 +2623,15 @@ language/statements/class/poisoned-underscore-proto.js  # TypeError: Extending t
 language/statements/class/scope-name-lex-open-heritage.js  # TypeError: Class extends value a function is not a constructor or null.
 language/statements/class/strict-mode/arguments-callee.js  # TypeError: Class extends value a function is not a constructor or null.
 language/statements/class/subclass-builtins/subclass-Array.js  # TypeError: Extending the built-in Array is not supported. Only classes and Error types can be extend
+language/statements/class/subclass-builtins/subclass-ArrayBuffer.js  # TypeError: Extending the built-in ArrayBuffer is not supported. Only classes and Error types can be 
 language/statements/class/subclass-builtins/subclass-Boolean.js  # TypeError: Class extends value a function is not a constructor or null.
+language/statements/class/subclass-builtins/subclass-DataView.js  # TypeError: Extending the built-in DataView is not supported. Only classes and Error types can be ext
 language/statements/class/subclass-builtins/subclass-Date.js  # TypeError: Extending the built-in Date is not supported. Only classes and Error types can be extende
+language/statements/class/subclass-builtins/subclass-Float32Array.js  # TypeError: Extending the built-in Float32Array is not supported. Only classes and Error types can be
+language/statements/class/subclass-builtins/subclass-Float64Array.js  # TypeError: Extending the built-in Float64Array is not supported. Only classes and Error types can be
+language/statements/class/subclass-builtins/subclass-Int16Array.js  # TypeError: Extending the built-in Int16Array is not supported. Only classes and Error types can be e
+language/statements/class/subclass-builtins/subclass-Int32Array.js  # TypeError: Extending the built-in Int32Array is not supported. Only classes and Error types can be e
+language/statements/class/subclass-builtins/subclass-Int8Array.js  # TypeError: Extending the built-in Int8Array is not supported. Only classes and Error types can be ex
 language/statements/class/subclass-builtins/subclass-Map.js  # TypeError: Extending the built-in Map is not supported. Only classes and Error types can be extended
 language/statements/class/subclass-builtins/subclass-Number.js  # TypeError: Class extends value a function is not a constructor or null.
 language/statements/class/subclass-builtins/subclass-Object.js  # TypeError: Extending the built-in Object is not supported. Only classes and Error types can be exten
@@ -2599,6 +2639,10 @@ language/statements/class/subclass-builtins/subclass-Promise.js  # TypeError: Ex
 language/statements/class/subclass-builtins/subclass-RegExp.js  # TypeError: Extending the built-in RegExp is not supported. Only classes and Error types can be exten
 language/statements/class/subclass-builtins/subclass-Set.js  # TypeError: Extending the built-in Set is not supported. Only classes and Error types can be extended
 language/statements/class/subclass-builtins/subclass-String.js  # TypeError: Class extends value a function is not a constructor or null.
+language/statements/class/subclass-builtins/subclass-Uint16Array.js  # TypeError: Extending the built-in Uint16Array is not supported. Only classes and Error types can be 
+language/statements/class/subclass-builtins/subclass-Uint32Array.js  # TypeError: Extending the built-in Uint32Array is not supported. Only classes and Error types can be 
+language/statements/class/subclass-builtins/subclass-Uint8Array.js  # TypeError: Extending the built-in Uint8Array is not supported. Only classes and Error types can be e
+language/statements/class/subclass-builtins/subclass-Uint8ClampedArray.js  # TypeError: Extending the built-in Uint8ClampedArray is not supported. Only classes and Error types c
 language/statements/class/subclass-builtins/subclass-WeakMap.js  # TypeError: Extending the built-in WeakMap is not supported. Only classes and Error types can be exte
 language/statements/class/subclass-builtins/subclass-WeakSet.js  # TypeError: Extending the built-in WeakSet is not supported. Only classes and Error types can be exte
 language/statements/class/subclass/binding.js  # TypeError: new f(...) is not supported; call f(...) without new instead.
@@ -2607,8 +2651,12 @@ language/statements/class/subclass/builtin-objects/Array/contructor-calls-super-
 language/statements/class/subclass/builtin-objects/Array/length.js  # TypeError: Extending the built-in Array is not supported. Only classes and Error types can be extend
 language/statements/class/subclass/builtin-objects/Array/regular-subclassing.js  # TypeError: Extending the built-in Array is not supported. Only classes and Error types can be extend
 language/statements/class/subclass/builtin-objects/Array/super-must-be-called.js  # TypeError: Extending the built-in Array is not supported. Only classes and Error types can be extend
+language/statements/class/subclass/builtin-objects/ArrayBuffer/regular-subclassing.js  # TypeError: Extending the built-in ArrayBuffer is not supported. Only classes and Error types can be 
+language/statements/class/subclass/builtin-objects/ArrayBuffer/super-must-be-called.js  # TypeError: Extending the built-in ArrayBuffer is not supported. Only classes and Error types can be 
 language/statements/class/subclass/builtin-objects/Boolean/regular-subclassing.js  # TypeError: Class extends value a function is not a constructor or null.
 language/statements/class/subclass/builtin-objects/Boolean/super-must-be-called.js  # TypeError: Class extends value a function is not a constructor or null.
+language/statements/class/subclass/builtin-objects/DataView/regular-subclassing.js  # TypeError: Extending the built-in DataView is not supported. Only classes and Error types can be ext
+language/statements/class/subclass/builtin-objects/DataView/super-must-be-called.js  # TypeError: Extending the built-in DataView is not supported. Only classes and Error types can be ext
 language/statements/class/subclass/builtin-objects/Date/regular-subclassing.js  # TypeError: Extending the built-in Date is not supported. Only classes and Error types can be extende
 language/statements/class/subclass/builtin-objects/Date/super-must-be-called.js  # TypeError: Extending the built-in Date is not supported. Only classes and Error types can be extende
 language/statements/class/subclass/builtin-objects/GeneratorFunction/regular-subclassing.js  # TypeError: Extending the built-in Function is not supported. Only classes and Error types can be ext
@@ -2629,6 +2677,8 @@ language/statements/class/subclass/builtin-objects/Set/regular-subclassing.js  #
 language/statements/class/subclass/builtin-objects/Set/super-must-be-called.js  # TypeError: Extending the built-in Set is not supported. Only classes and Error types can be extended
 language/statements/class/subclass/builtin-objects/String/regular-subclassing.js  # TypeError: Class extends value a function is not a constructor or null.
 language/statements/class/subclass/builtin-objects/String/super-must-be-called.js  # TypeError: Class extends value a function is not a constructor or null.
+language/statements/class/subclass/builtin-objects/TypedArray/regular-subclassing.js  # TypeError: Extending the built-in Float64Array is not supported. Only classes and Error types can be
+language/statements/class/subclass/builtin-objects/TypedArray/super-must-be-called.js  # TypeError: Extending the built-in Float64Array is not supported. Only classes and Error types can be
 language/statements/class/subclass/builtin-objects/WeakMap/regular-subclassing.js  # TypeError: Extending the built-in WeakMap is not supported. Only classes and Error types can be exte
 language/statements/class/subclass/builtin-objects/WeakMap/super-must-be-called.js  # TypeError: Extending the built-in WeakMap is not supported. Only classes and Error types can be exte
 language/statements/class/subclass/builtin-objects/WeakSet/regular-subclassing.js  # TypeError: Extending the built-in WeakSet is not supported. Only classes and Error types can be exte
@@ -2642,7 +2692,7 @@ language/statements/class/subclass/class-definition-parent-proto-null.js  # Type
 language/statements/class/subclass/default-constructor-2.js  # TypeError: new f(...) is not supported; call f(...) without new instead.
 language/statements/class/subclass/derived-class-return-override-catch-finally-arrow.js  # UnsupportedSyntax: SyntaxError: super() inside an arrow function is not supported. Call super() dire
 language/statements/class/subclass/derived-class-return-override-finally-super-arrow.js  # UnsupportedSyntax: SyntaxError: super() inside an arrow function is not supported. Call super() dire
-language/statements/class/subclass/derived-class-return-override-for-of-arrow.js  # ReferenceError: Must call super constructor in derived class before accessing '…' or returning from 
+language/statements/class/subclass/derived-class-return-override-for-of-arrow.js  # UnsupportedSyntax: SyntaxError: super() inside an arrow function is not supported. Call super() dire
 language/statements/class/subclass/superclass-bound-function.js  # TypeError: Class extends value a function is not a constructor or null.
 language/statements/class/subclass/superclass-prototype-setter-constructor.js  # TypeError: Class extends value a function is not a constructor or null.
 language/statements/class/subclass/superclass-prototype-setter-method-override.js  # TypeError: Class extends value a function is not a constructor or null.

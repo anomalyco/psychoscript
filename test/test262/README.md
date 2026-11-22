@@ -15,10 +15,13 @@ Without them the runner registers no tests, so CI is unaffected. Licensed under 
 - `manifest.json` — the pinned upstream revision, which upstream directories are copied (every `built-ins` and
   `language` directory, about 22,300 files after filtering), and what is left out.
 - `built-ins/`, `language/` — the copied files, mirroring upstream `test/`; gitignored.
+- `harness/` — the harness files listed under `sources` in the manifest (`testTypedArray.js`,
+  `byteConversionValues.js`, `nans.js`), copied by the sync; gitignored. `run.ts` runs the ones a test includes as
+  source ahead of it, which shifts that test's line numbers.
 - `skipped.txt` — vendored files that fail on a known interpreter gap, one `path  # reason` per line. They are
   skipped, and each gap is listed as unchecked in `interpreter-support.md`.
 - `run.ts` — runs one file: prepends `"use strict"`, provides the harness (`assert`, `Test262Error`,
-  `compareArray`, `$DONE`, `$DONOTEVALUATE`) as host globals, and interprets the file's frontmatter (`negative`,
+  `compareArray`, `$DONE`, `$DONOTEVALUATE`) as host globals, runs the `harness/` files the test includes, and interprets the file's frontmatter (`negative`,
   `flags: [async]`).
 
 ## What is not vendored
@@ -27,7 +30,8 @@ Without them the runner registers no tests, so CI is unaffected. Licensed under 
 manifest marks unsupported, or when its code matches one of the manifest's `boundaries` patterns. The sync checks the
 checkout is at the pinned revision, so every machine runs the same files. Boundaries are
 intentional limits of the interpreter, not compatibility work: prototype mutation, legacy accessors
-(`__defineGetter__` and friends), boxed primitives, typed arrays and buffers, `WeakRef` and `FinalizationRegistry`, `Reflect` and `Proxy`, sloppy mode, `eval`,
+(`__defineGetter__` and friends), boxed primitives, shared memory and BigInt typed arrays, `WeakRef` and
+`FinalizationRegistry`, `Reflect` and `Proxy`, sloppy mode, `eval`,
 `Symbol()`, and the `$262` host API. If one
 of those decisions changes, delete its entry and re-sync; the tests are upstream, not lost.
 

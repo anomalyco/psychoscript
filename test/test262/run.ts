@@ -8,7 +8,7 @@ import type { Interpreter } from "../../src/runtime/interpreter.js"
 import { Throw } from "../../src/runtime/model.js"
 import { createErrorValue } from "../../src/runtime/intrinsics.js"
 import { constructor, fn, methods } from "../../src/runtime/native.js"
-import { Callable, define, get, hidden, Arr, Fn, Obj, type Value } from "../../src/runtime/objects.js"
+import { Callable, define, get, hidden, Arr, Fn, Obj, TypedArrayObj, type Value } from "../../src/runtime/objects.js"
 
 export const root = import.meta.dir
 
@@ -20,10 +20,13 @@ export const skipped = new Map(
     .map((line) => [line.slice(0, line.indexOf("#")).trim(), line.slice(line.indexOf("#") + 1).trim()]),
 )
 
+const sources = ((await Bun.file(path.join(root, "manifest.json")).json()) as { sources: Array<string> }).sources
+
 export type Outcome = { readonly status: "pass" } | { readonly status: "fail"; readonly reason: string }
 
 type Frontmatter = {
   flags?: Array<string>
+  includes?: Array<string>
   negative?: { phase: "parse" | "resolution" | "runtime"; type: string }
 }
 
@@ -31,6 +34,7 @@ const setup: Setup<never> = { limits: { timeoutMs: 5000, maxOutputBytes: undefin
 
 // One line, on the line of the "use strict" directive, so the test's own line numbers stay as they are.
 const prelude = [
+  'function isPrimitive(value) { return !value || (typeof value !== "object" && typeof value !== "function") }',
   "function assert(mustBeTrue, message) { $assert(mustBeTrue, message) }",
   "assert.sameValue = $assert.sameValue; assert.notSameValue = $assert.notSameValue;",
   "assert.compareArray = $assert.compareArray;",
@@ -47,6 +51,12 @@ export const run = async (file: string): Promise<Outcome> => {
   // Sloppy-only tests are never vendored, so every file runs as the strict half of test262's two-mode run.
   // A host drains the job queue after an async test's script ends; the program end interrupts un-awaited
   // work instead, so drain explicitly.
+  // The trailing `void 0` keeps the script's completion value (a typed array, say) from becoming the result.
+  // Harness files the host does not provide run as source first; they shift the test's line numbers.
+  let included = ""
+  for (const include of meta.includes ?? []) {
+    if (sources.includes(include)) included += `${await Bun.file(path.join(root, "harness", include)).text()}\n`
+  }
   const drain = meta.flags?.includes("async") ? "\nfor (let i = 0; i < 100; i++) await null" : ""
   const result = await finishExecution(
     startProgram<never>(
@@ -57,7 +67,7 @@ export const run = async (file: string): Promise<Outcome> => {
             done ??= { error }
           }),
       },
-      `"use strict"; ${prelude}\n${source}${drain}`,
+      `"use strict"; ${prelude}\n${included}${source}${drain}\nvoid 0`,
     ).run(),
   )
   if (meta.negative !== undefined) {
@@ -87,11 +97,19 @@ const harness = <R>(ctx: Interpreter<R>, onDone: (error: Value) => void): Readon
   }
   const prefix = (message: unknown) => (message === undefined ? "" : `${String(message)} `)
   const expectedName = (ctor: unknown) => (ctor instanceof Callable ? String(get(ctor, "name")) : show(ctor))
-  const compare = (a: unknown, b: unknown) =>
-    a instanceof Arr &&
-    b instanceof Arr &&
-    a.items.length === b.items.length &&
-    a.items.every((value, i) => Object.is(value, b.items[i]))
+  // compareArray.js takes any array-like; typed arrays are the ones tests pass.
+  const items = (value: unknown) =>
+    value instanceof Arr ? value.items : value instanceof TypedArrayObj ? Array.from(value.array) : undefined
+  const compare = (a: unknown, b: unknown) => {
+    const left = items(a)
+    const right = items(b)
+    return (
+      left !== undefined &&
+      right !== undefined &&
+      left.length === right.length &&
+      left.every((value, i) => Object.is(value, right[i]))
+    )
+  }
   const test262Error = constructor(builtins, test262Prototype, {
     name: "Test262Error",
     call: (_, args) => test262(args),
@@ -174,6 +192,7 @@ const show = (value: unknown): string => {
   if (typeof value === "string") return JSON.stringify(value)
   if (Object.is(value, -0)) return "-0"
   if (value instanceof Arr) return `[${value.items.map(show).join(", ")}]`
+  if (value instanceof TypedArrayObj) return `${value.tag} [${Array.from(value.array, show).join(", ")}]`
   if (value instanceof Fn) return "program function"
   if (value instanceof Callable) return String(get(value, "name"))
   if (!(value instanceof Obj)) return String(value)

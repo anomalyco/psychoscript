@@ -10,7 +10,11 @@ import {
   hidden,
   isRuntimeReference,
   Arr,
-  Bytes,
+  ArrayBufferObj,
+  DataViewObj,
+  typedArray,
+  TypedArrayObj,
+  typedArrayTypes,
   DateObj,
   ErrorObj,
   HostNamespace,
@@ -47,6 +51,12 @@ export const structuredCloneGlobal = <R>(ctx: Interpreter<R>) =>
     if (args.length === 0) throw typeError("structuredClone requires 1 argument")
     const builtins = ctx.builtins
     const memo = new Map<Obj, Obj>()
+    const memories = new Map<ArrayBuffer, ArrayBuffer>()
+    const memory = (data: ArrayBuffer) => {
+      let copy = memories.get(data)
+      if (copy === undefined) memories.set(data, (copy = data.slice(0)))
+      return copy
+    }
     const clone = (value: Value): Value => {
       if (typeof value === "symbol" || value instanceof HostNamespace) {
         throw typeError(`DataCloneError: ${describeValue(value)} could not be cloned.`)
@@ -72,7 +82,23 @@ export const structuredCloneGlobal = <R>(ctx: Interpreter<R>) =>
       if (value instanceof RegExpObj) {
         return remember(new RegExpObj(builtins.RegExp, value.source, value.flags))
       }
-      if (value instanceof Bytes) return remember(new Bytes(builtins.Uint8Array, new Uint8Array(value.bytes)))
+      // Views keep sharing memory in the copy: each buffer is copied once.
+      if (value instanceof ArrayBufferObj) return remember(new ArrayBufferObj(builtins.ArrayBuffer, memory(value.data)))
+      if (value instanceof TypedArrayObj) {
+        const array = value.array
+        const copy = new typedArrayTypes[value.tag](memory(value.memory), array.byteOffset, array.length)
+        return remember(typedArray(builtins[value.tag], copy, clone(value.bufferObj(builtins)) as ArrayBufferObj))
+      }
+      if (value instanceof DataViewObj) {
+        const buffer = clone(value.buffer) as ArrayBufferObj
+        return remember(
+          new DataViewObj(
+            builtins.DataView,
+            buffer,
+            new DataView(buffer.data, value.view.byteOffset, value.view.byteLength),
+          ),
+        )
+      }
       if (value instanceof ErrorObj) {
         const name = get(value, "name")
         const message = get(value, "message")
@@ -98,6 +124,7 @@ export const structuredCloneGlobal = <R>(ctx: Interpreter<R>) =>
     }
     return withReads(() => {
       memo.clear()
+      memories.clear()
       return clone(args[0])
     })
   })
@@ -110,10 +137,16 @@ export const cryptoGlobal = <R>(ctx: Interpreter<R>) => {
       "getRandomValues",
       1,
       (_, args) => {
-        if (!(args[0] instanceof Bytes)) {
-          throw typeError(`crypto.getRandomValues expects a Uint8Array, received ${describeValue(args[0])}.`)
+        const target = args[0]
+        if (!(target instanceof TypedArrayObj) || target.tag.startsWith("Float")) {
+          throw typeError(`crypto.getRandomValues expects an integer typed array, received ${describeValue(target)}.`)
         }
-        crypto.getRandomValues(args[0].bytes)
+        if (target.array.byteLength > 65536) {
+          throw typeError(
+            `crypto.getRandomValues: QuotaExceededError: ${target.array.byteLength} bytes exceeds the 65536-byte limit.`,
+          )
+        }
+        crypto.getRandomValues(target.array as Uint8Array)
         return args[0]
       },
     ],
