@@ -16,6 +16,7 @@ use crate::schema::*;
 /// event step's `{ state, view, submit?, dismiss?, send? }` as `01 S`. Fails for an invalid draw (a program error in
 /// phase `draw`) or a value that isn't a step output.
 pub fn encode_output(v: &HostValue) -> Result<Vec<u8>, String> {
+    let v = &*as_json(v);
     if !matches!(v, HostValue::Object(_)) {
         return Err("a step must return an object with state and view".into());
     }
@@ -34,6 +35,19 @@ pub fn encode_post(m: &HostValue) -> Result<Vec<u8>, String> {
 }
 
 fn post(m: &HostValue) -> Result<Vec<u8>, String> {
+    // A GPU batch keeps its bytes as they are; its ops are written as JSON reads them (`gpu::put_arg`).
+    let gpu = match field(m, "type").and_then(HostValue::as_str) {
+        Some("gpu") => true,
+        Some("frame") => !matches!(field(m, "gpu"), None | Some(HostValue::Null)),
+        _ => false,
+    };
+    let json;
+    let m = if gpu {
+        m
+    } else {
+        json = as_json(m);
+        &*json
+    };
     let Some(ty) = field(m, "type").and_then(HostValue::as_str) else {
         return Err("a post is an object with a type".into());
     };
@@ -88,6 +102,33 @@ fn post(m: &HostValue) -> Result<Vec<u8>, String> {
         other => return Err(format!("unknown post type \"{other}\"")),
     }
     Ok(out)
+}
+
+/// Whether JSON reads `v` as it is: it holds no value of a kind JSON writes as something else (a Date as its ISO
+/// string, a URL as its href, a Set as an array, a Map or a typed array as an object).
+fn plain(v: &HostValue) -> bool {
+    match v {
+        HostValue::Undefined
+        | HostValue::Null
+        | HostValue::Bool(_)
+        | HostValue::Number(_)
+        | HostValue::String(_) => true,
+        HostValue::Array(items) => items.iter().flatten().all(plain),
+        HostValue::Object(fields) => fields.iter().all(|(_, v)| plain(v)),
+        _ => false,
+    }
+}
+
+/// `v` as the JSON path writes it (`HostValue::to_json`), so both read the same values.
+fn as_json(v: &HostValue) -> Cow<'_, HostValue> {
+    if plain(v) {
+        Cow::Borrowed(v)
+    } else {
+        Cow::Owned(
+            v.to_json()
+                .map_or(HostValue::Undefined, |j| HostValue::from_json(&j)),
+        )
+    }
 }
 
 /// An object's field, absent when `undefined` (as JSON leaves it out).

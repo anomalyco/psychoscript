@@ -231,6 +231,46 @@ fn live_workloads_post_what_their_json_posts() {
 }
 
 #[test]
+fn posts_read_values_of_other_kinds_as_their_json_does() {
+    // Values JSON writes as something else (a Date as its ISO string, a URL as its href, a Set as an array) decode as
+    // the JSON path gives them.
+    let source = r#"
+      __host.post({ type: "render", node: { type: "column", children: new Set([
+        { type: "text", text: new Date(0), tone: "muted" },
+        { type: "image", src: new URL("https://example.com/a.png"), alt: new Date(86400000) },
+        { type: "select", id: "s", options: new Set([{ value: "a", label: new Date(0) }]), value: new Set(["a"]) },
+      ]) } })
+      __host.post({ type: "draw", id: new URL("https://example.com/c"), commands: new Set([
+        ["text", 0, 10, new Date(0), { color: "accent" }],
+        ["image", new URL("https://example.com/i.png"), 0, 0, 4, 4],
+      ]) })
+      __host.post({ type: "submit", value: { at: new Date(0), tags: new Set(["x"]), m: new Map([[1, 2]]) } })
+      await __host.receive()
+    "#;
+    let (h, rx) = handler();
+    let run = program(source.into())
+        .start_live(
+            "null".into(),
+            h,
+            LiveOptions::default(),
+            None,
+            Some(ValueEncoder::new(Both)),
+        )
+        .unwrap();
+    let Event::Bytes(list) = next(&rx) else {
+        panic!("bytes")
+    };
+    assert_eq!(list.len(), 3);
+    for b in list {
+        let n = u32::from_le_bytes(b[..4].try_into().unwrap()) as usize;
+        let bin = decode_post(&b[4..4 + n]).unwrap();
+        let json = post_from_json(&serde_json::from_slice(&b[4 + n..]).unwrap());
+        assert_eq!(bin, json);
+    }
+    run.stop();
+}
+
+#[test]
 fn a_gpu_batch_carries_the_programs_typed_array_bytes() {
     let source = r#"
       const v = new Float32Array([1.5, -2, 0.25])
