@@ -40,7 +40,8 @@
     [
       "echo",
       "fail",
-      "git"
+      "git",
+      "upload"
     ],
     [
       "TypeError",

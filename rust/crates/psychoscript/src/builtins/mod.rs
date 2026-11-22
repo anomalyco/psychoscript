@@ -15,6 +15,7 @@ pub mod regexp;
 mod regexp_syntax;
 pub(crate) mod sets;
 pub(crate) mod string;
+pub mod typed;
 mod uri;
 pub mod web;
 
@@ -38,8 +39,22 @@ pub struct StdProtos {
     pub url: Id,
     pub params: Id,
     pub headers: Id,
+    pub array_buffer: Id,
+    /// The prototypes of the typed arrays other than Uint8Array, in `Elem::TYPED` order.
+    pub typed: [Id; 5],
     /// The lazily installed groups already set up (see `LAZY`).
     pub loaded: u8,
+}
+
+impl StdProtos {
+    /// The prototype of a typed array of `elem`, or of `ArrayBuffer`.
+    pub fn typed_proto(&self, elem: bytes::Elem) -> Id {
+        match elem {
+            bytes::Elem::U8 => self.uint8,
+            bytes::Elem::ArrayBuffer => self.array_buffer,
+            e => self.typed[e as usize - 1],
+        }
+    }
 }
 
 /// Built-in groups installed only when a program names one of their globals (or makes one of their values), so a
@@ -55,6 +70,12 @@ const LAZY: &[LazyGroup] = &[
         &[
             "Uint8Array",
             "Buffer",
+            "ArrayBuffer",
+            "Uint16Array",
+            "Uint32Array",
+            "Int32Array",
+            "Float32Array",
+            "Float64Array",
             "TextEncoder",
             "TextDecoder",
             "atob",
@@ -88,6 +109,7 @@ pub const LAZY_WEB: u8 = 32;
 
 fn setup_bytes(vm: &mut Vm) {
     bytes::setup(vm);
+    typed::setup(vm);
     buffer::setup(vm);
 }
 
@@ -149,6 +171,12 @@ pub const GLOBAL_NAMES: &[&str] = &[
     "Date",
     "Uint8Array",
     "Buffer",
+    "ArrayBuffer",
+    "Uint16Array",
+    "Uint32Array",
+    "Int32Array",
+    "Float32Array",
+    "Float64Array",
     "WeakMap",
     "WeakSet",
     "Iterator",
@@ -399,11 +427,13 @@ pub fn builtin_string(vm: &mut Vm, v: &Value) -> Result<String, Value> {
         }
         Kind::Date(t) => date::display(*t),
         Kind::RegExp(_) => regexp::inspect(vm, id),
+        Kind::Bytes(b) if b.elem == bytes::Elem::ArrayBuffer => "[object ArrayBuffer]".to_owned(),
+        Kind::Bytes(b) if b.elem != bytes::Elem::U8 => bytes::join_nums(vm, b, ","),
         Kind::Bytes(b) if b.buffer => {
-            crate::strings::external_text(String::from_utf8_lossy(&b.to_vec()).into_owned())
+            crate::strings::external_text(String::from_utf8_lossy(&b.to_vec(vm)).into_owned())
         }
         Kind::Bytes(b) => {
-            let parts: Vec<String> = b.to_vec().iter().map(u8::to_string).collect();
+            let parts: Vec<String> = b.to_vec(vm).iter().map(u8::to_string).collect();
             parts.join(",")
         }
         Kind::Error(_) => {

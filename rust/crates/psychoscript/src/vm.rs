@@ -191,6 +191,9 @@ pub struct Names {
     pub status: Atom,
     pub reason: Atom,
     pub errors: Atom,
+    pub byte_length: Atom,
+    pub byte_offset: Atom,
+    pub buffer: Atom,
 }
 
 #[derive(Default)]
@@ -335,6 +338,10 @@ pub struct Vm {
     pub(crate) heap_meter: Option<Box<crate::heap::HeapMeter>>,
     /// With a heap limit, the built-ins a lazy group made after the run started, which count as the runtime's own.
     pub(crate) lazy_builtins: Vec<Id>,
+    /// The handles on typed array buffers among the arguments being crossed, one per buffer: a synchronous call lends
+    /// them their bytes for its duration, any other call gets copies (see `call_host`). While a call's result crosses
+    /// back, the ones it lent, so a handle it returns is the same buffer again. Last, away from the hot fields.
+    pub(crate) lends: Vec<(Id, crate::host_function::SharedBytes)>,
 }
 
 impl Vm {
@@ -360,6 +367,9 @@ impl Vm {
             status: atoms.intern_static("status"),
             reason: atoms.intern_static("reason"),
             errors: atoms.intern_static("errors"),
+            byte_length: atoms.intern_static("byteLength"),
+            byte_offset: atoms.intern_static("byteOffset"),
+            buffer: atoms.intern_static("buffer"),
         };
         let char_strs = (0u8..128)
             .map(|c| atoms.alloc((c as char).to_string()))
@@ -434,6 +444,7 @@ impl Vm {
             gc: crate::collector::Gc::new(),
             heap_meter: None,
             lazy_builtins: Vec::new(),
+            lends: Vec::new(),
         }
     }
 
@@ -3232,6 +3243,16 @@ impl Vm {
                     Op::GetElem => {
                         let k = self.pop();
                         let o = self.pop();
+                        // A typed array's element, read in place without the general path's bookkeeping.
+                        if let (Value::Obj(id), Value::Num(n)) = (o, k)
+                            && let Kind::Bytes(b) = &self.heap[id as usize].kind
+                            && b.elem != crate::builtins::bytes::Elem::ArrayBuffer
+                            && n as usize as f64 == n
+                        {
+                            let v = b.num(self, n as usize).map_or(Value::Undef, Value::Num);
+                            self.push(v);
+                            continue;
+                        }
                         if matches!(k, Value::Obj(_)) && self.operand_calls(&k) {
                             conv_op!(code::GET_ELEM, o, k, Value::Undef, 0, 0);
                         }
@@ -3249,6 +3270,17 @@ impl Vm {
                         let v = self.pop();
                         let k = self.pop();
                         let o = self.pop();
+                        // A number into a typed array's element, written in place.
+                        if let (Value::Obj(id), Value::Num(n), Value::Num(x)) = (o, k, v)
+                            && let Kind::Bytes(b) = &self.heap[id as usize].kind
+                            && b.elem != crate::builtins::bytes::Elem::ArrayBuffer
+                            && n as usize as f64 == n
+                        {
+                            let b = **b;
+                            b.set_num(self, n as usize, x);
+                            self.push(v);
+                            continue;
+                        }
                         if matches!(k, Value::Obj(_)) && self.operand_calls(&k) {
                             conv_op!(code::SET_ELEM, o, k, v, 0, 0);
                         }

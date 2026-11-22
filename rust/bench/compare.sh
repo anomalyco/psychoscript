@@ -21,6 +21,11 @@ trap 'rm -rf "$TMP"' EXIT
 
 SLUGS=(numeric-loop closure-recursion array-callbacks promise-fan-out tool-fan-out json-round-trip generator-iteration string-building map-set-ops)
 NAMES=("numeric loop" "closure recursion (fib 22)" "array callbacks (50k)" "promise fan-out (5k)" "tool fan-out (1k)" "JSON round-trip" "generator iteration" "string building" "Map/Set ops")
+# Typed arrays, each against plain arrays doing the same: in table (a) only.
+TYPED_SLUGS=(typed-fill plain-fill typed-matrix plain-matrix vertex-transform host-bytes host-plain)
+TYPED_NAMES=("Float32Array fill (100k x10)" "plain array fill (100k x10)" "Float32Array 4x4 multiply (10k)" "plain array 4x4 multiply (10k)" "vertex transform (1k x60)" "host bytes, Float32Array (60)" "host bytes, plain array (60)")
+A_SLUGS=("${SLUGS[@]}" "${TYPED_SLUGS[@]}")
+A_NAMES=("${NAMES[@]}" "${TYPED_NAMES[@]}")
 BENCH=target/release/psychoscript-bench
 EMBED=target/release/examples/embed
 
@@ -36,14 +41,14 @@ cargo build --release --locked -p psychoscript-bench --bin psychoscript-bench --
 
 # (a) Per-case median and min.
 echo "(a) reference bench" >&2
-bun bench/ref/bench.ts --iterations "$ITERATIONS" "${SLUGS[@]}" >"$TMP/ref-bench.txt" || echo "reference bench failed" >&2
+bun bench/ref/bench.ts --iterations "$ITERATIONS" "${A_SLUGS[@]}" >"$TMP/ref-bench.txt" || echo "reference bench failed" >&2
 ref_field() { # slug, field (median_ms or min_ms)
   grep -F "\"slug\":\"$1\"" "$TMP/ref-bench.txt" | jq -r ".$2 // empty"
 }
 TABLE_A="| Case | Reference median ms | Reference min ms | Rust median ms | Rust min ms | Median speedup |
 |---|---:|---:|---:|---:|---:|"
-for i in "${!SLUGS[@]}"; do
-  slug=${SLUGS[$i]} name=${NAMES[$i]}
+for i in "${!A_SLUGS[@]}"; do
+  slug=${A_SLUGS[$i]} name=${A_NAMES[$i]}
   echo "(a) rust $slug" >&2
   rm_med="" rm_min=""
   if [ -x "$BENCH" ] && "$BENCH" --filter "$slug" --iterations "$ITERATIONS" --json >"$TMP/rust-$slug.json" 2>/dev/null; then

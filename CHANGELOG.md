@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `ArrayBuffer`, `Uint16Array`, `Uint32Array`, `Int32Array`, `Float32Array` and `Float64Array`: views of one byte
+  buffer with JS conversions, the methods 3D programs need, and fast indexed access. They (and `ArrayBuffer`s) are
+  lent to synchronous host functions for the call, without a copy. `Uint8Array` gains `byteLength`, `byteOffset`,
+  `buffer` and the `ArrayBuffer` constructor. A typed array ignores writes to numeric keys that are not indexes.
 - `limits.maxHeapBytes`: an optional cap on what a run can still reach, measured in a fixed size model rather than
   process memory, so garbage never counts and the result is the same everywhere. A run over it stops with the new
   diagnostic kind `MemoryLimitExceeded`; a suspended run keeps its limit.

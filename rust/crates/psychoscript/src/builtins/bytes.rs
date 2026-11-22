@@ -1,7 +1,5 @@
 //! Uint8Array, TextEncoder, TextDecoder, atob and btoa.
 
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-
 use super::{arg, describe_value, fuel, incompatible};
 use crate::native::{FOR_OF_SLOTS, Flow, ForOf, Frame, Input, Step};
 use crate::object::*;
@@ -9,60 +7,258 @@ use crate::ops::{MAX_ARRAY_LEN, MAX_STRING_LEN};
 use crate::value::{Id, Slot, Value};
 use crate::vm::{Res, Vm};
 
-/// A Uint8Array: a view of `len` bytes at `start` in a buffer that subarrays share.
+/// What a typed array holds, or `Buffer` for an `ArrayBuffer`, which has no elements of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Elem {
+    U8,
+    U16,
+    U32,
+    I32,
+    F32,
+    F64,
+    ArrayBuffer,
+}
+
+impl Elem {
+    /// The typed arrays, in the order their globals are set up.
+    pub const TYPED: [Elem; 6] = [
+        Elem::U8,
+        Elem::U16,
+        Elem::U32,
+        Elem::I32,
+        Elem::F32,
+        Elem::F64,
+    ];
+
+    pub fn size(self) -> usize {
+        match self {
+            Elem::U8 | Elem::ArrayBuffer => 1,
+            Elem::U16 => 2,
+            Elem::U32 | Elem::I32 | Elem::F32 => 4,
+            Elem::F64 => 8,
+        }
+    }
+
+    /// The constructor's name.
+    pub fn name(self) -> &'static str {
+        match self {
+            Elem::U8 => "Uint8Array",
+            Elem::U16 => "Uint16Array",
+            Elem::U32 => "Uint32Array",
+            Elem::I32 => "Int32Array",
+            Elem::F32 => "Float32Array",
+            Elem::F64 => "Float64Array",
+            Elem::ArrayBuffer => "ArrayBuffer",
+        }
+    }
+
+    pub fn code(self) -> u8 {
+        self as u8
+    }
+
+    pub fn from_code(c: u64) -> Option<Elem> {
+        [
+            Elem::U8,
+            Elem::U16,
+            Elem::U32,
+            Elem::I32,
+            Elem::F32,
+            Elem::F64,
+            Elem::ArrayBuffer,
+        ]
+        .get(c as usize)
+        .copied()
+    }
+
+    /// The element little-endian at the start of `b`.
+    #[inline]
+    pub fn read(self, b: &[u8]) -> f64 {
+        match self {
+            Elem::U8 | Elem::ArrayBuffer => b[0] as f64,
+            Elem::U16 => u16::from_le_bytes([b[0], b[1]]) as f64,
+            Elem::U32 => u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f64,
+            Elem::I32 => i32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f64,
+            Elem::F32 => f32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f64,
+            Elem::F64 => f64::from_le_bytes(b[..8].try_into().unwrap_or([0; 8])),
+        }
+    }
+
+    /// Writes `n` little-endian at the start of `out`, converted as a JS typed array does: float32 rounding, integer
+    /// wrapping. A NaN is the canonical quiet NaN.
+    #[inline]
+    pub fn write(self, n: f64, out: &mut [u8]) {
+        match self {
+            Elem::U8 | Elem::ArrayBuffer => out[0] = to_u8(n),
+            Elem::U16 => out[..2].copy_from_slice(&(to_u32(n) as u16).to_le_bytes()),
+            Elem::U32 => out[..4].copy_from_slice(&to_u32(n).to_le_bytes()),
+            Elem::I32 => out[..4].copy_from_slice(&(to_u32(n) as i32).to_le_bytes()),
+            Elem::F32 => {
+                let f = if n.is_nan() { f32::NAN } else { n as f32 };
+                out[..4].copy_from_slice(&f.to_le_bytes())
+            }
+            Elem::F64 => {
+                let f = if n.is_nan() { f64::NAN } else { n };
+                out[..8].copy_from_slice(&f.to_le_bytes())
+            }
+        }
+    }
+
+    /// `values` as this kind's bytes.
+    pub fn encode(self, values: &[f64]) -> Vec<u8> {
+        let size = self.size();
+        let mut out = vec![0; values.len() * size];
+        for (i, v) in values.iter().enumerate() {
+            self.write(*v, &mut out[i * size..]);
+        }
+        out
+    }
+}
+
+/// ToUint32: modulo 2^32, with NaN and infinities as 0. ToUint16 and ToInt32 are its low bits.
+pub fn to_u32(n: f64) -> u32 {
+    if !n.is_finite() {
+        return 0;
+    }
+    n.trunc().rem_euclid(4294967296.0) as u32
+}
+
+/// A typed array: a view of `len` elements at byte `start` of a storage object, a `Kind::Storage` heap object that
+/// holds the buffer's bytes and that its views and its `ArrayBuffer` reference by id. An `ArrayBuffer` (`elem`
+/// `ArrayBuffer`) is the whole buffer, `len` bytes from 0. A run's objects are its own, so the bytes need no lock.
+#[derive(Clone, Copy)]
 pub struct Bytes {
-    pub buf: Arc<Mutex<Vec<u8>>>,
+    pub store: Id,
     pub start: usize,
     pub len: usize,
     /// A Node Buffer: text conversions default to UTF-8.
     pub buffer: bool,
+    pub elem: Elem,
+}
+
+/// The bytes of storage object `store`; none if it is not one.
+#[inline(always)]
+pub fn storage(vm: &Vm, store: Id) -> &[u8] {
+    match &vm.heap[store as usize].kind {
+        Kind::Storage(data) => data,
+        _ => &[],
+    }
+}
+
+/// The bytes of storage object `store`, to write; none if it is not one. A write to bytes needs no collector
+/// barrier, as bytes hold no references: this reads the heap past it.
+#[inline(always)]
+pub fn storage_mut(vm: &mut Vm, store: Id) -> &mut [u8] {
+    match vm.heap.bytes_of(store) {
+        Some(data) => data.as_mut_slice(),
+        None => &mut [],
+    }
+}
+
+/// A new storage object holding `data`.
+pub fn new_storage(vm: &mut Vm, data: Vec<u8>) -> Id {
+    if let Some(m) = vm.heap_meter.as_deref_mut() {
+        m.debt += data.len() as u64;
+    }
+    vm.alloc(Obj::new(None, Kind::Storage(data)))
 }
 
 impl Bytes {
-    pub fn new(data: Vec<u8>, buffer: bool) -> Bytes {
-        let len = data.len();
+    /// A typed array (or an `ArrayBuffer`) of `elem` over all of storage object `store`, which holds `bytes` bytes.
+    pub fn whole(store: Id, bytes: usize, elem: Elem, buffer: bool) -> Bytes {
         Bytes {
-            buf: Arc::new(Mutex::new(data)),
+            store,
             start: 0,
-            len,
+            len: bytes / elem.size(),
             buffer,
+            elem,
         }
     }
 
-    /// The shared buffer. Only the run that owns it touches it, so the lock is never contended.
-    pub fn bytes(&self) -> MutexGuard<'_, Vec<u8>> {
-        self.buf.lock().unwrap_or_else(PoisonError::into_inner)
+    /// The view's length in bytes.
+    pub fn byte_len(&self) -> usize {
+        self.len * self.elem.size()
     }
 
-    pub fn to_vec(&self) -> Vec<u8> {
-        let b = self.bytes();
-        b[self.start..self.start + self.len].to_vec()
+    /// The view's bytes.
+    #[inline(always)]
+    pub fn data<'v>(&self, vm: &'v Vm) -> &'v [u8] {
+        storage(vm, self.store)
+            .get(self.start..self.start + self.byte_len())
+            .unwrap_or(&[])
     }
 
-    pub fn get(&self, i: usize) -> Option<u8> {
-        if i < self.len {
-            self.bytes().get(self.start + i).copied()
-        } else {
-            None
-        }
+    /// The view's bytes, to write.
+    #[inline(always)]
+    pub fn data_mut<'v>(&self, vm: &'v mut Vm) -> &'v mut [u8] {
+        let (start, end) = (self.start, self.start + self.byte_len());
+        storage_mut(vm, self.store)
+            .get_mut(start..end)
+            .unwrap_or(&mut [])
     }
 
-    pub fn put(&self, i: usize, v: u8) {
-        if i < self.len
-            && let Some(slot) = self.bytes().get_mut(self.start + i)
-        {
+    /// The view's bytes, copied.
+    pub fn to_vec(self, vm: &Vm) -> Vec<u8> {
+        self.data(vm).to_vec()
+    }
+
+    /// The byte at `i` of a Uint8Array.
+    pub fn get(&self, vm: &Vm, i: usize) -> Option<u8> {
+        self.data(vm).get(i).copied()
+    }
+
+    /// Writes the byte at `i` of a Uint8Array.
+    pub fn put(&self, vm: &mut Vm, i: usize, v: u8) {
+        if let Some(slot) = self.data_mut(vm).get_mut(i) {
             *slot = v;
         }
     }
 
+    /// The element at `i`, as a number. Out of line: inlined, it reshapes the dispatch loop's fast path for a few
+    /// instructions' gain.
+    #[inline(never)]
+    pub fn num(&self, vm: &Vm, i: usize) -> Option<f64> {
+        if i >= self.len {
+            return None;
+        }
+        let size = self.elem.size();
+        let at = self.start + i * size;
+        storage(vm, self.store)
+            .get(at..at + size)
+            .map(|b| self.elem.read(b))
+    }
+
+    /// Writes the element at `i`, converted; an index out of range writes nothing.
+    #[inline]
+    pub fn set_num(&self, vm: &mut Vm, i: usize, n: f64) {
+        if i >= self.len {
+            return;
+        }
+        let size = self.elem.size();
+        let at = self.start + i * size;
+        if let Some(b) = storage_mut(vm, self.store).get_mut(at..at + size) {
+            self.elem.write(n, b);
+        }
+    }
+
+    /// Every element, as numbers.
+    pub fn nums(&self, vm: &Vm) -> Vec<f64> {
+        let size = self.elem.size();
+        self.data(vm)
+            .chunks_exact(size)
+            .map(|c| self.elem.read(c))
+            .collect()
+    }
+
+    /// A view of elements `start..end` on the same bytes.
     pub fn view(&self, start: usize, end: usize, buffer: bool) -> Bytes {
         let end = end.max(start).min(self.len);
         let start = start.min(end);
         Bytes {
-            buf: self.buf.clone(),
-            start: self.start + start,
+            store: self.store,
+            start: self.start + start * self.elem.size(),
             len: end - start,
             buffer,
+            elem: self.elem,
         }
     }
 }
@@ -75,6 +271,20 @@ pub fn to_u8(n: f64) -> u8 {
     n.trunc().rem_euclid(256.0) as u8
 }
 
+/// A new typed array (or `ArrayBuffer`) of `elem` over `data`.
+pub fn new_typed(vm: &mut Vm, data: Vec<u8>, elem: Elem) -> Value {
+    super::ensure(vm, super::LAZY_BYTES);
+    let bytes = data.len();
+    let store = new_storage(vm, data);
+    let proto = vm.realm.std.typed_proto(elem);
+    let b = Bytes::whole(store, bytes, elem, false);
+    let id = vm.alloc(Obj::new(Some(proto), Kind::Bytes(Box::new(b))));
+    if elem == Elem::ArrayBuffer {
+        vm.heap[store as usize].proto = Some(id);
+    }
+    Value::Obj(id)
+}
+
 pub fn new_bytes(vm: &mut Vm, data: Vec<u8>, buffer: bool) -> Value {
     super::ensure(vm, super::LAZY_BYTES);
     let proto = if buffer {
@@ -82,10 +292,10 @@ pub fn new_bytes(vm: &mut Vm, data: Vec<u8>, buffer: bool) -> Value {
     } else {
         vm.realm.std.uint8
     };
-    Value::Obj(vm.alloc(Obj::new(
-        Some(proto),
-        Kind::Bytes(Box::new(Bytes::new(data, buffer))),
-    )))
+    let bytes = data.len();
+    let store = new_storage(vm, data);
+    let b = Bytes::whole(store, bytes, Elem::U8, buffer);
+    Value::Obj(vm.alloc(Obj::new(Some(proto), Kind::Bytes(Box::new(b)))))
 }
 
 pub fn view_value(vm: &mut Vm, b: Bytes) -> Value {
@@ -97,10 +307,22 @@ pub fn view_value(vm: &mut Vm, b: Bytes) -> Value {
     Value::Obj(vm.alloc(Obj::new(Some(proto), Kind::Bytes(Box::new(b)))))
 }
 
-pub fn as_bytes<'a>(vm: &'a Vm, v: &Value) -> Option<&'a Bytes> {
+/// A Uint8Array (or Buffer): the bytes the byte built-ins take.
+pub fn as_bytes(vm: &Vm, v: &Value) -> Option<Bytes> {
     match v {
         Value::Obj(id) => match &vm.heap[*id as usize].kind {
-            Kind::Bytes(b) => Some(b),
+            Kind::Bytes(b) if b.elem == Elem::U8 => Some(**b),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Any typed array, not an `ArrayBuffer`.
+pub fn as_typed(vm: &Vm, v: &Value) -> Option<Bytes> {
+    match v {
+        Value::Obj(id) => match &vm.heap[*id as usize].kind {
+            Kind::Bytes(b) if b.elem != Elem::ArrayBuffer => Some(**b),
             _ => None,
         },
         _ => None,
@@ -108,12 +330,13 @@ pub fn as_bytes<'a>(vm: &'a Vm, v: &Value) -> Option<&'a Bytes> {
 }
 
 pub fn bytes_of(vm: &Vm, v: &Value) -> Option<Vec<u8>> {
-    as_bytes(vm, v).map(Bytes::to_vec)
+    as_bytes(vm, v).map(|b| b.to_vec(vm))
 }
 
 fn this_bytes(vm: &mut Vm, this: &Value, name: &str) -> Result<Id, Value> {
     if let Value::Obj(id) = this
-        && let Kind::Bytes(_) = vm.heap[*id as usize].kind
+        && let Kind::Bytes(b) = &vm.heap[*id as usize].kind
+        && b.elem == Elem::U8
     {
         return Ok(*id);
     }
@@ -124,9 +347,9 @@ fn this_bytes(vm: &mut Vm, this: &Value, name: &str) -> Result<Id, Value> {
     ))
 }
 
-pub fn bytes_ref(vm: &Vm, id: Id) -> &Bytes {
+pub fn bytes_ref(vm: &Vm, id: Id) -> Bytes {
     match &vm.heap[id as usize].kind {
-        Kind::Bytes(b) => b,
+        Kind::Bytes(b) => **b,
         _ => unreachable!("checked by this_bytes"),
     }
 }
@@ -139,43 +362,122 @@ fn len_of(vm: &Vm, id: Id) -> usize {
 
 pub fn get_prop(vm: &mut Vm, id: Id, key: Atom) -> Option<Value> {
     let b = bytes_ref(vm, id);
+    if b.elem == Elem::ArrayBuffer {
+        return (key == vm.names.byte_length).then_some(Value::Num(b.len as f64));
+    }
     if let Some(i) = vm.atoms.index(key) {
-        return Some(match b.get(i as usize) {
-            Some(v) => Value::Num(v as f64),
+        return Some(match b.num(vm, i as usize) {
+            Some(v) => Value::Num(v),
             None => Value::Undef,
         });
     }
     if key == vm.names.length {
         return Some(Value::Num(b.len as f64));
     }
+    if key == vm.names.byte_length {
+        return Some(Value::Num(b.byte_len() as f64));
+    }
+    if key == vm.names.byte_offset {
+        return Some(Value::Num(b.start as f64));
+    }
+    if key == vm.names.buffer {
+        return Some(Value::Obj(array_buffer_of(vm, id)));
+    }
     None
 }
 
+/// The `ArrayBuffer` object of a typed array's buffer, made the first time it is needed.
+pub fn array_buffer_of(vm: &mut Vm, id: Id) -> Id {
+    let store = bytes_ref(vm, id).store;
+    if let Some(owner) = vm.heap[store as usize].proto {
+        return owner;
+    }
+    let len = storage(vm, store).len();
+    let proto = vm.realm.std.array_buffer;
+    let b = Bytes::whole(store, len, Elem::ArrayBuffer, false);
+    let owner = vm.alloc(Obj::new(Some(proto), Kind::Bytes(Box::new(b))));
+    vm.heap[store as usize].proto = Some(owner);
+    owner
+}
+
 pub fn set_prop(vm: &mut Vm, id: Id, key: Atom, val: Value) -> Option<Result<(), Value>> {
+    let elem = bytes_ref(vm, id).elem;
+    if elem == Elem::ArrayBuffer {
+        return (key == vm.names.byte_length).then(|| Err(vm.only_getter(&Value::Obj(id), key)));
+    }
     if let Some(i) = vm.atoms.index(key) {
         return Some(
-            super::builtin_number(vm, &val).map(|n| bytes_ref(vm, id).put(i as usize, to_u8(n))),
+            super::builtin_number(vm, &val).map(|n| bytes_ref(vm, id).set_num(vm, i as usize, n)),
         );
     }
-    if key == vm.names.length {
+    let names = &vm.names;
+    if [
+        names.length,
+        names.byte_length,
+        names.byte_offset,
+        names.buffer,
+    ]
+    .contains(&key)
+    {
         return Some(Err(vm.only_getter(&Value::Obj(id), key)));
+    }
+    // A typed array has no element at another numeric key (-1, 1.5, 2 ** 32): writing one does nothing.
+    let text = vm.atoms.text(key);
+    if text == "-0"
+        || text
+            .parse::<f64>()
+            .is_ok_and(|n| crate::value::num_to_string(n) == text)
+    {
+        return Some(Ok(()));
     }
     None
 }
 
 pub fn has_own(vm: &Vm, id: Id, key: Atom) -> bool {
-    vm.atoms
-        .index(key)
-        .is_some_and(|i| (i as usize) < len_of(vm, id))
+    let b = bytes_ref(vm, id);
+    b.elem != Elem::ArrayBuffer && vm.atoms.index(key).is_some_and(|i| (i as usize) < b.len)
 }
 
 pub fn index_len(vm: &Vm, id: Id) -> usize {
-    len_of(vm, id)
+    let b = bytes_ref(vm, id);
+    if b.elem == Elem::ArrayBuffer {
+        0
+    } else {
+        b.len
+    }
+}
+
+/// A typed array's elements as JS prints them, joined by `sep`.
+pub fn join_nums(vm: &Vm, b: &Bytes, sep: &str) -> String {
+    if b.elem == Elem::U8 {
+        return join_bytes(b.data(vm), sep);
+    }
+    let parts: Vec<String> = b
+        .nums(vm)
+        .into_iter()
+        .map(crate::value::num_to_string)
+        .collect();
+    parts.join(sep)
+}
+
+/// The message for a typed array or `ArrayBuffer` at the result boundary.
+pub fn boundary_message(elem: Elem) -> String {
+    match elem {
+        Elem::U8 => "A Uint8Array cannot cross to the host; pass text instead, e.g. `new TextDecoder().decode(bytes)` or `bytes.toBase64()`.".to_owned(),
+        Elem::ArrayBuffer => "An ArrayBuffer cannot cross to the host as data; pass a typed array of it to a host function, or its values, e.g. `Array.from(new Uint8Array(buffer))`.".to_owned(),
+        e => format!("A {} cannot cross to the host as data; pass it to a host function, or its values, e.g. `Array.from(values)`.", e.name()),
+    }
 }
 
 pub fn inspect(vm: &Vm, id: Id) -> String {
     let b = bytes_ref(vm, id);
-    let data = b.to_vec();
+    if b.elem == Elem::ArrayBuffer {
+        return format!("ArrayBuffer {{ byteLength: {} }}", b.len);
+    }
+    if b.elem != Elem::U8 {
+        return format!("{}({}) [{}]", b.elem.name(), b.len, join_nums(vm, &b, ","));
+    }
+    let data = b.to_vec(vm);
     if b.buffer {
         let shown: Vec<String> = data.iter().take(50).map(|x| format!("{x:02x}")).collect();
         let more = if data.len() > 50 {
@@ -201,17 +503,19 @@ pub fn inspect(vm: &Vm, id: Id) -> String {
 pub fn json_value(vm: &mut Vm, id: Id, boundary: bool) -> Res {
     if boundary {
         let p = vm.realm.type_error_proto;
-        return Err(vm.failure(
-            p,
-            "A Uint8Array cannot cross to the host; pass text instead, e.g. `new TextDecoder().decode(bytes)` or `bytes.toBase64()`.",
-            crate::DiagnosticKind::InvalidDataValue,
-        ));
+        let message = boundary_message(bytes_ref(vm, id).elem);
+        return Err(vm.failure(p, &message, crate::DiagnosticKind::InvalidDataValue));
     }
-    let data = bytes_ref(vm, id).to_vec();
+    let b = bytes_ref(vm, id);
+    let data = if b.elem == Elem::ArrayBuffer {
+        Vec::new()
+    } else {
+        b.nums(vm)
+    };
     let o = vm.new_object();
     for (i, b) in data.iter().enumerate() {
         let k = vm.atoms.intern(&i.to_string());
-        vm.define(o, k, Value::Num(*b as f64));
+        vm.define(o, k, Value::Num(*b));
     }
     Ok(Value::Obj(o))
 }
@@ -348,7 +652,7 @@ pub fn setup(vm: &mut Vm) {
     );
     vm.constant(ctor, "BYTES_PER_ELEMENT", Value::Num(1.0));
     vm.constant(proto, "BYTES_PER_ELEMENT", Value::Num(1.0));
-    super::accessors(vm, proto, &["length"]);
+    super::accessors(vm, proto, &["length", "byteLength", "byteOffset", "buffer"]);
     vm.methods(
         proto,
         &[
@@ -431,14 +735,14 @@ fn is_iterable(vm: &mut Vm, v: &Value) -> bool {
 /// What a built-in does with the bytes it collected: `new Uint8Array(...)` and `Uint8Array.from` make a Uint8Array of
 /// them, `set` writes them into `target` at `offset`.
 #[derive(Clone, Copy)]
-enum Sink {
-    New,
+pub(super) enum Sink {
+    New(Elem),
     Set { target: Id, offset: Value },
 }
 
 /// The values a Uint8Array, array or iterable describes, each mapped (with the original values) then converted, handed
 /// to `into`. An iterable is read and mapped by a native frame (`Collect`).
-fn collect(
+pub(super) fn collect(
     vm: &mut Vm,
     source: &Value,
     name: &str,
@@ -447,8 +751,9 @@ fn collect(
     into: Sink,
     callee: Id,
 ) -> Res {
-    if let (Some(b), None) = (bytes_of(vm, source), &mapper) {
-        return collected(vm, b, into);
+    if let (Some(b), None) = (as_typed(vm, source), &mapper) {
+        let values = b.nums(vm);
+        return collected(vm, &values, into);
     }
     // The reference's `collectBytes`, after the native's own call when a native hands on to it (see `fuel.rs`).
     if native {
@@ -470,7 +775,7 @@ fn collect(
     }
     let (f, this_arg) = mapper.unwrap_or_default();
     let (target, offset) = match into {
-        Sink::New => (Value::Undef, Value::Undef),
+        Sink::New(elem) => (Value::Undef, Value::Num(elem.code() as f64)),
         Sink::Set { target, offset } => (Value::Obj(target), offset),
     };
     let values = vm.new_array(Vec::new());
@@ -498,33 +803,42 @@ fn steps_natively(vm: &Vm, v: &Value) -> bool {
     }
 }
 
-/// The end of the reference's `collectBytes`: each collected value converted to a byte.
+/// The end of the reference's `collectBytes`: each collected value converted to a number.
 fn convert(vm: &mut Vm, values: &[Value], into: Sink) -> Res {
     fuel::native(vm);
     vm.bytecode_builtin();
     let mut data = Vec::with_capacity(values.len());
     for v in values {
-        data.push(to_u8(super::builtin_number(vm, v)?));
+        data.push(super::builtin_number(vm, v)?);
     }
-    collected(vm, data, into)
+    collected(vm, &data, into)
 }
 
-/// Hands collected bytes to what the built-in does with them.
-fn collected(vm: &mut Vm, data: Vec<u8>, into: Sink) -> Res {
-    let Sink::Set { target, offset } = into else {
-        return Ok(new_bytes(vm, data, false));
+/// Hands collected values to what the built-in does with them, converted to the typed array's elements.
+fn collected(vm: &mut Vm, data: &[f64], into: Sink) -> Res {
+    let (target, offset) = match into {
+        Sink::New(elem) => return Ok(new_typed(vm, elem.encode(data), elem)),
+        Sink::Set { target, offset } => (target, offset),
     };
     let offset = match offset {
         Value::Undef => 0.0,
         v => super::builtin_integer(vm, &v)?,
     };
-    let len = len_of(vm, target);
-    if offset < 0.0 || data.len() as f64 + offset > len as f64 {
-        return Err(vm.range_error("Uint8Array.set: the source does not fit at that offset."));
-    }
     let b = bytes_ref(vm, target);
+    if offset < 0.0 || data.len() as f64 + offset > b.len as f64 {
+        let name = b.elem.name();
+        return Err(vm.range_error(&format!(
+            "{name}.set: the source does not fit at that offset."
+        )));
+    }
+    let (size, elem, start) = (
+        b.elem.size(),
+        b.elem,
+        b.start + offset as usize * b.elem.size(),
+    );
+    let bytes = super::bytes::storage_mut(vm, b.store);
     for (i, v) in data.iter().enumerate() {
-        b.put(offset as usize + i, *v);
+        elem.write(*v, &mut bytes[start + i * size..]);
     }
     Ok(Value::Undef)
 }
@@ -566,7 +880,9 @@ impl ForOf for Collect {
                 target,
                 offset: fr.get(vm, COL_OFFSET),
             },
-            _ => Sink::New,
+            _ => Sink::New(
+                Elem::from_code(fr.get(vm, COL_OFFSET).as_num() as u64).unwrap_or(Elem::U8),
+            ),
         };
         convert(vm, &values, into)
     }
@@ -619,6 +935,9 @@ fn values_of(vm: &Vm, s: Slot) -> &[Value] {
 fn uint8_ctor(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
     requires_new(vm, &this, "Uint8Array")?;
     let source = arg(args, 0);
+    if let Some(buf) = super::typed::as_array_buffer(vm, &source) {
+        return super::typed::from_buffer(vm, Elem::U8, buf, &arg(args, 1), &arg(args, 2));
+    }
     if let Value::Obj(_) = source {
         return collect(
             vm,
@@ -626,7 +945,7 @@ fn uint8_ctor(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
             "new Uint8Array(...)",
             None,
             false,
-            Sink::New,
+            Sink::New(Elem::U8),
             callee,
         );
     }
@@ -660,7 +979,7 @@ fn uint8_from(vm: &mut Vm, _this: Value, args: &[Value], callee: Id) -> Res {
         "Uint8Array.from",
         mapper.map(|f| (f, arg(args, 2))),
         true,
-        Sink::New,
+        Sink::New(Elem::U8),
         callee,
     )
 }
@@ -842,7 +1161,7 @@ fn u_at(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
     if i < 0.0 || i >= len {
         return Ok(Value::Undef);
     }
-    Ok(match bytes_ref(vm, id).get(i as usize) {
+    Ok(match bytes_ref(vm, id).get(vm, i as usize) {
         Some(b) => Value::Num(b as f64),
         None => Value::Undef,
     })
@@ -860,7 +1179,7 @@ fn u_slice(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
     let (s, e) = range(vm, id, args)?;
     // New bytes of the receiver's kind: a Buffer's are a Buffer.
     let b = bytes_ref(vm, id);
-    let (data, buffer) = (b.view(s, e, false).to_vec(), b.buffer);
+    let (data, buffer) = (b.view(s, e, false).to_vec(vm), b.buffer);
     Ok(new_bytes(vm, data, buffer))
 }
 
@@ -901,7 +1220,7 @@ fn u_fill(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
     let e = rel_index(vm, &arg(args, 2), len, len)?;
     let b = bytes_ref(vm, id);
     for i in s..e {
-        b.put(i, v);
+        b.put(vm, i, v);
     }
     Ok(this)
 }
@@ -909,10 +1228,10 @@ fn u_fill(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
 fn u_reverse(vm: &mut Vm, this: Value, _args: &[Value], _: Id) -> Res {
     let id = this_bytes(vm, &this, "reverse")?;
     let b = bytes_ref(vm, id);
-    let mut data = b.to_vec();
+    let mut data = b.to_vec(vm);
     data.reverse();
     for (i, v) in data.into_iter().enumerate() {
-        b.put(i, v);
+        b.put(vm, i, v);
     }
     Ok(this)
 }
@@ -921,7 +1240,7 @@ fn u_sort(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
     let id = this_bytes(vm, &this, "sort")?;
     let cmp = arg(args, 0);
     super::array::sort_comparator(vm, &cmp, "Uint8Array.sort")?;
-    let mut data = bytes_ref(vm, id).to_vec();
+    let mut data = bytes_ref(vm, id).to_vec(vm);
     if !matches!(cmp, Value::Undef) {
         let list: Vec<Value> = data.iter().map(|b| Value::Num(*b as f64)).collect();
         return super::array::sort_with(vm, callee, this, list, cmp, 0, super::array::SORT_BYTES);
@@ -929,7 +1248,7 @@ fn u_sort(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
     data.sort_unstable();
     let b = bytes_ref(vm, id);
     for (i, v) in data.into_iter().enumerate() {
-        b.put(i, v);
+        b.put(vm, i, v);
     }
     Ok(this)
 }
@@ -938,7 +1257,7 @@ fn u_sort(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
 pub(super) fn put_sorted(vm: &mut Vm, id: Id, sorted: &[Value]) {
     let b = bytes_ref(vm, id);
     for (i, v) in sorted.iter().enumerate() {
-        b.put(i, to_u8(v.as_num()));
+        b.put(vm, i, to_u8(v.as_num()));
     }
 }
 
@@ -955,7 +1274,7 @@ fn u_index_of(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
     let x = search_value(&arg(args, 0));
     let len = len_of(vm, id);
     let from = rel_index(vm, &arg(args, 1), len, 0)?;
-    let data = bytes_ref(vm, id).to_vec();
+    let data = bytes_ref(vm, id).to_vec(vm);
     Ok(Value::Num(
         (from..len)
             .find(|i| data[*i] as f64 == x)
@@ -974,7 +1293,7 @@ fn u_last_index_of(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
         let n = super::builtin_integer(vm, &args[1])?;
         if n < 0.0 { len + n } else { n.min(len - 1.0) }
     };
-    let data = bytes_ref(vm, id).to_vec();
+    let data = bytes_ref(vm, id).to_vec(vm);
     if from < 0.0 {
         return Ok(Value::Num(-1.0));
     }
@@ -992,11 +1311,11 @@ fn u_includes(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
     let x = search_value(&arg(args, 0));
     let len = len_of(vm, id);
     let from = rel_index(vm, &arg(args, 1), len, 0)?;
-    let data = bytes_ref(vm, id).to_vec();
+    let data = bytes_ref(vm, id).to_vec(vm);
     Ok(Value::Bool((from..len).any(|i| data[i] as f64 == x)))
 }
 
-fn join_bytes(data: &[u8], sep: &str) -> String {
+pub fn join_bytes(data: &[u8], sep: &str) -> String {
     let parts: Vec<String> = data.iter().map(u8::to_string).collect();
     parts.join(sep)
 }
@@ -1010,7 +1329,7 @@ fn u_join(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
             vm.text(s).to_owned()
         }
     };
-    let out = join_bytes(&bytes_ref(vm, id).to_vec(), &sep);
+    let out = join_bytes(&bytes_ref(vm, id).to_vec(vm), &sep);
     if out.len() > MAX_STRING_LEN {
         return Err(vm.range_error("Invalid string length"));
     }
@@ -1019,7 +1338,7 @@ fn u_join(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
 
 fn u_to_string(vm: &mut Vm, this: Value, _args: &[Value], _: Id) -> Res {
     let id = this_bytes(vm, &this, "toString")?;
-    let out = join_bytes(&bytes_ref(vm, id).to_vec(), ",");
+    let out = join_bytes(&bytes_ref(vm, id).to_vec(vm), ",");
     Ok(vm.string_val(out))
 }
 
@@ -1039,13 +1358,13 @@ fn u_to_base64(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
         };
         Ok((url, !omit))
     })?;
-    let out = base64_encode(&bytes_ref(vm, id).to_vec(), url, pad);
+    let out = base64_encode(&bytes_ref(vm, id).to_vec(vm), url, pad);
     Ok(vm.string_val(out))
 }
 
 fn u_to_hex(vm: &mut Vm, this: Value, _args: &[Value], _: Id) -> Res {
     let id = this_bytes(vm, &this, "toHex")?;
-    let out = hex_encode(&bytes_ref(vm, id).to_vec());
+    let out = hex_encode(&bytes_ref(vm, id).to_vec(vm));
     Ok(vm.string_val(out))
 }
 
@@ -1068,16 +1387,16 @@ fn u_entries(vm: &mut Vm, this: Value, _args: &[Value], _: Id) -> Res {
 
 /// One step of a live iterator over bytes.
 pub fn iter_step(vm: &mut Vm, target: Id, pos: usize, kind: IterKind) -> Option<Value> {
-    let b = bytes_ref(vm, target).get(pos)?;
+    let b = bytes_ref(vm, target).num(vm, pos)?;
     Some(match kind {
         IterKind::Keys => Value::Num(pos as f64),
-        IterKind::Values => Value::Num(b as f64),
-        IterKind::Entries => vm.new_array(vec![Value::Num(pos as f64), Value::Num(b as f64)]),
+        IterKind::Values => Value::Num(b),
+        IterKind::Entries => vm.new_array(vec![Value::Num(pos as f64), Value::Num(b)]),
     })
 }
 
 fn byte_at(vm: &Vm, id: Id, i: usize) -> Value {
-    match bytes_ref(vm, id).get(i) {
+    match bytes_ref(vm, id).get(vm, i) {
         Some(b) => Value::Num(b as f64),
         None => Value::Undef,
     }

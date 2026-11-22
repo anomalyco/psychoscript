@@ -21,7 +21,7 @@ mod counters;
 mod reference;
 
 /// Case files and reference names, in the reference order.
-const CASES: [(&str, &str); 9] = [
+const CASES: [(&str, &str); 16] = [
     ("numeric-loop", "numeric loop"),
     ("closure-recursion", "closure recursion (fib 22)"),
     ("array-callbacks", "array callbacks (50k)"),
@@ -31,6 +31,13 @@ const CASES: [(&str, &str); 9] = [
     ("generator-iteration", "generator iteration"),
     ("string-building", "string building"),
     ("map-set-ops", "Map/Set ops"),
+    ("typed-fill", "Float32Array fill (100k x10)"),
+    ("plain-fill", "plain array fill (100k x10)"),
+    ("typed-matrix", "Float32Array 4x4 multiply (10k)"),
+    ("plain-matrix", "plain array 4x4 multiply (10k)"),
+    ("vertex-transform", "vertex transform (1k x60)"),
+    ("host-bytes", "host bytes, Float32Array (60)"),
+    ("host-plain", "host bytes, plain array (60)"),
 ];
 
 /// The bench runtime, as the reference drivers make it: one host global, the `tools` namespace of

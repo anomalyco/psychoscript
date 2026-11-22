@@ -873,33 +873,98 @@ export class URLObj extends Wrapper {
   }
 }
 
-/** A `Uint8Array`: the host array does the byte clamping and ignores out-of-range writes, as JS does. */
-export class Bytes extends Wrapper {
-  override readonly tag = "Uint8Array"
+/** The host arrays a typed array is: they do the float32 rounding and integer wrapping, and ignore out-of-range writes. */
+export type TypedArray = Uint8Array | Uint16Array | Uint32Array | Int32Array | Float32Array | Float64Array
+
+/** The typed arrays' constructors, by name, in the order their globals are made. */
+export const typedArrays = {
+  Uint8Array,
+  Uint16Array,
+  Uint32Array,
+  Int32Array,
+  Float32Array,
+  Float64Array,
+} as const
+
+export type TypedArrayName = keyof typeof typedArrays
+
+/** A typed array's name: `Float32Array`. A Node Buffer is a Uint8Array. */
+export const typedArrayName = (array: TypedArray): TypedArrayName =>
+  array instanceof Uint8Array ? "Uint8Array" : (array[Symbol.toStringTag] as TypedArrayName)
+
+/**
+ * A typed array: `Uint8Array` (whose byte built-ins take only it), `Float32Array`, ... A view of a host buffer that its
+ * `ArrayBuffer` and its other views share.
+ */
+export class Bytes<A extends TypedArray = TypedArray> extends Wrapper {
+  override readonly tag: string
   constructor(
     proto: Obj,
-    readonly bytes: Uint8Array,
+    readonly bytes: A,
   ) {
     super(proto)
+    this.tag = typedArrayName(bytes)
   }
   override toString() {
     return this.bytes.join(",")
   }
   override inspect() {
-    return `Uint8Array(${this.bytes.length}) [${this.bytes.join(",")}]`
+    return `${this.tag}(${this.bytes.length}) [${this.bytes.join(",")}]`
   }
   override toHost() {
-    return new Uint8Array(this.bytes)
+    // A Uint8Array crosses as a copy; the other typed arrays as views of the same bytes, which the host reads in place.
+    return this.bytes instanceof Uint8Array ? new Uint8Array(this.bytes) : this.bytes
   }
   override iterator(builtins: Builtins) {
     if (!builtins.Array.guard!.protector.intact) return undefined
     return new Position(this, "values", builtins.Array)
   }
   /** New bytes of this one's kind, as `slice`, `subarray`, `map` and `filter` make them (a Buffer's are a Buffer). */
-  derive(builtins: Builtins, bytes: Uint8Array): Bytes {
-    return new Bytes(builtins.Uint8Array, bytes)
+  derive(builtins: Builtins, bytes: TypedArray): Bytes {
+    return new Bytes(builtins[typedArrayName(bytes)], bytes)
+  }
+  /** Whether it is a Uint8Array (or Buffer), which the byte built-ins take. */
+  isUint8(): this is Bytes<Uint8Array> {
+    return this.bytes instanceof Uint8Array
   }
 }
+
+// The ArrayBuffer object of each host buffer a program reached, so every view of one gives the same one.
+const arrayBuffers = new WeakMap<ArrayBuffer, ArrayBufferObj>()
+
+/** An `ArrayBuffer`: the host buffer that typed arrays view. */
+export class ArrayBufferObj extends Wrapper {
+  override readonly tag = "ArrayBuffer"
+  constructor(
+    proto: Obj,
+    readonly buffer: ArrayBuffer,
+  ) {
+    super(proto)
+    arrayBuffers.set(buffer, this)
+  }
+  override toString() {
+    return "[object ArrayBuffer]"
+  }
+  override inspect() {
+    return `ArrayBuffer { byteLength: ${this.buffer.byteLength} }`
+  }
+  override toHost() {
+    return this.buffer
+  }
+}
+
+/** The `ArrayBuffer` of a typed array's buffer, made the first time it is needed. */
+export const arrayBufferOf = (builtins: Builtins, bytes: TypedArray): ArrayBufferObj =>
+  arrayBuffers.get(bytes.buffer as ArrayBuffer) ?? new ArrayBufferObj(builtins.ArrayBuffer, bytes.buffer as ArrayBuffer)
+
+/** Records a restored `ArrayBuffer` as its host buffer's. */
+export const rememberArrayBuffer = (value: ArrayBufferObj): void => {
+  arrayBuffers.set(value.buffer, value)
+}
+
+/** The `ArrayBuffer` already made for a host buffer, if there is one. */
+export const knownArrayBuffer = (buffer: ArrayBufferLike): ArrayBufferObj | undefined =>
+  arrayBuffers.get(buffer as ArrayBuffer)
 
 /**
  * A path into a host namespace (see `Host.namespace`): the global it is under, `root`, and the property names read
@@ -947,12 +1012,15 @@ export const parseArrayIndex = (key: string | number): number | undefined => {
 
 const canonical = (key: PropertyKey): string | symbol => (typeof key === "symbol" ? key : String(key))
 
+/** Whether a key is a number's own text, as `-1`, `1.5` and `-0` are: a typed array's elements are only its indexes. */
+const isCanonicalNumeric = (key: string): boolean => key === "-0" || String(Number(key)) === key
+
 /** Objects whose integer keys are live elements rather than own property slots. */
 type Indexed = Arr | Bytes
 
 const isIndexed = (target: Obj): target is Indexed => target instanceof Arr || target instanceof Bytes
 
-const elements = (target: Indexed): Array<Value> | Uint8Array => (target instanceof Arr ? target.items : target.bytes)
+const elements = (target: Indexed): Array<Value> | TypedArray => (target instanceof Arr ? target.items : target.bytes)
 
 const index = (target: Obj, key: string | number | symbol): number | undefined =>
   isIndexed(target) && typeof key !== "symbol" ? parseArrayIndex(key) : undefined
@@ -1101,6 +1169,14 @@ export const hasPrototype = (value: Value, proto: Obj): boolean => {
 
 const writeElement = (target: Indexed, name: string | number | symbol, value: Value): boolean | undefined => {
   const at = index(target, name)
+  // A typed array has no element at another numeric key (-1, 1.5, 2 ** 32): writing one does nothing.
+  if (
+    at === undefined &&
+    target instanceof Bytes &&
+    (typeof name === "number" || (typeof name === "string" && isCanonicalNumeric(name)))
+  ) {
+    return true
+  }
   if (at !== undefined) {
     if (target instanceof Bytes) {
       target.bytes[at] = typeof value === "number" ? value : Number(value)

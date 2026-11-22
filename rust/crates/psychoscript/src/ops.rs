@@ -337,15 +337,25 @@ impl Vm {
     pub fn get_elem(&mut self, v: &Value, k: &Value) -> Res {
         match (v, k) {
             (Value::Obj(id), Value::Num(n)) => {
-                if let Kind::Array(items) = &self.heap[*id as usize].kind {
-                    let i = *n as usize;
-                    // 2^32 - 1 and above are not array indexes but plain keys.
-                    if i as f64 == *n && i < u32::MAX as usize {
-                        return Ok(match items.get(i) {
-                            Some(v) if !matches!(v, Value::Uninit) => *v,
-                            _ => self.missing_elem(*id, i),
-                        });
+                match &self.heap[*id as usize].kind {
+                    Kind::Array(items) => {
+                        let i = *n as usize;
+                        // 2^32 - 1 and above are not array indexes but plain keys.
+                        if i as f64 == *n && i < u32::MAX as usize {
+                            return Ok(match items.get(i) {
+                                Some(v) if !matches!(v, Value::Uninit) => *v,
+                                _ => self.missing_elem(*id, i),
+                            });
+                        }
                     }
+                    // A typed array's element, read in place; out of range is undefined.
+                    Kind::Bytes(b) if b.elem != crate::builtins::bytes::Elem::ArrayBuffer => {
+                        let i = *n as usize;
+                        if i as f64 == *n {
+                            return Ok(b.num(self, i).map_or(Value::Undef, Value::Num));
+                        }
+                    }
+                    _ => {}
                 }
                 if self.is_namespace(*id) {
                     return Err(self.namespace_key_error(*id));
@@ -842,6 +852,18 @@ impl Vm {
             && self.is_namespace(*id)
         {
             return Err(self.namespace_key_error(*id));
+        }
+        if let (Value::Obj(id), Value::Num(n), Value::Num(x)) = (v, k, &val)
+            && let Kind::Bytes(b) = &self.heap[*id as usize].kind
+            && b.elem != crate::builtins::bytes::Elem::ArrayBuffer
+        {
+            let b = **b;
+            // A typed array's element, written in place; out of range writes nothing.
+            let i = *n as usize;
+            if i as f64 == *n {
+                b.set_num(self, i, *x);
+                return Ok(());
+            }
         }
         if let (Value::Obj(id), Value::Num(n)) = (v, k) {
             let o = &mut self.heap[*id as usize];

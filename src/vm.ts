@@ -22,6 +22,7 @@ import {
 import {
   Arguments,
   Arr,
+  Bytes,
   BoundFn,
   Builtin,
   type Callable,
@@ -606,6 +607,7 @@ export class Vm {
     const hole = HOLE
     const CellCtor = Cell
     const ArrCtor = Arr
+    const BytesCtor = Bytes
     const ObjCtor = Obj
     const FnCtor = Fn
     const PositionCtor = Position
@@ -839,6 +841,13 @@ export class Vm {
               pc++
               continue
             }
+            // A typed array's element, read from its host array; out of range is undefined.
+            if (mode === 0 && typeof keyVal === "number" && keyVal >= 0 && (keyVal | 0) === keyVal && o instanceof BytesCtor) {
+              sp--
+              regs[sp - 1] = o.bytes[keyVal]
+              pc++
+              continue
+            }
             frame.pc = pc
             frame.sp = sp
             sp = this.execGetElem(frame, o, keyVal, mode, pc, sp)
@@ -891,6 +900,12 @@ export class Vm {
                 pc++
                 continue
               }
+            } else if (typeof keyVal === "number" && typeof v === "number" && keyVal >= 0 && (keyVal | 0) === keyVal && o instanceof BytesCtor) {
+              // A number into a typed array's element: its host array converts it, and ignores one out of range.
+              o.bytes[keyVal] = v
+              regs[sp - 1] = v
+              pc++
+              continue
             }
             frame.pc = pc
             frame.sp = sp

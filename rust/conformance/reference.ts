@@ -50,13 +50,21 @@ export const toolsGlobal = (ref: Reference) => {
   const status = Host.fn((_: ReadonlyArray<unknown>) => Effect.succeed({ branch: "main", dirty: true }), {
     type: "async",
   })
+  // Synchronous: the sum of the bytes of a typed array, read in place, or of a plain array's numbers as float32.
+  const upload = Host.fn(([data]: ReadonlyArray<unknown>) => {
+    const view = ArrayBuffer.isView(data) ? data : Float32Array.from(data as Array<number>)
+    let sum = 0
+    for (const byte of new Uint8Array(view.buffer, view.byteOffset, view.byteLength)) sum += byte
+    return sum % 1000003
+  })
   const functions = new Map<string, unknown>([
     ["echo", echo],
     ["fail", fail],
     ["git.status", status],
+    ["upload", upload],
   ])
   const namespaces = new Map([
-    ["", ["echo", "fail", "git"]],
+    ["", ["echo", "fail", "git", "upload"]],
     ["git", ["status"]],
   ])
   return Host.namespace({
@@ -102,6 +110,9 @@ export const describe = (v: unknown): unknown => {
   if (Buffer.isBuffer(v)) return { buffer: [...v] }
   if (v instanceof Uint8Array) return { bytes: [...v] }
   if (v instanceof ArrayBuffer) return { arrayBuffer: [...new Uint8Array(v)] }
+  if (ArrayBuffer.isView(v) && !(v instanceof DataView)) {
+    return { typed: [v.constructor.name, [...(v as unknown as Iterable<number>)]] }
+  }
   if (v instanceof Map) return { map: [...v].map(([k, x]) => [describe(k), describe(x)]) }
   if (v instanceof Set) return { set: [...v].map(describe) }
   if (Array.isArray(v))

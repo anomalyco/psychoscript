@@ -150,6 +150,118 @@ impl fmt::Debug for HostString {
     }
 }
 
+/// The kind of a [`TypedArray`]: one of the typed arrays, or an `ArrayBuffer`.
+pub use crate::builtins::bytes::Elem as TypedKind;
+
+/// The bytes behind a [`TypedArray`], which a call shares among the views of one buffer.
+#[derive(Clone, Default)]
+pub(crate) struct SharedBytes(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl SharedBytes {
+    pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, Vec<u8>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(crate) fn same(&self, other: &SharedBytes) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// An `ArrayBuffer` or typed array on the host's side.
+///
+/// A host function gets one for each `ArrayBuffer`, Uint16Array, Uint32Array, Int32Array, Float32Array and
+/// Float64Array among its arguments (a Uint8Array still arrives as [`HostValue::Bytes`], a copy). A synchronous host
+/// function borrows the program's own bytes for the duration of the call, with no copy: read them with
+/// [`TypedArray::with_bytes`], for instance to upload them to a GPU, or write them with [`TypedArray::with_bytes_mut`].
+/// After the call returns the handle is empty: the bytes are the program's again. An async or durable host function
+/// gets a copy, as the program runs on while it works.
+///
+/// A host function may return one: bytes it owns ([`TypedArray::new`] takes the `Vec` without copying), which become
+/// the program's, or one it got during the same call, which is the program's buffer again. Elements are
+/// little-endian, as on every platform JS runs on.
+#[derive(Clone)]
+pub struct TypedArray {
+    pub(crate) kind: TypedKind,
+    pub(crate) buf: SharedBytes,
+    /// Where the view starts, in bytes, and how many elements it has.
+    pub(crate) start: usize,
+    pub(crate) len: usize,
+}
+
+impl TypedArray {
+    /// A typed array of `kind` over `bytes`, which it takes without copying; `None` when their length is not a whole
+    /// number of elements.
+    pub fn new(kind: TypedKind, bytes: Vec<u8>) -> Option<TypedArray> {
+        if !bytes.len().is_multiple_of(kind.size()) {
+            return None;
+        }
+        let len = bytes.len() / kind.size();
+        Some(TypedArray {
+            kind,
+            buf: SharedBytes(std::sync::Arc::new(std::sync::Mutex::new(bytes))),
+            start: 0,
+            len,
+        })
+    }
+
+    /// A Float32Array of `values`.
+    pub fn from_f32(values: &[f32]) -> TypedArray {
+        let bytes = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        TypedArray::new(TypedKind::F32, bytes).unwrap_or_else(|| unreachable!())
+    }
+
+    pub fn kind(&self) -> TypedKind {
+        self.kind
+    }
+
+    /// Its length in elements; in bytes for an `ArrayBuffer`.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn byte_len(&self) -> usize {
+        self.len * self.kind.size()
+    }
+
+    /// Calls `f` with the view's bytes, borrowed in place: during the call that got it, or of bytes the host made.
+    /// Empty otherwise.
+    pub fn with_bytes<R>(&self, f: impl FnOnce(&[u8]) -> R) -> R {
+        let b = self.buf.lock();
+        f(b.get(self.start..self.start + self.byte_len())
+            .unwrap_or(&[]))
+    }
+
+    /// Calls `f` with the view's bytes, borrowed in place for writing, as [`TypedArray::with_bytes`] does.
+    pub fn with_bytes_mut<R>(&self, f: impl FnOnce(&mut [u8]) -> R) -> R {
+        let mut b = self.buf.lock();
+        let end = self.start + self.byte_len();
+        f(b.get_mut(self.start..end).unwrap_or(&mut []))
+    }
+
+    /// The view's bytes, copied.
+    pub fn to_vec(&self) -> Vec<u8> {
+        self.with_bytes(<[u8]>::to_vec)
+    }
+
+    /// The elements as numbers, copied; an `ArrayBuffer`'s bytes.
+    pub fn values(&self) -> Vec<f64> {
+        let size = self.kind.size();
+        self.with_bytes(|b| b.chunks_exact(size).map(|c| self.kind.read(c)).collect())
+    }
+}
+
+impl std::fmt::Debug for TypedArray {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}{:?}", self.kind.name(), self.values())
+    }
+}
+
 /// A value on the host's side of the boundary.
 #[derive(Clone, Debug, Default)]
 pub enum HostValue {
@@ -188,6 +300,9 @@ pub enum HostValue {
     Bytes(Vec<u8>),
     /// A Node `Buffer`.
     Buffer(Vec<u8>),
+    /// An `ArrayBuffer` or a typed array other than Uint8Array, sharing its bytes with the program: see
+    /// [`TypedArray`]. A host may return one of any kind, Uint8Array too.
+    TypedArray(TypedArray),
     /// A live HTTP response whose body the host streams, the reference's `StreamingResponse`.
     Response(crate::streaming::StreamingResponse),
     /// What a host function throws (`Err(HostValue::Interrupt)`) to interrupt the whole run, as the reference's
@@ -306,6 +421,16 @@ impl HostValue {
                     .collect(),
             ),
             HostValue::Buffer(data) => serde_json::json!({ "type": "Buffer", "data": data }),
+            HostValue::TypedArray(t) => match t.kind() {
+                TypedKind::ArrayBuffer => Json::Object(Default::default()),
+                _ => Json::Object(
+                    t.values()
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, v)| (i.to_string(), Json::from(v)))
+                        .collect(),
+                ),
+            },
             HostValue::Error(e) => {
                 let mut map = serde_json::Map::new();
                 map.insert(

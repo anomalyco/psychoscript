@@ -322,7 +322,6 @@ struct Enc<'v> {
     vm: &'v Vm,
     natives: &'static Natives,
     protos: FxHashMap<usize, usize>,
-    buffers: Vec<Arc<std::sync::Mutex<Vec<u8>>>>,
 }
 
 /// Why a suspend was refused: the calls that block it, or a state that can't be saved.
@@ -361,7 +360,6 @@ pub fn capture(vm: &Vm, c: &Capture) -> Result<Snapshot, Refusal> {
             .enumerate()
             .map(|(i, p)| (Arc::as_ptr(p) as usize, i))
             .collect(),
-        buffers: Vec::new(),
     };
     let state = enc.state(c).map_err(|e| Refusal::Other(e.message))?;
     let base = vm.snapshot_base;
@@ -423,7 +421,6 @@ impl Enc<'_> {
             "cells": vm.cells[base.cells.min(vm.cells.len())..].iter().map(slot).collect::<Vec<_>>(),
             "changed": changed,
             "heap": rest,
-            "buffers": self.buffers.iter().map(|b| J::from(bytes_hex(&b.lock().unwrap_or_else(std::sync::PoisonError::into_inner)))).collect::<Vec<_>>(),
             "stack": vm.stack.iter().map(slot).collect::<Vec<_>>(),
             "frames": vm.frames.iter().map(|f| self.frame(f)).collect::<R<Vec<_>>>()?,
             "handlers": vm.handlers_ref().iter().map(handler).collect::<Vec<_>>(),
@@ -439,7 +436,7 @@ impl Enc<'_> {
             "lazyBuiltins": vm.lazy_builtins,
             "std": [std.regexp, std.date, std.uint8, std.buffer, std.text_encoder, std.text_decoder,
                     std.weak_map, std.weak_set, std.iterator_helper, std.uri_error, std.url, std.params,
-                    std.headers, std.loaded],
+                    std.headers, std.loaded, std.array_buffer, std.typed],
             "host": host,
         }))
     }
@@ -612,16 +609,8 @@ impl Enc<'_> {
             }
             Kind::RegExp(r) => json!(["re", r.source, r.flags, num(r.last_index)]),
             Kind::Date(t) => json!(["d", num(*t)]),
-            Kind::Bytes(b) => {
-                let i = match self.buffers.iter().position(|x| Arc::ptr_eq(x, &b.buf)) {
-                    Some(i) => i,
-                    None => {
-                        self.buffers.push(b.buf.clone());
-                        self.buffers.len() - 1
-                    }
-                };
-                json!(["y", i, b.start, b.len, b.buffer])
-            }
+            Kind::Bytes(b) => json!(["y", b.store, b.start, b.len, b.buffer, b.elem.code()]),
+            Kind::Storage(data) => json!(["st", bytes_hex(data)]),
             Kind::TextDecoder(d) => {
                 json!(["td", d.fatal, d.ignore_bom, bytes_hex(&d.queued), d.seen])
             }
@@ -920,7 +909,6 @@ fn baseline(vm: &Vm, code: &str) -> R<Vec<J>> {
         vm: &fresh,
         natives: natives(),
         protos: FxHashMap::default(),
-        buffers: Vec::new(),
     };
     fresh.heap.iter().map(|o| enc.obj(o)).collect()
 }
@@ -1011,6 +999,7 @@ fn host_value(v: &HostValue) -> J {
         HostValue::Headers(entries) => json!(["hd", entries]),
         HostValue::Bytes(b) => json!(["u8", bytes_hex(b)]),
         HostValue::Buffer(b) => json!(["buf", bytes_hex(b)]),
+        HostValue::TypedArray(t) => json!(["ta", t.kind.code(), bytes_hex(&t.to_vec())]),
         HostValue::Response(_) => json!(["resp"]),
         HostValue::Error(e) => json!([
             "e",
@@ -1148,6 +1137,15 @@ fn host_value_from(j: &J) -> R<HostValue> {
             Some("sp") => HostValue::SearchParams(pairs(at(j, 1)?)?),
             Some("hd") => HostValue::Headers(pairs(at(j, 1)?)?),
             Some("u8") => HostValue::Bytes(hex_bytes(&string(at(j, 1)?)?)?),
+            Some("ta") => {
+                let kind = crate::TypedKind::from_code(uint(at(j, 1)?)?)
+                    .ok_or_else(|| invalid("a typed array's kind is unknown."))?;
+                let bytes = hex_bytes(&string(at(j, 2)?)?)?;
+                HostValue::TypedArray(
+                    crate::TypedArray::new(kind, bytes)
+                        .ok_or_else(|| invalid("a typed array's bytes are not whole elements."))?,
+                )
+            }
             Some("buf") => HostValue::Buffer(hex_bytes(&string(at(j, 1)?)?)?),
             // A live response has no data form; a settlement holding one is restored as `lost_path` says.
             Some("resp") => HostValue::Undefined,
@@ -1249,7 +1247,6 @@ struct Dec<'p> {
     heap_len: usize,
     bufs_len: usize,
     protos: usize,
-    buffers: Vec<Arc<std::sync::Mutex<Vec<u8>>>>,
     _p: std::marker::PhantomData<&'p ()>,
 }
 
@@ -1745,27 +1742,16 @@ impl Dec<'_> {
                 }))
             }
             "d" => Kind::Date(unnum(f(1)?)?),
-            "y" => {
-                let i = usize_(f(1)?)?;
-                let Some(buf) = self.buffers.get(i) else {
-                    return Err(invalid("a byte array's buffer is missing."));
-                };
-                let (start, len) = (usize_(f(2)?)?, usize_(f(3)?)?);
-                if start + len
-                    > buf
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .len()
-                {
-                    return Err(invalid("a byte array's view is out of range."));
-                }
-                Kind::Bytes(Box::new(crate::builtins::bytes::Bytes {
-                    buf: buf.clone(),
-                    start,
-                    len,
-                    buffer: boolean(f(4)?)?,
-                }))
-            }
+            // A view past its storage reads as empty: the element accessors check every range.
+            "y" => Kind::Bytes(Box::new(crate::builtins::bytes::Bytes {
+                store: self.id(f(1)?)?,
+                start: usize_(f(2)?)?,
+                len: usize_(f(3)?)?,
+                buffer: boolean(f(4)?)?,
+                elem: crate::builtins::bytes::Elem::from_code(uint(f(5)?)?)
+                    .ok_or_else(|| invalid("a typed array's kind is unknown."))?,
+            })),
+            "st" => Kind::Storage(hex_bytes(&string(f(1)?)?)?),
             "td" => Kind::TextDecoder(Box::new(crate::builtins::bytes::Decoder {
                 fatal: boolean(f(1)?)?,
                 ignore_bom: boolean(f(2)?)?,
@@ -1974,16 +1960,11 @@ pub fn restore(vm: &mut Vm, snapshot: &Snapshot, program_hash: &str) -> R<()> {
 
     let rest = field_list(st, "heap")?;
     let changed = field_list(st, "changed")?;
-    let mut buffers = Vec::new();
-    for b in field_list(st, "buffers")? {
-        buffers.push(Arc::new(std::sync::Mutex::new(hex_bytes(&string(b)?)?)));
-    }
     let dec = Dec {
         natives: natives(),
         heap_len: base.heap + rest.len(),
         bufs_len: vm.atoms.counts().0,
         protos: vm.protos.len(),
-        buffers,
         _p: std::marker::PhantomData,
     };
     if vm.heap.len() != base.heap {
@@ -2092,6 +2073,14 @@ pub fn restore(vm: &mut Vm, snapshot: &Snapshot, program_hash: &str) -> R<()> {
     realm.params = id(11)?;
     realm.headers = id(12)?;
     realm.loaded = id(13)? as u8;
+    realm.array_buffer = id(14)?;
+    let typed = std
+        .get(15)
+        .and_then(J::as_array)
+        .ok_or_else(|| invalid("built-in prototypes are missing."))?;
+    for (i, t) in typed.iter().enumerate().take(5) {
+        realm.typed[i] = u32_(t)?;
+    }
 
     restore_host(vm, &dec, field(st, "host")?, base)?;
     let inbox = field_list(st, "inbox")?;

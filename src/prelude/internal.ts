@@ -6,6 +6,7 @@ import { invalidData, rangeError, typeError } from "../runtime/model.js"
 import {
   Arr,
   Builtin,
+  ArrayBufferObj,
   Bytes,
   Callable,
   coerceToNumber,
@@ -416,11 +417,7 @@ export const registerVmIntrinsics = (map: Map<string, unknown>, vm: Vm): void =>
     if (typeof val === "number") return Number.isFinite(val) ? 1 : 2
     if (val === null || typeof val === "string" || typeof val === "boolean") return 1
     if (!(val instanceof Obj)) return 3
-    if (boundary && val instanceof Bytes) {
-      throw invalidData(
-        "A Uint8Array cannot cross to the host; pass text instead, e.g. `new TextDecoder().decode(bytes)` or `bytes.toBase64()`.",
-      )
-    }
+    if (boundary && (val instanceof Bytes || val instanceof ArrayBufferObj)) throw invalidData(boundaryMessage(val))
     if ((boundary && val instanceof URLSearchParamsObj) || val instanceof HeadersObj) return 3
     if ((ancestors as Arr).items.includes(val)) throw typeError("Converting circular structure to JSON.")
     if (boundary && val instanceof SetObj) return 4
@@ -574,11 +571,7 @@ export const tryFastBoundaryOrJson = (
       }
       return { ok: false }
     }
-    if (boundary && cur instanceof Bytes) {
-      throw invalidData(
-        "A Uint8Array cannot cross to the host; pass text instead, e.g. `new TextDecoder().decode(bytes)` or `bytes.toBase64()`.",
-      )
-    }
+    if (boundary && (cur instanceof Bytes || cur instanceof ArrayBufferObj)) throw invalidData(boundaryMessage(cur))
     if (boundary && cur instanceof URLSearchParamsObj) return { ok: true, json: cur.params.toString() }
     if (cur instanceof HeadersObj) return { ok: true, json: Object.fromEntries(cur.headers) }
     if (ancestors.has(cur)) throw typeError("Converting circular structure to JSON.")
@@ -627,4 +620,15 @@ export const tryFastBoundaryOrJson = (
   }
 
   return visit(value, 0)
+}
+
+/** Why a typed array or ArrayBuffer cannot be a result. */
+const boundaryMessage = (value: Bytes | ArrayBufferObj): string => {
+  if (value instanceof ArrayBufferObj) {
+    return "An ArrayBuffer cannot cross to the host as data; pass a typed array of it to a host function, or its values, e.g. `Array.from(new Uint8Array(buffer))`."
+  }
+  if (value.isUint8()) {
+    return "A Uint8Array cannot cross to the host; pass text instead, e.g. `new TextDecoder().decode(bytes)` or `bytes.toBase64()`."
+  }
+  return `A ${value.tag} cannot cross to the host as data; pass it to a host function, or its values, e.g. \`Array.from(values)\`.`
 }

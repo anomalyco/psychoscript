@@ -22,7 +22,14 @@ import {
   type Getter,
   isProgramAccessor,
   type Setter,
+  ArrayBufferObj,
   Bytes,
+  knownArrayBuffer,
+  rememberArrayBuffer,
+  type TypedArray,
+  typedArrayName,
+  typedArrays,
+  type TypedArrayName,
   changed,
   DateObj,
   ErrorObj,
@@ -268,7 +275,24 @@ const builtinSpecs = (): ReadonlyArray<ClassSpec> => [
   },
   { name: "HeadersObj", ctor: HeadersObj, fields: ["headers"], obj: true, constants: { tag: "Headers" } },
   { name: "URLObj", ctor: URLObj, fields: ["searchParams", "url"], obj: true, constants: { tag: "URL" } },
-  { name: "Bytes", ctor: Bytes, fields: ["bytes"], obj: true, constants: { tag: "Uint8Array" } },
+  {
+    name: "Bytes",
+    ctor: Bytes,
+    fields: ["bytes"],
+    obj: true,
+    // Its tag is its host array's kind.
+    reset: (value: { tag: string; bytes: TypedArray }) => {
+      value.tag = typedArrayName(value.bytes)
+    },
+  },
+  {
+    name: "ArrayBufferObj",
+    ctor: ArrayBufferObj,
+    fields: ["buffer"],
+    obj: true,
+    constants: { tag: "ArrayBuffer" },
+    reset: (value: ArrayBufferObj) => rememberArrayBuffer(value),
+  },
   { name: "BufferObj", ctor: BufferObj, fields: ["bytes"], obj: true, constants: { tag: "Uint8Array" } },
   {
     name: "TextDecoderObj",
@@ -543,6 +567,10 @@ class Encoder {
     if (object instanceof Uint8Array) {
       return { t: "Uint8Array", b: this.ref(object.buffer), o: object.byteOffset, l: object.length }
     }
+    if (ArrayBuffer.isView(object) && Object.hasOwn(typedArrays, typedArrayName(object as TypedArray))) {
+      const view = object as TypedArray
+      return { t: "TypedArray", c: typedArrayName(view), b: this.ref(view.buffer), o: view.byteOffset, l: view.length }
+    }
     if (object instanceof ArrayBuffer) return { t: "ArrayBuffer", d: base64(new Uint8Array(object)) }
     if (object instanceof TextDecoder) return { t: "TextDecoder", f: object.fatal, i: object.ignoreBOM }
     const what = typeof object === "function" ? "a host function" : `a host ${object.constructor?.name ?? "object"}`
@@ -666,6 +694,7 @@ export const measure = (
   const mark = ++measurements
   const seen = new Set<object>()
   const texts = new Set<string>()
+  const buffers = new Set<ArrayBufferLike>()
   for (const item of exclude) {
     if (typeof item === "string") texts.add(item)
     else seen.add(item)
@@ -698,6 +727,14 @@ export const measure = (
     if (object instanceof Obj) {
       if (unchanged(object)) continue
       if (object.intrinsic === 0) bytes += objectBytes(object)
+      // A typed array's storage counts once, whole, however many views and ArrayBuffers share it.
+      const storage =
+        object instanceof Bytes ? object.bytes.buffer : object instanceof ArrayBufferObj ? object.buffer : undefined
+      if (storage !== undefined && !buffers.has(storage)) {
+        buffers.add(storage)
+        bytes += storage.byteLength
+      }
+      if (object instanceof Bytes) visit(knownArrayBuffer(object.bytes.buffer))
       if (object.props.size > 0) {
         const callable = object instanceof Callable
         const builtin = object.intrinsic !== 0
@@ -793,7 +830,6 @@ const objectBytes = (object: Obj): number => {
   if (object instanceof Arr) return own + ELEMENT_BYTES * object.items.length
   if (object instanceof MapObj || object instanceof WeakMapObj) return own + ENTRY_BYTES * object.map.size
   if (object instanceof SetObj || object instanceof WeakSetObj) return own + ENTRY_BYTES * object.set.size
-  if (object instanceof Bytes) return own + object.bytes.byteLength
   return own
 }
 
@@ -935,6 +971,19 @@ class Decoder {
         if (offset + length > buffer.byteLength) return invalid(`record ${id} reaches past its buffer.`)
         return new Uint8Array(buffer, offset, length)
       }
+      case "TypedArray": {
+        const name = text(record.c, "a typed array kind")
+        if (!Object.hasOwn(typedArrays, name)) return invalid(`record ${id} names no typed array kind.`)
+        const kind = typedArrays[name as TypedArrayName]
+        const buffer = this.value(record.b)
+        if (!(buffer instanceof ArrayBuffer)) return invalid(`record ${id} names no buffer.`)
+        const offset = count(record.o, "a byte offset")
+        const length = count(record.l, "a length")
+        if (offset % kind.BYTES_PER_ELEMENT !== 0 || offset + length * kind.BYTES_PER_ELEMENT > buffer.byteLength) {
+          return invalid(`record ${id} reaches past its buffer.`)
+        }
+        return new kind(buffer, offset, length)
+      }
       case "TextDecoder":
         return new TextDecoder("utf-8", { fatal: record.f === true, ignoreBOM: record.i === true })
     }
@@ -1038,6 +1087,7 @@ class Decoder {
       case "Headers":
       case "ArrayBuffer":
       case "Uint8Array":
+      case "TypedArray":
       case "TextDecoder":
         return
     }

@@ -52,6 +52,12 @@ pub const GLOBAL_NAMES: &[&str] = &[
     "Headers",
     "Uint8Array",
     "Buffer",
+    "ArrayBuffer",
+    "Uint16Array",
+    "Uint32Array",
+    "Int32Array",
+    "Float32Array",
+    "Float64Array",
     "TextEncoder",
     "TextDecoder",
     "encodeURI",
@@ -793,6 +799,7 @@ struct Target {
 /// runtime awaits promises in arguments and one hasn't fulfilled, the call waits for them first.
 fn call_host(vm: &mut Vm, f: &Callee, args: &[Value], target: Target, callee: Value) -> Res {
     let takes = matches!(f, Callee::Fn(f) if f.takes_functions);
+    vm.lends.clear();
     let concurrent = match f {
         Callee::Durable(_) => true,
         Callee::Fn(f) => f.is_async(),
@@ -840,6 +847,8 @@ fn call_host(vm: &mut Vm, f: &Callee, args: &[Value], target: Target, callee: Va
     };
     if concurrent {
         let site = vm.call_offset();
+        // The program runs on while the call works: it gets copies of the bytes of the typed arrays it was passed.
+        copy_lends(vm);
         let host_args = match crossed {
             Ok(Args::Ready(host_args)) => host_args,
             Ok(Args::Wait(promises)) => {
@@ -874,10 +883,19 @@ fn call_host(vm: &mut Vm, f: &Callee, args: &[Value], target: Target, callee: Va
     let Callee::Fn(f) = f else {
         unreachable!("durable functions are concurrent")
     };
-    let host_args = match crossed? {
-        Args::Ready(host_args) => host_args,
-        Args::Wait(promises) => return crate::cross::wait_sync(vm, promises, callee, args),
+    let host_args = match crossed {
+        Ok(Args::Ready(host_args)) => host_args,
+        Ok(Args::Wait(promises)) => {
+            vm.lends.clear();
+            return crate::cross::wait_sync(vm, promises, callee, args);
+        }
+        Err(e) => {
+            vm.lends.clear();
+            return Err(e);
+        }
     };
+    // The program waits for the call: it lends the call the bytes of the typed arrays it was passed, until it returns.
+    lend(vm);
     let Body::Sync(body) = &f.body else {
         unreachable!("a synchronous function has a synchronous body")
     };
@@ -902,6 +920,20 @@ fn call_host(vm: &mut Vm, f: &Callee, args: &[Value], target: Target, callee: Va
         returned => returned,
     };
     vm.host.leave_sync();
+    take_back(vm);
+    let r = sync_result(vm, f, returned, target, call_id);
+    vm.lends.clear();
+    r
+}
+
+/// What a synchronous call's result is to the program, once the bytes it was lent are back.
+fn sync_result(
+    vm: &mut Vm,
+    f: &HostFunction,
+    returned: Returned,
+    target: Target,
+    call_id: u64,
+) -> Res {
     match returned {
         Returned::Now(Err(HostValue::Interrupt)) | Returned::Block(_) => {
             interrupt(vm);
@@ -938,6 +970,45 @@ fn call_host(vm: &mut Vm, f: &Callee, args: &[Value], target: Target, callee: Va
             Ok(Value::Obj(p))
         }
     }
+}
+
+/// The handle on storage `store` that a call's arguments share, one per buffer however many views of it cross. It is
+/// empty until the call is made (`lend`, `copy_lends`).
+fn lend_handle(vm: &mut Vm, store: Id) -> crate::host_function::SharedBytes {
+    if let Some((_, h)) = vm.lends.iter().find(|(s, _)| *s == store) {
+        return h.clone();
+    }
+    let h = crate::host_function::SharedBytes::default();
+    vm.lends.push((store, h.clone()));
+    h
+}
+
+/// Fills the handles with copies of their buffers' bytes, for a call the program doesn't wait for.
+fn copy_lends(vm: &mut Vm) {
+    for (store, h) in std::mem::take(&mut vm.lends) {
+        *h.lock() = crate::builtins::bytes::storage(vm, store).to_vec();
+    }
+}
+
+/// Moves each buffer's bytes into its handle, for a call the program waits for: no copy is made.
+fn lend(vm: &mut Vm) {
+    for (store, h) in &vm.lends {
+        if let Some(data) = vm.heap.bytes_of(*store) {
+            *h.lock() = std::mem::take(data);
+        }
+    }
+}
+
+/// Moves the bytes a call was lent back into their buffers, whatever the host did with the handles.
+fn take_back(vm: &mut Vm) {
+    let lends = std::mem::take(&mut vm.lends);
+    for (store, h) in &lends {
+        let data = std::mem::take(&mut *h.lock());
+        if let Some(slot) = vm.heap.bytes_of(*store) {
+            *slot = data;
+        }
+    }
+    vm.lends = lends;
 }
 
 /// Waits on the thread for work a synchronous call blocks on, while the run's other host calls keep running: what they
@@ -1439,8 +1510,17 @@ fn to_host(
         Kind::Url(_) => HostValue::Url(crate::builtins::web::url_href(vm, id)),
         Kind::SearchParams(p) => HostValue::SearchParams(p.list.clone()),
         Kind::Headers(h) => HostValue::Headers(crate::builtins::web::header_entries(&h.list)),
+        Kind::Bytes(b) if b.elem != crate::builtins::bytes::Elem::U8 => {
+            let b = **b;
+            HostValue::TypedArray(crate::TypedArray {
+                kind: b.elem,
+                buf: lend_handle(vm, b.store),
+                start: b.start,
+                len: b.len,
+            })
+        }
         Kind::Bytes(b) => {
-            let data = b.to_vec();
+            let data = b.to_vec(vm);
             if b.buffer {
                 HostValue::Buffer(data)
             } else {
@@ -1653,6 +1733,7 @@ fn from_host(
         }
         HostValue::Bytes(data) => crate::builtins::bytes::new_bytes(vm, data.clone(), false),
         HostValue::Buffer(data) => crate::builtins::bytes::new_bytes(vm, data.clone(), true),
+        HostValue::TypedArray(t) => crate::builtins::typed::from_host(vm, t, label)?,
         HostValue::Response(response) => response_from_host(vm, response, label, place, depth)?,
         HostValue::Map(entries) => {
             let proto = vm.realm.map_proto;
@@ -1857,6 +1938,8 @@ fn result_from_host(
         within: owner.map(str::to_owned),
     };
     let out = from_host(vm, &v, label, &place, 0);
+    // The buffers its typed arrays matched are done with.
+    vm.lends.clear();
     let end = vm.host.functions.len();
     if let Some(owner) = owner
         && end > start

@@ -478,7 +478,7 @@ fn buffer_compare(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
 
 fn b_to_string(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
     let id = this_buf(vm, &this, "toString")?;
-    let data = bytes_ref(vm, id).to_vec();
+    let data = bytes_ref(vm, id).to_vec(vm);
     let enc = encoding(vm, &arg(args, 0))?.unwrap_or(Enc::Utf8);
     let start = match arg(args, 1) {
         Value::Undef => 0.0,
@@ -504,7 +504,7 @@ fn b_to_string(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
 fn b_to_json(vm: &mut Vm, this: Value, _args: &[Value], _: Id) -> Res {
     let id = this_buf(vm, &this, "toJSON")?;
     let data: Vec<Value> = bytes_ref(vm, id)
-        .to_vec()
+        .to_vec(vm)
         .into_iter()
         .map(|b| Value::Num(b as f64))
         .collect();
@@ -550,7 +550,7 @@ fn b_equals(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
             "The \"otherBuffer\" argument must be an instance of Buffer or Uint8Array. Received {d}"
         )));
     };
-    Ok(Value::Bool(bytes_ref(vm, id).to_vec() == b))
+    Ok(Value::Bool(bytes_ref(vm, id).to_vec(vm) == b))
 }
 
 fn range_arg(
@@ -602,7 +602,7 @@ fn b_compare(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
             "ERR_INVALID_ARG_TYPE",
         ));
     };
-    let s = bytes_ref(vm, id).to_vec();
+    let s = bytes_ref(vm, id).to_vec(vm);
     let ts = range_arg(vm, &arg(args, 1), "targetStart", 0, t.len())?;
     let te = range_arg(vm, &arg(args, 2), "targetEnd", t.len(), t.len())?;
     let ss = range_arg(vm, &arg(args, 3), "sourceStart", 0, s.len())?;
@@ -639,7 +639,7 @@ fn needle(vm: &mut Vm, v: &Value, enc: &Value) -> Result<Vec<u8>, Value> {
 
 fn search(vm: &mut Vm, this: &Value, args: &[Value], name: &str, last: bool) -> Result<f64, Value> {
     let id = this_buf(vm, this, name)?;
-    let hay = bytes_ref(vm, id).to_vec();
+    let hay = bytes_ref(vm, id).to_vec(vm);
     let (offset, enc) = match arg(args, 1) {
         Value::Str(_) => (Value::Undef, arg(args, 1)),
         o => (o, arg(args, 2)),
@@ -743,7 +743,7 @@ fn b_write(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
     }
     let b = bytes_ref(vm, id);
     for (i, v) in data.iter().enumerate() {
-        b.put(offset + i, *v);
+        b.put(vm, offset + i, *v);
     }
     Ok(Value::Num(data.len() as f64))
 }
@@ -771,7 +771,7 @@ fn b_fill(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
     fill_with(vm, &mut data, &value, enc)?;
     let b = bytes_ref(vm, id);
     for (i, v) in data.into_iter().enumerate() {
-        b.put(offset + i, v);
+        b.put(vm, offset + i, v);
     }
     Ok(this)
 }
@@ -798,7 +798,7 @@ fn b_copy(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
             "ERR_INVALID_ARG_TYPE",
         ));
     }
-    let src = bytes_ref(vm, id).to_vec();
+    let src = bytes_ref(vm, id).to_vec(vm);
     let tlen = bytes_ref(vm, tid).len;
     let ts = range_arg(vm, &arg(args, 1), "targetStart", 0, usize::MAX >> 12)?;
     let ss = range_arg(vm, &arg(args, 2), "sourceStart", 0, src.len())?;
@@ -812,14 +812,14 @@ fn b_copy(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
     let n = (se - ss).min(tlen - ts);
     let t = bytes_ref(vm, tid);
     for i in 0..n {
-        t.put(ts + i, src[ss + i]);
+        t.put(vm, ts + i, src[ss + i]);
     }
     Ok(Value::Num(n as f64))
 }
 
 fn swap(vm: &mut Vm, this: Value, size: usize) -> Res {
     let id = this_buf(vm, &this, &format!("swap{}", size * 8))?;
-    let mut data = bytes_ref(vm, id).to_vec();
+    let mut data = bytes_ref(vm, id).to_vec(vm);
     if !data.len().is_multiple_of(size) {
         return Err(node_error(
             vm,
@@ -833,7 +833,7 @@ fn swap(vm: &mut Vm, this: Value, size: usize) -> Res {
     }
     let b = bytes_ref(vm, id);
     for (i, v) in data.into_iter().enumerate() {
-        b.put(i, v);
+        b.put(vm, i, v);
     }
     Ok(this)
 }
@@ -990,7 +990,9 @@ fn b_numeric(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
     let offset = offset_arg(vm, &offset_v, len, width)?;
     let b = bytes_ref(vm, id);
     if !write {
-        let mut raw: Vec<u8> = (0..width).map(|i| b.get(offset + i).unwrap_or(0)).collect();
+        let mut raw: Vec<u8> = (0..width)
+            .map(|i| b.get(vm, offset + i).unwrap_or(0))
+            .collect();
         if !le {
             raw.reverse();
         }
@@ -1052,7 +1054,7 @@ fn b_numeric(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
     let b = bytes_ref(vm, id);
     for i in 0..width {
         let byte = raw[if le { i } else { width - 1 - i }];
-        b.put(offset + i, byte);
+        b.put(vm, offset + i, byte);
     }
     Ok(Value::Num((offset + width) as f64))
 }

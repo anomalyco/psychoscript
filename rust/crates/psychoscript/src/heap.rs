@@ -3,9 +3,10 @@
 //! share, so a measurement is the same on every platform and garbage never counts.
 //!
 //! - An object made by the run: `OBJECT_BYTES`, plus `PROPERTY_BYTES` per own property, plus `ELEMENT_BYTES` per
-//!   array element or argument (holes included), `ENTRY_BYTES` per Map, Set, WeakMap or WeakSet entry, and one per
-//!   byte of a Uint8Array. A function's `name` and `length` are part of it, an accessor's own object part of its
-//!   property, and the program body's function object, which the reference has none of, counts nothing.
+//!   array element or argument (holes included), `ENTRY_BYTES` per Map, Set, WeakMap or WeakSet entry. A function's
+//!   `name` and `length` are part of it, an accessor's own object part of its property, and the program body's
+//!   function object, which the reference has none of, counts nothing.
+//! - A typed array's storage: one per byte, once for every view and `ArrayBuffer` that shares it.
 //! - What the fresh runtime made (built-ins, host globals, and the lazy groups of built-ins it sets up later) counts
 //!   nothing, though the objects the program stored on it do.
 //! - A string value: `STRING_BYTES` plus two per UTF-16 code unit, once per distinct text. Property keys count as part
@@ -166,6 +167,10 @@ pub(crate) fn measure(vm: &Vm) -> u64 {
             continue;
         }
         w.bytes += object_bytes(vm, o);
+        // A typed array's storage counts once, whole, however many views and `ArrayBuffer`s share it.
+        if let Kind::Storage(data) = &o.kind {
+            w.bytes += data.len() as u64;
+        }
         // An error's `stack` text counts as part of the error, a function's `name` and `length` as part of it.
         let skip: &[Option<&Atom>] = match &o.kind {
             Kind::Error(_) => &[stack, stack],
@@ -199,14 +204,15 @@ fn object_bytes(vm: &Vm, o: &Obj) -> u64 {
     };
     let own = OBJECT_BYTES + PROPERTY_BYTES * props as u64;
     match &o.kind {
-        Kind::Accessor(_) => 0,
+        // An accessor's own object is part of its property; a buffer's storage counts as its bytes.
+        Kind::Accessor(_) | Kind::Storage(_) => 0,
         // The program's body, which the reference runs with no function object.
         Kind::Closure(c) if vm.protos.first().is_some_and(|p| Arc::ptr_eq(p, &c.proto)) => 0,
         Kind::Array(items) | Kind::Arguments(items) => own + ELEMENT_BYTES * items.len() as u64,
         Kind::Map(m) | Kind::Set(m) | Kind::WeakMap(m) | Kind::WeakSet(m) => {
             own + ENTRY_BYTES * m.live as u64
         }
-        Kind::Bytes(b) => own + b.len as u64,
+
         _ => own,
     }
 }

@@ -1,0 +1,39 @@
+{
+  "bindings": {},
+  "ok": true,
+  "value": [
+    [
+      "RangeError: start offset of Float32Array should be a multiple of 4",
+      "RangeError: byte length of Float32Array should be a multiple of 4",
+      "RangeError: Start offset 20 is outside the bounds of the buffer",
+      "RangeError: Start offset -4 is outside the bounds of the buffer",
+      "RangeError: Invalid typed array length: 10",
+      "RangeError: Invalid typed array length: -1",
+      "RangeError: Invalid typed array length: -1",
+      "RangeError: Invalid typed array length: 1.5",
+      "TypeError: new Uint16Array(...) expects a Uint8Array, an array, or an iterable of numbers, received a data object.",
+      "TypeError: Constructor Float32Array requires 'new'.",
+      "TypeError: Constructor ArrayBuffer requires 'new'.",
+      "RangeError: Float32Array.set: the source does not fit at that offset.",
+      "RangeError: Float32Array.set: the source does not fit at that offset.",
+      "RangeError: Invalid array buffer length",
+      "TypeError: Float32Array.prototype.at called on incompatible receiver an array.",
+      "TypeError: Float32Array.prototype.at called on incompatible receiver an ArrayBuffer.",
+      "TypeError: ArrayBuffer.prototype.slice called on incompatible receiver a Float32Array.",
+      "TypeError: Uint8Array.prototype.toHex called on incompatible receiver a Float32Array.",
+      "TypeError: Cannot set property 'length' of a Float32Array which has only a getter.",
+      "TypeError: Cannot set property 'buffer' of a Float32Array which has only a getter.",
+      "TypeError: fa.map is not a function.",
+      "TypeError: fa.forEach is not a function.",
+      "TypeError: TextDecoder.decode expects a Uint8Array, received a Float32Array.",
+      "TypeError: Float32Array.from expects a function callback.",
+      "TypeError: Float32Array.from expects a Uint8Array, an array, or an iterable of numbers, received a number.",
+      "TypeError: Cannot delete property '0'.",
+      "TypeError: Accessor properties are not supported on array elements; store the value or use a plain object."
+    ],
+    null,
+    4
+  ],
+  "logs": [],
+  "metadata": null
+}
