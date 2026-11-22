@@ -492,6 +492,7 @@ impl View for Data {
             Data::String(_) => Kind::String,
             Data::Array(_) => Kind::Array,
             Data::Object(_) => Kind::Object,
+            Data::FunctionMarker => Kind::Function,
         }
     }
     fn boolean(&self) -> bool {
@@ -540,7 +541,7 @@ impl View for HostValue {
             HostValue::String(_) => Kind::String,
             HostValue::Array(_) => Kind::Array,
             HostValue::Object(_) => Kind::Object,
-            HostValue::Function(_) => Kind::Function,
+            HostValue::Function(_) | HostValue::FunctionMarker => Kind::Function,
             _ => Kind::Undefined,
         }
     }
