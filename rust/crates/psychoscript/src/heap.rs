@@ -13,9 +13,10 @@
 //!   of their property, an error's `stack` text as part of the error, and a built-in's own texts nothing.
 //!
 //! Measuring walks the reachable heap (`reach.rs`), so it is paced by allocation: the run counts roughly what it
-//! allocated since the last measurement (objects and strings made, array contents, and `FUEL_BYTES` per unit of the
-//! reference's fuel for the rest), and measures again at its next safe point once that could have taken it past the
-//! limit, and always when its body ends. Over the limit, the run stops with `MemoryLimitExceeded`. When the
+//! allocated since the last measurement (objects and strings made, what concatenations copy, array contents, elements
+//! and properties added at once, and `FUEL_BYTES` per unit of the reference's fuel for the rest), and measures again at
+//! its next safe point once that could have taken it past the limit, and always as its body returns (its bindings
+//! still live) and when the run ends. Over the limit, the run stops with `MemoryLimitExceeded`. When the
 //! measurements between the first and the last fall differs from the reference's; what each one finds is the same.
 
 use rustc_hash::FxHashSet;
