@@ -1,6 +1,6 @@
 import { Images } from "./canvas.js";
 import type { ErrorInfo, FromWorker, ToWorker } from "./protocol.js";
-import { ShaderView, Ticker } from "./render.js";
+import { Ticker } from "./render.js";
 import type { ShaderError } from "./shader.js";
 import type { Theme } from "./theme.js";
 export interface Capabilities {
@@ -316,4 +316,4 @@ declare class Widget implements MountedWidget {
     private onPopState;
     destroy(): void;
 }
-export { ShaderView };
+export {};

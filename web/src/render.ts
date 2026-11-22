@@ -28,7 +28,7 @@ export interface RenderContext {
   translate(wgsl: string): Promise<{ code: string; block: string } | ShaderError>
   /** A program warning that isn't an error (an unknown node type). */
   warn(message: string): void
-  /** The widget template's code broke a contract here (WGSL that fails validation, a shader over 16 KB): reported. */
+  /** The widget template's code broke a contract here (WGSL that fails validation or over 16 KB, values without wgsl): reported. */
   programError(phase: string, error: { message: string; line?: number; column?: number }): void
   /** This host failed (valid WGSL it couldn't run, a surface too slow on this device): logged in dev mode only. */
   clientError(message: string, cause?: unknown): void
@@ -76,24 +76,29 @@ const KNOWN = new Set([
   "input",
   "divider",
   "canvas",
-  "shader",
+  "stack",
 ])
 
 const str = (v: unknown): string => (typeof v === "string" ? v : v === undefined || v === null ? "" : String(v))
 const finite = (v: unknown, d: number): number => (typeof v === "number" && Number.isFinite(v) ? v : d)
 const children = (node: ViewNode): ViewNode[] => (Array.isArray(node.children) ? (node.children as ViewNode[]) : [])
 
-/** Whether a `canvas` or `shader` node is in `node`'s tree. */
+/** Whether a `canvas` (2D or GPU) is in `node`'s tree. */
 export function hasSurface(node: ViewNode | undefined): boolean {
   if (!node || typeof node !== "object") return false
-  if (node.type === "canvas" || node.type === "shader") return true
+  if (node.type === "canvas") return true
   return children(node).some(hasSurface)
 }
 
 function hasFill(node: ViewNode): boolean {
-  // In full screen every canvas and shader fills unless it says `fill: false`.
-  if ((node.type === "canvas" || node.type === "shader") && node.fill !== false) return true
+  // In full screen every canvas fills unless it says `fill: false`.
+  if (node.type === "canvas" && node.fill !== false) return true
   return children(node).some((c) => c && typeof c === "object" && hasFill(c))
+}
+
+/** A canvas with `wgsl` is drawn by its shader on the GPU, one without by `draw`: never both, so never one element. */
+function kind(node: ViewNode): string {
+  return node.type === "canvas" && typeof node.wgsl === "string" ? "canvas:gpu" : node.type
 }
 
 /** Renders `nodes` as `parent`'s children, reusing elements of the same type at the same place. */
@@ -108,7 +113,7 @@ export function reconcile(ctx: RenderContext, parent: Element, nodes: readonly u
     const n = node as ViewNode
     const el = kids[i]
     const rec = el && REC.get(el)
-    if (rec && rec.type === n.type) {
+    if (rec && rec.type === kind(n)) {
       rec.node = n
       rec.update(n)
     } else {
@@ -576,6 +581,7 @@ const BUILDERS: Record<string, Builder> = {
           dots.append(d)
         }
         dots.hidden = prev.hidden = next.hidden = count < 2
+        el.toggleAttribute("data-id", typeof n.id === "string")
         const want = typeof n.index === "number" ? n.index : undefined
         if (want !== undefined && want !== given) index = want
         given = want
@@ -638,11 +644,70 @@ const BUILDERS: Record<string, Builder> = {
     el.addEventListener("pointercancel", end)
     return { el, rec }
   },
-  canvas: (ctx, node) => new CanvasView(ctx, node).built(),
-  shader: (ctx, node) => new ShaderView(ctx, node).built(),
 }
 
-// ---------- surfaces: canvas and shader ----------
+// ---------- stack ----------
+
+const PLACES: Record<string, [string, string]> = {
+  "top-left": ["start", "start"],
+  top: ["center", "start"],
+  "top-right": ["end", "start"],
+  left: ["start", "center"],
+  center: ["center", "center"],
+  right: ["end", "center"],
+  "bottom-left": ["start", "end"],
+  bottom: ["center", "end"],
+  "bottom-right": ["end", "end"],
+  fill: ["stretch", "stretch"],
+}
+
+/** A child's `inset` as CSS margins: a number for every side, or per side; logical px, at least 0. */
+function inset(v: unknown): string {
+  const side = (n: unknown) => `${Math.max(0, finite(n, 0))}px`
+  if (typeof v === "number") return side(v)
+  if (v && typeof v === "object") {
+    const o = v as { top?: unknown; right?: unknown; bottom?: unknown; left?: unknown }
+    return `${side(o.top)} ${side(o.right)} ${side(o.bottom)} ${side(o.left)}`
+  }
+  return "0px"
+}
+
+/**
+ * A `stack` (widgets.md, Stack): every child in one grid cell, the first at the bottom. A child's area is the cell minus
+ * its `inset` (margins); `place` aligns its natural size in that area, or with `fill` stretches it (a canvas draws at
+ * that size). Children let the pointer through to the layer below except where they take input (styles.ts).
+ */
+BUILDERS.stack = (ctx) => {
+  const el = h(ctx, "div", "pw-stack")
+  const rec: Rec = {
+    type: "stack",
+    node: { type: "stack" },
+    update(n) {
+      const kids = children(n).filter((c) => c && typeof c === "object" && KNOWN.has(c.type))
+      // In full screen a stack with a canvas grows like one, unless all its canvases say `fill: false`.
+      const grows = kids.some((c) => c.type === "canvas" && c.fill !== false)
+      setClass(el, `pw-stack${grows ? " pw-fill pw-has-fill" : ""}`)
+      reconcile(ctx, el, kids)
+      kids.forEach((c, i) => {
+        const child = el.children[i] as HTMLElement | undefined
+        if (!child) return
+        const place = typeof c.place === "string" && c.place in PLACES ? c.place : "top-left"
+        const [x, y] = PLACES[place]!
+        const surface = c.type === "canvas"
+        // A canvas's natural width is its `width` or the area's.
+        child.style.justifySelf = surface && place !== "fill" && !(finite(c.width, 0) > 0) ? "stretch" : x
+        child.style.alignSelf = y
+        child.style.margin = inset(c.inset)
+        child.style.zIndex = String(i)
+        // A `fill` canvas takes the area's height (its `height` stays the least, for the stack's own height).
+        if (surface && place === "fill") child.style.height = "auto"
+      })
+    },
+  }
+  return { el, rec }
+}
+
+// ---------- surfaces: canvas (2D and GPU) ----------
 
 /** A sized drawing surface that follows its width (and in full screen, unless `fill: false`, its share of the free height). */
 abstract class SurfaceBase {
@@ -667,7 +732,7 @@ abstract class SurfaceBase {
     this.node = node
     this.el = h(ctx, "div", "pw-surface")
     this.el.dataset.pwLive = ""
-    this.el.dataset.kind = node.type
+    this.el.dataset.kind = kind(node) === "canvas:gpu" ? "gpu" : "2d"
     this.canvas = h(ctx, "canvas")
     this.el.append(this.canvas)
     this.observer = new ResizeObserver(() => this.measure())
@@ -681,7 +746,7 @@ abstract class SurfaceBase {
     return { x: e.clientX - r.left, y: e.clientY - r.top }
   }
 
-  /** A `pointer` event for a surface with an `id` (canvas and shader alike). */
+  /** A `pointer` event for a canvas with an `id` (2D or GPU alike). */
   private send(kind: "down" | "move" | "up", e: PointerEvent, down?: boolean) {
     const id = this.id
     if (id === null || this.ctx.readOnly()) return
@@ -746,7 +811,7 @@ abstract class SurfaceBase {
 
   built(): { el: HTMLElement; rec: Rec } {
     const rec: Rec = {
-      type: this.node.type,
+      type: kind(this.node),
       node: this.node,
       update: (n) => this.update(n),
       destroy: () => this.destroy(),
@@ -761,6 +826,8 @@ abstract class SurfaceBase {
 
   /** Applies the node's size; returns whether the backing store changed. */
   protected layout(n: ViewNode): boolean {
+    // Takes pointer input (in a stack, the rest lets it through): a canvas with an id.
+    this.el.toggleAttribute("data-id", typeof n.id === "string")
     const height = Math.max(1, Math.min(4096, finite(n.height, 160)))
     const width = finite(n.width, 0)
     // Live programs re-render every frame: touch the DOM only when the size or label changes.
@@ -779,13 +846,23 @@ abstract class SurfaceBase {
     return true
   }
 
+  /** No width or height yet (laid out away, or changing size): never drawn or rendered then (widgets.md, Canvas). */
+  zero = true
+
   protected measure(): boolean {
     if (this.destroyed) return false
     const rect = this.el.getBoundingClientRect()
-    const width = Math.max(1, Math.round(rect.width))
-    const height = Math.max(1, Math.round(rect.height))
+    const width = Math.round(rect.width)
+    const height = Math.round(rect.height)
+    const was = this.zero
+    this.zero = width < 1 || height < 1
+    if (this.zero) return false
     const scale = Math.min(3, globalThis.devicePixelRatio || 1)
-    if (width === this.width && height === this.height && scale === this.scale) return false
+    if (width === this.width && height === this.height && scale === this.scale) {
+      // Sized again at its old size: draw what it skipped meanwhile.
+      if (was) this.resized()
+      return false
+    }
     this.width = width
     this.height = height
     this.scale = scale
@@ -793,6 +870,12 @@ abstract class SurfaceBase {
     this.canvas.height = Math.round(height * scale)
     this.resized()
     return true
+  }
+
+  /** Measures now; whether the surface has a size to draw at. */
+  sized(): boolean {
+    this.measure()
+    return !this.zero
   }
 
   frame(dt: number): Frame {
@@ -883,6 +966,8 @@ export class CanvasView extends SurfaceBase {
   }
 
   update(n: ViewNode) {
+    // `values` feed a shader: on a canvas without `wgsl` the view is invalid.
+    if (n.values !== undefined) this.ctx.programError("view", { message: "a canvas has values but no wgsl" })
     this.node = n
     if (this.layout(n)) this.measure()
     // A new view may come with new state: draw again (step mode); live canvases repaint their latest commands.
@@ -931,6 +1016,8 @@ export class CanvasView extends SurfaceBase {
     const draw = this.ctx.draw
     if (!draw) return this.stop()
     if (!this.ctx.visible()) return this.stop()
+    // Zero-sized: wait (the ResizeObserver brings it back with a size).
+    if (this.zero) return this.stop()
     const animate = this.animating()
     const interval = animate ? 1000 / this.fps() - 2 : 0
     if (this.inflight) return
@@ -969,15 +1056,15 @@ export class CanvasView extends SurfaceBase {
   }
 
   repaint() {
-    if (this.destroyed || !this.context || !this.commands) return
+    if (this.destroyed || this.zero || !this.context || !this.commands) return
     paint(this.context, this.commands, this.width, this.height, this.scale, this.ctx.theme(), this.ctx.images, () =>
       this.repaint(),
     )
   }
 }
 
-/** A `shader` node: WGSL on WebGPU, or WebGL2 through naga. */
-export class ShaderView extends SurfaceBase {
+/** A GPU canvas (a `canvas` with `wgsl`): its WGSL on WebGPU, or WebGL2 through naga. */
+export class GpuCanvasView extends SurfaceBase {
   private surface: Surface | undefined
   private wgsl: string | undefined
   private failed = false
@@ -991,7 +1078,7 @@ export class ShaderView extends SurfaceBase {
   private builds = 0
 
   protected pointerChanged() {
-    // `widget.pointer` follows the pointer; a shader at `fps: 0` renders again for it.
+    // `widget.pointer` follows the pointer; a GPU canvas at `fps: 0` renders again for it.
     this.dirty = true
     this.start()
   }
@@ -1066,10 +1153,13 @@ export class ShaderView extends SurfaceBase {
 
   protected tick = (now: number) => {
     this.flushMove()
-    if (this.failed || this.stopped || !this.ctx.visible()) return this.stop()
+    if (this.failed || this.stopped || !this.ctx.visible() || this.zero) return this.stop()
     const s = this.surface
     if (!s) return
-    const fps = Math.min(MAX_FPS, Math.max(0, finite(this.node.fps, 60)))
+    // `fps` defaults to 60 for a GPU canvas; with `duration` it animates until then, and after only on new values.
+    const duration = finite(this.node.duration, -1)
+    const running = duration < 0 || (performance.now() - this.appeared) / 1000 < duration
+    const fps = running ? Math.min(MAX_FPS, Math.max(0, finite(this.node.fps, 60))) : 0
     if (!this.dirty && fps <= 0) return this.stop()
     if (!this.dirty && now - this.lastFrame < 1000 / fps - 2) return
     this.dirty = false
@@ -1113,8 +1203,8 @@ export function rectIn(r: DOMRect, origin: DOMRect): Rect {
 }
 
 /** The surfaces under `root`, in document order. */
-export function surfaces(root: Element): (CanvasView | ShaderView)[] {
-  const out: (CanvasView | ShaderView)[] = []
+export function surfaces(root: Element): (CanvasView | GpuCanvasView)[] {
+  const out: (CanvasView | GpuCanvasView)[] = []
   for (const el of root.querySelectorAll(".pw-surface")) {
     const view = VIEWS.get(el)
     if (view) out.push(view)
@@ -1122,15 +1212,10 @@ export function surfaces(root: Element): (CanvasView | ShaderView)[] {
   return out
 }
 
-const VIEWS = new WeakMap<Element, CanvasView | ShaderView>()
-const register = (v: CanvasView | ShaderView) => VIEWS.set(v.el, v)
+const VIEWS = new WeakMap<Element, CanvasView | GpuCanvasView>()
+const register = (v: CanvasView | GpuCanvasView) => VIEWS.set(v.el, v)
 BUILDERS.canvas = (ctx, node) => {
-  const v = new CanvasView(ctx, node)
-  register(v)
-  return v.built()
-}
-BUILDERS.shader = (ctx, node) => {
-  const v = new ShaderView(ctx, node)
+  const v = kind(node) === "canvas:gpu" ? new GpuCanvasView(ctx, node) : new CanvasView(ctx, node)
   register(v)
   return v.built()
 }

@@ -6,7 +6,7 @@ import type { ErrorInfo, Frame, FromWorker, LiveExit, Rect, StepOutput, ToWorker
 import { Input } from "./input.js"
 import { SLICE_BUDGET_MS } from "./protocol.js"
 import type { RenderContext } from "./render.js"
-import { CanvasView, ShaderView, Ticker, destroy as destroyTree, hasSurface, icon, rectIn, reconcile, surfaces } from "./render.js"
+import { CanvasView, Ticker, destroy as destroyTree, hasSurface, icon, rectIn, reconcile, surfaces } from "./render.js"
 import type { ShaderError } from "./shader.js"
 import { stylesheet } from "./styles.js"
 import type { Resolved, Theme } from "./theme.js"
@@ -1103,13 +1103,15 @@ class Widget implements MountedWidget {
   private liveTick = (now: number) => {
     if (!this.live.frameWanted || !this.worker || !this.live.running) return this.host.ticker.delete(this.liveTick)
     if (!this.visible || this.paused) return this.host.ticker.delete(this.liveTick)
+    const surface = surfaces(this.viewEl).find((s): s is CanvasView => s instanceof CanvasView)
+    const rect = this.viewEl.getBoundingClientRect()
+    // Never a frame with a zero size (widgets.md, Canvas): keep the request until the canvas, or the view, has one.
+    if (surface ? !surface.sized() : rect.width < 1 || rect.height < 1) return
     this.live.frameWanted = false
     this.host.ticker.delete(this.liveTick)
-    const surface = surfaces(this.viewEl).find((s): s is CanvasView => s instanceof CanvasView)
     const t = (now - this.live.startedAt - this.live.pausedTotal) / 1000
     const dt = this.live.lastFrame ? (now - this.live.lastFrame) / 1000 : 0
     this.live.lastFrame = now
-    const rect = this.viewEl.getBoundingClientRect()
     const frame: Frame = surface
       ? { ...surface.frame(dt), t }
       : {
@@ -1246,4 +1248,3 @@ function summary(value: unknown): string {
   return text.length > 80 ? text.slice(0, 79) + "…" : text
 }
 
-export { ShaderView }

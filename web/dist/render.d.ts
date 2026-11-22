@@ -27,7 +27,7 @@ export interface RenderContext {
     } | ShaderError>;
     /** A program warning that isn't an error (an unknown node type). */
     warn(message: string): void;
-    /** The widget template's code broke a contract here (WGSL that fails validation, a shader over 16 KB): reported. */
+    /** The widget template's code broke a contract here (WGSL that fails validation or over 16 KB, values without wgsl): reported. */
     programError(phase: string, error: {
         message: string;
         line?: number;
@@ -51,7 +51,7 @@ interface Rec {
     update(node: ViewNode): void;
     destroy?(): void;
 }
-/** Whether a `canvas` or `shader` node is in `node`'s tree. */
+/** Whether a `canvas` (2D or GPU) is in `node`'s tree. */
 export declare function hasSurface(node: ViewNode | undefined): boolean;
 /** Renders `nodes` as `parent`'s children, reusing elements of the same type at the same place. */
 export declare function reconcile(ctx: RenderContext, parent: Element, nodes: readonly unknown[]): void;
@@ -82,7 +82,7 @@ declare abstract class SurfaceBase {
     constructor(ctx: RenderContext, node: ViewNode);
     /** Point in the canvas, logical px. */
     private local;
-    /** A `pointer` event for a surface with an `id` (canvas and shader alike). */
+    /** A `pointer` event for a canvas with an `id` (2D or GPU alike). */
     private send;
     /** Tracks the pointer for frames and uniforms; sends `down` and `up` at once, `move` only while down, at most once a frame. */
     private listen;
@@ -97,7 +97,11 @@ declare abstract class SurfaceBase {
     get id(): string | null;
     /** Applies the node's size; returns whether the backing store changed. */
     protected layout(n: ViewNode): boolean;
+    /** No width or height yet (laid out away, or changing size): never drawn or rendered then (widgets.md, Canvas). */
+    zero: boolean;
     protected measure(): boolean;
+    /** Measures now; whether the surface has a size to draw at. */
+    sized(): boolean;
     frame(dt: number): Frame;
     /** The full-screen close button's area in this surface's coordinates when it overlaps it, else null. */
     close(): Rect | null;
@@ -135,8 +139,8 @@ export declare class CanvasView extends SurfaceBase {
     wake(): void;
     repaint(): void;
 }
-/** A `shader` node: WGSL on WebGPU, or WebGL2 through naga. */
-export declare class ShaderView extends SurfaceBase {
+/** A GPU canvas (a `canvas` with `wgsl`): its WGSL on WebGPU, or WebGL2 through naga. */
+export declare class GpuCanvasView extends SurfaceBase {
     private surface;
     private wgsl;
     private failed;
@@ -161,4 +165,4 @@ export declare class ShaderView extends SurfaceBase {
 /** `r` in the coordinates of `origin`'s top-left corner, rounded to logical pixels. */
 export declare function rectIn(r: DOMRect, origin: DOMRect): Rect;
 /** The surfaces under `root`, in document order. */
-export declare function surfaces(root: Element): (CanvasView | ShaderView)[];
+export declare function surfaces(root: Element): (CanvasView | GpuCanvasView)[];

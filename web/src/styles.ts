@@ -28,6 +28,12 @@ export const CSS: string = /* css */ `
 :host(:fullscreen) .pw-row > .pw-fill { align-self: stretch; }
 :host(:fullscreen) .pw-chip { display: none; }
 .pw-view { min-width: 0; }
+/* stack (widgets.md, Stack): one grid cell, children layered in order; the cell is as tall as the tallest child plus
+   its insets. Children let the pointer through except where something takes input. */
+.pw-stack { display: grid; grid-template-columns: minmax(0, 1fr); width: 100%; min-width: 0; position: relative; isolation: isolate; }
+.pw-stack > * { grid-area: 1 / 1; min-width: 0; max-width: 100%; pointer-events: none; }
+.pw-stack .pw-btn, .pw-stack .pw-check, .pw-stack .pw-slider, .pw-stack .pw-option, .pw-stack .pw-input,
+.pw-stack .pw-press, .pw-stack .pw-carousel[data-id], .pw-stack .pw-surface[data-id] { pointer-events: auto; }
 .pw-col { display: flex; flex-direction: column; min-width: 0; }
 .pw-row { display: flex; flex-direction: row; min-width: 0; }
 .pw-row.pw-wrap { flex-wrap: wrap; }
