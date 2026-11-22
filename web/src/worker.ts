@@ -203,14 +203,28 @@ function flush(wid: number, live: Live) {
   if (text === "[]") return
   const out = JSON.parse(text) as Envelope[]
   const messages: unknown[] = []
+  // GPU batches name their bytes by `[offset, length]` in the run's byte outbox: one copy out of the WebAssembly,
+  // transferred to the page, each batch a view of it.
+  let bytes: Uint8Array | undefined
+  const batch = (b: { bytes?: unknown } | undefined) => {
+    if (!b || !Array.isArray(b.bytes)) return
+    const all = (bytes ??= live.run.takeBytes())
+    const [offset, length] = b.bytes as [number, number]
+    b.bytes = all.subarray(offset, offset + length)
+  }
   for (const e of out) {
     // Render and draw posts come out under the post rate (widgets-live.md, Post rate), checked when posted.
-    if (e.type === "post") messages.push(e.message)
+    if (e.type === "post") {
+      const m = e.message as { type?: string; gpu?: { bytes?: unknown }; batch?: { bytes?: unknown } }
+      if (m?.type === "frame") batch(m.gpu)
+      else if (m?.type === "gpu") batch(m.batch)
+      messages.push(m)
+    }
     else if (e.type === "warning") post({ t: "warning", wid, message: String(e.message) })
     else if (e.type === "fetch") void transfer(wid, live, e)
     else if (e.type === "cancel" && e.id !== undefined) live.fetches.get(e.id)?.abort()
   }
-  if (messages.length > 0) post({ t: "posts", wid, messages })
+  if (messages.length > 0) post({ t: "posts", wid, messages }, bytes ? [bytes.buffer as ArrayBuffer] : undefined)
 }
 
 function base64(text: string): Uint8Array {

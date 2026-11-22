@@ -70,9 +70,9 @@ export interface MountOptions {
     onAsk?(error: WidgetError): void | Promise<void>;
     /** Program warnings that aren't errors (an unknown node type): for dev logs. */
     onWarning?(message: string): void;
-    /** Timings: `compile`, `init` (first view on screen), `step`, `draw`, in ms. */
+    /** Timings: `compile`, `init` (first view on screen), `step`, `draw`, `gpu` (replaying a GPU batch), in ms. */
     onMetrics?(metric: {
-        kind: "compile" | "init" | "step" | "draw";
+        kind: "compile" | "init" | "step" | "draw" | "gpu";
         ms: number;
     }): void;
     /** Text for the expand button and placeholders, if not English. */
@@ -306,6 +306,12 @@ declare class Widget implements MountedWidget {
     private refreshControls;
     setTheme(theme: Theme): void;
     private livePause;
+    private gpu;
+    private gpuUnavailable;
+    private gpuKeys;
+    private gpuBatch;
+    /** Before a frame: `{ type: "canvas", key, width, height }` (physical pixels) for each GPU canvas whose size changed. */
+    private gpuSizes;
     private liveTick;
     private toggleFullscreen;
     private closeFullscreen;

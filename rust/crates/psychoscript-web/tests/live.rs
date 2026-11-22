@@ -610,6 +610,60 @@ fn an_invalid_draw_command_ends_the_run_in_phase_draw() {
     assert_eq!(posted["commands"].as_array().unwrap().len(), 13);
 }
 
+/// GPU batches (widgets-gpu.md, Transport) go out at once, in a frame request or on their own: their ops as JSON, a
+/// `context` op with its GPU canvas's id appended, and their bytes in the byte outbox, named by `[offset, length]`.
+#[test]
+fn gpu_batches_carry_their_ops_and_bytes() {
+    let mut run = start_widget(
+        r#"async function main() {
+  widget.render(ui.column([ui.canvas({ key: "scene", gpu: true, height: 10 }), ui.canvas({ key: "flat", height: 10 })]))
+  const data = new Float32Array([1, 2])
+  __host.post({ type: "gpu", ops: [["context", 1, "scene", "bgra8unorm", "opaque"], ["buffer", 3, 8, 40], ["writeBuffer", 3, 0, 0, 8]], bytes: data.buffer })
+  try { __host.post({ type: "gpu", ops: [["context", 2, "flat", "bgra8unorm", "opaque"]], bytes: new ArrayBuffer(0) }) } catch (e) { widget.send(e.message) }
+  __host.post({ type: "frame", gpu: { ops: [["writeBuffer", 3, 0, 0, 4]], bytes: new Uint32Array([7]).buffer } })
+  try { widget.draw("scene", []) } catch (e) { widget.send(e.message) }
+  try { __host.post({ type: "gpu", ops: [["shader", 4, () => 1]], bytes: new ArrayBuffer(0) }) } catch (e) { widget.send(e.name) }
+}"#,
+        240,
+    );
+    let mut out = Vec::new();
+    let mut bytes = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let pump = run.pump(8.0);
+        out.extend(posts(&parse(&run.take_outbox())));
+        bytes.extend(run.take_bytes());
+        if pump == Pump::Ended || Instant::now() > deadline {
+            break;
+        }
+    }
+    // A render names its GPU canvases' ids by key.
+    assert_eq!(out[0]["gpu"], json!({ "scene": "0/:scene" }));
+    assert_eq!(
+        out[1],
+        json!({ "type": "gpu", "batch": { "ops": [
+            ["context", 1, "scene", "bgra8unorm", "opaque"],
+            ["buffer", 3, 8, 40],
+            ["writeBuffer", 3, 0, 0, 8],
+        ], "bytes": [0, 8] } })
+    );
+    assert_eq!(
+        out[2]["value"],
+        "No GPU canvas with key \"flat\" in the rendered view"
+    );
+    assert_eq!(
+        out[3],
+        json!({ "type": "frame", "gpu": { "ops": [["writeBuffer", 3, 0, 0, 4]], "bytes": [8, 4] } })
+    );
+    let floats: Vec<u8> = [1.0f32, 2.0].iter().flat_map(|f| f.to_le_bytes()).collect();
+    assert_eq!(bytes, [floats, 7u32.to_le_bytes().to_vec()].concat());
+    assert_eq!(
+        out[4]["value"],
+        "Canvas \"scene\" is drawn by the GPU; it takes no draw commands"
+    );
+    assert_eq!(out[5]["value"], "TypeError");
+}
+
 /// A live program on the prelude (opencode widgets 35f0712e3), run natively.
 fn widget(source: &str) -> (Vec<Value>, Option<LiveExit>) {
     let prelude = std::fs::read_to_string(

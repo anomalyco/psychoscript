@@ -91,8 +91,19 @@ pub struct Tree {
     /// The ids with handlers and their events, in the order met (a later node with the same id overrides), when asked
     /// for ([`Walk::handlers`]).
     pub handlers: Option<Vec<(String, &'static str)>>,
-    /// The first canvas with each `String(key)`: its id and whether it has `wgsl`.
-    pub canvases: HashMap<String, (String, bool)>,
+    /// The first canvas with each `String(key)`: its id and how it is drawn.
+    pub canvases: HashMap<String, (String, Drawn)>,
+}
+
+/// How a canvas is drawn (widgets.md, Canvas; widgets-gpu.md): one way only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Drawn {
+    /// By draw commands.
+    Commands,
+    /// By its `wgsl`.
+    Wgsl,
+    /// By the program's WebGPU calls (`gpu: true`).
+    Gpu,
 }
 
 /// Why a view didn't walk.
@@ -213,8 +224,17 @@ impl Walk {
                 if let Some(key) = key {
                     let name = string_of(key);
                     if !self.tree.canvases.contains_key(&name) {
-                        let wgsl = v.get("wgsl").is_some_and(|w| w.kind() == Kind::String);
-                        self.tree.canvases.insert(name, (self.path.clone(), wgsl));
+                        let drawn = if v.get("wgsl").is_some_and(|w| w.kind() == Kind::String) {
+                            Drawn::Wgsl
+                        } else if v
+                            .get("gpu")
+                            .is_some_and(|g| g.kind() == Kind::Bool && g.boolean())
+                        {
+                            Drawn::Gpu
+                        } else {
+                            Drawn::Commands
+                        };
+                        self.tree.canvases.insert(name, (self.path.clone(), drawn));
                     }
                 }
             }

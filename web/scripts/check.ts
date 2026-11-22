@@ -1118,6 +1118,170 @@ for (const query of ["?only=shader-broken", "?only=shader-broken&gl=1"]) {
   await page.close()
 }
 
+// ---------- GPU canvases (widgets-gpu.md): batches replayed on WebGPU, pixels read back ----------
+{
+  const gpu = await import("./gpu-programs.ts")
+  /** Mounts a live program at the top-left of the page, for `ms`; its GPU canvas's centre, corner and top pixels. */
+  const run = async (page: Page, source: string, ms = 1500) => {
+    const got = await page.evaluate(
+      async ([source, ms]) => {
+        const d = (window as unknown as { __demo: { host: { mount(el: HTMLElement, o: object): { destroy(): void } }; prelude: string } }).__demo
+        const slot = document.createElement("div")
+        slot.style.cssText = "position:fixed;left:0;top:0;width:200px;z-index:9999;background:#fff"
+        document.body.prepend(slot)
+        const reports: { phase: string; message: string }[] = []
+        const clientErrors: string[] = []
+        const gpuMs: number[] = []
+        const w = d.host.mount(slot, {
+          program: d.prelude + "\n" + source,
+          data: null,
+          mode: "live",
+          onReport: (e: { phase: string; message: string }) => reports.push(e),
+          onClientError: (m: string) => clientErrors.push(m),
+          onMetrics: (m: { kind: string; ms: number }) => m.kind === "gpu" && gpuMs.push(m.ms),
+        })
+        ;(window as unknown as { __gpu: unknown }).__gpu = { w, slot }
+        await new Promise((r) => setTimeout(r, ms as number))
+        const root = slot.querySelector(".psychoscript-widget")!.shadowRoot!
+        const c = root.querySelector('.pw-surface[data-kind="webgpu"] canvas') as HTMLCanvasElement | null
+        const r = c?.getBoundingClientRect()
+        return {
+          rect: r ? { x: r.x, y: r.y, width: r.width, height: r.height } : null,
+          reports,
+          clientErrors,
+          gpuMs,
+          alt: root.querySelector(".pw-surface .pw-alt")?.textContent ?? "",
+          text: [...root.querySelectorAll(".pw-text")].map((t) => t.textContent ?? ""),
+        }
+      },
+      [source, ms] as const,
+    )
+    let px: number[][] = []
+    if (got.rect && got.rect.width > 0) {
+      const png = await page.screenshot({ clip: got.rect })
+      px = await page.evaluate(async (bytes) => {
+        const bmp = await createImageBitmap(new Blob([new Uint8Array(bytes)], { type: "image/png" }))
+        const g = new OffscreenCanvas(bmp.width, bmp.height).getContext("2d")!
+        g.drawImage(bmp, 0, 0)
+        const at = (x: number, y: number) => [...g.getImageData(Math.floor(x * bmp.width), Math.floor(y * bmp.height), 1, 1).data].slice(0, 3)
+        return [at(0.5, 0.5), at(0.05, 0.05), at(0.5, 0.1)]
+      }, [...png])
+    }
+    return { ...got, px }
+  }
+  const done = (page: Page) =>
+    page.evaluate(() => {
+      const g = (window as unknown as { __gpu: { w: { destroy(): void }; slot: HTMLElement } }).__gpu
+      g.w.destroy()
+      g.slot.remove()
+    })
+  const near = (p: number[] | undefined, want: number[]) => !!p && p.every((v, i) => Math.abs(v - want[i]!) <= 8)
+  const { page, errors } = await open("?only=confirm", { width: 800, height: 600 })
+
+  const clear = await run(page, gpu.clear)
+  check(clear.px.length === 3 && clear.px.every((p) => near(p, [255, 0, 0])) && clear.reports.length === 0, "gpu: a render pass clears the canvas to red", clear)
+  await done(page)
+  const triangle = await run(page, gpu.triangle)
+  check(near(triangle.px[0], [0, 255, 0]) && near(triangle.px[1], [0, 0, 0]) && triangle.reports.length === 0, "gpu: a pipeline draws a green triangle on black", triangle)
+  await done(page)
+  const cube = await run(page, gpu.cube)
+  check(
+    near(cube.px[0], [255, 0, 0]) && near(cube.px[1], [0, 0, 0]) && cube.reports.length === 0,
+    "gpu: a depth-tested cube shows its front face (the back face, drawn last, stays behind)",
+    cube,
+  )
+  await shot(page, "gpu-cube")
+  await done(page)
+  const invalid = await run(page, gpu.invalid)
+  check(
+    invalid.reports.length === 1 && invalid.reports[0]!.phase === "gpu" && /nope/.test(invalid.reports[0]!.message) && invalid.alt.startsWith("A GPU scene\n"),
+    "gpu: a WebGPU validation error is a program error in phase gpu; the canvas shows its placeholder with it",
+    { reports: invalid.reports, alt: invalid.alt.slice(0, 80) },
+  )
+  check(invalid.text.includes("over the scene"), "gpu: the rest of the widget keeps working (the layer over the canvas)", invalid.text)
+  await done(page)
+  const spinning = await run(page, gpu.spinning, 2500)
+  const frames = Math.max(0, ...spinning.text.map((t) => Number(/frame (\d+)/.exec(t)?.[1] ?? 0)))
+  const sorted = [...spinning.gpuMs].sort((a, b) => a - b)
+  const median = sorted[Math.floor(sorted.length / 2)] ?? NaN
+  check(frames >= 30 && spinning.reports.length === 0 && near(spinning.px[1], [0, 0, 0]), `gpu: a spinning cube runs a frame loop (${frames}+ frames in 2.5 s, replay median ${median.toFixed(2)} ms a batch, n=${sorted.length})`, { frames, reports: spinning.reports })
+  await done(page)
+  check(errors.length === 0, "gpu: no page errors", errors)
+  await page.close()
+}
+{
+  // No WebGPU: the canvas shows its placeholder, the program runs on, nothing is reported.
+  const page = await browser.newPage({ viewport: { width: 800, height: 600 } })
+  await page.addInitScript(() => delete (Navigator.prototype as { gpu?: unknown }).gpu)
+  const errors: string[] = []
+  page.on("pageerror", (e) => errors.push(e.message))
+  await page.goto(base + "?only=confirm")
+  await page.waitForTimeout(500)
+  const got = await page.evaluate(async (source) => {
+    const d = (window as unknown as { __demo: { host: { mount(el: HTMLElement, o: object): { destroy(): void } }; prelude: string } }).__demo
+    const slot = document.createElement("div")
+    document.body.prepend(slot)
+    const reports: unknown[] = []
+    const clientErrors: string[] = []
+    d.host.mount(slot, { program: d.prelude + "\n" + source, data: null, mode: "live", onReport: (e: unknown) => reports.push(e), onClientError: (m: string) => clientErrors.push(m) })
+    await new Promise((r) => setTimeout(r, 1500))
+    const root = slot.querySelector(".psychoscript-widget")!.shadowRoot!
+    return { reports, clientErrors, alt: root.querySelector(".pw-surface .pw-alt")?.textContent ?? "", text: [...root.querySelectorAll(".pw-text")].map((t) => t.textContent) }
+  }, (await import("./gpu-programs.ts")).cube)
+  check(
+    got.alt === "A GPU scene" && got.text.includes("over the scene") && got.reports.length === 0 && got.clientErrors.length > 0,
+    "gpu: without WebGPU the canvas shows its placeholder (alt), the layer over it stays, nothing is reported",
+    got,
+  )
+  check(errors.length === 0, "gpu (no WebGPU): no page errors", errors)
+  await page.close()
+}
+{
+  // Device loss: the program gets `{ type: "gpu", lost }`; the canvas shows its placeholder until it starts again.
+  const page = await browser.newPage({ viewport: { width: 800, height: 600 } })
+  await page.addInitScript(() => {
+    const w = window as unknown as { __devices: GPUDevice[]; __delivered: unknown[] }
+    w.__devices = []
+    w.__delivered = []
+    const request = GPUAdapter.prototype.requestDevice
+    GPUAdapter.prototype.requestDevice = async function (this: GPUAdapter, d?: GPUDeviceDescriptor) {
+      const device = await request.call(this, d)
+      w.__devices.push(device)
+      return device
+    }
+    const send = Worker.prototype.postMessage as (this: Worker, m: unknown, t?: Transferable[]) => void
+    Worker.prototype.postMessage = function (this: Worker, m: unknown, t?: unknown) {
+      const message = (m as { t?: string; message?: { type?: string } }).message
+      if ((m as { t?: string }).t === "deliver" && message?.type === "gpu") w.__delivered.push(message)
+      return send.call(this, m, t as Transferable[])
+    } as typeof Worker.prototype.postMessage
+  })
+  const errors: string[] = []
+  page.on("pageerror", (e) => errors.push(e.message))
+  await page.goto(base + "?only=confirm")
+  await page.waitForTimeout(500)
+  const got = await page.evaluate(async (source) => {
+    const w = window as unknown as { __demo: { host: { mount(el: HTMLElement, o: object): { destroy(): void } }; prelude: string }; __devices: GPUDevice[]; __delivered: unknown[] }
+    const slot = document.createElement("div")
+    document.body.prepend(slot)
+    const reports: unknown[] = []
+    w.__demo.host.mount(slot, { program: w.__demo.prelude + "\n" + source, data: null, mode: "live", onReport: (e: unknown) => reports.push(e) })
+    await new Promise((r) => setTimeout(r, 1500))
+    const devices = w.__devices.length
+    w.__devices.at(-1)?.destroy()
+    await new Promise((r) => setTimeout(r, 500))
+    const root = slot.querySelector(".psychoscript-widget")!.shadowRoot!
+    return { devices, delivered: w.__delivered, reports, alt: root.querySelector(".pw-surface .pw-alt")?.textContent ?? "" }
+  }, (await import("./gpu-programs.ts")).cube)
+  check(
+    (got.delivered as { lost?: string }[]).some((m) => m.lost === "destroyed") && got.alt === "A GPU scene" && got.reports.length === 0,
+    "gpu: a lost device is sent to the program ({ type: 'gpu', lost }) and the canvas shows its placeholder",
+    got,
+  )
+  check(errors.length === 0, "gpu (device loss): no page errors", errors)
+  await page.close()
+}
+
 // ---------- local network in dev mode ----------
 for (const [query, on] of [["?only=local-demo", true], ["?only=local-demo&local=0", false]] as const) {
   const { page, errors } = await open(query)

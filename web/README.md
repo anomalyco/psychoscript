@@ -95,6 +95,18 @@ Behavior, per the contract:
   one over 2,000 commands or with a command that fails the spec's draw command checks (phase `draw`, `draw command
   <i>: …`); the client gets a draw's canvas id and the normalised commands only. Draw steps are checked the same way.
 - `onSubmit`/`onDismiss` fire once; the widget turns read-only right away. `onSend` is throttled to 10 a second.
+- GPU canvas (`canvas` with `gpu: true` and a `key`, live mode; widgets-gpu.md): the program's WebGPU calls, recorded
+  by the prelude into batches (ops and one `ArrayBuffer` of bytes, in a frame request or on their own), are replayed
+  on the page's thread on the browser's WebGPU: one device per widget, resources by handle, the context's canvas found
+  by its key in the last render and sized before it is configured. WebGPU validates (an error scope per batch); the
+  host checks the subset's ops, handles and limits (4096 px textures, 64 MB buffers, 256 MB and 4,096 live handles a
+  widget, 4 MB and 20,000 ops a batch, 16 passes and 10,000 draws a frame, 256 KB of WGSL). A failure is a program
+  error in phase `gpu`: the canvas stops and shows its placeholder with it; the program and the rest of the widget run
+  on. Before each frame the program gets `{ type: "canvas", key, width, height }` (physical pixels) for each GPU canvas
+  whose size changed; a lost device sends `{ type: "gpu", lost, message }`. Without WebGPU, or without a device, the
+  canvas shows `poster`, else `alt`, else "GPU canvas not supported" (a client error, not reported). Why the page's
+  thread: the canvases, their sizes, placeholders, full screen and pointer are there already; batches cross from the
+  worker as transferred bytes, and WebGPU calls only record commands, so the GPU's work stays asynchronous.
 - `canvas`: Canvas2D, drawn on `requestAnimationFrame` only while `fps > 0` (or `duration` not reached) and
   visible; draw steps run in the worker, at most one in flight; 8 ms / 2,000 commands budget, three overruns in a row
   stop the animation and keep the last frame. A resize repaints the last commands at once, then draws again.

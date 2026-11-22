@@ -1,4 +1,5 @@
 import type { Command, Images } from "./canvas.js";
+import type { GpuCanvas } from "./gpu.js";
 import type { Frame, Rect, ViewNode, WidgetEvent } from "./protocol.js";
 import type { ShaderError } from "./shader.js";
 import type { Resolved } from "./theme.js";
@@ -162,7 +163,26 @@ export declare class GpuCanvasView extends SurfaceBase {
     protected tick: (now: number) => void;
     destroy(): void;
 }
+/**
+ * A GPU canvas (`gpu: true`, widgets-gpu.md): the widget's `GpuReplay` configures it and replays the program's WebGPU
+ * calls into it; it sizes itself as every canvas does, and shows its placeholder when there is no GPU or it failed.
+ */
+export declare class WebGpuCanvasView extends SurfaceBase implements GpuCanvas {
+    /** The physical size last sent to the program (`{ type: "canvas", key, width, height }`), and its key. */
+    sent: string;
+    key: string | undefined;
+    private poster;
+    constructor(ctx: RenderContext, node: ViewNode);
+    update(n: ViewNode): void;
+    /** `poster`, else `alt`, else "GPU canvas not supported"; with a program error's message under it. */
+    placeholder(message?: string): void;
+    shown(): void;
+    wake(): void;
+    protected pointerChanged(): void;
+    protected resized(): void;
+    protected tick: () => void;
+}
 /** `r` in the coordinates of `origin`'s top-left corner, rounded to logical pixels. */
 export declare function rectIn(r: DOMRect, origin: DOMRect): Rect;
 /** The surfaces under `root`, in document order. */
-export declare function surfaces(root: Element): (CanvasView | GpuCanvasView)[];
+export declare function surfaces(root: Element): (CanvasView | GpuCanvasView | WebGpuCanvasView)[];

@@ -6,7 +6,8 @@ import type { ErrorInfo, Frame, FromWorker, LiveExit, Rect, StepOutput, ToWorker
 import { Input } from "./input.js"
 import { NEWER, OLDER, PROTOCOL, SLICE_BUDGET_MS, protocol } from "./protocol.js"
 import type { RenderContext } from "./render.js"
-import { CanvasView, Ticker, destroy as destroyTree, hasSurface, icon, rectIn, reconcile, surfaces } from "./render.js"
+import { CanvasView, Ticker, WebGpuCanvasView, destroy as destroyTree, hasSurface, icon, rectIn, reconcile, surfaces } from "./render.js"
+import { type Batch, GpuReplay } from "./gpu.js"
 import type { ShaderError } from "./shader.js"
 import { stylesheet } from "./styles.js"
 import type { Resolved, Theme } from "./theme.js"
@@ -79,8 +80,8 @@ export interface MountOptions {
   onAsk?(error: WidgetError): void | Promise<void>
   /** Program warnings that aren't errors (an unknown node type): for dev logs. */
   onWarning?(message: string): void
-  /** Timings: `compile`, `init` (first view on screen), `step`, `draw`, in ms. */
-  onMetrics?(metric: { kind: "compile" | "init" | "step" | "draw"; ms: number }): void
+  /** Timings: `compile`, `init` (first view on screen), `step`, `draw`, `gpu` (replaying a GPU batch), in ms. */
+  onMetrics?(metric: { kind: "compile" | "init" | "step" | "draw" | "gpu"; ms: number }): void
   /** Text for the expand button and placeholders, if not English. */
   labels?: Partial<Labels>
   /**
@@ -597,7 +598,7 @@ class Widget implements MountedWidget {
     }
   }
 
-  private metric(kind: "compile" | "init" | "step" | "draw", ms: number) {
+  private metric(kind: "compile" | "init" | "step" | "draw" | "gpu", ms: number) {
     this.options.onMetrics?.({ kind, ms })
   }
 
@@ -676,6 +677,8 @@ class Widget implements MountedWidget {
   }
 
   private stopWorker() {
+    this.gpu?.destroy()
+    this.gpu = undefined
     const worker = this.worker
     if (!worker) return
     this.worker = undefined
@@ -753,6 +756,8 @@ class Widget implements MountedWidget {
   private posted(p: { type?: string; [k: string]: unknown }) {
     switch (p.type) {
       case "render":
+        // The GPU canvases' ids by key: GPU contexts find their canvases by key (widgets-gpu.md, Transport).
+        this.gpuKeys = (p.gpu && typeof p.gpu === "object" ? p.gpu : {}) as Record<string, string>
         if (p.node && typeof p.node === "object") this.render(p.node as ViewNode)
         return
       case "draw": {
@@ -764,8 +769,13 @@ class Widget implements MountedWidget {
         return
       }
       case "frame":
+        // A frame request may carry the GPU batch recorded before it (widgets-gpu.md, Transport): replayed first.
+        if (p.gpu) this.gpuBatch(p.gpu)
         this.live.frameWanted = true
         this.host.ticker.add(this.liveTick)
+        return
+      case "gpu":
+        if (p.batch) this.gpuBatch(p.batch)
         return
       case "submit":
         this.finish("submitted", p.value ?? null)
@@ -809,6 +819,7 @@ class Widget implements MountedWidget {
     if (this.view === undefined) this.viewEl.replaceChildren()
     this.view = node
     reconcile(this.ctx, this.viewEl, [node])
+    if (this.gpuUnavailable) for (const s of surfaces(this.viewEl)) if (s instanceof WebGpuCanvasView) s.placeholder()
     this.updateExpand()
     this.input.refresh()
     if (!this.firstView) {
@@ -1120,10 +1131,48 @@ class Widget implements MountedWidget {
     if (!pause && this.live.frameWanted) this.host.ticker.add(this.liveTick)
   }
 
+  // ---------- GPU canvases (widgets-gpu.md) ----------
+
+  private gpu: GpuReplay | undefined
+  private gpuUnavailable = false
+  private gpuKeys: Record<string, string> = {}
+
+  private gpuBatch(b: unknown) {
+    const batch = b as Batch
+    if (!batch || !Array.isArray(batch.ops) || !(batch.bytes instanceof Uint8Array)) return
+    this.gpu ??= new GpuReplay({
+      canvas: (key) => {
+        const id = Object.hasOwn(this.gpuKeys, key) ? this.gpuKeys[key] : undefined
+        return surfaces(this.viewEl).find((s): s is WebGpuCanvasView => s instanceof WebGpuCanvasView && s.id === id)
+      },
+      programError: (message) => this.report("gpu", { message }),
+      metric: (ms) => this.metric("gpu", ms),
+      clientError: (message, cause) => this.clientError(message, cause),
+      lost: (reason, message) => this.worker?.send({ t: "deliver", wid: this.wid, message: { type: "gpu", lost: reason, message } }),
+      unavailable: () => {
+        this.gpuUnavailable = true
+        for (const s of surfaces(this.viewEl)) if (s instanceof WebGpuCanvasView) s.placeholder()
+      },
+    })
+    this.gpu.batch(batch)
+  }
+
+  /** Before a frame: `{ type: "canvas", key, width, height }` (physical pixels) for each GPU canvas whose size changed. */
+  private gpuSizes() {
+    for (const s of surfaces(this.viewEl)) {
+      if (!(s instanceof WebGpuCanvasView) || s.key === undefined || !s.sized()) continue
+      const { width, height } = s.canvas
+      const size = `${width}x${height}`
+      if (size === s.sent) continue
+      s.sent = size
+      this.worker?.send({ t: "deliver", wid: this.wid, message: { type: "canvas", key: s.key, width, height } })
+    }
+  }
+
   private liveTick = (now: number) => {
     if (!this.live.frameWanted || !this.worker || !this.live.running) return this.host.ticker.delete(this.liveTick)
     if (!this.visible || this.paused) return this.host.ticker.delete(this.liveTick)
-    const surface = surfaces(this.viewEl).find((s): s is CanvasView => s instanceof CanvasView)
+    const surface = surfaces(this.viewEl).find((s): s is CanvasView | WebGpuCanvasView => s instanceof CanvasView || s instanceof WebGpuCanvasView)
     const rect = this.viewEl.getBoundingClientRect()
     // Never a frame with a zero size (widgets.md, Canvas): keep the request until the canvas, or the view, has one.
     if (surface ? !surface.sized() : rect.width < 1 || rect.height < 1) return
@@ -1146,6 +1195,8 @@ class Widget implements MountedWidget {
           fullscreen: this.isFullscreen,
           close: this.closeInRoot(),
         }
+    this.gpuSizes()
+    this.gpu?.frame()
     this.worker.send({ t: "deliver", wid: this.wid, message: { type: "frame", frame } })
   }
 

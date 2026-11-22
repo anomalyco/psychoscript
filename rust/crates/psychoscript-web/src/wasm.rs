@@ -159,6 +159,13 @@ impl JsLiveRun {
         self.0.take_outbox()
     }
 
+    /// The bytes of the GPU batches in the outbox `takeOutbox` just gave (`bytes: [offset, length]`): call it right
+    /// after.
+    #[wasm_bindgen(js_name = takeBytes)]
+    pub fn take_bytes(&mut self) -> Vec<u8> {
+        self.0.take_bytes()
+    }
+
     /// Answers fetch `id`: `metaJson` is `{ status, url, headers }` (the final URL), `body` the body's bytes.
     #[wasm_bindgen(js_name = fetchDone)]
     pub fn fetch_done(&mut self, id: f64, meta_json: &str, body: Vec<u8>) {

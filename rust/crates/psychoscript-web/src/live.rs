@@ -14,6 +14,7 @@
 //! stretch of compute longer than the slice budget, with no wait on the host in between, stops the run.
 
 use std::collections::{HashMap, VecDeque};
+use std::fmt::Write as _;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,7 +33,7 @@ use crate::fetch::{self, Rejection, Request};
 use crate::json::{self, Input};
 use crate::program::uri_error;
 use crate::time::Instant;
-use crate::tree::{Walk, WalkError};
+use crate::tree::{Drawn, Walk, WalkError};
 
 /// A live run's budgets and capabilities.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -152,8 +153,10 @@ struct FetchSlot {
 struct Shared {
     input: Arc<str>,
     native: bool,
-    /// Native runs: the last render's canvases by `String(key)`: id, and whether it has `wgsl`.
-    canvases: HashMap<String, (String, bool)>,
+    /// Native runs: the last render's canvases by `String(key)`: id, and how it is drawn.
+    canvases: HashMap<String, (String, Drawn)>,
+    /// The bytes of the GPU batches in the outbox, which their posts name by `[offset, length]` ([`LiveRun::take_bytes`]).
+    bytes: Vec<u8>,
     /// `None`: no https capability.
     policy: Option<fetch::Policy>,
     /// Native runs: the post rate.
@@ -286,6 +289,25 @@ impl Shared {
                     self.canvases = tree.canvases;
                     out.push_str(r#","node":"#);
                     out.push_str(&node);
+                    // The GPU canvases' ids by key, for the client's replay to find each context's canvas by
+                    // (widgets-gpu.md, Transport).
+                    let mut first = true;
+                    for (key, (id, drawn)) in &self.canvases {
+                        if *drawn != Drawn::Gpu {
+                            continue;
+                        }
+                        out.push_str(if std::mem::take(&mut first) {
+                            r#","gpu":{"#
+                        } else {
+                            ","
+                        });
+                        out.push_str(&serde_json::Value::from(key.as_str()).to_string());
+                        out.push(':');
+                        out.push_str(&serde_json::Value::from(id.as_str()).to_string());
+                    }
+                    if !first {
+                        out.push('}');
+                    }
                     out.push('}');
                     native = Some(out);
                     counted = Some(None);
@@ -306,7 +328,7 @@ impl Shared {
                                 &format!(r#"No canvas with key "{key}" in the rendered view"#),
                             ));
                         }
-                        Some((_, true)) => {
+                        Some((_, Drawn::Wgsl)) => {
                             return Err(error(
                                 "Error",
                                 &format!(
@@ -314,7 +336,15 @@ impl Shared {
                                 ),
                             ));
                         }
-                        Some((id, false)) => id,
+                        Some((_, Drawn::Gpu)) => {
+                            return Err(error(
+                                "Error",
+                                &format!(
+                                    r#"Canvas "{key}" is drawn by the GPU; it takes no draw commands"#
+                                ),
+                            ));
+                        }
+                        Some((id, Drawn::Commands)) => id,
                     };
                     // The client gets the canvas's id and the normalised commands, nothing else. A function in them
                     // fails the call; an invalid draw is an invalid post: the run ends with a program error in phase
@@ -332,6 +362,24 @@ impl Shared {
                     native = Some(out);
                     counted = Some(Some(key.to_owned()));
                 }
+                // GPU batches (widgets-gpu.md, Transport): in a frame request, or on their own; never counted.
+                Some("frame") => {
+                    if let Some(batch) = message
+                        .get("gpu")
+                        .filter(|b| !matches!(b, HostValue::Undefined))
+                    {
+                        let mut out = String::from(r#"{"type":"frame","gpu":"#);
+                        self.batch(batch, &mut out)?;
+                        out.push('}');
+                        native = Some(out);
+                    }
+                }
+                Some("gpu") if message.get("ops").is_some() => {
+                    let mut out = String::from(r#"{"type":"gpu","batch":"#);
+                    self.batch(message, &mut out)?;
+                    out.push('}');
+                    native = Some(out);
+                }
                 // An answer goes out after what waits for the rate.
                 Some("submit" | "dismiss") => self.release(),
                 _ => {}
@@ -347,6 +395,56 @@ impl Shared {
             None => self.push(&envelope),
         }
         Ok(reply)
+    }
+
+    /// Writes a GPU batch `{ ops, bytes }` as `{"ops":[...],"bytes":[offset,length]}`: its bytes go to the byte outbox,
+    /// read in place. A function in the ops fails the call; so does a `context` op whose key names no GPU canvas in the
+    /// last render.
+    fn batch(&mut self, batch: &HostValue, out: &mut String) -> Result<(), HostValue> {
+        out.push_str(r#"{"ops":["#);
+        let ops: &[Option<HostValue>] = match batch.get("ops") {
+            Some(HostValue::Array(ops)) => ops,
+            _ => &[],
+        };
+        for (i, op) in ops.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            let op = op.as_ref().unwrap_or(&HostValue::Undefined);
+            let written = json::write_checked(op).ok_or_else(|| json::carried(1, POST))?;
+            if let HostValue::Array(items) = op
+                && items
+                    .first()
+                    .and_then(|o| o.as_ref())
+                    .and_then(HostValue::as_str)
+                    == Some("context")
+            {
+                let key = items
+                    .get(2)
+                    .and_then(|k| k.as_ref())
+                    .and_then(HostValue::as_str)
+                    .unwrap_or_default();
+                if !self
+                    .canvases
+                    .get(key)
+                    .is_some_and(|(_, drawn)| *drawn == Drawn::Gpu)
+                {
+                    return Err(error(
+                        "Error",
+                        &format!(r#"No GPU canvas with key "{key}" in the rendered view"#),
+                    ));
+                }
+            }
+            out.push_str(&written);
+        }
+        let start = self.bytes.len();
+        match batch.get("bytes") {
+            Some(HostValue::TypedArray(t)) => t.with_bytes(|b| self.bytes.extend_from_slice(b)),
+            Some(HostValue::Bytes(b) | HostValue::Buffer(b)) => self.bytes.extend_from_slice(b),
+            _ => {}
+        }
+        let _ = write!(out, r#"],"bytes":[{start},{}]}}"#, self.bytes.len() - start);
+        Ok(())
     }
 
     /// A `render` (`by` `None`) or a canvas's `draw` under the post rate: out now, or waiting in place of the waiting
@@ -478,6 +576,7 @@ impl LiveRun {
             input: input_json.into(),
             native: options.native,
             canvases: HashMap::new(),
+            bytes: Vec::new(),
             policy: options.https_hosts.clone().map(|hosts| fetch::Policy {
                 hosts,
                 local_network: options.allow_local_network,
@@ -619,6 +718,12 @@ impl LiveRun {
             w.wake();
         }
         Ok(())
+    }
+
+    /// The bytes of the GPU batches in the outbox [`LiveRun::take_outbox`] just gave, which their posts name by
+    /// `[offset, length]`: take them right after it.
+    pub fn take_bytes(&mut self) -> Vec<u8> {
+        std::mem::take(&mut lock(&self.shared).bytes)
     }
 
     /// The outbox since the last call, as a JSON array of `{ type: "post", message }`, `{ type: "warning", message }`,

@@ -2,6 +2,7 @@
 // place keeps its element, so focus, a carousel's page, a slider being dragged and a canvas's clock survive updates.
 
 import type { Command, Images } from "./canvas.js"
+import type { GpuCanvas } from "./gpu.js"
 import { paint } from "./canvas.js"
 import { markdown } from "./markdown.js"
 import type { Frame, Rect, ViewNode, WidgetEvent } from "./protocol.js"
@@ -96,9 +97,13 @@ function hasFill(node: ViewNode): boolean {
   return children(node).some((c) => c && typeof c === "object" && hasFill(c))
 }
 
-/** A canvas with `wgsl` is drawn by its shader on the GPU, one without by `draw`: never both, so never one element. */
+/**
+ * A canvas with `wgsl` is drawn by its shader on the GPU, one with `gpu: true` by the program's WebGPU calls
+ * (widgets-gpu.md), any other by `draw`: one way only, so never one element.
+ */
 function kind(node: ViewNode): string {
-  return node.type === "canvas" && typeof node.wgsl === "string" ? "canvas:gpu" : node.type
+  if (node.type !== "canvas") return node.type
+  return typeof node.wgsl === "string" ? "canvas:gpu" : node.gpu === true ? "canvas:webgpu" : "canvas"
 }
 
 /** Renders `nodes` as `parent`'s children, reusing elements of the same type at the same place. */
@@ -733,7 +738,7 @@ abstract class SurfaceBase {
     this.node = node
     this.el = h(ctx, "div", "pw-surface")
     this.el.dataset.pwLive = ""
-    this.el.dataset.kind = kind(node) === "canvas:gpu" ? "gpu" : "2d"
+    this.el.dataset.kind = kind(node) === "canvas:gpu" ? "gpu" : kind(node) === "canvas:webgpu" ? "webgpu" : "2d"
     this.canvas = h(ctx, "canvas")
     this.el.append(this.canvas)
     this.observer = new ResizeObserver(() => this.measure())
@@ -1195,6 +1200,54 @@ export class GpuCanvasView extends SurfaceBase {
   }
 }
 
+/**
+ * A GPU canvas (`gpu: true`, widgets-gpu.md): the widget's `GpuReplay` configures it and replays the program's WebGPU
+ * calls into it; it sizes itself as every canvas does, and shows its placeholder when there is no GPU or it failed.
+ */
+export class WebGpuCanvasView extends SurfaceBase implements GpuCanvas {
+  /** The physical size last sent to the program (`{ type: "canvas", key, width, height }`), and its key. */
+  sent = ""
+  key: string | undefined
+  private poster: HTMLImageElement | undefined
+
+  constructor(ctx: RenderContext, node: ViewNode) {
+    super(ctx, node)
+    if (!(navigator as Navigator & { gpu?: unknown }).gpu) this.placeholder()
+  }
+
+  update(n: ViewNode) {
+    this.node = n
+    if (this.layout(n)) this.measure()
+  }
+
+  /** `poster`, else `alt`, else "GPU canvas not supported"; with a program error's message under it. */
+  placeholder(message?: string) {
+    const poster = str(this.node.poster)
+    const url = poster ? this.ctx.resolveImage(poster) : undefined
+    if (url) {
+      this.poster ??= h(this.ctx, "img", "pw-poster")
+      this.poster.alt = str(this.node.alt)
+      this.poster.src = url
+      this.el.append(this.poster)
+      if (message) this.showAlt(message, true)
+      else this.el.querySelector(".pw-alt")?.remove()
+      return
+    }
+    const alt = str(this.node.alt) || "GPU canvas not supported"
+    this.showAlt(message ? `${alt}\n${message}` : alt)
+  }
+
+  shown() {
+    this.poster?.remove()
+    this.el.querySelector(".pw-alt")?.remove()
+  }
+
+  wake() {}
+  protected pointerChanged() {}
+  protected resized() {}
+  protected tick = () => this.stop()
+}
+
 /** `r` in the coordinates of `origin`'s top-left corner, rounded to logical pixels. */
 export function rectIn(r: DOMRect, origin: DOMRect): Rect {
   return {
@@ -1206,8 +1259,8 @@ export function rectIn(r: DOMRect, origin: DOMRect): Rect {
 }
 
 /** The surfaces under `root`, in document order. */
-export function surfaces(root: Element): (CanvasView | GpuCanvasView)[] {
-  const out: (CanvasView | GpuCanvasView)[] = []
+export function surfaces(root: Element): (CanvasView | GpuCanvasView | WebGpuCanvasView)[] {
+  const out: (CanvasView | GpuCanvasView | WebGpuCanvasView)[] = []
   for (const el of root.querySelectorAll(".pw-surface")) {
     const view = VIEWS.get(el)
     if (view) out.push(view)
@@ -1215,10 +1268,11 @@ export function surfaces(root: Element): (CanvasView | GpuCanvasView)[] {
   return out
 }
 
-const VIEWS = new WeakMap<Element, CanvasView | GpuCanvasView>()
-const register = (v: CanvasView | GpuCanvasView) => VIEWS.set(v.el, v)
+const VIEWS = new WeakMap<Element, CanvasView | GpuCanvasView | WebGpuCanvasView>()
+const register = (v: CanvasView | GpuCanvasView | WebGpuCanvasView) => VIEWS.set(v.el, v)
 BUILDERS.canvas = (ctx, node) => {
-  const v = kind(node) === "canvas:gpu" ? new GpuCanvasView(ctx, node) : new CanvasView(ctx, node)
+  const k = kind(node)
+  const v = k === "canvas:gpu" ? new GpuCanvasView(ctx, node) : k === "canvas:webgpu" ? new WebGpuCanvasView(ctx, node) : new CanvasView(ctx, node)
   register(v)
   return v.built()
 }
