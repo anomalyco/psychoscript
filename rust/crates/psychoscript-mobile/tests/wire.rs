@@ -1176,3 +1176,57 @@ fn views_of_100_levels_cross_and_deeper_ones_fail_the_view() {
         run.stop();
     }
 }
+
+#[test]
+fn a_program_catches_a_real_type_error_for_a_function_where_none_may_go() {
+    let caught = "const name = (e) => [e instanceof TypeError, e.constructor === TypeError, e.name, e.message]";
+    // A step: the view's call, then the input's.
+    let bytes = run_bytes(
+        &format!(
+            "{caught}\nlet a, b\ntry {{ __widget_emit({{ type: \"text\", text: \"t\", f: () => 1 }}) }} catch (e) {{ a = name(e) }}\ntry {{ __input(() => 1) }} catch (e) {{ b = name(e) }}\n__widget_emit({{ type: \"divider\" }})\nreturn {{ state: [a, b] }}"
+        ),
+        RunOptions::default(),
+    )
+    .unwrap();
+    let Output::Step(s) = decode_output(&bytes).unwrap() else {
+        panic!()
+    };
+    let message = |label: &str, arg: usize| {
+        format!(
+            "Argument {arg} to {label} contains a function, which cannot be passed to the host."
+        )
+    };
+    assert_eq!(
+        s.state,
+        json!([
+            [true, true, "TypeError", message("__widget_emit", 1)],
+            [true, true, "TypeError", message("__input", 1)]
+        ])
+    );
+    // Live: sync (`post`) and async (`sleep`, `fetch`) calls.
+    let source = format!(
+        "{caught}\nconst got = []\ntry {{ __host.post({{ type: \"send\", value: () => 1 }}) }} catch (e) {{ got.push(name(e)) }}\ntry {{ await __host.sleep(() => 1) }} catch (e) {{ got.push(name(e)) }}\ntry {{ await __host.fetch({{ url: \"https://a.test\", body: () => 1 }}) }} catch (e) {{ got.push(name(e)) }}\n__host.post({{ type: \"submit\", value: got }})\nawait __host.receive()"
+    );
+    let (h, rx) = handler();
+    let run = program(source)
+        .start_live(
+            "null".into(),
+            h,
+            LiveOptions::default(),
+            None,
+            Some(ValueEncoder::widget()),
+        )
+        .unwrap();
+    let Event::Bytes(list) = next(&rx) else {
+        panic!("bytes")
+    };
+    assert_eq!(
+        decode_post(&list[0]).unwrap(),
+        Post::Submit(json!([
+            [true, true, "TypeError", message("__host.post", 1)],
+            [true, true, "TypeError", message("__host.sleep", 1)],
+            [true, true, "TypeError", message("__host.fetch", 1)]
+        ]))
+    );
+    run.stop();
+}

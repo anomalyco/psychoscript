@@ -96,8 +96,7 @@ the program built it. Runs with an encoder pass program functions to the host as
 - A function (marker) in the argument of a host function the encoder doesn't handle, or where the encoder allows none
   (a post's values, draw commands, `fetch`'s request), fails the call with the runtime's `TypeError`
   `Argument <n> to <name> contains a function, which cannot be passed to the host.` at the call, as it does without
-  an encoder. (The program sees it as an `Error` with that message: psychoscript gives a host's located failure the
-  name `Error`; the run's failure says `TypeError`.)
+  an encoder: a real `TypeError` the program can catch, located at the call when uncaught.
 - Widget live draws name their canvas by key (`{ type: "draw", key, commands }`); the encoder sends the canvas's id
   from the last render. An unknown key, or a canvas drawn by its `wgsl`, throws an `Error` at the post that the
   program can catch, as the prelude does.
