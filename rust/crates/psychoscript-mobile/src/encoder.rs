@@ -1,4 +1,5 @@
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Instant;
 
 use psychoscript::{Data, Failure, HostError, HostValue};
 
@@ -53,14 +54,30 @@ pub trait EncodeStep: Send {
     fn finish(&self, result: &Data) -> Result<Vec<u8>, Failure>;
 }
 
-/// A live run's posts (`__host.post(message)`).
+/// A live run's posts (`__host.post(message)`). It may hold posts back (a rate) and hand them over later: the run asks
+/// for them when [`EncodePosts::due`] says, as soon as the program waits, and takes them all when it ends unless the
+/// app stopped it.
 pub trait EncodePosts: Send {
-    /// The post's bytes, `None` when `keep` is false (dropped over the post rate), and what `post` returns.
+    /// The bytes to hand to the app for a post at `now` (none, one or several), and what `post` returns.
     fn post(
         &mut self,
         message: &HostValue,
-        keep: bool,
-    ) -> Result<(Option<Vec<u8>>, HostValue), Reject>;
+        now: Instant,
+    ) -> Result<(Vec<Vec<u8>>, HostValue), Reject>;
+    /// Posts held back that are due by `now`.
+    fn due(&mut self, _now: Instant) -> Vec<Vec<u8>> {
+        Vec::new()
+    }
+    /// When the next post held back is due, if one is.
+    fn next_due(&self) -> Option<Instant> {
+        None
+    }
+    /// Every post held back, as the run ends (not when the app stops it).
+    fn release(&mut self) -> Vec<Vec<u8>> {
+        Vec::new()
+    }
+    /// A message the app delivered to the program.
+    fn delivered(&mut self, _message: &HostValue) {}
     /// What a snapshot keeps of it, for [`EncodePosts::load`] in the restored run.
     fn save(&self) -> Data {
         Data::Null
@@ -176,6 +193,7 @@ mod widget {
             widget_wire::CallError::View(m) => {
                 Reject::End(Failure::new(widget_wire::INVALID_VIEW, m))
             }
+            widget_wire::CallError::End(e) => Reject::End(failure(e)),
         }
     }
 
@@ -223,11 +241,23 @@ mod widget {
         fn post(
             &mut self,
             message: &HostValue,
-            keep: bool,
-        ) -> Result<(Option<Vec<u8>>, HostValue), Reject> {
+            now: Instant,
+        ) -> Result<(Vec<Vec<u8>>, HostValue), Reject> {
             let (bytes, handled) =
-                widget_wire::LivePosts::post(self, message, keep).map_err(reject)?;
+                widget_wire::LivePosts::post(self, message, now).map_err(reject)?;
             Ok((bytes, handled.map_or(HostValue::Undefined, HostValue::Bool)))
+        }
+        fn due(&mut self, now: Instant) -> Vec<Vec<u8>> {
+            widget_wire::LivePosts::due(self, now)
+        }
+        fn next_due(&self) -> Option<Instant> {
+            widget_wire::LivePosts::next_due(self)
+        }
+        fn release(&mut self) -> Vec<Vec<u8>> {
+            widget_wire::LivePosts::release(self)
+        }
+        fn delivered(&mut self, message: &HostValue) {
+            widget_wire::LivePosts::delivered(self, message)
         }
         /// The last render's canvases, `[[key, id, wgsl], ...]`.
         fn save(&self) -> Data {

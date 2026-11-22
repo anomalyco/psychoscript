@@ -37,9 +37,6 @@ pub struct LiveOptions {
     /// Longest the program may compute without waiting on its host; past it the run stops with `SliceBudget`.
     #[uniffi(default = 50)]
     pub slice_budget_ms: u64,
-    /// Posts beyond this many in a second are dropped, with one `on_warning` per second.
-    #[uniffi(default = 240)]
-    pub max_posts_per_second: u32,
     /// The `https` capability: hosts `__host.fetch` may reach (exact names, `*.` suffixes, `*` for any). `None`:
     /// every fetch is rejected with `CapabilityDenied`.
     #[uniffi(default)]
@@ -59,7 +56,6 @@ impl Default for LiveOptions {
     fn default() -> Self {
         LiveOptions {
             slice_budget_ms: 50,
-            max_posts_per_second: 240,
             https_hosts: None,
             allow_local_network: false,
             max_heap_bytes: None,
@@ -150,6 +146,9 @@ impl LiveRun {
         })?;
         if matches!(*self.control.state(), State::Ended) {
             return Err(ended());
+        }
+        if let Some(encoded) = &self.control.encoded {
+            lock(encoded).delivered(&message);
         }
         lock(&self.control.inbox).queue.push_back(message);
         self.control.wake_receive();
@@ -356,12 +355,6 @@ enum At {
 /// How long a probed run thread has to answer: wake, and poll its pending calls.
 const PROBE_GRACE: Duration = Duration::from_millis(30);
 
-struct Posts {
-    window: Instant,
-    count: u32,
-    warned: bool,
-}
-
 /// One wake-up's posts: JSON, or an encoder's bytes.
 #[derive(Default)]
 struct Outbox {
@@ -385,6 +378,8 @@ pub(crate) struct Control {
     encoded: Option<Mutex<Box<dyn EncodePosts>>>,
     /// The encoder's boundary depth.
     max_value_depth: Option<usize>,
+    /// When the timer asks for the encoder's held-back posts next.
+    due_at: Mutex<Option<Instant>>,
     /// A program error that ended the run at once (a view the encoder refused).
     ended: Mutex<Option<PsychoScriptError>>,
     thrown: Thrown,
@@ -398,7 +393,6 @@ pub(crate) struct Control {
     fetches: Mutex<Vec<Weak<Mutex<fetch::Slot>>>>,
     fetch_budget: Mutex<fetch::Budget>,
     clock: Mutex<Clock>,
-    posts: Mutex<Posts>,
     /// Set by `stop`: host calls interrupt the run.
     stopping: AtomicBool,
     /// Whether the VM is computing, for the slice budget.
@@ -426,6 +420,7 @@ impl Control {
             max_value_depth: encoder.as_ref().and_then(|e| e.0.max_value_depth()),
             encoded: encoder.map(|e| Mutex::new(e.0.live())),
             ended: Mutex::new(None),
+            due_at: Mutex::new(None),
             thrown: Thrown::default(),
             state: Mutex::new(State::Starting),
             run: Mutex::new(None),
@@ -438,11 +433,6 @@ impl Control {
                 base: now,
                 offset_ms: 0.0,
                 paused: None,
-            }),
-            posts: Mutex::new(Posts {
-                window: now,
-                count: 0,
-                warned: false,
             }),
             stopping: AtomicBool::new(false),
             slice: Mutex::new(Slice {
@@ -540,7 +530,10 @@ impl Control {
             },
             Ok(RunOutcome::Suspended(_)) => match why {
                 // `snapshot` keeps the state and joins this thread.
-                Why::Snapshot => return self.flush(),
+                Why::Snapshot => {
+                    self.take_held(true);
+                    return self.flush();
+                }
                 Why::Overrun => LiveExit::Failed {
                     error: PsychoScriptError::SliceBudget {
                         reason: format!(
@@ -566,7 +559,15 @@ impl Control {
             },
             Err(_interrupted) => LiveExit::Stopped,
         };
-        self.flush();
+        // The final view is never lost: what an encoder holds back goes out, unless the app stopped the run, which
+        // drops it.
+        match exit {
+            LiveExit::Stopped => self.hand_over(),
+            _ => {
+                self.take_held(true);
+                self.flush();
+            }
+        }
         self.end();
         self.handler.on_exit(exit);
     }
@@ -1035,43 +1036,19 @@ impl Control {
     /// Queues a post and returns what `post` gives the program: `undefined`, or with an encoder what it says (a
     /// native widget render: whether the view has handlers). An encoder's failure is thrown at the post.
     fn post(&self, message: &HostValue) -> HostResult {
-        // Over the rate a post is dropped; an encoder still sees it (a render's handlers count).
-        let keep = {
-            let mut posts = lock(&self.posts);
-            if posts.window.elapsed() >= Duration::from_secs(1) {
-                *posts = Posts {
-                    window: Instant::now(),
-                    count: 0,
-                    warned: false,
-                };
-            }
-            posts.count += 1;
-            if posts.count > self.options.max_posts_per_second {
-                let warn = !std::mem::replace(&mut posts.warned, true);
-                drop(posts);
-                if warn {
-                    self.handler.on_warning(format!(
-                        "the program posted more than {} messages in a second; later ones this second are dropped",
-                        self.options.max_posts_per_second
-                    ));
-                }
-                false
-            } else {
-                true
-            }
-        };
         let (first, ret) = match &self.encoded {
             Some(encoded) => {
-                let posted = lock(encoded).post(message, keep);
+                let posted = lock(encoded).post(message, Instant::now());
                 let (bytes, ret) = posted.map_err(|r| self.reject(r))?;
-                let Some(bytes) = bytes else {
+                self.arm_due();
+                if bytes.is_empty() {
                     return Ok(ret);
-                };
+                }
                 let mut outbox = lock(&self.outbox);
-                outbox.bytes.push(bytes);
-                (outbox.bytes.len() == 1, ret)
+                let first = outbox.bytes.is_empty();
+                outbox.bytes.extend(bytes);
+                (first, ret)
             }
-            None if !keep => return Ok(HostValue::Undefined),
             None => {
                 let text = json::write(message);
                 let mut outbox = lock(&self.outbox);
@@ -1086,8 +1063,51 @@ impl Control {
         Ok(ret)
     }
 
-    /// Hands the queued posts to the host in one call.
+    /// Asks the encoder again when its next held-back post is due: the timer then wakes the run's pending calls, whose
+    /// poll hands it over.
+    fn arm_due(&self) {
+        let Some(encoded) = &self.encoded else { return };
+        let Some(at) = lock(encoded).next_due() else {
+            return;
+        };
+        let mut armed = lock(&self.due_at);
+        if armed.is_some_and(|armed| armed <= at) {
+            return;
+        }
+        *armed = Some(at);
+        drop(armed);
+        timer::schedule(at, Fire::Due(self.me.clone()));
+    }
+
+    /// The timer's call for held-back posts that are due.
+    pub(crate) fn due(&self) {
+        *lock(&self.due_at) = None;
+        self.wake_all();
+    }
+
+    /// Moves the encoder's due posts, or with `all` every held-back one, into the outbox.
+    fn take_held(&self, all: bool) {
+        let Some(encoded) = &self.encoded else { return };
+        let bytes = match all {
+            true => lock(encoded).release(),
+            false => lock(encoded).due(Instant::now()),
+        };
+        if !bytes.is_empty() {
+            lock(&self.outbox).bytes.extend(bytes);
+        }
+        if !all {
+            self.arm_due();
+        }
+    }
+
+    /// Hands the queued posts (and the encoder's held-back ones that are due) to the host in one call.
     fn flush(&self) {
+        self.take_held(false);
+        self.hand_over();
+    }
+
+    /// Hands the queued posts to the host in one call.
+    fn hand_over(&self) {
         let Outbox { json, bytes } = std::mem::take(&mut *lock(&self.outbox));
         if !json.is_empty() {
             self.handler.on_posts(json);

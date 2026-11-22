@@ -90,9 +90,18 @@ the program built it. Runs with an encoder pass program functions to the host as
   called. `__host.post` returns what the encoder says: for a widget `render`, whether the view has handlers (the
   prelude keeps the run going on it), else `undefined`. A post the encoder can't write throws at `__host.post`:
   uncaught, the run ends with `Failed(Runtime)` of the encoder's kind, located at the post. A view breaking Keys and
-  depth doesn't throw: the run ends at once with `Failed(Runtime(kind: "InvalidView"))`, no line. Posts dropped over
-  the rate still reach the encoder (a render is walked, its handlers count) but not the app. What the encoder keeps
-  (a widget's canvases by key) goes into a snapshot.
+  depth doesn't throw: the run ends at once with `Failed(Runtime(kind: "InvalidView"))`, no line. What the encoder
+  keeps (a widget's canvases by key) goes into a snapshot.
+- **An encoder may hold posts back** and hand them over later: the crate asks it again when it says (its timer wakes
+  the waiting run, whose next poll hands them over), and takes all of them when the run ends, before `onExit`,
+  unless `stop()` ended it (then they're dropped). The widget encoder holds back for the **post rate**
+  (`widgets-live.md`, Post rate): `render` and `draw` posts take a token from a bucket of 8 refilled at 240 a second;
+  without one they wait, a newer render replacing the waiting render and a newer draw the waiting draw of its canvas
+  key, and go out in order as tokens come. Every post is checked when it's posted (errors and `post`'s answer don't
+  wait). `submit` and `dismiss` hand over what waits first; `frame`, `send`, `capture` and GPU batches go at once;
+  a frame request while one is pending (no `frame` delivered since) sends nothing but its GPU batch. Nothing is
+  dropped and the rate is never an error. A `draw` post whose `key` isn't a string ends the run with
+  `Failed(Runtime(kind: "InvalidDataValue", reason: "A draw post needs a string key"))`, no line.
 - A function (marker) in the argument of a host function the encoder doesn't handle, or where the encoder allows none
   (a post's values, draw commands, `fetch`'s request), fails the call with the runtime's `TypeError`
   `Argument <n> to <name> contains a function, which cannot be passed to the host.` at the call, as it does without
@@ -120,11 +129,11 @@ its own until it returns or is stopped. Beside its input function it gets `__hos
 - `LiveHandler` (callback interface): `onPosts(messagesJson)` gets every post of one wake-up of the program, in
   order, in one call, as soon as the program waits again (or ends). A live frame that draws and then asks for the next
   frame costs one callback, not two. `onPostsBytes(messages)` replaces `onPosts` for a run with an encoder (above);
-  implement it as a no-op otherwise. `onWarning(message)` comes in its own call. Both run on the run's thread: hand
+  implement it as a no-op otherwise. `onWarning(message)` comes in its own call (the crate sends none at present). Both run on the run's thread: hand
   them to the UI thread and return. `onExit(LiveExit)` runs once on the run's thread:
   `Finished(resultJson)`, `Failed(error)` (`SliceBudget`, `Runtime`, ...), or `Stopped`.
-- `LiveOptions(sliceBudgetMs = 50, maxPostsPerSecond = 240, httpsHosts = nil, allowLocalNetwork = false,
-  maxHeapBytes = nil)`.
+- `LiveOptions(sliceBudgetMs = 50, httpsHosts = nil, allowLocalNetwork = false, maxHeapBytes = nil)`. The crate
+  limits no post rate: a widget's is its encoder's (above).
   - **Slice budget:** a run computing past the budget without waiting is stopped with `SliceBudget`. Only the VM's
     own execution counts, in its thread's CPU time, so time the OS doesn't schedule the thread (a loaded device, a
     paused emulator) isn't compute: not the time it waits on pending host calls (several at once included), and not time
@@ -138,7 +147,6 @@ its own until it returns or is stopped. Beside its input function it gets `__hos
     loops. A timer checks each stretch of compute; past the budget it probes the run by waking its pending host calls,
     which the VM polls as soon as it waits and can't while it computes. An unanswered probe (30 ms grace) means the run
     is still computing.
-  - **Posts:** past the limit in one second they're dropped, with one `onWarning` per second.
   - **Heap:** `maxHeapBytes` caps the run's heap: over it the run ends with `Failed(MemoryLimitExceeded)`. The
     contract's default for live widgets is 32 MB (`32 * 1024 * 1024`), but the crate sets no default: pass it.
     A snapshot keeps the cap it ran with.
