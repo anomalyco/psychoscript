@@ -26,6 +26,7 @@ use psychoscript::{
     ProgramOptions, RunOutcome, Runtime, Translate, TranslateFunctions, TranslatePromises,
 };
 
+use crate::draw;
 use crate::error::Error;
 use crate::fetch::{self, Rejection, Request};
 use crate::json::{self, Input};
@@ -192,8 +193,6 @@ struct Rate {
 /// The post rate's burst, and the tolerance for its fractional tokens.
 const BURST: f64 = 8.0;
 const EPSILON: f64 = 1e-9;
-/// The most commands a draw may have (widgets-live.md, "Lifecycle and budgets").
-const MAX_COMMANDS: usize = 2000;
 
 impl Rate {
     fn refill(&mut self) {
@@ -317,20 +316,13 @@ impl Shared {
                         }
                         Some((id, false)) => id,
                     };
-                    // The client gets the canvas's id and the commands, nothing else.
+                    // The client gets the canvas's id and the commands, nothing else. A function in them fails the
+                    // call; an invalid draw is an invalid post: the run ends with a program error in phase `draw`.
                     let commands = message.get("commands").unwrap_or(&HostValue::Undefined);
                     let written =
                         json::write_checked(commands).ok_or_else(|| json::carried(1, POST))?;
-                    if let HostValue::Array(list) = commands
-                        && list.len() > MAX_COMMANDS
-                    {
-                        // An invalid post: the run ends with a program error in phase `draw`.
-                        return Err(self.fail(Error::Draw {
-                            reason: format!(
-                                "A draw post has {} commands; it must have at most {MAX_COMMANDS} commands",
-                                list.len()
-                            ),
-                        }));
+                    if let Err(reason) = draw::check(Some(commands)) {
+                        return Err(self.fail(Error::Draw { reason }));
                     }
                     let out = format!(
                         r#"{{"type":"draw","id":{},"commands":{written}}}"#,

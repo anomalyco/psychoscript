@@ -756,8 +756,9 @@ class Widget implements MountedWidget {
         if (p.node && typeof p.node === "object") this.render(p.node as ViewNode)
         return
       case "draw": {
-        const id = typeof p.id === "string" ? p.id : null
-        const commands = Array.isArray(p.commands) ? (p.commands as Command[]) : []
+        // Checked when posted (widgets-live.md): the canvas's id and valid commands.
+        const id = p.id as string
+        const commands = p.commands as Command[]
         this.live.commands.set(id, commands)
         for (const s of surfaces(this.viewEl)) if (s instanceof CanvasView && s.id === id) s.setCommands(commands)
         return

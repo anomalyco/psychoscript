@@ -42,7 +42,7 @@ the same way and gives the commands the program emitted, as JSON reads them (`nu
 `native: true` builds each posted `render`'s tree (`post` returns whether it has handlers) and maps a `draw`'s `key` to
 its canvas's id; its `render` and `draw` posts go out under the post rate (a bucket of 8 refilled at
 `maxPostsPerSecond`, 240; waiting posts coalesce by render and by canvas key, and go out at the run's end unless it is
-stopped); a `draw` without a string `key`, or over 2,000 commands (type `draw`), ends the run. A key that isn't a string, number or boolean, or a view over 100 levels, fails with type `view` (a step
+stopped); a `draw` without a string `key`, over 2,000 commands or with an invalid command (type `draw`, `src/draw.rs`), ends the run. A key that isn't a string, number or boolean, or a view over 100 levels, fails with type `view` (a step
 once it has run; a live run at once); a function anywhere but a node's handler props, in any host call's argument,
 throws the runtime's `TypeError` `Argument <n> to <name> contains a function, which cannot be passed to the host.`,
 located at the call (`HostError::located`, sync and async calls alike), as the host's other errors are. `tests/tree.rs` runs the 56 conformance fixtures (`tests/fixtures/wire`, opencode widgets 35f0712e3).

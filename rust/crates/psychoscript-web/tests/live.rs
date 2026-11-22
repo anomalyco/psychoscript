@@ -196,7 +196,7 @@ const view = { type: "column", children: [
 const interactive = __host.post({ type: "render", node: view })
 const still = __host.post({ type: "render", node: { ...view, children: [view.children[1]] } })
 __host.post({ type: "render", node: view })
-__host.post({ type: "draw", key: "board", commands: [["rect", 0, 0, 1, 1, "accent"]] })
+__host.post({ type: "draw", key: "board", commands: [["rect", 0, 0, 1, 1, { fill: "accent" }]] })
 const caught = []
 for (const key of ["nope", "sky"]) {
   try { __host.post({ type: "draw", key, commands: [] }) } catch (e) { caught.push(e.message) }
@@ -241,7 +241,7 @@ __host.post({ type: "result", interactive, still, caught })
     assert_eq!(out[2], out[0]);
     assert_eq!(
         out[3],
-        json!({ "type": "draw", "id": "0/:board", "commands": [["rect", 0, 0, 1, 1, "accent"]] })
+        json!({ "type": "draw", "id": "0/:board", "commands": [["rect", 0, 0, 1, 1, { "fill": "accent" }]] })
     );
     assert_eq!(
         out[4],
@@ -487,7 +487,7 @@ fn draw_posts_carry_id_and_commands_and_end_the_run_over_2000_commands() {
     let mut run = start_widget(
         r#"async function main() {
   widget.render(ui.canvas({ key: "c", height: 1 }))
-  __host.post({ type: "draw", key: "c", commands: [["rect", 0, 0, 1, 1, "accent"]], extra: 1 })
+  __host.post({ type: "draw", key: "c", commands: [["rect", 0, 0, 1, 1, { fill: "accent" }]], extra: 1 })
   for (let i = 0; i < 10; i++) widget.render(ui.canvas({ key: "c", height: i + 1 }))
   try { widget.draw("c", Array.from({ length: 2001 }, () => ["save"])) } catch (e) { widget.send("caught") }
   widget.send("after")
@@ -497,7 +497,7 @@ fn draw_posts_carry_id_and_commands_and_end_the_run_over_2000_commands() {
     let out = run_for(&mut run, 3000);
     assert_eq!(
         out[1],
-        json!({ "type": "draw", "id": ":c", "commands": [["rect", 0, 0, 1, 1, "accent"]] })
+        json!({ "type": "draw", "id": ":c", "commands": [["rect", 0, 0, 1, 1, { "fill": "accent" }]] })
     );
     // The latest render goes out (at once or when the run ends); nothing after the invalid draw does.
     assert_eq!(out.last().unwrap()["node"]["height"], 10, "{out:?}");
@@ -507,11 +507,107 @@ fn draw_posts_carry_id_and_commands_and_end_the_run_over_2000_commands() {
             assert_eq!(error.phase(), Some("draw"));
             assert_eq!(
                 error.reason(),
-                "A draw post has 2001 commands; it must have at most 2000 commands"
+                "2001 draw commands is over the budget of 2000 per frame"
             );
         }
         other => panic!("{other:?}"),
     }
+}
+
+/// Every command is checked when the program posts it, with the other hosts' rules and messages: the first invalid one
+/// ends the run in phase `draw`, named by its index; valid ones of every kind go through.
+#[test]
+fn an_invalid_draw_command_ends_the_run_in_phase_draw() {
+    let draw = |commands: &str| {
+        let mut run = start_widget(
+            &format!(
+                "async function main() {{\n  widget.render(ui.canvas({{ key: \"c\", height: 1 }}))\n  __host.post({{ type: \"draw\", key: \"c\"{commands} }})\n  widget.send(\"after\")\n}}"
+            ),
+            240,
+        );
+        let out = run_for(&mut run, 3000);
+        match run.exit() {
+            Some(LiveExit::Failed { error }) => {
+                assert_eq!(error.phase(), Some("draw"), "{commands}");
+                assert!(
+                    out.iter()
+                        .all(|m| m["type"] != "send" && m["type"] != "draw"),
+                    "{out:?}"
+                );
+                Err(error.reason().to_owned())
+            }
+            Some(LiveExit::Finished { .. }) => {
+                Ok(out.into_iter().find(|m| m["type"] == "draw").unwrap())
+            }
+            other => panic!("{commands}: {other:?}"),
+        }
+    };
+    for (commands, message) in [
+        (
+            r#", commands: [["save"], ["rect", 0, 0, 1, 1, "accent"]]"#,
+            "draw command 1: a paint is an object",
+        ),
+        (
+            r#", commands: [["blur", 1]]"#,
+            "draw command 0: unknown draw command \"blur\"",
+        ),
+        (
+            r#", commands: [["alpha", "x"]]"#,
+            "draw command 0: \"alpha\" argument 1 must be a finite number",
+        ),
+        (
+            r#", commands: [["rect", 0, 0, 1, NaN, {}]]"#,
+            "draw command 0: \"rect\" argument 4 must be a finite number",
+        ),
+        (
+            r##", commands: [["circle", 0, 0, 1, { fill: "#12" }]]"##,
+            "draw command 0: not a color",
+        ),
+        (
+            r#", commands: [["line", 0, 0, 1, 1, { stroke: "accent", width: "2" }]]"#,
+            "draw command 0: a stroke's width must be a finite number",
+        ),
+        (
+            r#", commands: [["rect", 0, 0, 1, 1, { fill: { linear: [0, 0, 1], stops: [] } }]]"#,
+            "draw command 0: a linear gradient takes 4 numbers",
+        ),
+        (
+            r#", commands: [["rect", 0, 0, 1, 1, { fill: { radial: [0, 0, 1], stops: [[0]] } }]]"#,
+            "draw command 0: a stop is [offset, color]",
+        ),
+        (
+            r#", commands: [["path", [["M", 0, 0], ["X", 1]], {}]]"#,
+            "draw command 0: unknown path segment",
+        ),
+        (
+            r#", commands: [["text", 0, 0]]"#,
+            "draw command 0: \"text\" is missing argument 3",
+        ),
+        (
+            r#", commands: [["text", 0, 0, "t", { size: "big" }]]"#,
+            "draw command 0: a text size must be a finite number",
+        ),
+        (
+            r#", commands: [["image", 1, 0, 0, 1, 1]]"#,
+            "draw command 0: \"image\" takes a src",
+        ),
+        (
+            r#", commands: [5]"#,
+            "draw command 0: a command is an array",
+        ),
+        (
+            r#", commands: [[1]]"#,
+            "draw command 0: a command starts with its name",
+        ),
+        (r#", commands: "x""#, "draw commands must be a list"),
+        ("", "a draw post needs commands"),
+    ] {
+        assert_eq!(draw(commands), Err(message.to_owned()), "{commands}");
+    }
+    // Every kind, as the prelude's builder writes it, goes through as it was posted.
+    let valid = r##"ui.draw().save().translate(1, 2).rotate(0.5).scale(2).alpha(0.5).rect(0, 0, 1, 1, "accent").rrect(0, 0, 4, 4, 1, { fill: { linear: [0, 0, 1, 1], stops: [[0, "#fff"], [1, "#000000aa"]] }, stroke: "border", width: 2, cap: "round" }).circle(1, 1, 1, { fill: { radial: [1, 1, 1], stops: [[0, "bg"]] } }).line(0, 0, 1, 1, "muted").path([["M", 0, 0], ["L", 1, 1], ["Q", 1, 0, 2, 2], ["C", 0, 0, 1, 1, 2, 2], ["Z"]], "success").text(0, 10, "hi", { size: 12, weight: 600, align: "center", color: "#abc", mono: true }).image("a.png", 0, 0, 1, 1).restore().commands"##;
+    let posted = draw(&format!(", commands: {valid}")).expect("valid commands");
+    assert_eq!(posted["commands"].as_array().unwrap().len(), 13);
 }
 
 /// A live program on the prelude (opencode widgets 35f0712e3), run natively.

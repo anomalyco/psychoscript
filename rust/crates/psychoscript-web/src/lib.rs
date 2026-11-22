@@ -13,6 +13,8 @@
 //! `wasm32-unknown-unknown` only.
 
 #[cfg(feature = "language")]
+mod draw;
+#[cfg(feature = "language")]
 mod error;
 #[cfg(feature = "language")]
 pub mod fetch;

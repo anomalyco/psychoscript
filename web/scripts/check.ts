@@ -1089,6 +1089,7 @@ for (const query of ["?only=shader-broken", "?only=shader-broken&gl=1"]) {
         (t) => t === "n 119",
       ),
       await run("oversized", `async function main() {\n  widget.render(ui.canvas({ key: "c", height: 4 }))\n  widget.draw("c", Array.from({ length: 2001 }, () => ["save"]))\n}`, () => false),
+      await run("invalid", `async function main() {\n  widget.render(ui.canvas({ key: "c", height: 4 }))\n  widget.draw("c", [["save"], ["blur", 1]])\n}`, () => false),
       await run("keyless", `async function main() {\n  widget.render(ui.canvas({ key: "c", height: 4 }))\n  __host.post({ type: "draw", id: "0", commands: [] })\n}`, () => false),
     ]
   })
@@ -1098,9 +1099,14 @@ for (const query of ["?only=shader-broken", "?only=shader-broken&gl=1"]) {
   check(by.game!.text === "n 119" && by.game!.reports.length === 0, `post rate: a game posting three times a frame runs all 120 frames (${by.game!.ms} ms) and shows its last view`, by.game)
   check(JSON.stringify(by.keyless!.reports) === JSON.stringify([{ phase: "main", message: "A draw post needs a string key" }]), "post rate: a draw post without a string key ends the run, reported in phase main", by.keyless)
   check(
-    JSON.stringify(by.oversized!.reports) === JSON.stringify([{ phase: "draw", message: "A draw post has 2001 commands; it must have at most 2000 commands" }]),
+    JSON.stringify(by.oversized!.reports) === JSON.stringify([{ phase: "draw", message: "2001 draw commands is over the budget of 2000 per frame" }]),
     "draw posts: one over 2,000 commands ends the run, reported in phase draw",
     by.oversized,
+  )
+  check(
+    JSON.stringify(by.invalid!.reports) === JSON.stringify([{ phase: "draw", message: 'draw command 1: unknown draw command "blur"' }]),
+    "draw posts: an invalid command ends the run in phase draw, named by its index",
+    by.invalid,
   )
   check(errors.length === 0, "post rate: no page errors", errors)
   await page.close()
