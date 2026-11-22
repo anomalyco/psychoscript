@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
-use psychoscript::{Data, Failure, HostValue};
+use psychoscript::{Data, Failure, HostError, HostValue};
 
 use crate::error::PsychoScriptError;
 
@@ -34,8 +34,8 @@ pub enum Reject {
     /// A program error, thrown at the call: uncaught, the run fails with `Runtime` of its kind and message, at the
     /// call's line and column.
     Failure(Failure),
-    /// A function in argument `arg` (from 1) where none may go: the runtime's `TypeError`
-    /// `Argument <arg> to <name> contains a function, which cannot be passed to the host.`, at the call.
+    /// A function in argument `arg` (from 1) where none may go: a `TypeError`
+    /// `Argument <arg> to <name> contains a function, which cannot be passed to the host.`, located at the call.
     Function { arg: usize },
     /// Thrown as it is, for the program to catch.
     Throw(HostValue),
@@ -102,70 +102,50 @@ pub(crate) fn marked(v: &HostValue) -> bool {
     }
 }
 
-/// What a call with an encoder threw, as the program sees it and as the run's error names it. The language locates
-/// only its own kinds, and names a host's failure `Error`: a failure is thrown as `InvalidDataValue` (or
-/// `ExecutionFailure`) so the run's error is at the call, then given its own kind (or the error's own name) there.
+/// What a call with an encoder threw, as the run's error names it. The language locates only its own kinds: an encoder's
+/// failure is thrown as `InvalidDataValue` so the run's error is at the call, then given its own kind there.
 #[derive(Default)]
 pub(crate) struct Thrown(Mutex<Option<Named>>);
 
 struct Named {
     message: String,
-    kind: Option<String>,
-    name: Option<&'static str>,
+    kind: String,
 }
 
 impl Thrown {
     /// What the call throws for `reject` (an `End` is not thrown: `None`).
     pub(crate) fn throw(&self, reject: Reject, label: &str) -> Option<HostValue> {
-        let (message, kind, name) = match reject {
-            Reject::Throw(v) => return Some(v),
-            Reject::End(_) => return None,
-            Reject::Failure(f) => (f.message.to_string_lossy().into_owned(), Some(f.kind), None),
-            Reject::Function { arg } => (function(label, arg), None, Some("TypeError")),
-        };
-        let thrown = Failure::new(
-            if kind.is_some() {
-                "InvalidDataValue"
-            } else {
-                "ExecutionFailure"
-            },
-            message.clone(),
-        );
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(Named {
-            message,
-            kind,
-            name,
-        });
-        Some(HostValue::Failure(thrown))
+        match reject {
+            Reject::Throw(v) => Some(v),
+            Reject::End(_) => None,
+            Reject::Function { arg } => Some(HostError::located("TypeError", function(label, arg))),
+            Reject::Failure(f) => {
+                let message = f.message.to_string_lossy().into_owned();
+                let thrown = Failure::new("InvalidDataValue", message.clone());
+                *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(Named {
+                    message,
+                    kind: f.kind,
+                });
+                Some(HostValue::Failure(thrown))
+            }
+        }
     }
 
     /// A function where none may go in argument `arg` of the call `label`.
     pub(crate) fn function(&self, label: &str, arg: usize) -> HostValue {
-        self.throw(Reject::Function { arg }, label)
-            .unwrap_or(HostValue::Undefined)
+        HostError::located("TypeError", function(label, arg))
     }
 
-    /// Gives `error` its own kind or name when it is what was thrown.
+    /// Gives `error` the encoder's kind when it is the failure thrown.
     pub(crate) fn name(&self, error: &mut PsychoScriptError) {
         let Some(named) = self.0.lock().unwrap_or_else(PoisonError::into_inner).take() else {
             return;
         };
-        let PsychoScriptError::Runtime { kind, reason, .. } = error else {
-            return;
-        };
-        if !reason.contains(&named.message) {
-            return;
-        }
-        if let Some(own) = named.kind
+        if let PsychoScriptError::Runtime { kind, reason, .. } = error
             && kind == "InvalidDataValue"
+            && reason.contains(&named.message)
         {
-            *kind = own;
-        }
-        if let Some(name) = named.name
-            && kind == "ExecutionFailure"
-            && let Some(rest) = reason.strip_prefix("Error: ")
-        {
-            *reason = format!("{name}: {rest}");
+            *kind = named.kind;
         }
     }
 }
@@ -187,9 +167,9 @@ mod widget {
         match e {
             widget_wire::CallError::Invalid(e) => Reject::Failure(failure(e)),
             widget_wire::CallError::Function { arg } => Reject::Function { arg },
-            widget_wire::CallError::Uri => Reject::Throw(HostValue::Error(Box::new(
-                psychoscript::HostError::named("URIError", "URI malformed"),
-            ))),
+            widget_wire::CallError::Uri => {
+                Reject::Throw(HostError::located("URIError", "URI malformed"))
+            }
             widget_wire::CallError::Throw(m) => {
                 Reject::Throw(HostValue::Error(Box::new(psychoscript::HostError::new(m))))
             }
