@@ -7,7 +7,9 @@ import { root, run, skipped } from "../test/test262/run.js"
 
 const write = process.argv.includes("--write")
 const prefix = process.argv.slice(2).find((arg) => !arg.startsWith("--")) ?? ""
-const files = [...new Bun.Glob("**/*.js").scanSync({ cwd: root })].filter((file) => file.startsWith(prefix)).sort()
+const files = [...new Bun.Glob("{built-ins,language}/**/*.js").scanSync({ cwd: root })]
+  .filter((file) => file.startsWith(prefix))
+  .sort()
 
 const failures: Array<{ file: string; reason: string }> = []
 const recovered: Array<string> = []

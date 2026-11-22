@@ -1056,9 +1056,9 @@ describe("Uint8Array", () => {
     `),
     ).toEqual([[0, 0], [1, 2, 44], [7, 8], [9, 2, 44], [1, 2, 44], 3, [1, 2]])
     expect((await error(`new Uint8Array(-1)`)).message).toContain("Invalid typed array length: -1")
-    expect((await error(`new Uint8Array(1.5)`)).message).toContain("Invalid typed array length")
-    expect((await error(`new Uint8Array(20_000_000)`)).message).toContain("Invalid array length")
-    expect((await error(`Uint8Array.from(/x/)`)).message).toContain("received a RegExp")
+    expect(await value(`return new Uint8Array(1.5).length`)).toBe(1)
+    expect((await error(`new Uint8Array(20_000_000)`)).message).toContain("Invalid typed array length")
+    expect(await value(`return Uint8Array.from(/x/).length`)).toBe(0)
   })
 
   test("BYTES_PER_ELEMENT is a read-only 1 on Uint8Array, Buffer and their instances", async () => {
@@ -1135,8 +1135,8 @@ describe("Uint8Array", () => {
       ],
       [2, 1],
     ])
-    expect((await error(`new Uint8Array(2).set([1, 2, 3])`)).message).toContain("does not fit")
-    expect((await error(`new Uint8Array(2).set([1], 2)`)).message).toContain("does not fit")
+    expect((await error(`new Uint8Array(2).set([1, 2, 3])`)).message).toContain("offset is out of bounds")
+    expect((await error(`new Uint8Array(2).set([1], 2)`)).message).toContain("offset is out of bounds")
   })
 
   test("base64 and hex", async () => {
@@ -1332,7 +1332,7 @@ describe("TextEncoder and TextDecoder", () => {
       "not valid utf-8",
     )
     expect((await error(`new TextDecoder().decode("text")`)).message).toContain(
-      "expects a Uint8Array, received a string",
+      "expects an ArrayBuffer, a typed array or a DataView, received a string",
     )
     expect((await error(`TextDecoder()`)).message).toContain("requires 'new'")
   })
@@ -1343,7 +1343,7 @@ describe("TextEncoder and TextDecoder", () => {
         `const b = new Uint8Array(16); const same = crypto.getRandomValues(b) === b; return [same, b.length, b.some((n) => n !== 0)]`,
       ),
     ).toEqual([true, 16, true])
-    expect((await error(`crypto.getRandomValues([1])`)).message).toContain("expects a Uint8Array, received an array")
+    expect((await error(`crypto.getRandomValues([1])`)).message).toContain("expects an integer typed array, received an array")
   })
 })
 
@@ -2228,12 +2228,12 @@ describe("Uint8Array callback methods", () => {
     `),
     ).toEqual([6, 16, "321", 5, 2])
     expect((await error(`new Uint8Array().reduce((sum, byte) => sum + byte)`)).message).toContain(
-      "Uint8Array.reduce of an empty array with no initial value",
+      "TypedArray.reduce of an empty array with no initial value",
     )
     expect((await error(`new Uint8Array().reduceRight((sum, byte) => sum + byte)`)).message).toContain(
-      "Uint8Array.reduceRight of an empty array with no initial value",
+      "TypedArray.reduceRight of an empty array with no initial value",
     )
-    expect((await error(`new Uint8Array([1]).map(null)`)).message).toContain("Uint8Array.map expects a function")
+    expect((await error(`new Uint8Array([1]).map(null)`)).message).toContain("TypedArray.map expects a function")
   })
 
   test("sort is numeric by default and in place, with an optional comparator", async () => {
@@ -2245,7 +2245,7 @@ describe("Uint8Array callback methods", () => {
       return [same, [...b], [...desc], desc instanceof Uint8Array, [...new Uint8Array([2, 1]).sort(() => NaN)]]
     `),
     ).toEqual([true, [1, 9, 10], [3, 2, 1], true, [2, 1]])
-    expect((await error(`new Uint8Array([2, 1]).sort(null)`)).message).toContain("Uint8Array.sort expects a function")
+    expect((await error(`new Uint8Array([2, 1]).sort(null)`)).message).toContain("TypedArray.prototype.sort expects a function")
   })
 
   test("lastIndexOf treats an explicit undefined fromIndex as 0", async () => {

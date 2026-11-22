@@ -1,5 +1,6 @@
 // Copies the manifest's test262 directories from a local checkout into test/test262, verbatim.
-// Files needing unsupported flags, features, or harness includes, or whose code crosses one of the
+// The manifest's `sources` harness files are copied to test/test262/harness. Files needing unsupported flags,
+// features, or harness includes, or whose code crosses one of the
 // interpreter's intentional boundaries, are not copied, so the vendored tree is exactly what
 // test/test262.test.ts runs.
 //
@@ -14,6 +15,7 @@ const manifest = (await Bun.file(path.join(root, "manifest.json")).json()) as {
   revision: string
   directories: Array<string>
   harness: Array<string>
+  sources: Array<string>
   flags: Array<string>
   features: Array<string>
   boundaries: Record<string, string>
@@ -45,7 +47,7 @@ for (const dir of manifest.directories) {
     const reason =
       meta.flags?.find((flag) => manifest.flags.includes(flag)) ??
       meta.features?.find((feature) => manifest.features.includes(feature)) ??
-      meta.includes?.find((include) => !manifest.harness.includes(include)) ??
+      meta.includes?.find((include) => !manifest.harness.includes(include) && !manifest.sources.includes(include)) ??
       boundaries.find(([, pattern]) => pattern.test(code))?.[0]
     if (reason !== undefined) {
       excluded.set(reason, (excluded.get(reason) ?? 0) + 1)
@@ -54,6 +56,12 @@ for (const dir of manifest.directories) {
     await Bun.write(path.join(root, dir, file), Bun.file(path.join(from, file)))
     copied++
   }
+}
+
+// Harness files run as source ahead of the tests that include them (see test/test262/run.ts).
+await rm(path.join(root, "harness"), { recursive: true, force: true })
+for (const file of manifest.sources) {
+  await Bun.write(path.join(root, "harness", file), Bun.file(path.join(checkout, "harness", file)))
 }
 
 console.log(`copied ${copied} files`)

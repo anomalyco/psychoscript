@@ -45,7 +45,9 @@ export class Prelude {
       this.scope.set(name, fn)
       define(this.functions, name, fn, hidden)
       if (path.length === 1) continue
-      const owner = path.slice(1, -1).reduce((value, key) => get(value as Obj, key), this.scope.get(path[0]!))
+      // %TypedArray% is no global; its methods are reached through its prototype.
+      const root = path[0] === "TypedArray" ? get(builtins.TypedArray, "constructor") : this.scope.get(path[0]!)
+      const owner = path.slice(1, -1).reduce((value, key) => get(value as Obj, key), root)
       define(owner as Obj, path.at(-1)!, fn, hidden)
     }
   }

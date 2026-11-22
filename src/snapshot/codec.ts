@@ -44,6 +44,12 @@ import {
   WeakMapObj,
   WeakSetObj,
   Protector,
+  ArrayBufferObj,
+  DataViewObj,
+  type HostTypedArray,
+  TypedArrayObj,
+  typedArrayKind,
+  typedArrayTypes,
 } from "../runtime/objects.js"
 import { Convert, Interruption, Invoke, Prefetch } from "../runtime/signals.js"
 import { deleted, OrderedTable } from "../runtime/table.js"
@@ -266,8 +272,11 @@ const builtinSpecs = (): ReadonlyArray<ClassSpec> => [
   },
   { name: "HeadersObj", ctor: HeadersObj, fields: ["headers"], obj: true, constants: { tag: "Headers" } },
   { name: "URLObj", ctor: URLObj, fields: ["searchParams", "url"], obj: true, constants: { tag: "URL" } },
-  { name: "Bytes", ctor: Bytes, fields: ["bytes"], obj: true, constants: { tag: "Uint8Array" } },
-  { name: "BufferObj", ctor: BufferObj, fields: ["bytes"], obj: true, constants: { tag: "Uint8Array" } },
+  { name: "ArrayBufferObj", ctor: ArrayBufferObj, fields: ["data"], obj: true, constants: { tag: "ArrayBuffer" } },
+  { name: "TypedArrayObj", ctor: TypedArrayObj, fields: ["tag", "array", "buffer"], obj: true },
+  { name: "Bytes", ctor: Bytes, fields: ["tag", "array", "buffer"], obj: true },
+  { name: "BufferObj", ctor: BufferObj, fields: ["tag", "array", "buffer"], obj: true },
+  { name: "DataViewObj", ctor: DataViewObj, fields: ["buffer", "view"], obj: true, constants: { tag: "DataView" } },
   {
     name: "TextDecoderObj",
     ctor: TextDecoderObj,
@@ -538,8 +547,13 @@ class Encoder {
     if (object instanceof Date) return { t: "Date", v: this.value(object.getTime()) }
     if (object instanceof RegExp) return { t: "RegExp", s: object.source, f: object.flags }
     if (object instanceof Headers) return { t: "Headers", e: [...object].map(([key, item]) => [key, item]) }
-    if (object instanceof Uint8Array) {
-      return { t: "Uint8Array", b: this.ref(object.buffer), o: object.byteOffset, l: object.length }
+    // A view refers to its memory, so views that share memory share it again when restored.
+    if (object instanceof DataView) {
+      return { t: "DataView", b: this.ref(object.buffer), o: object.byteOffset, l: object.byteLength }
+    }
+    if (ArrayBuffer.isView(object)) {
+      const array = object as HostTypedArray
+      return { t: typedArrayKind(array), b: this.ref(array.buffer), o: array.byteOffset, l: array.length }
     }
     if (object instanceof ArrayBuffer) return { t: "ArrayBuffer", d: base64(new Uint8Array(object)) }
     if (object instanceof TextDecoder) return { t: "TextDecoder", f: object.fatal, i: object.ignoreBOM }
@@ -773,13 +787,28 @@ class Decoder {
       }
       case "ArrayBuffer":
         return fromBase64(text(record.d, "bytes")).buffer
-      case "Uint8Array": {
+      case "DataView":
+      case "Int8Array":
+      case "Uint8Array":
+      case "Uint8ClampedArray":
+      case "Int16Array":
+      case "Uint16Array":
+      case "Int32Array":
+      case "Uint32Array":
+      case "Float16Array":
+      case "Float32Array":
+      case "Float64Array": {
         const buffer = this.value(record.b)
         if (!(buffer instanceof ArrayBuffer)) return invalid(`record ${id} names no buffer.`)
         const offset = count(record.o, "a byte offset")
-        const length = count(record.l, "a byte length")
-        if (offset + length > buffer.byteLength) return invalid(`record ${id} reaches past its buffer.`)
-        return new Uint8Array(buffer, offset, length)
+        const length = count(record.l, "a length")
+        const size = record.t === "DataView" ? 1 : typedArrayTypes[record.t].BYTES_PER_ELEMENT
+        if (offset % size !== 0 || offset + length * size > buffer.byteLength) {
+          return invalid(`record ${id} reaches past its buffer.`)
+        }
+        return record.t === "DataView"
+          ? new DataView(buffer, offset, length)
+          : new typedArrayTypes[record.t](buffer, offset, length)
       }
       case "TextDecoder":
         return new TextDecoder("utf-8", { fatal: record.f === true, ignoreBOM: record.i === true })
@@ -883,7 +912,17 @@ class Decoder {
       case "URLSearchParams":
       case "Headers":
       case "ArrayBuffer":
+      case "DataView":
+      case "Int8Array":
       case "Uint8Array":
+      case "Uint8ClampedArray":
+      case "Int16Array":
+      case "Uint16Array":
+      case "Int32Array":
+      case "Uint32Array":
+      case "Float16Array":
+      case "Float32Array":
+      case "Float64Array":
       case "TextDecoder":
         return
     }

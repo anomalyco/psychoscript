@@ -16,7 +16,7 @@ export const fromBytes = (bytes: Uint8Array): unknown => {
 }
 
 /** The snapshot format this build writes and reads (see `src/snapshot.ts`). */
-export const FORMAT = 3
+export const FORMAT = 5
 
 /**
  * A suspended run's whole state as JSON: a header that says which build and sources it belongs to and what budget it

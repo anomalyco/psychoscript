@@ -5,7 +5,11 @@ import { Throw, typeError } from "../runtime/model.js"
 import { constructor, type Method, methods, prototypeFrom, receiver } from "../runtime/native.js"
 import {
   Arr,
+  ArrayBufferObj,
+  binaryBytes,
   Bytes,
+  type HostTypedArray,
+  TypedArrayObj,
   define,
   frozen,
   get,
@@ -26,8 +30,10 @@ export class BufferObj extends Bytes {
   override toHost() {
     return Buffer.from(this.bytes)
   }
-  override derive(builtins: Builtins, bytes: Uint8Array) {
-    return new BufferObj(builtins.Buffer, bytes)
+  override derive(builtins: Builtins, array: HostTypedArray, buffer?: ArrayBufferObj): TypedArrayObj {
+    return array instanceof Uint8Array
+      ? new BufferObj(builtins.Buffer, array, buffer)
+      : super.derive(builtins, array, buffer)
   }
   override inspect() {
     const shown = Array.from(this.bytes.subarray(0, 50), (byte) => byte.toString(16).padStart(2, "0")).join(" ")
@@ -176,17 +182,30 @@ export const bufferGlobal = <R>(ctx: Interpreter<R>) => {
     return length
   }
 
+  // Over an ArrayBuffer, a Buffer is a view on its memory, as in Node; from anything else it is a copy.
+  const make = (into: Obj, args: Array<Value>) => {
+    const source = args[0]
+    if (!(source instanceof ArrayBufferObj)) return new BufferObj(into, bytesFrom(args[0], args[1], args[2]))
+    const available = source.data.byteLength
+    const offset = args[1] === undefined ? 0 : Math.trunc(coerceToNumber(args[1])) || 0
+    if (offset < 0 || offset > available)
+      throw fail("RangeError", '"offset" is outside of buffer bounds', "ERR_BUFFER_OUT_OF_BOUNDS")
+    const length = args[2] === undefined ? available - offset : Math.trunc(coerceToNumber(args[2])) || 0
+    if (length < 0 || offset + length > available) {
+      throw fail("RangeError", '"length" is outside of buffer bounds', "ERR_BUFFER_OUT_OF_BOUNDS")
+    }
+    return new BufferObj(into, new Uint8Array(source.data, offset, length), source)
+  }
   const buffer = constructor(builtins, proto, {
     name: "Buffer",
     length: 2,
-    call: (_, args) => withReads(() => wrap(bytesFrom(args[0], args[1], args[2]))),
-    construct: (args, newTarget) =>
-      withReads(() => new BufferObj(prototypeFrom(newTarget, proto), bytesFrom(args[0], args[1], args[2]))),
+    call: (_, args) => withReads(() => make(proto, args)),
+    construct: (args, newTarget) => withReads(() => make(prototypeFrom(newTarget, proto), args)),
   })
   // Bun inherits this from Uint8Array; Buffer's constructor here does not.
   define(buffer, "BYTES_PER_ELEMENT", 1, frozen)
   methods(builtins, buffer, [
-    ["from", 3, (_, args) => withReads(() => wrap(bytesFrom(args[0], args[1], args[2])))],
+    ["from", 3, (_, args) => withReads(() => make(proto, args))],
     [
       "alloc",
       3,
@@ -204,10 +223,7 @@ export const bufferGlobal = <R>(ctx: Interpreter<R>) => {
     [
       "byteLength",
       2,
-      (_, args) =>
-        args[0] instanceof Bytes
-          ? args[0].bytes.byteLength
-          : Buffer.byteLength(coerceToString(args[0]), encoding(args[1])),
+      (_, args) => binaryBytes(args[0])?.byteLength ?? Buffer.byteLength(coerceToString(args[0]), encoding(args[1])),
     ],
     [
       "concat",
@@ -244,14 +260,21 @@ export const bufferGlobal = <R>(ctx: Interpreter<R>) => {
   define(buffer, "poolSize", 8192, hidden)
 
   const view = (thisValue: Value, name: string, args: Array<Value>) => {
-    const bytes = self(thisValue, name).bytes
+    const target = self(thisValue, name)
+    const bytes = target.bytes
     const length = bytes.length
     const clamp = (value: Value, fallback: number) => {
       if (value === undefined) return fallback
       const index = Math.trunc(coerceToNumber(value)) || 0
       return index < 0 ? Math.max(0, length + index) : Math.min(index, length)
     }
-    return wrap(bytes.subarray(clamp(args[0], 0), clamp(args[1], length)))
+    const start = clamp(args[0], 0)
+    const end = Math.max(start, clamp(args[1], length))
+    return new BufferObj(
+      proto,
+      new Uint8Array(target.memory, bytes.byteOffset + start, end - start),
+      target.bufferObj(builtins),
+    )
   }
   const delegate = (name: string, length: number): Method => [
     name,
