@@ -1,0 +1,1 @@
+{"gap":2,"type":"column","children":[{"style":"title","type":"text","text":"Sure?"},{"type":"markdown","text":"Really."},{"gap":1,"align":"center","type":"row","children":[{"variant":"danger","type":"button","label":"Confirm","id":"0/2/0"},{"variant":"secondary","type":"button","label":"Cancel","id":"0/2/1"}]}]}

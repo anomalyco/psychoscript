@@ -183,3 +183,50 @@ fn fetches_need_the_capability_and_go_through_the_host() {
     let out: Vec<Value> = serde_json::from_str(&run.take_outbox()).unwrap();
     assert_eq!(out, vec![json!({ "type": "cancel", "id": id })]);
 }
+
+#[test]
+fn native_runs_build_render_trees_and_draw_by_key() {
+    const NATIVE: &str = r#"
+const view = { type: "column", children: [
+  [null, { type: "canvas", key: "board", height: 10 }],
+  { type: "canvas", key: "sky", wgsl: "fn shade(p: vec2f) -> vec4f { return vec4f(1.0); }", height: 10 },
+] }
+const interactive = __host.post({ type: "render", node: view })
+__host.post({ type: "draw", key: "board", commands: [["rect", 0, 0, 1, 1, "accent"]] })
+const caught = []
+for (const key of ["nope", "sky"]) {
+  try { __host.post({ type: "draw", key, commands: [] }) } catch (e) { caught.push(e.message) }
+}
+__host.post({ type: "result", interactive, caught })
+"#;
+    let mut run = Program::new(NATIVE, None)
+        .unwrap()
+        .start_live(
+            "null",
+            LiveOptions {
+                native: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let out = posts(&settle(&mut run));
+    assert_eq!(
+        out[0],
+        json!({ "type": "render", "node": { "type": "column", "children": [
+            { "type": "canvas", "height": 10, "id": "0/:board" },
+            { "type": "canvas", "wgsl": "fn shade(p: vec2f) -> vec4f { return vec4f(1.0); }", "height": 10, "id": "0/:sky" },
+        ] } })
+    );
+    assert_eq!(
+        out[1],
+        json!({ "type": "draw", "id": "0/:board", "commands": [["rect", 0, 0, 1, 1, "accent"]] })
+    );
+    assert_eq!(
+        out[2],
+        json!({ "type": "result", "interactive": false, "caught": [
+            "No canvas with key \"nope\" in the rendered view",
+            "Canvas \"sky\" is drawn by its wgsl; it takes no draw commands",
+        ] })
+    );
+    assert_eq!(out.len(), 3);
+}

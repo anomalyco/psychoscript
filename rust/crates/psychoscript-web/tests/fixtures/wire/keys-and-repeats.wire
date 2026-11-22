@@ -1,0 +1,1 @@
+{"type":"row","children":[{"type":"button","label":"x","id":":root/:k"},{"type":"text","text":"kk"},{"type":"button","label":"y","id":":root/:k~3"},{"type":"button","label":"z","id":":root/:k~2"},{"type":"text","text":"t"},{"type":"card","id":":root/:a%2Fb%20c","children":[{"type":"button","label":"in","id":":root/:a%2Fb%20c/0"}]},{"type":"button","label":"n","id":":root/:7"}]}

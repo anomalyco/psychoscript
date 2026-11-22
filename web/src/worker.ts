@@ -7,8 +7,15 @@ import { initSync as initShader, translateWgsl } from "../wasm/psychoscript_web_
 import type { ErrorInfo, FromWorker, LiveExit, StepOutput, ToWorker } from "./protocol.js"
 import { DRAW_TIMEOUT_MS, MAX_COMMANDS, STEP_TIMEOUT_MS } from "./protocol.js"
 
-const STEP_ENTRY = "\nreturn __widget_step(__input())"
-const LIVE_ENTRY = "\nreturn await __widget_live(__input())"
+/**
+ * Native tree building (widgets.md, "Native hosts"): the prelude hands views over as built and the WebAssembly walks
+ * them into the tree clients get (`runStep`, live `native`). Off until PsychoScript passes program functions as
+ * markers (`translate.functions = "mark"`): until then handler props drop out of results and posts, and handlers
+ * with them.
+ */
+const NATIVE = false
+const STEP_ENTRY = NATIVE ? "\nreturn __widget_step(__input(), true)" : "\nreturn __widget_step(__input())"
+const LIVE_ENTRY = NATIVE ? "\nreturn await __widget_live(__input(), true)" : "\nreturn await __widget_live(__input())"
 /** Longest one `pump` computes before letting this worker's event loop run (messages, timers). */
 const PUMP_SLICE_MS = 8
 
@@ -76,7 +83,7 @@ function step(wid: number, s: StepSession, phase: "init" | "event", input: strin
   const started = performance.now()
   let text: string
   try {
-    text = c.program.run(input, STEP_TIMEOUT_MS)
+    text = NATIVE ? c.program.runStep(input, STEP_TIMEOUT_MS) : c.program.run(input, STEP_TIMEOUT_MS)
   } catch (e) {
     if (trapped(e, wid)) return
     post({ t: "step", wid, phase, error: info(e), ms: performance.now() - started })
@@ -394,6 +401,7 @@ function handle(m: ToWorker) {
       }
       try {
         const run = c.program.startLive(`{"data":${m.data}}`, {
+          native: NATIVE,
           httpsHosts: m.hosts,
           allowLocalNetwork: m.localNetwork === true,
           sliceBudgetMs: m.sliceBudgetMs,

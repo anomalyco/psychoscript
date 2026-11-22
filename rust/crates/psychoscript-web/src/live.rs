@@ -22,13 +22,15 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
 use psychoscript::{
-    Compiled, HostFunction, HostResult, HostValue, Interrupted, ProgramOptions, RunOutcome, Runtime,
+    Compiled, HostError, HostFunction, HostResult, HostValue, Interrupted, ProgramOptions,
+    RunOutcome, Runtime,
 };
 
 use crate::error::Error;
 use crate::fetch::{self, Rejection, Request};
 use crate::json::{self, Input};
 use crate::time::Instant;
+use crate::tree::Walk;
 
 /// A live run's budgets and capabilities.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,6 +46,10 @@ pub struct LiveOptions {
     /// link-local destinations and local names, over `http:` too, when the widget template declares them (not through `*`).
     /// Off by default.
     pub allow_local_network: bool,
+    /// A native run (`__widget_live(__input(), true)`, widgets.md, "Native hosts"): a posted `render` carries the view
+    /// as built, which goes out as the tree clients get, and `post` returns whether it has handlers; a `draw` names its
+    /// canvas by `key`, mapped to the canvas's id from the last render.
+    pub native: bool,
 }
 
 impl Default for LiveOptions {
@@ -53,6 +59,7 @@ impl Default for LiveOptions {
             max_posts_per_second: 240,
             https_hosts: None,
             allow_local_network: false,
+            native: false,
         }
     }
 }
@@ -139,6 +146,9 @@ struct FetchSlot {
 
 struct Shared {
     input: Arc<str>,
+    native: bool,
+    /// Native runs: the last render's canvases by `String(key)`: id, and whether it has `wgsl`.
+    canvases: HashMap<String, (String, bool)>,
     /// `None`: no https capability.
     policy: Option<fetch::Policy>,
     max_posts: u32,
@@ -177,7 +187,65 @@ impl Shared {
         self.out.push_str(envelope);
     }
 
-    fn post(&mut self, message: &HostValue) {
+    /// Takes a posted message; a native `render` returns whether its view has handlers, a native `draw` with an unknown
+    /// or GPU canvas's key throws.
+    fn post(&mut self, message: &HostValue) -> HostResult {
+        let mut reply = HostValue::Undefined;
+        let mut native = None;
+        if self.native {
+            match message.get("type").and_then(HostValue::as_str) {
+                Some("render") => {
+                    let mut node = String::new();
+                    let tree = Walk::new()
+                        .run(
+                            message.get("node").unwrap_or(&HostValue::Undefined),
+                            &mut node,
+                        )
+                        .map_err(|e| error("URIError", &e.0))?;
+                    reply = HostValue::Bool(tree.has_handlers);
+                    self.canvases = tree.canvases;
+                    native = Some(format!(r#"{{"type":"render","node":{node}}}"#));
+                }
+                Some("draw") => {
+                    let key = message
+                        .get("key")
+                        .and_then(HostValue::as_str)
+                        .unwrap_or_default();
+                    let id = match self.canvases.get(key) {
+                        None => {
+                            return Err(error(
+                                "Error",
+                                &format!(r#"No canvas with key "{key}" in the rendered view"#),
+                            ));
+                        }
+                        Some((_, true)) => {
+                            return Err(error(
+                                "Error",
+                                &format!(
+                                    r#"Canvas "{key}" is drawn by its wgsl; it takes no draw commands"#
+                                ),
+                            ));
+                        }
+                        Some((id, false)) => id,
+                    };
+                    let commands = json::write(message.get("commands").unwrap_or(&HostValue::Null));
+                    native = Some(format!(
+                        r#"{{"type":"draw","id":{},"commands":{commands}}}"#,
+                        serde_json::Value::from(id.as_str())
+                    ));
+                }
+                _ => {}
+            }
+        }
+        if self.admit() {
+            let message = native.unwrap_or_else(|| json::write(message));
+            self.push(&format!(r#"{{"type":"post","message":{message}}}"#));
+        }
+        Ok(reply)
+    }
+
+    /// Counts a post against the rate: whether it goes out (one warning a second for the rest).
+    fn admit(&mut self) -> bool {
         if self.posts_window.elapsed() >= Duration::from_secs(1) {
             self.posts_window = Instant::now();
             self.posts = 0;
@@ -195,15 +263,19 @@ impl Shared {
                     serde_json::Value::from(warning)
                 ));
             }
-            return;
+            return false;
         }
-        let message = json::write(message);
-        self.push(&format!(r#"{{"type":"post","message":{message}}}"#));
+        true
     }
 
     fn begin_slice(&mut self) {
         self.slice = Some(Instant::now());
     }
+}
+
+/// An error the program can catch, thrown from a host call.
+fn error(name: &str, message: &str) -> HostValue {
+    HostValue::Error(Box::new(HostError::named(name, message)))
 }
 
 fn lock(m: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
@@ -278,6 +350,8 @@ impl LiveRun {
         let now = Instant::now();
         let shared = Arc::new(Mutex::new(Shared {
             input: input_json.into(),
+            native: options.native,
+            canvases: HashMap::new(),
             policy: options.https_hosts.clone().map(|hosts| fetch::Policy {
                 hosts,
                 local_network: options.allow_local_network,
@@ -578,8 +652,7 @@ fn runtime(shared: &Arc<Mutex<Shared>>, input_name: String) -> Runtime {
             if s.stopping {
                 return Err(HostValue::Interrupt);
             }
-            s.post(args.first().unwrap_or(&HostValue::Undefined));
-            Ok(HostValue::Undefined)
+            s.post(args.first().unwrap_or(&HostValue::Undefined))
         });
         let s = shared.clone();
         let now = HostFunction::new(move |_args, _call| -> HostResult {

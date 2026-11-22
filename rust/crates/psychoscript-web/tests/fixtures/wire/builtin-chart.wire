@@ -1,0 +1,1 @@
+{"gap":1,"align":"stretch","type":"column","children":[{"style":"title","type":"text","text":"Chart"},{"height":240,"fps":60,"duration":0.65,"alt":"Bar chart. s: a 1, b 2","type":"canvas","id":"0/1","pointer":true},{"style":"caption","tone":"muted","type":"text","text":"Tap a bar to choose it"}]}

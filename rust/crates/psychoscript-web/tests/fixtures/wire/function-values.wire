@@ -1,0 +1,1 @@
+{"type":"column","children":[{"type":"text","text":"t"},null,{"type":"button","label":"b","id":"0/2"},{"type":"select","options":[{"value":"a","label":"A"}],"id":"0/3"},{"height":1,"type":"canvas"},{"type":"card","children":[{"type":"text","text":"c"}]}]}

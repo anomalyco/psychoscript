@@ -58,8 +58,27 @@ impl JsProgram {
             .map_err(thrown)
     }
 
+    /// Runs a widget step natively (`__widget_step(__input(), true)`): as `run`, with the result's `view` written as
+    /// the tree clients get (widgets.md, "Native hosts").
+    #[wasm_bindgen(js_name = runStep)]
+    pub fn run_step(
+        &self,
+        input_json: &str,
+        timeout_ms: Option<f64>,
+        max_output_bytes: Option<f64>,
+    ) -> Result<String, JsValue> {
+        self.0
+            .run_step(
+                input_json,
+                timeout_ms.map(|t| t.max(1.0) as u64),
+                max_output_bytes.map(|m| m.max(0.0) as u64),
+            )
+            .map_err(thrown)
+    }
+
     /// Starts the program as a live run with `inputJson` behind its input function and `__host`. `options`:
-    /// `{ sliceBudgetMs = 50, maxPostsPerSecond = 240, httpsHosts?: string[], allowLocalNetwork = false }`.
+    /// `{ sliceBudgetMs = 50, maxPostsPerSecond = 240, httpsHosts?: string[], allowLocalNetwork = false,
+    /// native = false }` (`native`: a `__widget_live(__input(), true)` run, widgets.md "Native hosts").
     #[wasm_bindgen(js_name = startLive)]
     pub fn start_live(&self, input_json: &str, options: JsValue) -> Result<JsLiveRun, JsValue> {
         let mut o = LiveOptions::default();
@@ -73,6 +92,7 @@ impl JsProgram {
             }
             o.allow_local_network =
                 get("allowLocalNetwork").is_some_and(|v| v.as_bool() == Some(true));
+            o.native = get("native").is_some_and(|v| v.as_bool() == Some(true));
             if let Some(hosts) = get("httpsHosts").filter(js_sys::Array::is_array) {
                 o.https_hosts = Some(
                     js_sys::Array::from(&hosts)

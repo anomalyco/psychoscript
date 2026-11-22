@@ -1,10 +1,11 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
-use psychoscript::{Compiled, HostFunction, HostValue, Limits, Runtime};
+use psychoscript::{Compiled, Data, HostFunction, HostValue, Limits, Runtime};
 
 use crate::error::Error;
 use crate::json::Input;
 use crate::live::{LiveOptions, LiveRun};
+use crate::tree::Walk;
 
 /// A program compiled once, to run as often as needed: each run has its own VM. A run reads its JSON input through
 /// one sync host function, `input_name` (`__input` by default), and its result is the program's completion value.
@@ -34,6 +35,51 @@ impl Program {
         timeout_ms: Option<u64>,
         max_output_bytes: Option<u64>,
     ) -> Result<String, Error> {
+        let out = self.execute(input_json, timeout_ms)?.to_json_string();
+        limit(out, max_output_bytes)
+    }
+
+    /// [`Program::run`] for a widget step run natively (`__widget_step(__input(), true)`, widgets.md, "Native hosts"):
+    /// the result's `view` is the view as the program built it, and goes out as the tree clients get, built while it
+    /// is written ([`crate::tree`]). A key it can't encode is a runtime error (`URIError`), as in the prelude.
+    pub fn run_step(
+        &self,
+        input_json: &str,
+        timeout_ms: Option<u64>,
+        max_output_bytes: Option<u64>,
+    ) -> Result<String, Error> {
+        let data = self.execute(input_json, timeout_ms)?;
+        let mut out = String::new();
+        match &data {
+            Data::Object(fields) => {
+                out.push('{');
+                for (i, (name, value)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    out.push_str(&Data::String(name.clone()).to_json_string());
+                    out.push(':');
+                    if name == "view" {
+                        Walk::new()
+                            .run(value, &mut out)
+                            .map_err(|e| Error::Runtime {
+                                kind: "ExecutionFailure".into(),
+                                reason: e.0,
+                                line: None,
+                                column: None,
+                            })?;
+                    } else {
+                        out.push_str(&value.to_json_string());
+                    }
+                }
+                out.push('}');
+            }
+            other => out.push_str(&other.to_json_string()),
+        }
+        limit(out, max_output_bytes)
+    }
+
+    fn execute(&self, input_json: &str, timeout_ms: Option<u64>) -> Result<Data, Error> {
         if timeout_ms == Some(0) {
             return Err(Error::invalid_input("timeout_ms must be at least 1"));
         }
@@ -60,22 +106,27 @@ impl Program {
             });
         let outcome = runtime.execute(&self.compiled);
         drop(runtime);
-        let data = outcome
+        outcome
             .result
-            .map_err(|d| Error::from_diagnostic(d, timeout_ms))?;
-        let out = data.to_json_string();
-        match max_output_bytes {
-            Some(max) if out.len() as u64 > max => Err(Error::OutputTooLarge {
-                reason: format!(
-                    "the result is {} bytes of JSON, over the limit of {max}",
-                    out.len()
-                ),
-                max_output_bytes: max,
-            }),
-            _ => Ok(out),
-        }
+            .map_err(|d| Error::from_diagnostic(d, timeout_ms))
     }
+}
 
+/// `out`, unless it's over `max_output_bytes`.
+fn limit(out: String, max_output_bytes: Option<u64>) -> Result<String, Error> {
+    match max_output_bytes {
+        Some(max) if out.len() as u64 > max => Err(Error::OutputTooLarge {
+            reason: format!(
+                "the result is {} bytes of JSON, over the limit of {max}",
+                out.len()
+            ),
+            max_output_bytes: max,
+        }),
+        _ => Ok(out),
+    }
+}
+
+impl Program {
     /// Starts the program as a [`LiveRun`] with `input_json` behind its input function and `__host`.
     pub fn start_live(&self, input_json: &str, options: LiveOptions) -> Result<LiveRun, Error> {
         LiveRun::start(

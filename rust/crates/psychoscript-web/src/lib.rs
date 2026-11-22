@@ -26,6 +26,8 @@ mod program;
 pub mod shader;
 #[cfg(feature = "language")]
 mod time;
+#[cfg(feature = "language")]
+pub mod tree;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 
