@@ -10,15 +10,15 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use psychoscript_mobile::{
-    EncodePosts, EncodeValues, Failure, HostValue, LiveExit, LiveHandler, LiveOptions, LiveRun,
-    Program, PsychoScriptError, RunOptions, ValueEncoder,
+    EncodePosts, EncodeStep, EncodeValues, Failure, HostValue, LiveExit, LiveHandler, LiveOptions,
+    LiveRun, Program, PsychoScriptError, Reject, RunOptions, ValueEncoder,
 };
 use serde_json::{Value, json};
 use widget_wire::{Arg, DrawOutput, Node, Output, Post, StepOutput, decode_output, decode_post};
 
 const PRELUDE: &str = include_str!("fixtures/workloads/prelude.js");
 const STEP: &str = "\nreturn __widget_step(__input())";
-const EMIT: &str = "\n__widget_emit(__widget_step(__input(), true))";
+const EMIT: &str = "\nreturn __widget_native_step(__input())";
 const LIVE: &str = "\nreturn await __widget_live(__input())";
 const NATIVE_LIVE: &str = "\nreturn await __widget_live(__input(), true)";
 
@@ -78,9 +78,17 @@ fn assert_alike(a: &impl std::fmt::Debug, b: &impl std::fmt::Debug, what: &str) 
     assert!(alike, "{what}:\n{a}\n{b}");
 }
 
+/// A program; one without the prelude declares protocol 2 on a line of its own before its source, as the widget
+/// encoder runs only those.
 fn program(source: String) -> Arc<Program> {
+    let source = match source.starts_with("const __widget_protocol") {
+        true => source,
+        false => format!("{P2}{source}"),
+    };
     Arc::new(Program::new(source, "__input".into()).unwrap())
 }
+
+const P2: &str = "const __widget_protocol = 2\n";
 
 #[test]
 fn step_workloads_decode_as_their_json() {
@@ -175,7 +183,7 @@ impl EncodeValues for Both {
     fn emit_name(&self) -> &str {
         "__emit"
     }
-    fn encode_output(&self, _value: &HostValue) -> Result<Vec<u8>, Failure> {
+    fn step(&self) -> Box<dyn EncodeStep> {
         unreachable!()
     }
     fn live(&self) -> Box<dyn EncodePosts> {
@@ -188,9 +196,9 @@ impl EncodePosts for Both {
         &mut self,
         message: &HostValue,
         keep: bool,
-    ) -> Result<(Option<Vec<u8>>, HostValue), HostValue> {
+    ) -> Result<(Option<Vec<u8>>, HostValue), Reject> {
         let bin = widget_wire::encode_post(message)
-            .map_err(|e| HostValue::Failure(Failure::new(e.kind, e.message)))?;
+            .map_err(|e| Reject::Failure(Failure::new(e.kind, e.message)))?;
         let json = message.to_json().unwrap().to_string();
         let both = [&(bin.len() as u32).to_le_bytes()[..], &bin, json.as_bytes()].concat();
         Ok((keep.then_some(both), HostValue::Undefined))
@@ -349,7 +357,7 @@ fn an_invalid_post_ends_the_live_run_as_a_program_error() {
         panic!("a program error")
     };
     // The kind names the spec's phase (`draw`).
-    assert_eq!((kind.as_str(), line), ("InvalidDraw", Some(2)));
+    assert_eq!((kind.as_str(), line), ("InvalidDraw", Some(3)));
     assert!(reason.contains("invalid post: draw command 0"), "{reason}");
 
     let (h, rx) = handler();
@@ -434,23 +442,20 @@ fn run_bytes(source: &str, options: RunOptions) -> Result<Vec<u8>, PsychoScriptE
 
 #[test]
 fn run_bytes_failures_are_program_errors() {
-    let e = run_bytes(
-        "const x = 1\n__widget_emit({ commands: [[\"blur\"]] })",
-        RunOptions::default(),
-    )
-    .unwrap_err();
+    // A draw step's result that isn't a valid draw: phase `draw`, no line (it's the result).
+    let e = run_bytes("return { commands: [[\"blur\"]] }", RunOptions::default()).unwrap_err();
     let PsychoScriptError::Runtime {
         kind, reason, line, ..
     } = e
     else {
         panic!("{e:?}")
     };
-    assert_eq!((kind.as_str(), line), ("InvalidDraw", Some(2)));
+    assert_eq!((kind.as_str(), line), ("InvalidDraw", None));
     assert!(reason.contains("unknown draw command \"blur\""), "{reason}");
 
-    let e = run_bytes("1 + 1", RunOptions::default()).unwrap_err();
+    let e = run_bytes("return { state: 1 }", RunOptions::default()).unwrap_err();
     assert!(
-        matches!(&e, PsychoScriptError::Runtime { kind, reason, .. } if kind == "InvalidDataValue" && reason.contains("didn't call __widget_emit")),
+        matches!(&e, PsychoScriptError::Runtime { kind, reason, .. } if kind == "InvalidDataValue" && reason == "The step gave no view"),
         "{e:?}"
     );
 
@@ -459,7 +464,7 @@ fn run_bytes_failures_are_program_errors() {
         ..Default::default()
     };
     let e = run_bytes(
-        "__widget_emit({ state: 0, view: { type: \"text\", text: \"long enough\" } })",
+        "__widget_emit({ type: \"text\", text: \"long enough\" })\nreturn { state: 0 }",
         options,
     )
     .unwrap_err();
@@ -476,7 +481,7 @@ fn run_bytes_failures_are_program_errors() {
 
     assert!(matches!(
         run_bytes(
-            "__widget_emit(1)",
+            "return 1",
             RunOptions {
                 timeout_ms: Some(0),
                 ..Default::default()
@@ -487,33 +492,138 @@ fn run_bytes_failures_are_program_errors() {
 }
 
 #[test]
-fn run_bytes_leaves_functions_out_as_json_does() {
-    let source =
-        "const out = { state: { n: 1, f() {}, list: [() => 2, 3] }, view: { type: \"divider\" } }";
-    let json = program(format!("{source}\nreturn out"))
-        .run("{}".into(), RunOptions::default())
-        .unwrap();
-    let bytes = run_bytes(
-        &format!("{source}\n__widget_emit(out)"),
-        RunOptions::default(),
-    )
-    .unwrap();
-    let Output::Step(s) = decode_output(&bytes).unwrap() else {
-        panic!()
-    };
-    assert_eq!(
-        s.state,
-        serde_json::from_str::<Value>(&json).unwrap()["state"]
-    );
-    assert_eq!(s.state, json!({ "n": 1, "list": [null, 3] }));
-    // The last call wins; `emit_name` names the global.
-    let bytes = run_bytes(
-        "__widget_emit({ commands: [] })\n__widget_emit({ commands: [[\"save\"]] })",
-        RunOptions::default(),
-    )
-    .unwrap();
-    assert!(matches!(decode_output(&bytes).unwrap(), Output::Draw(d) if d.len() == 1));
-    assert_eq!(ValueEncoder::widget().emit_name(), "__widget_emit");
+fn programs_of_another_protocol_dont_run() {
+    // Nothing runs: the program would post and fail otherwise.
+    for (first, kind, reason) in [
+        ("", "OlderProtocol", widget_wire::OLDER),
+        (
+            "const __widget_protocol = 1\n",
+            "OlderProtocol",
+            widget_wire::OLDER,
+        ),
+        (
+            "const __widget_protocol = 3\n",
+            "NewerProtocol",
+            widget_wire::NEWER,
+        ),
+        (
+            "const __widget_protocol = 2 \n",
+            "OlderProtocol",
+            widget_wire::OLDER,
+        ),
+    ] {
+        let source =
+            format!("{first}__host.post({{ type: \"explode\" }})\nreturn __widget_native_step(1)");
+        let p = Arc::new(Program::new(source, "__input".into()).unwrap());
+        let refused = PsychoScriptError::Runtime {
+            kind: kind.into(),
+            reason: reason.into(),
+            line: None,
+            column: None,
+        };
+        let e = p.run_bytes("{}".into(), ValueEncoder::widget(), RunOptions::default());
+        assert_eq!(e, Err(refused), "{first:?}");
+        let (h, _rx) = handler();
+        let e = p.start_live(
+            "null".into(),
+            h,
+            LiveOptions::default(),
+            None,
+            Some(ValueEncoder::widget()),
+        );
+        let Some(PsychoScriptError::Runtime {
+            kind: k, reason: r, ..
+        }) = e.err()
+        else {
+            panic!("{first:?}")
+        };
+        assert_eq!((k.as_str(), r.as_str()), (kind, reason), "{first:?}");
+    }
+    // Without an encoder, as before.
+    let p = Arc::new(Program::new("return 1".into(), "__input".into()).unwrap());
+    assert_eq!(p.run("{}".into(), RunOptions::default()).unwrap(), "1");
+}
+
+#[test]
+fn functions_where_none_may_go_fail_the_call_with_the_runtimes_type_error() {
+    for (source, label, arg) in [
+        (
+            "__widget_emit({ type: \"text\", text: \"t\", f: () => 1 })\nreturn {}",
+            "__widget_emit",
+            1,
+        ),
+        (
+            "__widget_emit(null, () => 1)\nreturn {}",
+            "__widget_emit",
+            2,
+        ),
+        ("__input(() => 1)\nreturn {}", "__input", 1),
+    ] {
+        let e = run_bytes(source, RunOptions::default()).unwrap_err();
+        let message = format!(
+            "TypeError: Argument {arg} to {label} contains a function, which cannot be passed to the host. (line 2, col 1)"
+        );
+        assert_eq!(
+            e,
+            PsychoScriptError::Runtime {
+                kind: "ExecutionFailure".into(),
+                reason: message,
+                line: Some(2),
+                column: Some(1),
+            },
+            "{source}"
+        );
+    }
+    // Live: posts, other host functions.
+    for (source, label) in [
+        (
+            "__host.post({ type: \"submit\", value: [() => 1] })",
+            "Argument 1 to __host.post",
+        ),
+        (
+            "__host.post({ type: \"frame\" }, () => 1)",
+            "Argument 2 to __host.post",
+        ),
+        (
+            "__host.post({ type: \"draw\", id: \"c\", commands: [[\"save\", () => 1]] })",
+            "Argument 1 to __host.post",
+        ),
+        ("__host.now(() => 1)", "Argument 1 to __host.now"),
+        ("await __host.sleep(() => 1)", "Argument 1 to __host.sleep"),
+        (
+            "await __host.fetch({ url: \"https://a.test\", body: () => 1 })",
+            "Argument 1 to __host.fetch",
+        ),
+    ] {
+        let (h, rx) = handler();
+        let _run = program(format!("{source}\nawait __host.receive()"))
+            .start_live(
+                "null".into(),
+                h,
+                LiveOptions::default(),
+                None,
+                Some(ValueEncoder::widget()),
+            )
+            .unwrap();
+        let exit = loop {
+            if let Event::Exit(e) = next(&rx) {
+                break e;
+            }
+        };
+        let LiveExit::Failed {
+            error: PsychoScriptError::Runtime { kind, reason, .. },
+        } = exit
+        else {
+            panic!("{source}: {exit:?}")
+        };
+        assert_eq!(kind, "ExecutionFailure", "{source}");
+        assert!(
+            reason.starts_with(&format!(
+                "TypeError: {label} contains a function, which cannot be passed to the host."
+            )),
+            "{source}: {reason}"
+        );
+    }
 }
 
 /// The ids in a view, depth first.
@@ -532,8 +642,9 @@ fn ids(node: &Node, out: &mut Vec<String>) {
 }
 
 #[test]
-fn native_steps_give_the_conformance_fixtures_views() {
-    // `prelude + "\n" + source` on `input`, natively: the view the prelude's own tree building gives (`view`).
+fn native_steps_give_the_conformance_fixtures() {
+    // `prelude + "\n" + source` on `input`, natively (fixtures from opencode widgets 523750c6a, protocol 2): the view
+    // exactly (its bytes), the run's result as JSON values, or the failure exactly.
     let dir = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../widget-wire/tests/fixtures/wire"
@@ -547,27 +658,52 @@ fn native_steps_give_the_conformance_fixtures_views() {
             "{PRELUDE}\n{}{EMIT}",
             f["source"].as_str().unwrap()
         ));
-        let bytes = program
-            .run_bytes(
-                f["input"].to_string(),
-                ValueEncoder::widget(),
-                RunOptions::default(),
-            )
-            .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        let out = program.run_bytes(
+            f["input"].to_string(),
+            ValueEncoder::widget(),
+            RunOptions::default(),
+        );
+        n += 1;
+        if let Some(e) = f.get("error") {
+            let Err(PsychoScriptError::Runtime {
+                kind, reason, line, ..
+            }) = &out
+            else {
+                panic!("{name}: {out:?}")
+            };
+            assert_eq!(reason, e["message"].as_str().unwrap(), "{name}");
+            if e["view"] == true {
+                assert_eq!((kind.as_str(), *line), ("InvalidView", None), "{name}");
+            } else {
+                assert_ne!(kind, "InvalidView", "{name}");
+            }
+            continue;
+        }
+        let bytes = out.unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        let view = widget_wire::encode_post(&HostValue::from_json(
+            &json!({ "type": "render", "node": f["view"] }),
+        ))
+        .unwrap();
+        assert!(bytes.ends_with(&view[2..]), "{name}");
         let Output::Step(s) = decode_output(&bytes).unwrap() else {
             panic!("{name}")
         };
-        let expected = widget_wire::encode_output(&HostValue::from_json(
-            &json!({ "state": null, "view": f["view"] }),
-        ))
-        .unwrap();
-        let Output::Step(e) = decode_output(&expected).unwrap() else {
-            panic!()
-        };
-        assert_eq!(s.view, e.view, "{name}");
-        n += 1;
+        let r = &f["result"];
+        assert_eq!(
+            s.state,
+            r.get("state").cloned().unwrap_or(Value::Null),
+            "{name}"
+        );
+        assert_eq!(s.submit, r.get("submit").cloned(), "{name}");
+        assert_eq!(s.dismiss, r.get("dismiss") == Some(&json!(true)), "{name}");
+        assert_eq!(
+            s.send.map(|m| (m.value, m.wake)),
+            r.get("send")
+                .map(|m| (m["value"].clone(), m["wake"] != json!(false))),
+            "{name}"
+        );
     }
-    assert_eq!(n, 37);
+    assert_eq!(n, 53);
 }
 
 /// Every post of `frames` frames, decoded.
@@ -653,8 +789,8 @@ impl EncodeValues for Built {
     fn emit_name(&self) -> &str {
         "__widget_emit"
     }
-    fn encode_output(&self, value: &HostValue) -> Result<Vec<u8>, Failure> {
-        widget_wire::encode_output(value).map_err(|e| Failure::new(e.kind, e.message))
+    fn step(&self) -> Box<dyn EncodeStep> {
+        unreachable!()
     }
     fn live(&self) -> Box<dyn EncodePosts> {
         Box::new(Built)
@@ -666,9 +802,9 @@ impl EncodePosts for Built {
         &mut self,
         message: &HostValue,
         keep: bool,
-    ) -> Result<(Option<Vec<u8>>, HostValue), HostValue> {
+    ) -> Result<(Option<Vec<u8>>, HostValue), Reject> {
         let bytes = widget_wire::encode_post(message)
-            .map_err(|e| HostValue::Failure(Failure::new(e.kind, e.message)))?;
+            .map_err(|e| Reject::Failure(Failure::new(e.kind, e.message)))?;
         Ok((keep.then_some(bytes), HostValue::Undefined))
     }
 }
@@ -830,16 +966,21 @@ fn a_restored_native_run_keeps_its_canvases_for_draws() {
     restored.stop();
 }
 
-/// A step output both ways: the JSON path's result and `run_bytes`.
+/// A step output both ways: the JSON path's result and `run_bytes` (the view emitted, the rest the result).
 fn both_ways(state: &str) -> (Value, Value) {
-    let out = format!("({{ state: {state}, view: {{ type: \"divider\" }} }})");
     let json: Value = serde_json::from_str(
-        &program(format!("return {out}"))
-            .run("{}".into(), RunOptions::default())
-            .unwrap(),
+        &program(format!(
+            "return {{ state: {state}, view: {{ type: \"divider\" }} }}"
+        ))
+        .run("{}".into(), RunOptions::default())
+        .unwrap(),
     )
     .unwrap();
-    let bytes = run_bytes(&format!("__widget_emit({out})"), RunOptions::default()).unwrap();
+    let bytes = run_bytes(
+        &format!("__widget_emit({{ type: \"divider\" }})\nreturn {{ state: {state} }}"),
+        RunOptions::default(),
+    )
+    .unwrap();
     let Output::Step(s) = decode_output(&bytes).unwrap() else {
         panic!()
     };
@@ -859,19 +1000,28 @@ fn step_output_values_read_as_their_json_does() {
     }
 }
 
-/// The JSON path calls `toJSON` (custom ones, and so an `Error`'s own fields and typed arrays read differently);
-/// `__widget_emit`'s argument crosses as a host value, which doesn't. Needs psychoscript to apply `toJSON` to
-/// host-call arguments.
+/// The rest of a step's output is the run's result: `toJSON`, an `Error`'s own fields, a typed array failing the step,
+/// all as the JSON path has them.
 #[test]
-#[ignore = "needs psychoscript to apply toJSON to host-call arguments"]
 fn step_output_values_with_to_json_read_as_their_json_does() {
     for state in [
         "{ a: { toJSON() { return 'custom' } } }",
         "{ list: [{ toJSON(key) { return 'at ' + key } }] }",
         "{ e: Object.assign(new Error('e'), { code: 7 }) }",
-        "{ bytes: new Float32Array([1.5]) }",
     ] {
         let (bin, json) = both_ways(state);
         assert_eq!(bin, json, "{state}");
     }
+    let state = "{ bytes: new Float32Array([1.5]) }";
+    let json = program(format!(
+        "return {{ state: {state}, view: {{ type: \"divider\" }} }}"
+    ))
+    .run("{}".into(), RunOptions::default())
+    .unwrap_err();
+    let bin = run_bytes(
+        &format!("__widget_emit({{ type: \"divider\" }})\nreturn {{ state: {state} }}"),
+        RunOptions::default(),
+    )
+    .unwrap_err();
+    assert_eq!(bin, json);
 }

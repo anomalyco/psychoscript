@@ -4,30 +4,58 @@ use psychoscript::{Data, Failure, HostValue};
 
 use crate::error::PsychoScriptError;
 
-/// Writes values a program hands its host as bytes for the app, instead of JSON: a run's output
+/// Writes values a program hands its host as bytes for the app, instead of JSON: a step's output
 /// ([`crate::Program::run_bytes`]) and a live run's posts ([`crate::LiveHandler::on_posts_bytes`]). The crate only
 /// carries the bytes; their format is the encoder's. Runs with an encoder pass program functions as markers
-/// (`translate: { functions: "mark" }`).
+/// (`translate: { functions: "mark" }`); a marker in an argument of a host function the encoder doesn't handle fails
+/// the call with the runtime's `TypeError`, as a function does without markers.
 pub trait EncodeValues: Send + Sync {
-    /// The host global `run_bytes` defines; the program passes its output to it (`__emit(main())`).
+    /// Checks a program before it runs, from its first line: an `Err` refuses the run (`Runtime` of its kind and
+    /// message, nothing run).
+    fn check(&self, _first_line: &str) -> Result<(), Failure> {
+        Ok(())
+    }
+    /// The host global `run_bytes` defines; the program passes its output, or part of it, to it.
     fn emit_name(&self) -> &str;
-    /// A run's output, passed to the emit global. An `Err` is thrown at the call: uncaught, the run fails with
-    /// `Runtime` of its kind and message, located at the call.
-    fn encode_output(&self, value: &HostValue) -> Result<Vec<u8>, Failure>;
+    /// What one `run_bytes` keeps between its emit calls and its result.
+    fn step(&self) -> Box<dyn EncodeStep>;
     /// What a live run keeps between its posts.
     fn live(&self) -> Box<dyn EncodePosts>;
 }
 
+/// Why an encoder's call fails.
+#[derive(Debug)]
+pub enum Reject {
+    /// A program error, thrown at the call: uncaught, the run fails with `Runtime` of its kind and message, at the
+    /// call's line and column.
+    Failure(Failure),
+    /// A function in argument `arg` (from 1) where none may go: the runtime's `TypeError`
+    /// `Argument <arg> to <name> contains a function, which cannot be passed to the host.`, at the call.
+    Function { arg: usize },
+    /// Thrown as it is, for the program to catch.
+    Throw(HostValue),
+    /// A program error that isn't thrown: the live run ends at once with `Failed(Runtime)` of its kind and message.
+    End(Failure),
+}
+
+/// One `run_bytes`: the emit global's calls, then the run's result.
+pub trait EncodeStep: Send {
+    /// The emit global's arguments.
+    fn emit(&mut self, args: &[HostValue]) -> Result<(), Reject>;
+    /// A program error the emitted values make, which fails the step whatever the run did.
+    fn failure(&self) -> Option<Failure>;
+    /// The bytes, from the run's result (program functions in it as markers).
+    fn finish(&self, result: &Data) -> Result<Vec<u8>, Failure>;
+}
+
 /// A live run's posts (`__host.post(message)`).
 pub trait EncodePosts: Send {
-    /// The post's bytes, `None` when `keep` is false (dropped over the post rate), and what `post` returns. An `Err`
-    /// is thrown at the post: a [`Failure`] is a program error (uncaught, the run fails with `Runtime` of its kind,
-    /// located at the post); any other value is thrown as it is, for the program to catch.
+    /// The post's bytes, `None` when `keep` is false (dropped over the post rate), and what `post` returns.
     fn post(
         &mut self,
         message: &HostValue,
         keep: bool,
-    ) -> Result<(Option<Vec<u8>>, HostValue), HostValue>;
+    ) -> Result<(Option<Vec<u8>>, HostValue), Reject>;
     /// What a snapshot keeps of it, for [`EncodePosts::load`] in the restored run.
     fn save(&self) -> Data {
         Data::Null
@@ -59,115 +87,205 @@ impl ValueEncoder {
     }
 }
 
-/// An encoder's failure, thrown at the call as `InvalidDataValue` so the run's error is located there (the language
-/// locates only its own kinds), then named by its own kind on that error.
+/// Whether `v` holds a function marker anywhere.
+pub(crate) fn marked(v: &HostValue) -> bool {
+    match v {
+        HostValue::FunctionMarker => true,
+        HostValue::Array(items) => items.iter().flatten().any(marked),
+        HostValue::Object(fields) => fields.iter().any(|(_, v)| marked(v)),
+        _ => false,
+    }
+}
+
+/// What a call with an encoder threw, as the program sees it and as the run's error names it. The language locates
+/// only its own kinds, and names a host's failure `Error`: a failure is thrown as `InvalidDataValue` (or
+/// `ExecutionFailure`) so the run's error is at the call, then given its own kind (or the error's own name) there.
 #[derive(Default)]
-pub(crate) struct Thrown(Mutex<Option<(String, String)>>);
+pub(crate) struct Thrown(Mutex<Option<Named>>);
+
+struct Named {
+    message: String,
+    kind: Option<String>,
+    name: Option<&'static str>,
+}
 
 impl Thrown {
-    pub(crate) fn throw(&self, thrown: HostValue) -> HostValue {
-        let HostValue::Failure(failure) = thrown else {
-            return thrown;
+    /// What the call throws for `reject` (an `End` is not thrown: `None`).
+    pub(crate) fn throw(&self, reject: Reject, label: &str) -> Option<HostValue> {
+        let (message, kind, name) = match reject {
+            Reject::Throw(v) => return Some(v),
+            Reject::End(_) => return None,
+            Reject::Failure(f) => (f.message.to_string_lossy().into_owned(), Some(f.kind), None),
+            Reject::Function { arg } => (function(label, arg), None, Some("TypeError")),
         };
-        let message = failure.message.to_string_lossy().into_owned();
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner) =
-            Some((failure.kind, message.clone()));
-        HostValue::Failure(Failure::new("InvalidDataValue", message))
+        let thrown = Failure::new(
+            if kind.is_some() {
+                "InvalidDataValue"
+            } else {
+                "ExecutionFailure"
+            },
+            message.clone(),
+        );
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(Named {
+            message,
+            kind,
+            name,
+        });
+        Some(HostValue::Failure(thrown))
     }
 
-    /// Gives `error` the encoder's kind when it is the failure thrown.
+    /// A function where none may go in argument `arg` of the call `label`.
+    pub(crate) fn function(&self, label: &str, arg: usize) -> HostValue {
+        self.throw(Reject::Function { arg }, label)
+            .unwrap_or(HostValue::Undefined)
+    }
+
+    /// Gives `error` its own kind or name when it is what was thrown.
     pub(crate) fn name(&self, error: &mut PsychoScriptError) {
-        let thrown = self.0.lock().unwrap_or_else(PoisonError::into_inner).take();
-        if let (PsychoScriptError::Runtime { kind, reason, .. }, Some((own, message))) =
-            (error, thrown)
+        let Some(named) = self.0.lock().unwrap_or_else(PoisonError::into_inner).take() else {
+            return;
+        };
+        let PsychoScriptError::Runtime { kind, reason, .. } = error else {
+            return;
+        };
+        if !reason.contains(&named.message) {
+            return;
+        }
+        if let Some(own) = named.kind
             && kind == "InvalidDataValue"
-            && reason.contains(&message)
         {
             *kind = own;
         }
-    }
-}
-
-#[cfg(feature = "widget-wire")]
-struct Widget;
-
-#[cfg(feature = "widget-wire")]
-impl EncodeValues for Widget {
-    fn emit_name(&self) -> &str {
-        widget_wire::EMIT
-    }
-    fn encode_output(&self, value: &HostValue) -> Result<Vec<u8>, Failure> {
-        widget_wire::encode_output_native(value, widget_wire::is_function_marker)
-            .map_err(|e| Failure::new(e.kind, e.message))
-    }
-    fn live(&self) -> Box<dyn EncodePosts> {
-        Box::new(widget_wire::LivePosts::new(widget_wire::is_function_marker))
-    }
-}
-
-#[cfg(feature = "widget-wire")]
-impl EncodePosts for widget_wire::LivePosts {
-    fn post(
-        &mut self,
-        message: &HostValue,
-        keep: bool,
-    ) -> Result<(Option<Vec<u8>>, HostValue), HostValue> {
-        match widget_wire::LivePosts::post(self, message, keep) {
-            Ok((bytes, handled)) => {
-                Ok((bytes, handled.map_or(HostValue::Undefined, HostValue::Bool)))
-            }
-            Err(widget_wire::PostError::Invalid(e)) => {
-                Err(HostValue::Failure(Failure::new(e.kind, e.message)))
-            }
-            Err(widget_wire::PostError::Throw(message)) => Err(HostValue::Error(Box::new(
-                psychoscript::HostError::new(message),
-            ))),
+        if let Some(name) = named.name
+            && kind == "ExecutionFailure"
+            && let Some(rest) = reason.strip_prefix("Error: ")
+        {
+            *reason = format!("{name}: {rest}");
         }
     }
-    /// The last render's canvases, `[[key, id, wgsl], ...]`.
-    fn save(&self) -> Data {
-        Data::Array(
-            self.last_render()
-                .canvases
-                .iter()
-                .map(|c| {
-                    Data::Array(vec![
-                        Data::String(c.key.as_str().into()),
-                        Data::String(c.id.as_str().into()),
-                        Data::Bool(c.wgsl),
-                    ])
-                })
-                .collect(),
-        )
-    }
-    fn load(&mut self, saved: &Data) {
-        let Data::Array(list) = saved else { return };
-        let text = |d: &Data| d.as_string().map(|s| s.to_string_lossy().into_owned());
-        let canvases = list
-            .iter()
-            .filter_map(|c| match c {
-                Data::Array(f) if f.len() == 3 => Some(widget_wire::Canvas {
-                    key: text(&f[0])?,
-                    id: text(&f[1])?,
-                    wgsl: matches!(f[2], Data::Bool(true)),
-                }),
-                _ => None,
-            })
-            .collect();
-        self.restore_canvases(canvases);
-    }
+}
+
+/// The runtime's message for a function in a host call's argument.
+fn function(label: &str, arg: usize) -> String {
+    format!("Argument {arg} to {label} contains a function, which cannot be passed to the host.")
 }
 
 #[cfg(feature = "widget-wire")]
-#[uniffi::export]
-impl ValueEncoder {
-    /// OpenCode widgets' binary format (`widget-wire`, opencode `specs/v2/widgets-binary.md`) for a native host
-    /// (`widgets.md`, Native hosts): steps run `<program>\n__widget_emit(__widget_step(__input(), true))` with
-    /// `run_bytes`, live runs `<program>\nreturn await __widget_live(__input(), true)`. A value it can't write fails with `Runtime`
-    /// of kind `InvalidView`, `InvalidDraw` or `InvalidGpu` (the spec's phase `view`, `draw` or `gpu`), else
-    /// `InvalidDataValue`.
-    #[uniffi::constructor]
-    pub fn widget() -> Arc<ValueEncoder> {
-        ValueEncoder::new(Widget)
+mod widget {
+    use super::*;
+
+    fn failure(e: widget_wire::EncodeError) -> Failure {
+        Failure::new(e.kind, e.message)
+    }
+
+    fn reject(e: widget_wire::CallError) -> Reject {
+        match e {
+            widget_wire::CallError::Invalid(e) => Reject::Failure(failure(e)),
+            widget_wire::CallError::Function { arg } => Reject::Function { arg },
+            widget_wire::CallError::Uri => Reject::Throw(HostValue::Error(Box::new(
+                psychoscript::HostError::named("URIError", "URI malformed"),
+            ))),
+            widget_wire::CallError::Throw(m) => {
+                Reject::Throw(HostValue::Error(Box::new(psychoscript::HostError::new(m))))
+            }
+            widget_wire::CallError::View(m) => {
+                Reject::End(Failure::new(widget_wire::INVALID_VIEW, m))
+            }
+        }
+    }
+
+    pub(super) struct Widget;
+
+    impl EncodeValues for Widget {
+        fn check(&self, first_line: &str) -> Result<(), Failure> {
+            match widget_wire::protocol(first_line) {
+                widget_wire::PROTOCOL => Ok(()),
+                p if p < widget_wire::PROTOCOL => {
+                    Err(Failure::new("OlderProtocol", widget_wire::OLDER))
+                }
+                _ => Err(Failure::new("NewerProtocol", widget_wire::NEWER)),
+            }
+        }
+        fn emit_name(&self) -> &str {
+            widget_wire::EMIT
+        }
+        fn step(&self) -> Box<dyn EncodeStep> {
+            Box::new(widget_wire::NativeStep::default())
+        }
+        fn live(&self) -> Box<dyn EncodePosts> {
+            Box::new(widget_wire::LivePosts::new())
+        }
+    }
+
+    impl EncodeStep for widget_wire::NativeStep {
+        fn emit(&mut self, args: &[HostValue]) -> Result<(), Reject> {
+            widget_wire::NativeStep::emit(self, args).map_err(reject)
+        }
+        fn failure(&self) -> Option<Failure> {
+            widget_wire::NativeStep::failure(self)
+                .map(|m| Failure::new(widget_wire::INVALID_VIEW, m))
+        }
+        fn finish(&self, result: &Data) -> Result<Vec<u8>, Failure> {
+            widget_wire::NativeStep::finish(self, result).map_err(failure)
+        }
+    }
+
+    impl EncodePosts for widget_wire::LivePosts {
+        fn post(
+            &mut self,
+            message: &HostValue,
+            keep: bool,
+        ) -> Result<(Option<Vec<u8>>, HostValue), Reject> {
+            let (bytes, handled) =
+                widget_wire::LivePosts::post(self, message, keep).map_err(reject)?;
+            Ok((bytes, handled.map_or(HostValue::Undefined, HostValue::Bool)))
+        }
+        /// The last render's canvases, `[[key, id, wgsl], ...]`.
+        fn save(&self) -> Data {
+            Data::Array(
+                self.last_render()
+                    .canvases
+                    .iter()
+                    .map(|c| {
+                        Data::Array(vec![
+                            Data::String(c.key.as_str().into()),
+                            Data::String(c.id.as_str().into()),
+                            Data::Bool(c.wgsl),
+                        ])
+                    })
+                    .collect(),
+            )
+        }
+        fn load(&mut self, saved: &Data) {
+            let Data::Array(list) = saved else { return };
+            let text = |d: &Data| d.as_string().map(|s| s.to_string_lossy().into_owned());
+            let canvases = list
+                .iter()
+                .filter_map(|c| match c {
+                    Data::Array(f) if f.len() == 3 => Some(widget_wire::Canvas {
+                        key: text(&f[0])?,
+                        id: text(&f[1])?,
+                        wgsl: matches!(f[2], Data::Bool(true)),
+                    }),
+                    _ => None,
+                })
+                .collect();
+            self.restore_canvases(canvases);
+        }
+    }
+
+    #[uniffi::export]
+    impl ValueEncoder {
+        /// OpenCode widgets' binary format (`widget-wire`, opencode `specs/v2/widgets-binary.md`) for a native host
+        /// of widget protocol 2 (`widgets.md`, Native hosts): steps run `<program>\nreturn
+        /// __widget_native_step(__input())` with `run_bytes`, live runs `<program>\nreturn await
+        /// __widget_live(__input(), true)`. A program of another protocol isn't run: `Runtime` of kind
+        /// `OlderProtocol` (a program error) or `NewerProtocol` (a client error). A value it can't write fails with
+        /// `Runtime` of kind `InvalidView`, `InvalidDraw` or `InvalidGpu` (the spec's phase `view`, `draw` or `gpu`),
+        /// else `InvalidDataValue`.
+        #[uniffi::constructor]
+        pub fn widget() -> Arc<ValueEncoder> {
+            ValueEncoder::new(Widget)
+        }
     }
 }

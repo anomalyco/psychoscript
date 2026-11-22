@@ -1,6 +1,7 @@
-//! Native tree building (`widgets.md`, Native hosts): the view as the program built it (handlers as function markers,
-//! `key`s, children as written) walked while it is encoded, into the bytes of exactly the tree the prelude's
-//! `__widget_tree` makes, with its handler ids and canvases by key.
+//! Native tree building (`widgets.md`, Native hosts, protocol 2): the view as the program built it (handlers as
+//! function markers, `key`s, children as written) walked while it is encoded, into the bytes of exactly the tree the
+//! prelude's `__widget_tree` makes, with its handler ids and canvases by key. The walk checks Keys and depth and the
+//! function rule as it goes.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -8,16 +9,14 @@ use std::fmt::Write as _;
 
 use psychoscript::HostValue;
 
-use crate::encode::{Streams, field, prop, too_deep, write_node};
-use crate::schema::{K_INT, K_STR, MAX_DEPTH, T_UNKNOWN, is_container, type_id};
+use crate::encode::{Streams, field, json_value, prop, write_node};
+use crate::schema::{K_INT, K_STR, T_UNKNOWN, is_container, type_id};
 
-/// Whether a value is a function marker.
-pub type IsMarker = fn(&HostValue) -> bool;
-
-/// psychoscript's function marker (`translate: { functions: "mark" }`), what a native host's runtime gives.
-pub fn is_function_marker(v: &HostValue) -> bool {
-    matches!(v, HostValue::FunctionMarker)
-}
+/// The most levels a view nests (`widgets.md`, Keys and depth).
+pub const LEVELS: usize = 100;
+/// The failures of a view that breaks Keys and depth: program errors in phase `view`.
+pub const DEEP: &str = "The view nests more than 100 levels";
+pub const KEY: &str = "A node's key must be a string, a number or a boolean";
 
 /// What a walk found besides the bytes.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -34,6 +33,17 @@ pub struct Canvas {
     pub key: String,
     pub id: String,
     pub wgsl: bool,
+}
+
+/// Why a walk stopped.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Stop {
+    /// The view breaks Keys and depth (`KEY`, `DEEP`).
+    View(&'static str),
+    /// A function where none may go: the call fails with the runtime's `TypeError`.
+    Function,
+    /// A key `encodeURIComponent` can't write (a lone surrogate): the prelude's `URIError`.
+    Uri,
 }
 
 struct Control {
@@ -60,40 +70,60 @@ fn control(ty: &str) -> Option<Control> {
     })
 }
 
-const REMOVED: [&str; 8] = [
-    "type",
-    "key",
-    "id",
-    "pointer",
-    "onPress",
-    "onChange",
-    "onPointer",
-    "children",
-];
+fn handler_prop(k: &str) -> bool {
+    matches!(k, "onPress" | "onChange" | "onPointer")
+}
 
-/// A node's `key`, when it is neither `undefined` nor `null`.
-fn key(v: &HostValue) -> Option<&HostValue> {
-    field(v, "key").filter(|k| !matches!(k, HostValue::Null))
+/// Whether `v` holds a function marker anywhere.
+pub(crate) fn marked(v: &HostValue) -> bool {
+    match v {
+        HostValue::FunctionMarker => true,
+        HostValue::Array(items) => items.iter().flatten().any(marked),
+        HostValue::Object(fields) => fields.iter().any(|(_, v)| marked(v)),
+        _ => false,
+    }
+}
+
+/// An object as JavaScript sees one (`typeof v === "object"`, not `null`): the walk's nodes and arrays.
+fn object_like(v: &HostValue) -> bool {
+    !matches!(
+        v,
+        HostValue::Undefined
+            | HostValue::Null
+            | HostValue::Bool(_)
+            | HostValue::Number(_)
+            | HostValue::String(_)
+            | HostValue::FunctionMarker
+    )
+}
+
+/// A node's `key`: `None` when absent, `undefined` or `null`; a string, a number or a boolean; else the view fails.
+fn key(v: &HostValue) -> Result<Option<&HostValue>, Stop> {
+    match v.get("key") {
+        None | Some(HostValue::Undefined | HostValue::Null) => Ok(None),
+        Some(k @ (HostValue::String(_) | HostValue::Number(_) | HostValue::Bool(_))) => Ok(Some(k)),
+        Some(_) => Err(Stop::View(KEY)),
+    }
 }
 
 /// `String(key)`.
-fn key_string(k: &HostValue) -> Result<Cow<'_, str>, String> {
-    Ok(match k {
+pub(crate) fn key_string(k: &HostValue) -> Cow<'_, str> {
+    match k {
         HostValue::String(s) => s.to_string_lossy(),
         HostValue::Number(n) => Cow::Owned(js_number(*n)),
         HostValue::Bool(b) => Cow::Borrowed(if *b { "true" } else { "false" }),
-        _ => return Err("a node's key must be a string or a number".into()),
-    })
+        _ => Cow::Borrowed(""),
+    }
 }
 
 /// `":" + encodeURIComponent(String(key))`.
-fn segment(k: &HostValue) -> Result<String, String> {
+fn segment(k: &HostValue) -> Result<String, Stop> {
     if let HostValue::String(s) = k
         && s.as_str().is_none()
     {
-        return Err("URIError: URI malformed (a node's key has a lone surrogate)".into());
+        return Err(Stop::Uri);
     }
-    let text = key_string(k)?;
+    let text = key_string(k);
     let mut out = String::with_capacity(text.len() + 1);
     out.push(':');
     for b in text.bytes() {
@@ -147,37 +177,42 @@ pub(crate) fn js_number(x: f64) -> String {
     out
 }
 
-/// What JavaScript skips among children: a hole, `undefined`, `null`, `false`, `0`, `-0`, `NaN`, `""`.
+/// What JavaScript skips among children: a hole, `undefined`, `null`, `false`, `0`, `-0`, `NaN`, `""`; and what goes
+/// out as JSON's `null`, which clients drop too: `±Infinity`.
 fn falsy(item: Option<&HostValue>) -> bool {
     match item {
         None | Some(HostValue::Undefined | HostValue::Null | HostValue::Bool(false)) => true,
-        Some(HostValue::Number(n)) => *n == 0.0 || n.is_nan(),
+        Some(HostValue::Number(n)) => *n == 0.0 || !n.is_finite(),
         Some(HostValue::String(s)) => s.as_str() == Some(""),
         _ => false,
     }
 }
 
 /// Walks `root` (writing its bytes into `s`, when given) and returns what it found.
-pub(crate) fn walk(
-    s: Option<&mut Streams>,
-    root: &HostValue,
-    is_marker: IsMarker,
-) -> Result<Found, String> {
-    let path = match key(root).filter(|_| matches!(root, HostValue::Object(_))) {
+pub(crate) fn walk(s: Option<&mut Streams>, root: &HostValue) -> Result<Found, Stop> {
+    let mut walk = Walk {
+        path: String::new(),
+        found: Found::default(),
+    };
+    if !object_like(root) || matches!(root, HostValue::Array(_)) {
+        // Not a node: as JSON holds it.
+        if marked(root) {
+            return Err(Stop::Function);
+        }
+        if let Some(s) = s {
+            write_node(s, &json_value(root), 0).map_err(|_| Stop::View(DEEP))?;
+        }
+        return Ok(walk.found);
+    }
+    walk.path = match key(root)? {
         Some(k) => segment(k)?,
         None => "0".into(),
     };
-    let mut walk = Walk {
-        is_marker,
-        path,
-        found: Found::default(),
-    };
-    walk.node(s, root, 0)?;
+    walk.node(s, root, 1)?;
     Ok(walk.found)
 }
 
 struct Walk {
-    is_marker: IsMarker,
     /// The current node's path.
     path: String,
     found: Found,
@@ -205,21 +240,12 @@ impl<'a> Items<'a> {
 }
 
 impl Walk {
-    fn node(&mut self, s: Option<&mut Streams>, v: &HostValue, depth: usize) -> Result<(), String> {
-        if depth > MAX_DEPTH {
-            return Err(too_deep());
-        }
-        let HostValue::Object(fields) = v else {
-            // Not an object, or an array: as it is (a marker as `null`).
-            if let Some(s) = s {
-                let v = if (self.is_marker)(v) {
-                    &HostValue::Null
-                } else {
-                    v
-                };
-                write_node(s, v, depth)?;
-            }
-            return Ok(());
+    /// A node (an object) at `level`, its key already checked.
+    fn node(&mut self, s: Option<&mut Streams>, v: &HostValue, level: usize) -> Result<(), Stop> {
+        let fields: &[(psychoscript::HostString, HostValue)] = match v {
+            HostValue::Object(fields) => fields,
+            // Another kind of object (a Date, a Set...): a node with no props.
+            _ => &[],
         };
         let name = match field(v, "type") {
             Some(HostValue::String(t)) => t.to_string_lossy(),
@@ -239,17 +265,28 @@ impl Walk {
             Some(s) if t != T_UNKNOWN => Some(s),
             _ => None,
         };
-        if let Some(st) = props.as_deref_mut() {
-            for (k, pv) in fields {
-                let Some(k) = k.as_str() else { continue };
-                if !REMOVED.contains(&k) && !(self.is_marker)(pv) {
-                    prop(st, k, pv);
+        for (k, pv) in fields {
+            let Some(k) = k.as_str() else {
+                if marked(pv) {
+                    return Err(Stop::Function);
                 }
+                continue;
+            };
+            if k == "children" || handler_prop(k) {
+                continue;
+            }
+            if marked(pv) {
+                return Err(Stop::Function);
+            }
+            if let Some(st) = props.as_deref_mut()
+                && !matches!(k, "type" | "key" | "id" | "pointer")
+            {
+                prop(st, k, &json_value(pv));
             }
         }
         if let Some(c) = control(&name) {
-            let handled = field(v, c.handler).is_some_and(self.is_marker);
-            let keyed = if c.canvas { key(v) } else { None };
+            let handled = matches!(field(v, c.handler), Some(HostValue::FunctionMarker));
+            let keyed = if c.canvas { key(v)? } else { None };
             if handled || c.always || keyed.is_some() {
                 if let Some(st) = props.as_deref_mut() {
                     st.tag(10, K_STR);
@@ -263,7 +300,7 @@ impl Walk {
                     self.found.handlers.push((self.path.clone(), c.event));
                 }
                 if let Some(k) = keyed {
-                    let k = key_string(k)?;
+                    let k = key_string(k);
                     if !self.found.canvases.iter().any(|c| c.key == k) {
                         self.found.canvases.push(Canvas {
                             key: k.into_owned(),
@@ -290,50 +327,35 @@ impl Walk {
         };
         let st = match st {
             Some(st) => {
-                st.int(self.count(items, depth)?);
+                st.int(count(items));
                 Some(st)
             }
             None => None,
         };
         let mut prefix = String::new();
         let mut seen = HashMap::new();
-        self.items(st, items, &mut prefix, &mut seen, depth)
+        self.items(st, items, &mut prefix, &mut seen, level + 1)
     }
 
-    /// How many children go out: what isn't skipped, a marker (`null`, which clients drop) aside.
-    fn count(&self, items: Items, depth: usize) -> Result<u32, String> {
-        if depth > MAX_DEPTH {
-            return Err(too_deep());
-        }
-        let mut n = 0;
-        for (_, item) in items.iter() {
-            match item {
-                _ if falsy(item) => {}
-                Some(HostValue::Array(nested)) => {
-                    n += self.count(Items::Many(nested), depth + 1)?
-                }
-                Some(v) if (self.is_marker)(v) => {}
-                _ => n += 1,
-            }
-        }
-        Ok(n)
-    }
-
+    /// The items of a node's `children` (or of an array in them) at `level`.
     fn items(
         &mut self,
         mut s: Option<&mut Streams>,
         items: Items,
         prefix: &mut String,
         seen: &mut HashMap<String, u32>,
-        depth: usize,
-    ) -> Result<(), String> {
-        if depth > MAX_DEPTH {
-            return Err(too_deep());
-        }
+        level: usize,
+    ) -> Result<(), Stop> {
         for (i, item) in items.iter() {
+            if falsy(item) {
+                continue;
+            }
+            let Some(item) = item else { continue };
+            if level > LEVELS && object_like(item) {
+                return Err(Stop::View(DEEP));
+            }
             match item {
-                _ if falsy(item) => {}
-                Some(HostValue::Array(nested)) => {
+                HostValue::Array(nested) => {
                     let len = prefix.len();
                     let _ = write!(prefix, "{i}.");
                     self.items(
@@ -341,14 +363,16 @@ impl Walk {
                         Items::Many(nested),
                         prefix,
                         seen,
-                        depth + 1,
+                        level + 1,
                     )?;
                     prefix.truncate(len);
                 }
-                Some(child @ HostValue::Object(_)) => {
+                HostValue::FunctionMarker => return Err(Stop::Function),
+                child if object_like(child) => {
+                    let k = key(child)?;
                     let len = self.path.len();
                     self.path.push('/');
-                    match key(child) {
+                    match k {
                         Some(k) => {
                             let seg = segment(k)?;
                             let n = seen.entry(seg.clone()).or_insert(0);
@@ -363,18 +387,30 @@ impl Walk {
                             let _ = write!(self.path, "{i}");
                         }
                     }
-                    self.node(s.as_deref_mut(), child, depth + 1)?;
+                    self.node(s.as_deref_mut(), child, level)?;
                     self.path.truncate(len);
                 }
-                Some(v) if (self.is_marker)(v) => {}
-                Some(v) => {
+                // A string, a number, `true`: as it is.
+                v => {
                     if let Some(s) = s.as_deref_mut() {
-                        write_node(s, v, depth + 1)?;
+                        write_node(s, v, 0).map_err(|_| Stop::View(DEEP))?;
                     }
                 }
-                None => {}
             }
         }
         Ok(())
     }
+}
+
+/// How many children go out: every item not skipped, an array's in its place.
+fn count(items: Items) -> u32 {
+    let mut n = 0;
+    for (_, item) in items.iter() {
+        match item {
+            _ if falsy(item) => {}
+            Some(HostValue::Array(nested)) => n += count(Items::Many(nested)),
+            _ => n += 1,
+        }
+    }
+    n
 }

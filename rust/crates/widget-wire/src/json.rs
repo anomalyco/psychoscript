@@ -64,6 +64,7 @@ pub(crate) fn skipped(v: &HostValue) -> bool {
     )
 }
 
+/// As `JSON.stringify` writes a number: `Number::toString` (`1e+21`, `18446744073709552000`), `null` if not finite.
 fn number(n: f64, out: &mut String) {
     use std::fmt::Write as _;
     if !n.is_finite() {
@@ -71,9 +72,7 @@ fn number(n: f64, out: &mut String) {
     } else if n.fract() == 0.0 && n.abs() < 9.0e15 {
         let _ = write!(out, "{}", n as i64);
     } else {
-        out.push_str(
-            &serde_json::Number::from_f64(n).map_or_else(|| "null".to_owned(), |n| n.to_string()),
-        );
+        out.push_str(&crate::native::js_number(n));
     }
 }
 
