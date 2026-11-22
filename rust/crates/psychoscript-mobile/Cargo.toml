@@ -11,10 +11,12 @@ description = "PsychoScript for iOS (Swift) and Android (Kotlin): UniFFI binding
 name = "psychoscript_mobile"
 
 [features]
-default = ["shader"]
+default = ["shader", "widget-wire"]
 # `translate_wgsl`: WGSL to MSL and GLSL ES 3.00 with naga (about 1 MB of code). Off, the library is the
 # language alone.
 shader = ["dep:naga"]
+# `ValueEncoder.widget()`: OpenCode widgets' binary format, from the `widget-wire` crate.
+widget-wire = ["dep:widget-wire"]
 # The bindings generators (`uniffi-bindgen`, `uniffi-bindgen-swift`), for the build scripts only.
 cli = ["uniffi/cli"]
 
@@ -28,11 +30,16 @@ name = "uniffi-bindgen-swift"
 path = "src/bin/uniffi-bindgen-swift.rs"
 required-features = ["cli"]
 
+[[example]]
+name = "wire_bench"
+required-features = ["widget-wire"]
+
 [dependencies]
 psychoscript = { path = "../psychoscript" }
 serde = "1"
 serde_json = { version = "1", features = ["preserve_order"] }
 uniffi = "0.32"
 url = "2.5"
+widget-wire = { path = "../widget-wire", optional = true }
 naga = { version = "30", default-features = false, features = ["wgsl-in", "msl-out", "glsl-out"], optional = true }
 

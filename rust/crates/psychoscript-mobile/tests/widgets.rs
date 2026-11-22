@@ -19,6 +19,7 @@ enum Event {
 struct Handler(Mutex<Sender<Event>>);
 
 impl LiveHandler for Handler {
+    fn on_posts_bytes(&self, _messages: Vec<Vec<u8>>) {}
     fn on_posts(&self, messages_json: Vec<String>) {
         let tx = self.0.lock().unwrap();
         for m in messages_json {
@@ -43,6 +44,7 @@ fn start(source: &str, data: serde_json::Value) -> (Arc<LiveRun>, Receiver<Event
             serde_json::json!({ "data": data }).to_string(),
             Box::new(Handler(Mutex::new(tx))),
             LiveOptions::default(),
+            None,
             None,
         )
         .unwrap();

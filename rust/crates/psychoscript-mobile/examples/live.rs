@@ -38,6 +38,7 @@ while (true) {
 struct Timing(Mutex<Sender<Instant>>);
 
 impl LiveHandler for Timing {
+    fn on_posts_bytes(&self, _messages: Vec<Vec<u8>>) {}
     fn on_posts(&self, _messages_json: Vec<String>) {
         let _ = self.0.lock().map(|tx| tx.send(Instant::now()));
     }
@@ -64,6 +65,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         Box::new(Timing(Mutex::new(tx))),
         options,
         None,
+        None,
     )?;
     let mut latencies = Vec::new();
     for i in 0..2_000 {
@@ -88,6 +90,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         r#"{"dots":48}"#.into(),
         Box::new(Timing(Mutex::new(tx))),
         LiveOptions::default(),
+        None,
         None,
     )?;
     let cpu0 = cpu_seconds();
@@ -137,6 +140,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             r#"{"dots":48}"#.into(),
             Box::new(Timing(Mutex::new(tx))),
             LiveOptions::default(),
+            None,
             None,
         )?);
     }

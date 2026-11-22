@@ -1,8 +1,9 @@
 //! Long-running programs that talk to their host: a [`LiveRun`] runs on a thread of its own with these host
 //! functions under `__host`, beside the input function:
 //!
-//! - `__host.post(message)` (sync): queues `message`, as JSON, for [`LiveHandler::on_posts`]: every post of one
-//!   wake-up of the program reaches the host in one call, in order, when the program next waits (or ends).
+//! - `__host.post(message)` (sync): queues `message`, as JSON, for [`LiveHandler::on_posts`] (or, with a
+//!   [`ValueEncoder`], as its bytes for [`LiveHandler::on_posts_bytes`]): every post of one wake-up of the program
+//!   reaches the host in one call, in order, when the program next waits (or ends).
 //! - `await __host.receive()` (async, idempotent): the next message [`LiveRun::deliver`] queued, in order.
 //! - `await __host.sleep(ms)` (async, idempotent): resolves after `ms` (clamped to >= 0) of running time.
 //! - `__host.now()` (sync): milliseconds the program has been running, paused time left out.
@@ -19,10 +20,11 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use psychoscript::{
-    Compiled, Data, HostFunction, HostResult, HostString, HostValue, Limits, ProgramOptions, Run,
-    RunOutcome, Runtime, Snapshot, Suspender, from_bytes, to_bytes,
+    Compiled, Data, Failure, HostFunction, HostResult, HostString, HostValue, Limits,
+    ProgramOptions, Run, RunOutcome, Runtime, Snapshot, Suspender, from_bytes, to_bytes,
 };
 
+use crate::encoder::{EncodeValues, ValueEncoder};
 use crate::error::PsychoScriptError;
 use crate::fetch::{self, FetchTransport, Rejection, Request};
 use crate::json::{self, Input};
@@ -65,11 +67,13 @@ impl Default for LiveOptions {
 }
 
 /// What a live run tells its host, on the run's own thread, so return quickly (hand the messages to your UI thread).
-/// `on_posts` gets the posts of one wake-up of the program together, in order, as soon as it waits again; `on_exit`
-/// is called once, after the last posts (on the caller's thread for `stop` on a run suspended to a snapshot).
+/// `on_posts` gets the posts of one wake-up of the program together, in order, as soon as it waits again (as
+/// JSON; with a [`ValueEncoder`], `on_posts_bytes` gets them instead, as its bytes); `on_exit` is called once, after
+/// the last posts (on the caller's thread for `stop` on a run suspended to a snapshot).
 #[uniffi::export(callback_interface)]
 pub trait LiveHandler: Send + Sync {
     fn on_posts(&self, messages_json: Vec<String>);
+    fn on_posts_bytes(&self, messages: Vec<Vec<u8>>);
     fn on_warning(&self, message: String);
     fn on_exit(&self, exit: LiveExit);
 }
@@ -105,11 +109,12 @@ impl LiveRun {
         handler: Box<dyn LiveHandler>,
         options: LiveOptions,
         transport: Option<Arc<dyn FetchTransport>>,
+        encoder: Option<Arc<ValueEncoder>>,
     ) -> Result<Arc<LiveRun>, PsychoScriptError> {
         Input::parse(&input_json).map_err(|e| PsychoScriptError::InvalidInput {
             reason: format!("the input isn't JSON: {e}"),
         })?;
-        let control = Control::new(handler, options, input_name, transport);
+        let control = Control::new(handler, options, input_name, transport, encoder);
         control.spawn(Start::Fresh(compiled, input_json.into()))?;
         Ok(Arc::new(LiveRun { control }))
     }
@@ -119,18 +124,19 @@ impl LiveRun {
 impl LiveRun {
     /// Continues a run from a [`LiveRun::snapshot`], in this process or a later one of the same build: the program
     /// first receives `{ type: "resumed", pausedMs }`. Its input, running time and timers come back with it; messages
-    /// delivered but not yet received don't.
-    #[uniffi::constructor(default(input_name = "__input", transport = None, options))]
+    /// delivered but not yet received don't. Pass the `encoder` the run started with.
+    #[uniffi::constructor(default(input_name = "__input", transport = None, encoder = None, options))]
     pub fn restore(
         snapshot: Vec<u8>,
         handler: Box<dyn LiveHandler>,
         input_name: String,
         options: LiveOptions,
         transport: Option<Arc<dyn FetchTransport>>,
+        encoder: Option<Arc<ValueEncoder>>,
     ) -> Result<Arc<LiveRun>, PsychoScriptError> {
         let state =
             from_bytes(&snapshot).map_err(|e| PsychoScriptError::Snapshot { reason: e.message })?;
-        let control = Control::new(handler, options, input_name, transport);
+        let control = Control::new(handler, options, input_name, transport, encoder);
         control.spawn(Start::Restore(state))?;
         Ok(Arc::new(LiveRun { control }))
     }
@@ -352,18 +358,33 @@ struct Posts {
     warned: bool,
 }
 
+/// One wake-up's posts: JSON, or an encoder's bytes.
+#[derive(Default)]
+struct Outbox {
+    json: Vec<String>,
+    bytes: Vec<Vec<u8>>,
+}
+
+impl Outbox {
+    fn is_empty(&self) -> bool {
+        self.json.is_empty() && self.bytes.is_empty()
+    }
+}
+
 pub(crate) struct Control {
     me: Weak<Control>,
     handler: Box<dyn LiveHandler>,
     options: LiveOptions,
     input_name: String,
     transport: Option<Arc<dyn FetchTransport>>,
+    /// Posts as its bytes, not JSON.
+    encoder: Option<Arc<dyn EncodeValues>>,
     state: Mutex<State>,
     /// The psychoscript run of the current thread, for its metadata.
     run: Mutex<Option<Run>>,
     inbox: Mutex<Inbox>,
     /// Posts of the current wake-up, not yet handed over.
-    outbox: Mutex<Vec<String>>,
+    outbox: Mutex<Outbox>,
     sleeps: Mutex<HashMap<String, Sleep>>,
     fetches: Mutex<Vec<Weak<Mutex<fetch::Slot>>>>,
     fetch_budget: Mutex<fetch::Budget>,
@@ -384,6 +405,7 @@ impl Control {
         options: LiveOptions,
         input_name: String,
         transport: Option<Arc<dyn FetchTransport>>,
+        encoder: Option<Arc<ValueEncoder>>,
     ) -> Arc<Control> {
         let now = Instant::now();
         Arc::new_cyclic(|me| Control {
@@ -392,6 +414,7 @@ impl Control {
             options,
             input_name,
             transport,
+            encoder: encoder.map(|e| e.0.clone()),
             state: Mutex::new(State::Starting),
             run: Mutex::new(None),
             inbox: Mutex::default(),
@@ -561,7 +584,7 @@ impl Control {
                 c.interrupted()?;
                 c.computing();
                 let _host = HostSection::enter(&c);
-                c.post(args.first().unwrap_or(&HostValue::Undefined));
+                c.post(args.first().unwrap_or(&HostValue::Undefined))?;
                 Ok(HostValue::Undefined)
             });
             let c = control.clone();
@@ -921,7 +944,8 @@ impl Control {
 
     // ---------- host functions ----------
 
-    fn post(&self, message: &HostValue) {
+    /// Queues a post; an encoder's failure is thrown at it, as an invalid post is a program error.
+    fn post(&self, message: &HostValue) -> Result<(), HostValue> {
         {
             let mut posts = lock(&self.posts);
             if posts.window.elapsed() >= Duration::from_secs(1) {
@@ -941,25 +965,40 @@ impl Control {
                         self.options.max_posts_per_second
                     ));
                 }
-                return;
+                return Ok(());
             }
         }
-        let first = {
-            let mut outbox = lock(&self.outbox);
-            outbox.push(json::write(message));
-            outbox.len() == 1
+        let first = match &self.encoder {
+            Some(encoder) => {
+                let bytes = encoder
+                    .encode_post(message)
+                    .map_err(|e| HostValue::Failure(Failure::new("InvalidDataValue", e)))?;
+                let mut outbox = lock(&self.outbox);
+                outbox.bytes.push(bytes);
+                outbox.bytes.len() == 1
+            }
+            None => {
+                let text = json::write(message);
+                let mut outbox = lock(&self.outbox);
+                outbox.json.push(text);
+                outbox.json.len() == 1
+            }
         };
         // The host calls the program waits on now get polled again once it stops, which hands the posts over.
         if first {
             self.wake_all();
         }
+        Ok(())
     }
 
     /// Hands the queued posts to the host in one call.
     fn flush(&self) {
-        let posts = std::mem::take(&mut *lock(&self.outbox));
-        if !posts.is_empty() {
-            self.handler.on_posts(posts);
+        let Outbox { json, bytes } = std::mem::take(&mut *lock(&self.outbox));
+        if !json.is_empty() {
+            self.handler.on_posts(json);
+        }
+        if !bytes.is_empty() {
+            self.handler.on_posts_bytes(bytes);
         }
     }
 

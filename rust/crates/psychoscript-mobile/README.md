@@ -55,14 +55,30 @@ val out = program.run("""{"n":21}""", RunOptions(timeoutMs = 250uL))
 
 Swift errors also get `.reason` on the enum. Kotlin exceptions' `message` lists every field.
 
+### Bytes instead of JSON
+
+A `ValueEncoder` writes what a program hands its host as bytes in its own format. The crate carries them and knows
+nothing of the format. `ValueEncoder.widget()` (feature `widget-wire`, on by default) is OpenCode widgets' binary
+format (opencode `specs/v2/widgets-binary.md`, crate `widget-wire`).
+
+- `program.runBytes(inputJson, encoder, options = RunOptions())`, also on `RunSession`, defines the host global
+  `encoder.emitName()` (`__widget_emit`). The program passes its output to it, and the result is the bytes the encoder
+  wrote for that value (the last call's) instead of the completion value. Functions in the value are left out, as JSON
+  leaves them out. `maxOutputBytes` limits the bytes. A value the encoder can't write fails the run with
+  `Runtime(kind: "InvalidDataValue")` at the call, as does a run that never calls the global.
+- With `startLive(..., encoder:)` (and `LiveRun.restore(..., encoder:)`, with the same encoder), every post reaches
+  `handler.onPostsBytes(messages)` as the encoder's bytes, a wake-up's posts in one call, and `onPosts` is never
+  called. A post the encoder can't write throws `InvalidDataValue` at `__host.post`: uncaught, the run ends with
+  `Failed(Runtime)`.
+
 ## Live runs
 
-`program.startLive(inputJson, handler, options = LiveOptions(), transport = nil)` runs the program on a thread of
+`program.startLive(inputJson, handler, options = LiveOptions(), transport = nil, encoder = nil)` runs the program on a thread of
 its own until it returns or is stopped. Beside its input function it gets `__host`:
 
 | Function | Kind | |
 | --- | --- | --- |
-| `__host.post(message)` | sync | `handler.onPosts([json, ...])`, a wake-up's posts in one call |
+| `__host.post(message)` | sync | `handler.onPosts([json, ...])`, a wake-up's posts in one call (`onPostsBytes` with an encoder) |
 | `await __host.receive()` | async | the next message `deliver(json)` queued, in order |
 | `await __host.sleep(ms)` | async | resolves after `ms` of running time (clamped to >= 0) |
 | `__host.now()` | sync | ms of running time, paused time left out |
@@ -70,7 +86,8 @@ its own until it returns or is stopped. Beside its input function it gets `__hos
 
 - `LiveHandler` (callback interface): `onPosts(messagesJson)` gets every post of one wake-up of the program, in
   order, in one call, as soon as the program waits again (or ends). A live frame that draws and then asks for the next
-  frame costs one callback, not two. `onWarning(message)` comes in its own call. Both run on the run's thread: hand
+  frame costs one callback, not two. `onPostsBytes(messages)` replaces `onPosts` for a run with an encoder (above);
+  implement it as a no-op otherwise. `onWarning(message)` comes in its own call. Both run on the run's thread: hand
   them to the UI thread and return. `onExit(LiveExit)` runs once on the run's thread:
   `Finished(resultJson)`, `Failed(error)` (`SliceBudget`, `Runtime`, ...), or `Stopped`.
 - `LiveOptions(sliceBudgetMs = 50, maxPostsPerSecond = 240, httpsHosts = nil, allowLocalNetwork = false,
@@ -92,7 +109,7 @@ its own until it returns or is stopped. Beside its input function it gets `__hos
     contract's default for live widgets is 32 MB (`32 * 1024 * 1024`), but the crate sets no default: pass it.
     A snapshot keeps the cap it ran with.
 - `deliver(json)`, `pause()`, `resume()`, `snapshot()`, `stop()`, `isRunning()`;
-  `LiveRun.restore(snapshot, handler, inputName = "__input", options = LiveOptions(), transport = nil)`.
+  `LiveRun.restore(snapshot, handler, inputName = "__input", options = LiveOptions(), transport = nil, encoder = nil)`.
   - `pause()`: no frames, messages or timers reach the program. `sleep` timers freeze with their remaining time,
     `now()` stops, delivered messages and finished fetches are held, and nothing is scheduled. A stretch of compute in
     progress finishes first (within the slice budget). After that it costs no CPU (measured: 0 ms over 2 s).
@@ -340,6 +357,25 @@ val program = Program(served.program + "\nreturn __widget_step(__input())")
 val out = program.run("""{"phase":"init","data":$dataJson}""", RunOptions(timeoutMs = 250uL))
 val frame = program.run(drawInputJson, RunOptions(timeoutMs = 8uL))   // a Timeout here counts as a draw overrun
 ```
+
+With the binary format, the program ends in `__widget_emit(...)` instead of `return`, and the app decodes the bytes
+(`widgets-binary.md`) rather than parsing JSON. Live posts arrive in `onPostsBytes`:
+
+```swift
+let wire = ValueEncoder.widget()
+let program = try Program(source: served.program + "\n__widget_emit(__widget_step(__input()))")
+let bytes = try program.runBytes(inputJson: stepInputJson, encoder: wire, options: step)    // 01 'S' ... or 01 'D' ...
+let run = try liveProgram.startLive(inputJson: input, handler: handler, options: opts, transport: t, encoder: wire)
+```
+
+```kotlin
+val wire = ValueEncoder.widget()
+val program = Program(served.program + "\n__widget_emit(__widget_step(__input()))")
+val bytes = program.runBytes(stepInputJson, wire, RunOptions(timeoutMs = 250uL))
+val run = liveProgram.startLive(input, handler, opts, transport, wire)          // handler.onPostsBytes(List<ByteArray>)
+```
+
+`examples/wire_bench.rs` times both paths on opencode's bench workloads (`tests/fixtures/workloads`).
 
 A `shader` node: wrap its `wgsl` in the spec's header and entry point, translate `widget_main`, and draw a full-screen
 triangle. GLES flips `frag.y` in the entry point so templates see a top-left origin everywhere (`resolution` is in
