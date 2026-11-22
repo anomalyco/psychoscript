@@ -242,6 +242,7 @@ impl Program {
     ) -> Result<Data, PsychoScriptError> {
         let slot = Arc::new(Mutex::new(slot));
         let name = self.input_name.clone();
+        let max_value_depth = emit.as_ref().and_then(|(e, _)| e.0.max_value_depth());
         let emit = emit.map(|(e, out)| (e.0.emit_name().to_owned(), out));
         let translate = Translate {
             functions: match emit {
@@ -278,6 +279,7 @@ impl Program {
             .limits(Limits {
                 timeout_ms: options.timeout_ms,
                 max_heap_bytes: options.max_heap_bytes,
+                max_value_depth,
                 ..Default::default()
             });
         let outcome = runtime.execute(&self.compiled);
