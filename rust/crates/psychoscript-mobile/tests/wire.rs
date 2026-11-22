@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use psychoscript_mobile::{
-    EncodeValues, HostValue, LiveExit, LiveHandler, LiveOptions, LiveRun, Program,
+    EncodeValues, Failure, HostValue, LiveExit, LiveHandler, LiveOptions, LiveRun, Program,
     PsychoScriptError, RunOptions, ValueEncoder,
 };
 use serde_json::{Value, json};
@@ -172,11 +172,11 @@ impl EncodeValues for Both {
     fn emit_name(&self) -> &str {
         "__emit"
     }
-    fn encode_output(&self, _value: &HostValue) -> Result<Vec<u8>, String> {
+    fn encode_output(&self, _value: &HostValue) -> Result<Vec<u8>, Failure> {
         unreachable!()
     }
-    fn encode_post(&self, message: &HostValue) -> Result<Vec<u8>, String> {
-        let bin = widget_wire::encode_post(message)?;
+    fn encode_post(&self, message: &HostValue) -> Result<Vec<u8>, Failure> {
+        let bin = widget_wire::encode_post(message).map_err(|e| Failure::new(e.kind, e.message))?;
         let json = message.to_json().unwrap().to_string();
         Ok([&(bin.len() as u32).to_le_bytes()[..], &bin, json.as_bytes()].concat())
     }
@@ -333,7 +333,8 @@ fn an_invalid_post_ends_the_live_run_as_a_program_error() {
     else {
         panic!("a program error")
     };
-    assert_eq!((kind.as_str(), line), ("InvalidDataValue", Some(2)));
+    // The kind names the spec's phase (`draw`).
+    assert_eq!((kind.as_str(), line), ("InvalidDraw", Some(2)));
     assert!(reason.contains("invalid post: draw command 0"), "{reason}");
 
     let (h, rx) = handler();
@@ -354,6 +355,24 @@ fn an_invalid_post_ends_the_live_run_as_a_program_error() {
     };
     assert_eq!(kind, "InvalidDataValue");
     assert!(reason.contains("unknown post type \"explode\""), "{reason}");
+
+    let (h, rx) = handler();
+    let _run = program("__host.post({ type: \"frame\", gpu: { ops: [], bytes: [1, 2] } })".into())
+        .start_live(
+            "null".into(),
+            h,
+            LiveOptions::default(),
+            None,
+            Some(ValueEncoder::widget()),
+        )
+        .unwrap();
+    let Event::Exit(LiveExit::Failed {
+        error: PsychoScriptError::Runtime { kind, .. },
+    }) = next(&rx)
+    else {
+        panic!("a program error")
+    };
+    assert_eq!(kind, "InvalidGpu");
 }
 
 #[test]
@@ -411,7 +430,7 @@ fn run_bytes_failures_are_program_errors() {
     else {
         panic!("{e:?}")
     };
-    assert_eq!((kind.as_str(), line), ("InvalidDataValue", Some(2)));
+    assert_eq!((kind.as_str(), line), ("InvalidDraw", Some(2)));
     assert!(reason.contains("unknown draw command \"blur\""), "{reason}");
 
     let e = run_bytes("1 + 1", RunOptions::default()).unwrap_err();

@@ -20,12 +20,12 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use psychoscript::{
-    Compiled, Data, Failure, HostFunction, HostResult, HostString, HostValue, Limits,
-    ProgramOptions, Run, RunOutcome, Runtime, Snapshot, Suspender, from_bytes, to_bytes,
+    Compiled, Data, HostFunction, HostResult, HostString, HostValue, Limits, ProgramOptions, Run,
+    RunOutcome, Runtime, Snapshot, Suspender, from_bytes, to_bytes,
 };
 
 use crate::cpu::ThreadClock;
-use crate::encoder::{EncodeValues, ValueEncoder};
+use crate::encoder::{EncodeValues, Thrown, ValueEncoder};
 use crate::error::PsychoScriptError;
 use crate::fetch::{self, FetchTransport, Rejection, Request};
 use crate::json::{self, Input};
@@ -381,8 +381,9 @@ pub(crate) struct Control {
     options: LiveOptions,
     input_name: String,
     transport: Option<Arc<dyn FetchTransport>>,
-    /// Posts as its bytes, not JSON.
+    /// Posts as its bytes, not JSON; the failure it threw at a post.
     encoder: Option<Arc<dyn EncodeValues>>,
+    thrown: Thrown,
     state: Mutex<State>,
     /// The psychoscript run of the current thread, for its metadata.
     run: Mutex<Option<Run>>,
@@ -419,6 +420,7 @@ impl Control {
             input_name,
             transport,
             encoder: encoder.map(|e| e.0.clone()),
+            thrown: Thrown::default(),
             state: Mutex::new(State::Starting),
             run: Mutex::new(None),
             inbox: Mutex::default(),
@@ -543,9 +545,12 @@ impl Control {
                     result_json: data.to_json_string(),
                 },
                 Err(_) if why == Why::Stop => LiveExit::Stopped,
-                Err(d) => LiveExit::Failed {
-                    error: PsychoScriptError::from_diagnostic(d, None, self.options.max_heap_bytes),
-                },
+                Err(d) => {
+                    let mut error =
+                        PsychoScriptError::from_diagnostic(d, None, self.options.max_heap_bytes);
+                    self.thrown.name(&mut error);
+                    LiveExit::Failed { error }
+                }
             },
             Err(_interrupted) => LiveExit::Stopped,
         };
@@ -986,7 +991,7 @@ impl Control {
             Some(encoder) => {
                 let bytes = encoder
                     .encode_post(message)
-                    .map_err(|e| HostValue::Failure(Failure::new("InvalidDataValue", e)))?;
+                    .map_err(|f| self.thrown.throw(f))?;
                 let mut outbox = lock(&self.outbox);
                 outbox.bytes.push(bytes);
                 outbox.bytes.len() == 1

@@ -3,7 +3,8 @@
 //!
 //! - [`encode_output`] and [`encode_post`] write a message straight from the VM's value (the [`HostValue`] a host
 //!   function receives), applying the client rules the format bakes in (draw commands validated and colors resolved,
-//!   children flattened, props of the wrong shape left out). An `Err` is an invalid output or post: a program error.
+//!   children flattened, props of the wrong shape left out). An [`EncodeError`] is an invalid output or post: a
+//!   program error, its kind naming the phase (`InvalidView`, `InvalidDraw`, `InvalidGpu`).
 //! - [`decode_output`] and [`decode_post`] read it back into Rune's types ([`Node`], [`Command`], [`StepOutput`]),
 //!   every read bounds-checked. The same types read the JSON form ([`StepOutput::from_value`],
 //!   [`DrawOutput::from_value`], [`Node::from_value`]), so both paths can be compared.
@@ -22,7 +23,9 @@ pub mod step;
 
 pub use decode::{DecodeError, Output, Post, decode_output, decode_post};
 pub use draw::{Command, DrawOutput};
-pub use encode::{encode_output, encode_post};
+pub use encode::{
+    EncodeError, INVALID_DATA, INVALID_DRAW, INVALID_GPU, INVALID_VIEW, encode_output, encode_post,
+};
 pub use gpu::{Arg, Batch};
 pub use node::Node;
 pub use psychoscript::HostValue;

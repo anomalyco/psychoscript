@@ -32,7 +32,7 @@ pub use fetch::{
 };
 pub use live::{LiveExit, LiveHandler, LiveOptions, LiveRun};
 pub use program::{Program, RunOptions, RunSession};
-pub use psychoscript::HostValue;
+pub use psychoscript::{Failure, HostValue};
 #[cfg(feature = "shader")]
 pub use shader::{
     ShaderError, ShaderStage, ShaderTarget, TranslatedShader, UniformBlock, translate_wgsl,
