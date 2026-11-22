@@ -22,7 +22,7 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
 use psychoscript::{
-    Compiled, HostError, HostFunction, HostResult, HostString, HostValue, Interrupted,
+    Compiled, HostError, HostFunction, HostResult, HostString, HostValue, Interrupted, Limits,
     ProgramOptions, RunOutcome, Runtime, Translate, TranslateFunctions, TranslatePromises,
 };
 
@@ -447,8 +447,11 @@ impl LiveRun {
         }));
         let mut runtime = runtime(&shared, input_name);
         if options.native {
-            // A native run posts views as built: handler functions cross as markers.
-            runtime = runtime.translate(MARK);
+            // A native run posts views as built: handler functions cross as markers, 100 levels of view deep.
+            runtime = runtime.translate(MARK).limits(Limits {
+                max_value_depth: Some(WIDGET_DEPTH),
+                ..Limits::default()
+            });
         }
         let future: RunFuture = Box::pin(async move {
             let program = runtime.program(&compiled, &ProgramOptions::new());
@@ -716,6 +719,10 @@ fn next_timer(s: &Shared) -> Option<f64> {
         .map(|sleep| (sleep.deadline - now).max(0.0))
         .min_by(f64::total_cmp)
 }
+
+/// The boundary value depth of widget runs (widgets.md, "Native hosts"): the deepest value of a view of 100 levels in
+/// a live `{ type: "render", node }`, 1 + 2 x 99 + 3.
+pub(crate) const WIDGET_DEPTH: usize = 202;
 
 /// How a native run's functions cross into posts and results: as markers (widgets.md, "Native hosts").
 pub(crate) const MARK: Translate = Translate {

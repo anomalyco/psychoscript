@@ -6,7 +6,7 @@ use psychoscript::{
 
 use crate::error::Error;
 use crate::json::{self, Input};
-use crate::live::{LiveOptions, LiveRun, MARK};
+use crate::live::{LiveOptions, LiveRun, MARK, WIDGET_DEPTH};
 use crate::tree::{Walk, WalkError};
 
 /// A program compiled once, to run as often as needed: each run has its own VM. A run reads its JSON input through
@@ -160,6 +160,7 @@ impl Program {
             })
             .limits(Limits {
                 timeout_ms,
+                max_value_depth: emitted.is_some().then_some(WIDGET_DEPTH),
                 ..Limits::default()
             });
         if emitted.is_some() {

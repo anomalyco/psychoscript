@@ -318,6 +318,53 @@ fn a_view_nests_at_most_100_levels() {
     assert!(Walk::new().run(&strings, &mut String::new()).is_ok());
 }
 
+/// A widget step's boundary is 202 values deep (widgets.md, "Native hosts"): a view of 100 levels crosses and walks,
+/// one of 101 fails in phase view, nested children or arrays alike; a prop deeper than the boundary fails where it
+/// crosses.
+#[test]
+fn a_native_step_takes_views_of_100_levels() {
+    let step = |view: &str| {
+        let program = format!("{}\nfunction view() {{\n{view}\n}}{ENTRY}", prelude());
+        Program::new(&program, None).unwrap().run_step(
+            r#"{"phase":"init","data":null}"#,
+            None,
+            None,
+        )
+    };
+    let nested = |levels: usize, wrap: &str| {
+        format!(
+            "let node = ui.button(\"deep\", {{ onPress: (s) => s }})\nfor (let i = 1; i < {levels}; i++) node = {wrap}\nreturn node"
+        )
+    };
+    let id = vec!["0"; 100].join("/");
+    let out = step(&nested(100, "ui.column([node])")).expect("100 levels");
+    assert!(out.contains(&format!("\"id\":\"{id}\"")), "{out}");
+    let id = std::iter::once("0")
+        .chain(vec!["0.0"; 49])
+        .collect::<Vec<_>>()
+        .join("/");
+    let out = step(&nested(50, "ui.column([[node]])")).expect("100 levels in arrays");
+    assert!(out.contains(&format!("\"id\":\"{id}\"")), "{out}");
+    assert_eq!(
+        step(&nested(101, "ui.column([node])")),
+        Err(Error::View {
+            reason: DEEP.into()
+        })
+    );
+    assert_eq!(
+        step(&nested(51, "ui.column([[node]])")),
+        Err(Error::View {
+            reason: DEEP.into()
+        })
+    );
+    let too_deep =
+        step(r#"return ui.text("x", { extra: JSON.parse("[".repeat(210) + "]".repeat(210)) })"#);
+    assert!(
+        matches!(&too_deep, Err(e) if e.reason().contains("exceeds the maximum value depth of 202")),
+        "{too_deep:?}"
+    );
+}
+
 #[test]
 fn a_key_with_a_lone_surrogate_is_a_program_error() {
     let lone = psychoscript::HostString::from_utf16(&[0xd800]);

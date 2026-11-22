@@ -981,6 +981,9 @@ for (const query of ["?only=shader-broken", "?only=shader-broken&gl=1"]) {
         "step",
         (root) => (root.querySelector(".pw-view .pw-btn") as HTMLElement).click(),
       ),
+      await run("step-100", step(`function view() {\n  let node = ui.button("deep", { onPress: (s) => s })\n  for (let i = 1; i < 100; i++) node = ui.column([node])\n  return node\n}`), "step"),
+      await run("step-101", step(`function view() {\n  let node = ui.button("deep", { onPress: (s) => s })\n  for (let i = 1; i < 101; i++) node = ui.column([node])\n  return node\n}`), "step"),
+      await run("live-100", step(`async function main() {\n  let node = ui.button("deep", { onPress: () => {} })\n  for (let i = 1; i < 100; i++) node = ui.column([node])\n  widget.render(node)\n}`), "live"),
       await run("deep", step(`async function main() {\n  let node = ui.text("x")\n  for (let i = 1; i < 101; i++) node = ui.column([node])\n  widget.render(node)\n}`), "live"),
       await run("function", step(`function view() {\n  return ui.column({ onHover: (s) => s }, [ui.text("t")])\n}`), "step"),
     ]
@@ -1012,6 +1015,13 @@ for (const query of ["?only=shader-broken", "?only=shader-broken&gl=1"]) {
     by.key,
   )
   check(JSON.stringify(by.deep!.reports) === JSON.stringify([{ phase: "view", message: "The view nests more than 100 levels" }]), "rules of views: a live view over 100 levels ends the run in phase view", by.deep)
+  check(by["step-100"]!.reports.length === 0 && by["step-100"]!.buttons === 1, "rules of views: a step view of 100 levels crosses (depth 202) and renders", by["step-100"])
+  check(by["live-100"]!.reports.length === 0 && by["live-100"]!.buttons === 1, "rules of views: a live view of 100 levels renders", by["live-100"])
+  check(
+    JSON.stringify(by["step-101"]!.reports) === JSON.stringify([{ phase: "view", message: "The view nests more than 100 levels" }]) && by["step-101"]!.shown.startsWith("The view nests more than 100 levels"),
+    "rules of views: a step view of 101 levels fails in phase view with the spec's message",
+    by["step-101"],
+  )
   check(
     JSON.stringify(by.function!.reports) === JSON.stringify([{ phase: "init", message: "TypeError: Argument 1 to __widget_emit contains a function, which cannot be passed to the host." }]),
     "functions: a function in a view's prop fails the step with the runtime's TypeError",

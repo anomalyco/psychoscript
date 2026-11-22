@@ -33,7 +33,11 @@ fn settle(run: &mut LiveRun) -> Vec<Value> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let pump = run.pump(8.0);
-        let batch: Vec<Value> = serde_json::from_str(&run.take_outbox()).unwrap();
+        let outbox = run.take_outbox();
+        // Views of 100 levels nest past serde_json's default limit of 128.
+        let mut reader = serde_json::Deserializer::from_str(&outbox);
+        reader.disable_recursion_limit();
+        let batch: Vec<Value> = serde::Deserialize::deserialize(&mut reader).unwrap();
         out.extend(batch);
         match pump {
             Pump::Ended => return out,
@@ -341,20 +345,29 @@ fn a_render_that_breaks_a_rule_of_views_ends_the_run_in_phase_view() {
         vec![json!({ "type": "render", "node": { "type": "text", "text": "first" } })]
     );
     assert_eq!(exit, view(psychoscript_web::tree::KEY));
-    // Too deep to cross the boundary: the prelude posts the reason instead.
-    let (out, exit) = widget(
-        r#"async function main() {
-  let node = ui.text("x")
-  for (let i = 1; i < 101; i++) node = ui.column([node])
-  widget.render(node)
-}"#,
+    // 100 levels render; 101 end the run.
+    let deep = |levels: usize| {
+        format!(
+            "async function main() {{\n  let node = ui.text(\"x\")\n  for (let i = 1; i < {levels}; i++) node = ui.column([node])\n  widget.render(node)\n}}"
+        )
+    };
+    let (out, exit) = widget(&deep(100));
+    assert_eq!(
+        (out.len(), exit),
+        (
+            1,
+            Some(LiveExit::Finished {
+                result_json: "null".into()
+            })
+        )
     );
+    let (out, exit) = widget(&deep(101));
     assert!(out.is_empty());
     assert_eq!(exit, view(psychoscript_web::tree::DEEP));
-    // Deep only in a prop: the boundary's own error, which the program gets.
+    // Deep only in a prop, past the boundary of 202: the boundary's own error, which the program gets.
     let (_, exit) = widget(
         r#"async function main() {
-  widget.render(ui.text("x", { extra: JSON.parse("[".repeat(40) + "]".repeat(40)) }))
+  widget.render(ui.text("x", { extra: JSON.parse("[".repeat(210) + "]".repeat(210)) }))
 }"#,
     );
     match exit {
