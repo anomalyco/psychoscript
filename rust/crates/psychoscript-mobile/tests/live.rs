@@ -907,3 +907,93 @@ fn resume_restarts_the_budget() {
     }
     assert!(exited(&rx, Duration::from_millis(150)).is_none());
 }
+
+/// The slice budget counts the run thread's CPU time: a thread the OS doesn't schedule isn't computing. With the run's
+/// thread sharing one CPU with three spinning threads, ~25 ms of compute takes ~100 ms of wall time and finishes,
+/// while a loop that never waits is still stopped.
+#[cfg(target_os = "linux")]
+#[test]
+fn time_the_thread_isnt_scheduled_doesnt_count_against_the_slice() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    const COMPUTE: &str = r#"
+      const { n, spin } = __input()
+      let x = 0
+      for (let i = 0; i < n; i++) x += i % 7
+      __host.post({ x })
+      if (spin) while (true) {}
+      await __host.receive()
+    "#;
+    let program = Arc::new(Program::new(COMPUTE.into(), "__input".into()).unwrap());
+    let run = |n: u64, spin: bool| {
+        let (h, rx) = handler();
+        let options = LiveOptions {
+            slice_budget_ms: 50,
+            ..LiveOptions::default()
+        };
+        let input = serde_json::json!({ "n": n, "spin": spin }).to_string();
+        let run = program.start_live(input, h, options, None, None).unwrap();
+        (run, rx)
+    };
+    // About 25 ms of compute on this machine, uncontended.
+    let mut n = 1_000u64;
+    loop {
+        let started = Instant::now();
+        let (r, rx) = run(n, false);
+        post(&rx);
+        r.stop();
+        let took = started.elapsed();
+        if took >= Duration::from_millis(25) {
+            break;
+        }
+        n = (n as f64 * 25.0 / took.as_secs_f64().max(1e-4) / 1000.0).max(n as f64 * 2.0) as u64;
+    }
+
+    // This thread, and the threads it starts (the run's, the spinners), on one CPU.
+    // SAFETY: a zeroed cpu_set_t is a valid empty set; the calls get valid pointers and its size.
+    unsafe {
+        let mut set: libc::cpu_set_t = std::mem::zeroed();
+        libc::CPU_SET(0, &mut set);
+        assert_eq!(
+            libc::sched_setaffinity(0, std::mem::size_of_val(&set), &set),
+            0
+        );
+    }
+    let done = Arc::new(AtomicBool::new(false));
+    let spinners: Vec<_> = (0..3)
+        .map(|_| {
+            let done = done.clone();
+            std::thread::spawn(move || {
+                while !done.load(Ordering::Relaxed) {
+                    std::hint::spin_loop();
+                }
+            })
+        })
+        .collect();
+
+    let started = Instant::now();
+    let (r, rx) = run(n, false);
+    let event = next(&rx);
+    let took = started.elapsed();
+    r.stop();
+    assert!(matches!(event, Event::Post(_)), "{event:?} after {took:?}");
+    assert!(took > Duration::from_millis(50), "not contended: {took:?}");
+
+    let (_r, rx) = run(n, true);
+    assert!(matches!(next(&rx), Event::Post(_)));
+    let exit = next(&rx);
+    assert!(
+        matches!(
+            exit,
+            Event::Exit(LiveExit::Failed {
+                error: PsychoScriptError::SliceBudget { .. }
+            })
+        ),
+        "{exit:?}"
+    );
+
+    done.store(true, Ordering::Relaxed);
+    for s in spinners {
+        s.join().unwrap();
+    }
+}

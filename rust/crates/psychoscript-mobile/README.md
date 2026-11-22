@@ -93,7 +93,8 @@ its own until it returns or is stopped. Beside its input function it gets `__hos
 - `LiveOptions(sliceBudgetMs = 50, maxPostsPerSecond = 240, httpsHosts = nil, allowLocalNetwork = false,
   maxHeapBytes = nil)`.
   - **Slice budget:** a run computing past the budget without waiting is stopped with `SliceBudget`. Only the VM's
-    own execution counts: not the time it waits on pending host calls (several at once included), and not time
+    own execution counts, in its thread's CPU time, so time the OS doesn't schedule the thread (a loaded device, a
+    paused emulator) isn't compute: not the time it waits on pending host calls (several at once included), and not time
     inside host code on its thread (`post`, `now`, the input function, polls of host calls, and the handler's
     callbacks, however long the app takes in them). Pausing doesn't change the accounting. A run that reaches a wait
     while paused (its calls are held by the pause) answers the check from there and counts as at rest. A run still

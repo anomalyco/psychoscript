@@ -24,6 +24,7 @@ use psychoscript::{
     ProgramOptions, Run, RunOutcome, Runtime, Snapshot, Suspender, from_bytes, to_bytes,
 };
 
+use crate::cpu::ThreadClock;
 use crate::encoder::{EncodeValues, ValueEncoder};
 use crate::error::PsychoScriptError;
 use crate::fetch::{self, FetchTransport, Rejection, Request};
@@ -293,34 +294,37 @@ struct Clock {
 /// happens inside the VM's run; a later poll happens while the VM is stopped between runs, and one that resolves
 /// starts a stretch. That a stretch has ended (the VM waits) is confirmed by a probe: the budget check wakes the
 /// program's pending host calls, which the VM polls as soon as it stops, and can't while it computes.
+/// Times are the run thread's CPU time ([`ThreadClock`]), so time the OS doesn't schedule it isn't compute.
 struct Slice {
     busy: bool,
     /// Counts stretches.
     n: u64,
-    start: Instant,
+    /// The thread computing the stretch, and its CPU time when it started.
+    clock: ThreadClock,
+    start: Duration,
     /// A budget check is on the timer.
     armed: bool,
-    /// The stretch a probe is out for.
+    /// The stretch a probe is out for, and the thread's CPU time when it went out.
     probe: Option<u64>,
+    probe_cpu: Duration,
     /// Host code running on the run's thread (host functions, polls of host calls, the handler's callbacks) doesn't
     /// count as the VM's compute: how deep in it the run's thread is, since when, and how long it spent there in this
     /// stretch.
     host_depth: u32,
-    host_since: Instant,
+    host_since: Duration,
     host_time: Duration,
 }
 
 impl Slice {
     /// How long the VM itself has computed in this stretch.
-    fn vm_time(&self, now: Instant) -> Duration {
+    fn vm_time(&self, now: Duration) -> Duration {
         let host = self.host_time
             + if self.host_depth > 0 {
-                now.saturating_duration_since(self.host_since)
+                now.saturating_sub(self.host_since)
             } else {
                 Duration::ZERO
             };
-        now.saturating_duration_since(self.start)
-            .saturating_sub(host)
+        now.saturating_sub(self.start).saturating_sub(host)
     }
 }
 
@@ -436,11 +440,13 @@ impl Control {
             slice: Mutex::new(Slice {
                 busy: false,
                 n: 0,
-                start: now,
+                clock: ThreadClock::current(),
+                start: Duration::ZERO,
                 armed: false,
                 probe: None,
+                probe_cpu: Duration::ZERO,
                 host_depth: 0,
-                host_since: now,
+                host_since: Duration::ZERO,
                 host_time: Duration::ZERO,
             }),
             why: Mutex::new(Why::None),
@@ -749,8 +755,10 @@ impl Control {
         }
     }
 
+    /// On the run's thread.
     fn start_stretch(&self, slice: &mut Slice) {
-        let now = Instant::now();
+        slice.clock = ThreadClock::current();
+        let now = slice.clock.now();
         slice.n += 1;
         slice.start = now;
         slice.busy = true;
@@ -760,7 +768,7 @@ impl Control {
             slice.host_since = now;
         }
         if !std::mem::replace(&mut slice.armed, true) {
-            timer::schedule(now + self.budget(), Fire::Watch(self.me.clone()));
+            timer::schedule(Instant::now() + self.budget(), Fire::Watch(self.me.clone()));
         }
     }
 
@@ -772,7 +780,7 @@ impl Control {
     fn enter_host(&self) {
         let mut slice = lock(&self.slice);
         if slice.host_depth == 0 {
-            slice.host_since = Instant::now();
+            slice.host_since = ThreadClock::current().now();
         }
         slice.host_depth += 1;
     }
@@ -781,7 +789,9 @@ impl Control {
         let mut slice = lock(&self.slice);
         slice.host_depth = slice.host_depth.saturating_sub(1);
         if slice.host_depth == 0 {
-            let spent = slice.host_since.elapsed();
+            let spent = ThreadClock::current()
+                .now()
+                .saturating_sub(slice.host_since);
             slice.host_time += spent;
             // A probe that went out meanwhile couldn't be answered: the next check sends another.
             slice.probe = None;
@@ -789,26 +799,30 @@ impl Control {
     }
 
     /// The timer's check. A stretch past its budget of VM time gets a probe (its pending host calls woken); one still
-    /// going a grace period after its probe is stopped. Time in host code doesn't count, and no probe goes out while
-    /// the run's thread is in it (it couldn't answer).
+    /// going a grace period after its probe, its thread having run meanwhile, is stopped. Time in host code doesn't
+    /// count, and no probe goes out while the run's thread is in it (it couldn't answer).
     pub(crate) fn watch(&self) {
         let mut slice = lock(&self.slice);
         slice.armed = false;
         if !slice.busy {
             return;
         }
-        let now = Instant::now();
-        let vm = slice.vm_time(now);
+        let (now, cpu) = (Instant::now(), slice.clock.now());
+        let vm = slice.vm_time(cpu);
         let left = self.budget().saturating_sub(vm);
         let over = left.is_zero();
+        let probed = slice.probe == Some(slice.n);
         let at = match slice.probe {
             _ if slice.host_depth > 0 => Some(now + left.max(Duration::from_millis(5))),
-            // Unanswered: the VM is still computing.
-            Some(n) if n == slice.n && over => None,
+            // Unanswered though its thread ran: the VM is still computing.
+            _ if probed && over && cpu > slice.probe_cpu => None,
+            // Its thread hasn't run since: another grace.
+            _ if probed && over => Some(now + PROBE_GRACE),
             _ if !over => Some(now + left),
             _ => {
                 slice.probe = Some(slice.n);
-                Some(Instant::now() + PROBE_GRACE)
+                slice.probe_cpu = cpu;
+                Some(now + PROBE_GRACE)
             }
         };
         let Some(at) = at else {

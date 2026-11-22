@@ -1216,6 +1216,7 @@ dependencies = [
 name = "psychoscript-mobile"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "naga",
  "psychoscript",
  "serde",
