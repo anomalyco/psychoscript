@@ -11,8 +11,13 @@ use psychoscript::HostValue;
 use crate::encode::{Streams, field, prop, too_deep, write_node};
 use crate::schema::{K_INT, K_STR, MAX_DEPTH, T_UNKNOWN, is_container, type_id};
 
-/// Whether a value is a function marker (psychoscript's `translate: { functions: "mark" }`).
+/// Whether a value is a function marker.
 pub type IsMarker = fn(&HostValue) -> bool;
+
+/// psychoscript's function marker (`translate: { functions: "mark" }`), what a native host's runtime gives.
+pub fn is_function_marker(v: &HostValue) -> bool {
+    matches!(v, HostValue::FunctionMarker)
+}
 
 /// What a walk found besides the bytes.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -269,11 +274,10 @@ impl Walk {
                 }
             }
         }
-        let st = props.map(|st| {
+        if let Some(st) = props.as_deref_mut() {
             st.int(0);
-            st
-        });
-        let st = st.filter(|_| is_container(t));
+        }
+        let st = props.filter(|_| is_container(t));
         let items = match field(v, "children") {
             None => {
                 if let Some(st) = st {

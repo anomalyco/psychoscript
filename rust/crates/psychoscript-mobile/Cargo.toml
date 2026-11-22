@@ -43,4 +43,3 @@ uniffi = "0.32"
 url = "2.5"
 widget-wire = { path = "../widget-wire", optional = true }
 naga = { version = "30", default-features = false, features = ["wgsl-in", "msl-out", "glsl-out"], optional = true }
-

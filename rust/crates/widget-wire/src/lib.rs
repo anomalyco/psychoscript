@@ -29,7 +29,7 @@ pub use encode::{
     encode_output, encode_output_native, encode_post,
 };
 pub use gpu::{Arg, Batch};
-pub use native::{Canvas, Found, IsMarker};
+pub use native::{Canvas, Found, IsMarker, is_function_marker};
 pub use node::Node;
 pub use psychoscript::HostValue;
 pub use schema::{MAX_ARG_DEPTH, MAX_DEPTH, MAX_GPU_BYTES, MAX_GPU_OPS};
@@ -38,6 +38,6 @@ pub use step::StepOutput;
 /// The format's version: every message's first byte.
 pub const VERSION: u8 = 1;
 
-/// The host global a widget program hands its step output to: hosts run
-/// `<program>\n__widget_emit(__widget_step(__input()))`.
+/// The host global a widget program hands its step output to: a native host runs
+/// `<program>\n__widget_emit(__widget_step(__input(), true))`.
 pub const EMIT: &str = "__widget_emit";

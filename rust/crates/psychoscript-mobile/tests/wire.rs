@@ -1,6 +1,8 @@
-//! The binary path (`ValueEncoder.widget()`) against the JSON path, through the crate's API: `run_bytes` and live
-//! posts on the bench workloads (`fixtures/workloads`: the widget prelude and templates of opencode's binary-format
-//! bench, with their inputs) decode to what the JSON reads as; the encoder's failures are program errors.
+//! The binary path (`ValueEncoder.widget()`, a native host) against the JSON path, through the crate's API:
+//! `run_bytes` and live posts on the bench workloads (`fixtures/workloads`: the widget prelude at opencode
+//! 60732569a and the templates of opencode's binary-format bench, with their inputs) and on the native-host
+//! conformance fixtures (`widget-wire/tests/fixtures/wire`) decode to what the prelude's own tree reads as; the
+//! encoder's failures are program errors.
 #![cfg(feature = "widget-wire")]
 
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -8,16 +10,17 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use psychoscript_mobile::{
-    EncodeValues, Failure, HostValue, LiveExit, LiveHandler, LiveOptions, LiveRun, Program,
-    PsychoScriptError, RunOptions, ValueEncoder,
+    EncodePosts, EncodeValues, Failure, HostValue, LiveExit, LiveHandler, LiveOptions, LiveRun,
+    Program, PsychoScriptError, RunOptions, ValueEncoder,
 };
 use serde_json::{Value, json};
 use widget_wire::{Arg, DrawOutput, Node, Output, Post, StepOutput, decode_output, decode_post};
 
 const PRELUDE: &str = include_str!("fixtures/workloads/prelude.js");
 const STEP: &str = "\nreturn __widget_step(__input())";
-const EMIT: &str = "\n__widget_emit(__widget_step(__input()))";
+const EMIT: &str = "\n__widget_emit(__widget_step(__input(), true))";
 const LIVE: &str = "\nreturn await __widget_live(__input())";
+const NATIVE_LIVE: &str = "\nreturn await __widget_live(__input(), true)";
 
 fn fixture(path: &str) -> String {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/workloads/");
@@ -34,7 +37,7 @@ fn workloads(kind: &str) -> Vec<(String, String)> {
             let program = fixture(&format!("templates/{}.js", w["program"].as_str().unwrap()));
             (
                 w["name"].as_str().unwrap().to_owned(),
-                format!("{PRELUDE}{program}"),
+                format!("{PRELUDE}\n{program}"),
             )
         })
         .collect()
@@ -164,8 +167,8 @@ fn post_from_json(v: &Value) -> Post {
     }
 }
 
-/// Writes each post both ways, the widget format's bytes and its JSON, so one run (live programs read the clock)
-/// gives both.
+/// Writes each post both ways, the widget format's bytes (of a built tree, as the prelude posts it without `true`)
+/// and its JSON, so one run (live programs read the clock) gives both.
 struct Both;
 
 impl EncodeValues for Both {
@@ -175,10 +178,22 @@ impl EncodeValues for Both {
     fn encode_output(&self, _value: &HostValue) -> Result<Vec<u8>, Failure> {
         unreachable!()
     }
-    fn encode_post(&self, message: &HostValue) -> Result<Vec<u8>, Failure> {
-        let bin = widget_wire::encode_post(message).map_err(|e| Failure::new(e.kind, e.message))?;
+    fn live(&self) -> Box<dyn EncodePosts> {
+        Box::new(Both)
+    }
+}
+
+impl EncodePosts for Both {
+    fn post(
+        &mut self,
+        message: &HostValue,
+        keep: bool,
+    ) -> Result<(Option<Vec<u8>>, HostValue), HostValue> {
+        let bin = widget_wire::encode_post(message)
+            .map_err(|e| HostValue::Failure(Failure::new(e.kind, e.message)))?;
         let json = message.to_json().unwrap().to_string();
-        Ok([&(bin.len() as u32).to_le_bytes()[..], &bin, json.as_bytes()].concat())
+        let both = [&(bin.len() as u32).to_le_bytes()[..], &bin, json.as_bytes()].concat();
+        Ok((keep.then_some(both), HostValue::Undefined))
     }
 }
 
@@ -499,4 +514,364 @@ fn run_bytes_leaves_functions_out_as_json_does() {
     .unwrap();
     assert!(matches!(decode_output(&bytes).unwrap(), Output::Draw(d) if d.len() == 1));
     assert_eq!(ValueEncoder::widget().emit_name(), "__widget_emit");
+}
+
+/// The ids in a view, depth first.
+fn ids(node: &Node, out: &mut Vec<String>) {
+    let own = match node {
+        Node::Button { id, .. }
+        | Node::Checkbox { id, .. }
+        | Node::Slider { id, .. }
+        | Node::Select { id, .. }
+        | Node::Input { id, .. } => Some(id.clone()),
+        Node::Carousel { id, .. } | Node::Card { id, .. } | Node::Canvas { id, .. } => id.clone(),
+        _ => None,
+    };
+    out.extend(own);
+    node.children().iter().for_each(|c| ids(c, out));
+}
+
+#[test]
+fn native_steps_give_the_conformance_fixtures_views() {
+    // `prelude + "\n" + source` on `input`, natively: the view the prelude's own tree building gives (`view`).
+    let dir = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../widget-wire/tests/fixtures/wire"
+    );
+    let mut n = 0;
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        let f: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let name = f["name"].as_str().unwrap();
+        let program = program(format!(
+            "{PRELUDE}\n{}{EMIT}",
+            f["source"].as_str().unwrap()
+        ));
+        let bytes = program
+            .run_bytes(
+                f["input"].to_string(),
+                ValueEncoder::widget(),
+                RunOptions::default(),
+            )
+            .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        let Output::Step(s) = decode_output(&bytes).unwrap() else {
+            panic!("{name}")
+        };
+        let expected = widget_wire::encode_output(&HostValue::from_json(
+            &json!({ "state": null, "view": f["view"] }),
+        ))
+        .unwrap();
+        let Output::Step(e) = decode_output(&expected).unwrap() else {
+            panic!()
+        };
+        assert_eq!(s.view, e.view, "{name}");
+        n += 1;
+    }
+    assert_eq!(n, 37);
+}
+
+/// Every post of `frames` frames, decoded.
+fn drive(
+    source: &str,
+    input: &str,
+    encoder: Option<Arc<ValueEncoder>>,
+    frames: usize,
+) -> Vec<Post> {
+    let (h, rx) = handler();
+    let options = LiveOptions {
+        slice_budget_ms: 60_000,
+        ..LiveOptions::default()
+    };
+    let run = program(source.to_owned())
+        .start_live(input.into(), h, options, None, encoder)
+        .unwrap();
+    let (mut posts, mut delivered) = (Vec::new(), 0);
+    while delivered < frames {
+        let batch: Vec<Post> = match next(&rx) {
+            Event::Json => panic!("JSON posts"),
+            Event::Bytes(list) => list.iter().map(|b| decode_post(b).unwrap()).collect(),
+            Event::Exit(e) => panic!("exited: {e:?}"),
+        };
+        for p in batch {
+            if p == Post::Frame {
+                delivered += 1;
+                run.deliver(frame(delivered)).unwrap();
+            }
+            posts.push(p);
+        }
+    }
+    run.stop();
+    posts
+}
+
+#[test]
+fn native_live_workloads_post_the_prelude_trees() {
+    // Natively against the prelude building the tree itself (both through the binary format): the same posts where
+    // the workload doesn't read the clock or draw random numbers, else the same kinds of post and the same ids.
+    for (name, source) in workloads("live") {
+        let input = fixture(&format!("inputs/{name}.json"));
+        let built = drive(
+            &format!("{source}{LIVE}"),
+            &input,
+            Some(ValueEncoder::new(Built)),
+            20,
+        );
+        let native = drive(
+            &format!("{source}{NATIVE_LIVE}"),
+            &input,
+            Some(ValueEncoder::widget()),
+            20,
+        );
+        if matches!(name.as_str(), "live-table-50" | "live-grid-200") {
+            assert_eq!(native, built, "{name}");
+            continue;
+        }
+        assert_eq!(native.len(), built.len(), "{name}");
+        for (a, b) in native.iter().zip(&built) {
+            match (a, b) {
+                (Post::Render(a), Post::Render(b)) => {
+                    let (mut x, mut y) = (Vec::new(), Vec::new());
+                    ids(a, &mut x);
+                    ids(b, &mut y);
+                    assert_eq!(x, y, "{name}");
+                }
+                (Post::Draw { id: a, .. }, Post::Draw { id: b, .. }) => assert_eq!(a, b, "{name}"),
+                _ => assert_eq!(
+                    std::mem::discriminant(a),
+                    std::mem::discriminant(b),
+                    "{name}"
+                ),
+            }
+        }
+    }
+}
+
+/// The widget format for a built tree (the prelude without `true`): today's posts, `post` returning `undefined`.
+struct Built;
+
+impl EncodeValues for Built {
+    fn emit_name(&self) -> &str {
+        "__widget_emit"
+    }
+    fn encode_output(&self, value: &HostValue) -> Result<Vec<u8>, Failure> {
+        widget_wire::encode_output(value).map_err(|e| Failure::new(e.kind, e.message))
+    }
+    fn live(&self) -> Box<dyn EncodePosts> {
+        Box::new(Built)
+    }
+}
+
+impl EncodePosts for Built {
+    fn post(
+        &mut self,
+        message: &HostValue,
+        keep: bool,
+    ) -> Result<(Option<Vec<u8>>, HostValue), HostValue> {
+        let bytes = widget_wire::encode_post(message)
+            .map_err(|e| HostValue::Failure(Failure::new(e.kind, e.message)))?;
+        Ok((keep.then_some(bytes), HostValue::Undefined))
+    }
+}
+
+fn start_native(source: &str, options: LiveOptions) -> (Arc<LiveRun>, Receiver<Event>) {
+    let (h, rx) = handler();
+    let run = program(source.into())
+        .start_live(
+            "null".into(),
+            h,
+            options,
+            None,
+            Some(ValueEncoder::widget()),
+        )
+        .unwrap();
+    (run, rx)
+}
+
+fn posts(rx: &Receiver<Event>) -> Vec<Post> {
+    match next(rx) {
+        Event::Bytes(list) => list.iter().map(|b| decode_post(b).unwrap()).collect(),
+        Event::Json => panic!("JSON posts"),
+        Event::Exit(e) => panic!("exited: {e:?}"),
+    }
+}
+
+#[test]
+fn a_native_render_returns_whether_it_has_handlers_and_draws_go_by_key() {
+    let source = r#"
+      const said = []
+      said.push(__host.post({ type: "render", node: { type: "column", children: [
+        { type: "button", label: "go", onPress: () => 1 },
+        { type: "canvas", key: "chart", height: 10 },
+        { type: "canvas", key: "gpu", height: 10, wgsl: "fn shade(p: vec2f) -> vec4f { return vec4f(1.0); }" },
+      ] } }))
+      __host.post({ type: "draw", key: "chart", commands: [["rect", 0, 0, 1, 1, { fill: "accent" }]] })
+      for (const key of ["nope", "gpu"]) {
+        try { __host.post({ type: "draw", key, commands: [] }) } catch (e) { said.push(e.name + ": " + e.message) }
+      }
+      said.push(__host.post({ type: "render", node: { type: "text", text: "no handlers" } }))
+      said.push(__host.post({ type: "frame" }) === undefined)
+      __host.post({ type: "submit", value: said })
+      await __host.receive()
+    "#;
+    let (run, rx) = start_native(source, LiveOptions::default());
+    let list = posts(&rx);
+    let Post::Render(Node::Column { children, .. }) = &list[0] else {
+        panic!("{list:?}")
+    };
+    assert!(matches!(&children[0], Node::Button { id, .. } if id == "0/0"));
+    assert!(
+        matches!(&children[1], Node::Canvas { id: Some(id), pointer: false, .. } if id == "0/:chart")
+    );
+    let Post::Draw { id, commands } = &list[1] else {
+        panic!()
+    };
+    assert_eq!((id.as_str(), commands.len()), ("0/:chart", 1));
+    let Post::Submit(said) = list.last().unwrap() else {
+        panic!()
+    };
+    assert_eq!(
+        said,
+        &json!([
+            true,
+            "Error: No canvas with key \"nope\" in the rendered view",
+            "Error: Canvas \"gpu\" is drawn by its wgsl; it takes no draw commands",
+            false,
+            true
+        ])
+    );
+    run.stop();
+}
+
+#[test]
+fn a_native_render_dropped_over_the_post_rate_still_counts() {
+    let source = r#"
+      __host.post({ type: "render", node: { type: "text", text: "first" } })
+      const handled = __host.post({ type: "render", node: { type: "button", label: "b", onPress: () => 1 } })
+      await __host.sleep(1100)
+      __host.post({ type: "submit", value: handled })
+      await __host.receive()
+    "#;
+    let options = LiveOptions {
+        max_posts_per_second: 1,
+        ..LiveOptions::default()
+    };
+    let (run, rx) = start_native(source, options);
+    assert!(matches!(posts(&rx)[..], [Post::Render(Node::Text { .. })]));
+    assert_eq!(posts(&rx), [Post::Submit(json!(true))]);
+    run.stop();
+}
+
+#[test]
+fn a_native_live_widget_dispatches_events_by_id() {
+    // The prelude finds the handler of the id the host gave, and keeps running while the view has one.
+    let source = format!(
+        "{PRELUDE}\nasync function main() {{\n  let n = 0\n  const view = () => ui.column([ui.text(\"n=\" + n), ui.button(\"add\", {{ key: \"add\", onPress: () => {{ n++; widget.render(view()) }} }})])\n  widget.render(view())\n}}{NATIVE_LIVE}"
+    );
+    let (h, rx) = handler();
+    let run = program(source)
+        .start_live(
+            r#"{"data":null}"#.into(),
+            h,
+            LiveOptions::default(),
+            None,
+            Some(ValueEncoder::widget()),
+        )
+        .unwrap();
+    let text = |p: &Post| match p {
+        Post::Render(Node::Column { children, .. }) => match (&children[0], &children[1]) {
+            (Node::Text { text, .. }, Node::Button { id, .. }) => (text.clone(), id.clone()),
+            other => panic!("{other:?}"),
+        },
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(text(&posts(&rx)[0]), ("n=0".into(), "0/:add".into()));
+    for n in 1..=2 {
+        run.deliver(
+            json!({ "type": "event", "event": { "id": "0/:add", "type": "press" } }).to_string(),
+        )
+        .unwrap();
+        assert_eq!(text(&posts(&rx)[0]), (format!("n={n}"), "0/:add".into()));
+    }
+    run.stop();
+}
+
+#[test]
+fn a_restored_native_run_keeps_its_canvases_for_draws() {
+    let source = r#"
+      __host.post({ type: "render", node: { type: "canvas", key: "c", height: 10 } })
+      while (true) {
+        const m = await __host.receive()
+        if (m.type === "draw") __host.post({ type: "draw", key: "c", commands: [["save"]] })
+      }
+    "#;
+    let (run, rx) = start_native(source, LiveOptions::default());
+    assert!(matches!(
+        posts(&rx)[..],
+        [Post::Render(Node::Canvas { .. })]
+    ));
+    run.pause().unwrap();
+    let snapshot = run.snapshot().unwrap();
+    run.stop();
+    assert!(matches!(next(&rx), Event::Exit(LiveExit::Stopped)));
+    let (h, rx) = handler();
+    let restored = LiveRun::restore(
+        snapshot,
+        h,
+        "__input".into(),
+        LiveOptions::default(),
+        None,
+        Some(ValueEncoder::widget()),
+    )
+    .unwrap();
+    restored.deliver(r#"{"type":"draw"}"#.into()).unwrap();
+    let list = posts(&rx);
+    assert_eq!(list.len(), 1);
+    assert!(matches!(&list[0], Post::Draw { id, .. } if id == ":c"));
+    restored.stop();
+}
+
+/// A step output both ways: the JSON path's result and `run_bytes`.
+fn both_ways(state: &str) -> (Value, Value) {
+    let out = format!("({{ state: {state}, view: {{ type: \"divider\" }} }})");
+    let json: Value = serde_json::from_str(
+        &program(format!("return {out}"))
+            .run("{}".into(), RunOptions::default())
+            .unwrap(),
+    )
+    .unwrap();
+    let bytes = run_bytes(&format!("__widget_emit({out})"), RunOptions::default()).unwrap();
+    let Output::Step(s) = decode_output(&bytes).unwrap() else {
+        panic!()
+    };
+    (s.state, json["state"].clone())
+}
+
+#[test]
+fn step_output_values_read_as_their_json_does() {
+    for state in [
+        "{ at: new Date(0), never: new Date(NaN), list: [new Date(86400000)] }",
+        "{ url: new URL('https://example.com/a?b=c'), tags: new Set(['x', 'y']), m: new Map([[1, 2]]) }",
+        "{ e: new Error('boom'), f() {}, list: [() => 1, 2] }",
+        "{ toJSON: 5, n: 1 }",
+    ] {
+        let (bin, json) = both_ways(state);
+        assert_eq!(bin, json, "{state}");
+    }
+}
+
+/// The JSON path calls `toJSON` (custom ones, and so an `Error`'s own fields and typed arrays read differently);
+/// `__widget_emit`'s argument crosses as a host value, which doesn't. Needs psychoscript to apply `toJSON` to
+/// host-call arguments.
+#[test]
+#[ignore = "needs psychoscript to apply toJSON to host-call arguments"]
+fn step_output_values_with_to_json_read_as_their_json_does() {
+    for state in [
+        "{ a: { toJSON() { return 'custom' } } }",
+        "{ list: [{ toJSON(key) { return 'at ' + key } }] }",
+        "{ e: Object.assign(new Error('e'), { code: 7 }) }",
+        "{ bytes: new Float32Array([1.5]) }",
+    ] {
+        let (bin, json) = both_ways(state);
+        assert_eq!(bin, json, "{state}");
+    }
 }
