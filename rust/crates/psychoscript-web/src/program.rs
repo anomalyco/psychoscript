@@ -56,7 +56,7 @@ impl Program {
             })
             .limits(Limits {
                 timeout_ms,
-                max_output_bytes: None,
+                ..Limits::default()
             });
         let outcome = runtime.execute(&self.compiled);
         drop(runtime);
