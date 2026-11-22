@@ -80,7 +80,10 @@ the program built it. Runs with an encoder pass program functions to the host as
   `maxOutputBytes` limits the bytes. Failures (`Runtime`, by kind):
   - `InvalidView`, no line: the view breaks Keys and depth (`A node's key must be a string, a number or a boolean`,
     `The view nests more than 100 levels`), whatever the run did after;
-  - `InvalidDraw`, no line: a draw step's commands it can't write (after the run; the run's own failure first);
+  - `InvalidDraw`, no line: a draw step's commands failing the Draw command checks (`widgets.md`, Canvas), with
+    exactly that section's message, e.g. `draw command 2: a text weight must be 400, 500, 600 or 700` (after the
+    run; the run's own failure first). Clients get the normalised commands (clamped values, defaults for absent
+    fields);
   - `ExecutionFailure` `TypeError: Argument <n> to __widget_emit contains a function, which cannot be passed to the
     host. (line, col)`: a function in the view anywhere but a node's `onPress`, `onChange`, `onPointer`;
   - `InvalidDataValue` `The step gave no view`: an init or event step that never called `__widget_emit`;
@@ -89,9 +92,10 @@ the program built it. Runs with an encoder pass program functions to the host as
   `handler.onPostsBytes(messages)` as the encoder's bytes, a wake-up's posts in one call, and `onPosts` is never
   called. `__host.post` returns what the encoder says: for a widget `render`, whether the view has handlers (the
   prelude keeps the run going on it), else `undefined`. A post the encoder can't write throws at `__host.post`:
-  uncaught, the run ends with `Failed(Runtime)` of the encoder's kind, located at the post. A view breaking Keys and
-  depth doesn't throw: the run ends at once with `Failed(Runtime(kind: "InvalidView"))`, no line. What the encoder
-  keeps (a widget's canvases by key) goes into a snapshot.
+  uncaught, the run ends with `Failed(Runtime)` of the encoder's kind, located at the post. A live draw's commands
+  get a draw step's checks and message (kind `InvalidDraw`, the message without an `invalid post:` prefix). A view
+  breaking Keys and depth doesn't throw: the run ends at once with `Failed(Runtime(kind: "InvalidView"))`, no line.
+  What the encoder keeps (a widget's canvases by key) goes into a snapshot.
 - **An encoder may hold posts back** and hand them over later: the crate asks it again when it says (its timer wakes
   the waiting run, whose next poll hands them over), and takes all of them when the run ends, before `onExit`,
   unless `stop()` ended it (then they're dropped). The widget encoder holds back for the **post rate**
