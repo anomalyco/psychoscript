@@ -84,7 +84,18 @@ impl<'de> Visitor<'de> for Json {
 /// the top; non-finite numbers are `null`), or `None` when it holds a function, which a host call's argument may not.
 pub(crate) fn write_checked(value: &HostValue) -> Option<String> {
     let mut out = String::new();
-    write_into(value, &mut out).then_some(out)
+    write_into(value, &mut out, true).then_some(out)
+}
+
+/// A host value as JSON reads it, functions left out as `undefined` is (a native draw step's emitted commands).
+pub(crate) fn write(value: &HostValue) -> String {
+    let mut out = String::new();
+    write_into(value, &mut out, false);
+    out
+}
+
+fn is_function(v: &HostValue) -> bool {
+    matches!(v, HostValue::Function(_) | HostValue::FunctionMarker)
 }
 
 /// Why a host call fails for a function in its argument `n` (from 1), as the runtime's own error says it without
@@ -142,8 +153,8 @@ fn has_function(v: &HostValue) -> bool {
     }
 }
 
-/// Writes `value`; false when it holds a function.
-fn write_into(value: &HostValue, out: &mut String) -> bool {
+/// Writes `value`; with `strict`, false when it holds a function, else functions go as `undefined` does.
+fn write_into(value: &HostValue, out: &mut String, strict: bool) -> bool {
     match value {
         HostValue::Null => out.push_str("null"),
         HostValue::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
@@ -156,9 +167,9 @@ fn write_into(value: &HostValue, out: &mut String) -> bool {
                     out.push(',');
                 }
                 match item {
-                    Some(HostValue::Function(_) | HostValue::FunctionMarker) => return false,
-                    Some(item) if !skipped(item) => {
-                        if !write_into(item, out) {
+                    Some(item) if strict && is_function(item) => return false,
+                    Some(item) if !skipped(item) && !is_function(item) => {
+                        if !write_into(item, out, strict) {
                             return false;
                         }
                     }
@@ -171,10 +182,11 @@ fn write_into(value: &HostValue, out: &mut String) -> bool {
             out.push('{');
             let mut first = true;
             for (k, v) in fields.iter() {
-                match v {
-                    HostValue::Function(_) | HostValue::FunctionMarker => return false,
-                    v if skipped(v) => continue,
-                    _ => {}
+                if is_function(v) && strict {
+                    return false;
+                }
+                if skipped(v) || is_function(v) {
+                    continue;
                 }
                 if !first {
                     out.push(',');
@@ -182,14 +194,14 @@ fn write_into(value: &HostValue, out: &mut String) -> bool {
                 first = false;
                 string(&k.to_string_lossy(), out);
                 out.push(':');
-                if !write_into(v, out) {
+                if !write_into(v, out, strict) {
                     return false;
                 }
             }
             out.push('}');
         }
-        HostValue::Function(_) | HostValue::FunctionMarker => return false,
-        HostValue::Map(_) | HostValue::Set(_) if has_function(value) => return false,
+        HostValue::Function(_) | HostValue::FunctionMarker if strict => return false,
+        HostValue::Map(_) | HostValue::Set(_) if strict && has_function(value) => return false,
         other => match other.to_json() {
             Some(json) => out.push_str(&json.to_string()),
             None => out.push_str("null"),

@@ -359,34 +359,60 @@ fn timings() {
     }
 }
 
-/// A whole step on the biggest fixtures, the prelude building the tree (`run`, protocol 1's entry) against a native
-/// step (`run_step`: the view emitted and walked here, functions as markers).
+/// A native draw step: the commands `__widget_emit` gets come back as JSON reads them, `[]` when `draw` returns nothing.
+#[test]
+fn a_draw_step_emits_its_commands_as_json_reads_them() {
+    let draw = |source: &str| {
+        let program = format!("{}\n{source}{ENTRY}", prelude());
+        Program::new(&program, None).unwrap().run_draw(
+            r#"{"phase":"draw","data":null,"state":{},"frame":{"id":"0/:c","width":2,"height":2}}"#,
+            None,
+            None,
+        )
+    };
+    assert_eq!(
+        draw(r#"function draw(state, data, frame) {
+  return ui.draw().rect(0, 0, 1, 1, "accent").commands.concat([["text", frame.key, NaN, undefined, () => 1, { fill: "red", f: () => 1, u: undefined }]])
+}"#)
+        .unwrap(),
+        r#"[["rect",0,0,1,1,{"fill":"accent"}],["text","c",null,null,null,{"fill":"red"}]]"#
+    );
+    assert_eq!(draw("function draw() {}").unwrap(), "[]");
+    assert_eq!(draw("").unwrap(), "[]");
+    assert!(draw("function draw() { throw new Error('no') }").is_err());
+}
+
+/// Whole native steps on the biggest fixtures (the view emitted and walked here, functions as markers), and a draw
+/// step of the heatmap (its commands emitted).
 #[test]
 #[ignore = "timings: run in release with --ignored"]
 fn step_timings() {
     let all = fixtures();
-    for name in ["grid-200", "builtin-suggestions"] {
+    for name in ["grid-200", "builtin-suggestions", "builtin-heatmap"] {
         let f = all.iter().find(|f| f.name == name).expect(name);
-        let source = format!(
-            "{}\n{}",
-            prelude(),
-            f.json["source"].as_str().unwrap_or_default()
-        );
         let input = f.json["input"].to_string();
-        let prelude_walk =
-            Program::new(&format!("{source}\nreturn __widget_step(__input())"), None).unwrap();
         let native = Program::new(&f.program(), None).unwrap();
-        let (mut a, mut b) = (f64::MAX, f64::MAX);
+        let mut best = f64::MAX;
+        let mut output = String::new();
         for _ in 0..200 {
             let t = Instant::now();
-            prelude_walk.run(&input, None, None).expect("runs");
-            a = a.min(t.elapsed().as_secs_f64() * 1e6);
-            let t = Instant::now();
-            native.run_step(&input, None, None).expect("runs");
-            b = b.min(t.elapsed().as_secs_f64() * 1e6);
+            output = native.run_step(&input, None, None).expect("runs");
+            best = best.min(t.elapsed().as_secs_f64() * 1e6);
         }
-        println!(
-            "{name}: step with the prelude's tree {a:.0} µs, native step {b:.0} µs (min of 200)"
-        );
+        println!("{name}: native step {best:.0} µs (min of 200)");
+        if name == "builtin-heatmap" {
+            let state: Value = serde_json::from_str::<Value>(&output).unwrap()["state"].clone();
+            let draw = serde_json::json!({ "phase": "draw", "data": f.json["input"]["data"], "state": state,
+                "frame": { "id": "0", "t": 0, "dt": 0, "width": 640, "height": 320, "scale": 2, "pointer": null,
+                "dark": true, "fullscreen": false, "close": null } })
+            .to_string();
+            let mut best = f64::MAX;
+            for _ in 0..200 {
+                let t = Instant::now();
+                native.run_draw(&draw, None, None).expect("draws");
+                best = best.min(t.elapsed().as_secs_f64() * 1e6);
+            }
+            println!("{name}: native draw step {best:.0} µs (min of 200)");
+        }
     }
 }

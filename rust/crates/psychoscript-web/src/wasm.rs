@@ -79,6 +79,23 @@ impl JsProgram {
             .map_err(thrown)
     }
 
+    /// Runs a widget draw step natively: the commands the program gave `__widget_emit`, as JSON (`null` for none).
+    #[wasm_bindgen(js_name = runDraw)]
+    pub fn run_draw(
+        &self,
+        input_json: &str,
+        timeout_ms: Option<f64>,
+        max_output_bytes: Option<f64>,
+    ) -> Result<String, JsValue> {
+        self.0
+            .run_draw(
+                input_json,
+                timeout_ms.map(|t| t.max(1.0) as u64),
+                max_output_bytes.map(|m| m.max(0.0) as u64),
+            )
+            .map_err(thrown)
+    }
+
     /// Starts the program as a live run with `inputJson` behind its input function and `__host`. `options`:
     /// `{ sliceBudgetMs = 50, maxPostsPerSecond = 240, httpsHosts?: string[], allowLocalNetwork = false,
     /// native = false }` (`native`: a `__widget_live(__input(), true)` run, widgets.md "Native hosts").

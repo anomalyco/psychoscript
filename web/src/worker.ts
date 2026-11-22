@@ -9,8 +9,8 @@ import { DRAW_TIMEOUT_MS, MAX_COMMANDS, STEP_TIMEOUT_MS } from "./protocol.js"
 
 /**
  * Widget protocol 2, a native host (widgets.md, "Protocol", "Native hosts"): functions cross as markers, steps hand
- * their view to `__widget_emit` and the WebAssembly walks it into the tree clients get (`runStep`), live renders are
- * walked as posted (`native`).
+ * their view to `__widget_emit` and the WebAssembly walks it into the tree clients get (`runStep`), draw steps hand it
+ * their commands (`runDraw`), live renders are walked as posted (`native`).
  */
 const STEP_ENTRY = "\nreturn __widget_native_step(__input())"
 const LIVE_ENTRY = "\nreturn await __widget_live(__input(), true)"
@@ -112,9 +112,9 @@ function draw(wid: number, req: number, frame: unknown) {
   const input = `{"phase":"draw","data":${s.data},"state":${s.state},"frame":${JSON.stringify(frame)}}`
   const started = performance.now()
   try {
-    const out = JSON.parse(program.runStep(input, DRAW_TIMEOUT_MS)) as { commands?: unknown }
+    // The run emits its commands (`__widget_emit(commands)`), read here as JSON reads them.
+    const commands = JSON.parse(program.runDraw(input, DRAW_TIMEOUT_MS)) as unknown
     const ms = performance.now() - started
-    const commands = out?.commands
     if (!Array.isArray(commands)) post({ t: "drawn", wid, req, error: { type: "draw", message: "draw returned no commands" }, ms })
     else if (commands.length > MAX_COMMANDS)
       post({ t: "drawn", wid, req, error: { type: "draw", message: `${commands.length} draw commands, over the limit of ${MAX_COMMANDS}` }, ms })

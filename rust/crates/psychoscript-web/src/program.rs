@@ -44,8 +44,8 @@ impl Program {
     /// [`Program::run`] for a widget step run natively (`return __widget_native_step(__input())`, widgets.md, "Native
     /// hosts"): functions cross as markers, and `__widget_emit(view)` hands over the view as built, which goes out as
     /// the tree clients get, built while it is written ([`crate::tree`]). The result is the run's, its functions left
-    /// out as JSON leaves them, with `view` added when one was emitted (`init` and `event` steps; a `draw` step emits
-    /// none). A view that breaks a rule of views (or that the prelude found too deep to hand over, `__widget_emit(null,
+    /// out as JSON leaves them, with `view` added when one was emitted (`init` and `event` steps; draw steps run with
+    /// [`Program::run_draw`]). A view that breaks a rule of views (or that the prelude found too deep to hand over, `__widget_emit(null,
     /// message)`) fails the step with [`Error::View`] once it has run; a function where none may go, or a key
     /// `encodeURIComponent` can't encode, is thrown from `__widget_emit` as the runtime's own error.
     pub fn run_step(
@@ -78,6 +78,32 @@ impl Program {
             out.push('}');
         }
         limit(out, max_output_bytes)
+    }
+
+    /// A widget draw step run natively (`return __widget_native_step(__input())` on a `draw` input, widgets.md,
+    /// "Native hosts"): functions cross as markers, and the commands the program gives `__widget_emit(commands)` come
+    /// back as JSON reads them (functions and `undefined` props left out, `null` for `undefined` items and non-finite
+    /// numbers), or `null` when it gave none. The run's own result isn't read.
+    pub fn run_draw(
+        &self,
+        input_json: &str,
+        timeout_ms: Option<u64>,
+        max_output_bytes: Option<u64>,
+    ) -> Result<String, Error> {
+        let emitted = Arc::new(Mutex::new(Emitted {
+            draw: true,
+            ..Emitted::default()
+        }));
+        let result = self.execute(input_json, timeout_ms, Some(&emitted));
+        let emitted = std::mem::take(&mut *emitted.lock().unwrap_or_else(PoisonError::into_inner));
+        result.map_err(|mut e| {
+            emitted.thrown.name(&mut e);
+            e
+        })?;
+        limit(
+            emitted.view.unwrap_or_else(|| "null".to_owned()),
+            max_output_bytes,
+        )
     }
 
     /// One run's result; with `emitted`, a native step's: functions cross as markers, and `__widget_emit` writes the
@@ -150,20 +176,27 @@ impl Program {
 /// The host global a native step hands its view to.
 const EMIT: &str = "__widget_emit";
 
-/// What a native step's `__widget_emit` took: the view's wire JSON, or why the view failed; and what its host calls
-/// threw.
+/// What a native step's `__widget_emit` took: the view's wire JSON (a draw step's commands as JSON), or why the view
+/// failed; and what its host calls threw.
 #[derive(Default)]
 struct Emitted {
+    /// A draw step: `__widget_emit(commands)`.
+    draw: bool,
     view: Option<String>,
     failure: Option<String>,
     thrown: json::Thrown,
 }
 
 impl Emitted {
-    /// `__widget_emit(view, failure?)`: a string `failure` fails the view with it; else the view is walked.
+    /// `__widget_emit(view, failure?)`: a string `failure` fails the view with it; else the view is walked. In a draw
+    /// step, `__widget_emit(commands)`.
     fn take(&mut self, args: &[HostValue]) -> HostResult {
         if let Err(m) = json::unmarked(args, EMIT, 1) {
             return Err(self.thrown.throw(m));
+        }
+        if self.draw {
+            self.view = Some(json::write(args.first().unwrap_or(&HostValue::Undefined)));
+            return Ok(HostValue::Undefined);
         }
         if let Some(HostValue::String(failure)) = args.get(1) {
             self.failure = Some(failure.to_string_lossy().into_owned());
