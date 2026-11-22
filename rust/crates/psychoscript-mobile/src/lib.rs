@@ -14,6 +14,7 @@
 //!
 //! `README.md` covers packaging, threading and what a run copies.
 
+mod cpu;
 mod encoder;
 mod error;
 mod fetch;

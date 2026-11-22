@@ -36,6 +36,7 @@ required-features = ["widget-wire"]
 
 [dependencies]
 psychoscript = { path = "../psychoscript" }
+libc = "0.2"
 serde = "1"
 serde_json = { version = "1", features = ["preserve_order"] }
 uniffi = "0.32"
