@@ -328,7 +328,7 @@ fn view(c: &mut Cursor) -> Result<Node, DecodeError> {
         floats: Cursor::new(c.take(lf)?),
         strs: Cursor::new(c.take(ls)?),
     };
-    let (node, _) = node(&mut s, 0)?;
+    let (node, _) = node(&mut s)?;
     s.ints.end("the view's ints")?;
     s.floats.end("the view's floats")?;
     s.strs.end("the view's strings")?;
@@ -463,21 +463,88 @@ fn pick<T: Copy + Default>(i: Option<u32>, table: &[T]) -> T {
 }
 
 /// A node and how it sits when it's a stack's child.
-fn node(s: &mut Streams, depth: usize) -> Result<(Node, Layer), DecodeError> {
-    if depth > MAX_DEPTH {
-        return Err(Malformed(format!("a view deeper than {MAX_DEPTH} levels")).into());
-    }
-    let t = s.ints.int()?;
-    if t == T_UNKNOWN {
-        if s.ints.int()? != 0 {
-            return Err(Malformed("an unknown node has no props".into()).into());
+/// A container being read: its node without children, and the children read so far.
+struct Open {
+    shell: Result<(Node, Layer), DecodeError>,
+    left: usize,
+    children: Vec<Node>,
+    layers: Vec<Layer>,
+}
+
+/// The view's root and how it sits. Iterative, so a deep view takes no stack: each container waiting for its children
+/// is on a heap stack.
+fn node(s: &mut Streams) -> Result<(Node, Layer), DecodeError> {
+    let mut open: Vec<Open> = Vec::new();
+    loop {
+        if open.len() > MAX_DEPTH {
+            return Err(Malformed(format!("a view deeper than {MAX_DEPTH} levels")).into());
         }
-        s.strs.str()?;
-        return Ok((Node::Unknown, Layer::default()));
+        let t = s.ints.int()?;
+        let mut done = if t == T_UNKNOWN {
+            if s.ints.int()? != 0 {
+                return Err(Malformed("an unknown node has no props".into()).into());
+            }
+            s.strs.str()?;
+            (Node::Unknown, Layer::default())
+        } else {
+            if !matches!(t, 1..=14 | T_STACK) {
+                return Err(Malformed(format!("unknown node type {t}")).into());
+            }
+            // The node without its children; its failure waits for the children's reading, which may find the bytes
+            // malformed.
+            let shell = head(s, t)?;
+            let n = if is_container(t) { s.ints.count(2)? } else { 0 };
+            if n > 0 {
+                open.push(Open {
+                    shell,
+                    left: n,
+                    children: Vec::with_capacity(n),
+                    layers: Vec::with_capacity(n),
+                });
+                continue;
+            }
+            shell?
+        };
+        loop {
+            let Some(parent) = open.last_mut() else {
+                return Ok(done);
+            };
+            parent.children.push(done.0);
+            parent.layers.push(done.1);
+            parent.left -= 1;
+            if parent.left > 0 {
+                break;
+            }
+            let Open {
+                shell,
+                children,
+                layers,
+                ..
+            } = open.pop().unwrap_or_else(|| unreachable!());
+            let (mut node, layer) = shell?;
+            match &mut node {
+                Node::Column { children: c, .. }
+                | Node::Row { children: c, .. }
+                | Node::Carousel { children: c, .. }
+                | Node::Card { children: c, .. } => *c = children,
+                Node::Stack { children: c } => {
+                    *c = Layers {
+                        nodes: children,
+                        layers,
+                    }
+                }
+                _ => {}
+            }
+            done = (node, layer);
+        }
     }
-    if !matches!(t, 1..=14 | T_STACK) {
-        return Err(Malformed(format!("unknown node type {t}")).into());
-    }
+}
+
+/// A node's props (after its type `t`) and the node they make, with no children: `Err` for malformed bytes, `Ok(Err)`
+/// for a node they make invalid.
+#[inline(never)]
+#[allow(clippy::type_complexity)]
+fn head(s: &mut Streams, t: u32) -> Result<Result<(Node, Layer), DecodeError>, DecodeError> {
     let mut p = Props::default();
     loop {
         match s.ints.int()? {
@@ -485,17 +552,11 @@ fn node(s: &mut Streams, depth: usize) -> Result<(Node, Layer), DecodeError> {
             tag => read_prop(s, &mut p, tag)?,
         }
     }
-    let mut children = Vec::new();
-    let mut layers = Vec::new();
-    if is_container(t) {
-        let n = s.ints.count(2)?;
-        children.reserve(n);
-        for _ in 0..n {
-            let (child, layer) = node(s, depth + 1)?;
-            children.push(child);
-            layers.push(layer);
-        }
-    }
+    Ok(shell(t, p))
+}
+
+fn shell(t: u32, mut p: Props) -> Result<(Node, Layer), DecodeError> {
+    let (children, layers) = (Vec::new(), Vec::new());
     let place = pick(
         p.place,
         &[
