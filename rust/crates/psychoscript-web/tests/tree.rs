@@ -1,5 +1,5 @@
 //! The native host against the conformance fixtures (opencode `packages/widget/test/fixtures/wire`, at widgets
-//! 523750c6a, with its `prelude.js`). Each fixture holds a widget template `source` and a step `input`, `built` (the
+//! 35f0712e3, with its `prelude.js`). Each fixture holds a widget template `source` and a step `input`, `built` (the
 //! view as emitted, each function as `"$function"`) when it crosses, and either `view`, `handlers`, `canvases` and
 //! `result`, or `error`. `<name>.wire` is `JSON.stringify(view)`, made from the fixture with
 //! `bun -e 'for (const f of fs.readdirSync(".")) if (f.endsWith(".json")) { const d = JSON.parse(fs.readFileSync(f)); if ("view" in d) fs.writeFileSync(f.replace(/json$/, "wire"), JSON.stringify(d.view)) }'`.
@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use psychoscript::{
-    HostFunction, HostValue, Runtime, Translate, TranslateFunctions, TranslatePromises,
+    HostFunction, HostValue, Limits, Runtime, Translate, TranslateFunctions, TranslatePromises,
 };
 use psychoscript_web::tree::{DEEP, Walk, WalkError};
 use psychoscript_web::{Error, Program};
@@ -107,8 +107,11 @@ fn fixtures() -> Vec<Fixture> {
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
-        let json: Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("JSON");
+        // The depth fixtures nest past serde_json's default limit of 128.
+        let text = std::fs::read_to_string(&path).expect("read");
+        let mut reader = serde_json::Deserializer::from_str(&text);
+        reader.disable_recursion_limit();
+        let json: Value = serde::Deserialize::deserialize(&mut reader).expect("JSON");
         out.push(Fixture {
             name: json["name"].as_str().unwrap_or_default().to_owned(),
             wire: std::fs::read_to_string(path.with_extension("wire")).ok(),
@@ -116,11 +119,11 @@ fn fixtures() -> Vec<Fixture> {
         });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
-    assert_eq!(out.len(), 53);
+    assert_eq!(out.len(), 56);
     out
 }
 
-/// The prelude a fixture's program starts with (opencode `packages/widget/src/prelude.js` at widgets 523750c6a).
+/// The prelude a fixture's program starts with (opencode `packages/widget/src/prelude.js` at widgets 35f0712e3).
 fn prelude() -> String {
     std::fs::read_to_string(dir().join("prelude.js")).expect("the prelude")
 }
@@ -187,7 +190,7 @@ fn every_fixture_walks_from_its_built_view() {
         }
         walked += 1;
     }
-    assert_eq!(walked, 51);
+    assert_eq!(walked, 55);
 }
 
 /// Each fixture's program run natively on its input with real function markers: the view `__widget_emit` gets is
@@ -220,6 +223,10 @@ fn every_fixture_runs_natively_to_its_view_result_or_error() {
             .translate(Translate {
                 functions: TranslateFunctions::Mark,
                 promises: TranslatePromises::Error,
+            })
+            .limits(Limits {
+                max_value_depth: Some(202),
+                ..Limits::default()
             });
         let _ = runtime.execute(program.as_str());
         let emitted = std::mem::take(&mut *emitted.lock().unwrap());
@@ -255,7 +262,9 @@ fn every_fixture_runs_natively_to_its_view_result_or_error() {
                     "{}: the view in {text}",
                     f.name
                 );
-                let mut output: Value = serde_json::from_str(&text).expect("JSON");
+                let mut reader = serde_json::Deserializer::from_str(&text);
+                reader.disable_recursion_limit();
+                let mut output: Value = serde::Deserialize::deserialize(&mut reader).expect("JSON");
                 output.as_object_mut().unwrap().shift_remove("view");
                 assert_eq!(output, f.json["result"], "{}: the result", f.name);
             }
@@ -271,7 +280,7 @@ fn every_fixture_runs_natively_to_its_view_result_or_error() {
         }
         count += 1;
     }
-    assert_eq!(count, 53);
+    assert_eq!(count, 56);
 }
 
 /// The walk counts levels itself, for views the boundary lets through (its default depth stops them at 16 levels).

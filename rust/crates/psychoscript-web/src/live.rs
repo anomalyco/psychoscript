@@ -317,36 +317,25 @@ impl Shared {
                         }
                         Some((id, false)) => id,
                     };
-                    let mut out = format!(
-                        r#"{{"type":"draw","id":{}"#,
+                    // The client gets the canvas's id and the commands, nothing else.
+                    let commands = message.get("commands").unwrap_or(&HostValue::Undefined);
+                    let written =
+                        json::write_checked(commands).ok_or_else(|| json::carried(1, POST))?;
+                    if let HostValue::Array(list) = commands
+                        && list.len() > MAX_COMMANDS
+                    {
+                        // An invalid post: the run ends with a program error in phase `draw`.
+                        return Err(self.fail(Error::Draw {
+                            reason: format!(
+                                "A draw post has {} commands; it must have at most {MAX_COMMANDS} commands",
+                                list.len()
+                            ),
+                        }));
+                    }
+                    let out = format!(
+                        r#"{{"type":"draw","id":{},"commands":{written}}}"#,
                         serde_json::Value::from(id.as_str())
                     );
-                    for (name, value) in fields(message) {
-                        if name == "type" || name == "key" {
-                            continue;
-                        }
-                        let value =
-                            json::write_checked(value).ok_or_else(|| json::carried(1, POST))?;
-                        out.push(',');
-                        out.push_str(&serde_json::Value::from(name.to_string_lossy()).to_string());
-                        out.push(':');
-                        out.push_str(&value);
-                    }
-                    out.push('}');
-                    if let Some(HostValue::Array(commands)) = message.get("commands")
-                        && commands.len() > MAX_COMMANDS
-                    {
-                        // Dropped, as an invalid draw output the run survives: a program error in phase `draw`.
-                        let warning = format!(
-                            "a draw of {} commands, over {MAX_COMMANDS}, was dropped",
-                            commands.len()
-                        );
-                        self.push(&format!(
-                            r#"{{"type":"warning","phase":"draw","message":{}}}"#,
-                            serde_json::Value::from(warning)
-                        ));
-                        return Ok(reply);
-                    }
                     native = Some(out);
                     counted = Some(Some(key.to_owned()));
                 }

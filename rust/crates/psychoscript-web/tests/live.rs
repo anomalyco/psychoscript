@@ -480,7 +480,41 @@ fn a_draw_post_without_a_string_key_ends_the_run() {
     }
 }
 
-/// A live program on the prelude (opencode widgets 523750c6a), run natively.
+/// A draw post goes to the client as its canvas's id and commands only; one over 2,000 commands is an invalid post,
+/// which ends the run in phase `draw`, what waits for the post rate going out first.
+#[test]
+fn draw_posts_carry_id_and_commands_and_end_the_run_over_2000_commands() {
+    let mut run = start_widget(
+        r#"async function main() {
+  widget.render(ui.canvas({ key: "c", height: 1 }))
+  __host.post({ type: "draw", key: "c", commands: [["rect", 0, 0, 1, 1, "accent"]], extra: 1 })
+  for (let i = 0; i < 10; i++) widget.render(ui.canvas({ key: "c", height: i + 1 }))
+  try { widget.draw("c", Array.from({ length: 2001 }, () => ["save"])) } catch (e) { widget.send("caught") }
+  widget.send("after")
+}"#,
+        240,
+    );
+    let out = run_for(&mut run, 3000);
+    assert_eq!(
+        out[1],
+        json!({ "type": "draw", "id": ":c", "commands": [["rect", 0, 0, 1, 1, "accent"]] })
+    );
+    // The latest render goes out (at once or when the run ends); nothing after the invalid draw does.
+    assert_eq!(out.last().unwrap()["node"]["height"], 10, "{out:?}");
+    assert!(out.iter().all(|m| m["type"] != "send"), "{out:?}");
+    match run.exit() {
+        Some(LiveExit::Failed { error }) => {
+            assert_eq!(error.phase(), Some("draw"));
+            assert_eq!(
+                error.reason(),
+                "A draw post has 2001 commands; it must have at most 2000 commands"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// A live program on the prelude (opencode widgets 35f0712e3), run natively.
 fn widget(source: &str) -> (Vec<Value>, Option<LiveExit>) {
     let prelude = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/wire/prelude.js"),

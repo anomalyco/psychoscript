@@ -1088,6 +1088,7 @@ for (const query of ["?only=shader-broken", "?only=shader-broken&gl=1"]) {
         `async function main() {\n  for (let n = 0; n < 120; n++) {\n    await widget.frame()\n    widget.render(ui.column([ui.text("n " + n), ui.canvas({ key: "a", height: 4 }), ui.canvas({ key: "b", height: 4 })]))\n    widget.draw("a", [["alpha", n / 1000]])\n    widget.draw("b", [["alpha", n / 200]])\n  }\n  await widget.sleep(100000)\n}`,
         (t) => t === "n 119",
       ),
+      await run("oversized", `async function main() {\n  widget.render(ui.canvas({ key: "c", height: 4 }))\n  widget.draw("c", Array.from({ length: 2001 }, () => ["save"]))\n}`, () => false),
       await run("keyless", `async function main() {\n  widget.render(ui.canvas({ key: "c", height: 4 }))\n  __host.post({ type: "draw", id: "0", commands: [] })\n}`, () => false),
     ]
   })
@@ -1096,6 +1097,11 @@ for (const query of ["?only=shader-broken", "?only=shader-broken&gl=1"]) {
   check(by.draws!.text === "frame true" && by.draws!.reports.length === 0, "post rate: a frame request under a load of draws is answered", by.draws)
   check(by.game!.text === "n 119" && by.game!.reports.length === 0, `post rate: a game posting three times a frame runs all 120 frames (${by.game!.ms} ms) and shows its last view`, by.game)
   check(JSON.stringify(by.keyless!.reports) === JSON.stringify([{ phase: "main", message: "A draw post needs a string key" }]), "post rate: a draw post without a string key ends the run, reported in phase main", by.keyless)
+  check(
+    JSON.stringify(by.oversized!.reports) === JSON.stringify([{ phase: "draw", message: "A draw post has 2001 commands; it must have at most 2000 commands" }]),
+    "draw posts: one over 2,000 commands ends the run, reported in phase draw",
+    by.oversized,
+  )
   check(errors.length === 0, "post rate: no page errors", errors)
   await page.close()
 }

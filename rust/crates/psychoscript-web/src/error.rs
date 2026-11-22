@@ -4,8 +4,8 @@ use psychoscript::{Diagnostic, DiagnosticKind};
 
 /// Why a program didn't compile or a run failed: the same cases as `psychoscript-mobile`'s error. In JavaScript it is
 /// an `Error` whose `name` is `"PsychoScriptError"`, with `type` (the variant, lowercase: `"syntax"`, `"runtime"`,
-/// `"timeout"`, `"outputTooLarge"`, `"invalidInput"`, `"sliceBudget"`, `"invalidState"`, `"view"`), `kind` (the
-/// language's diagnostic kind), `line`/`column` (1-based) when known, and `phase` when it is a phase's own (`"view"`).
+/// `"timeout"`, `"outputTooLarge"`, `"invalidInput"`, `"sliceBudget"`, `"invalidState"`, `"view"`, `"draw"`), `kind` (the
+/// language's diagnostic kind), `line`/`column` (1-based) when known, and `phase` when it is a phase's own (`"view"`, `"draw"`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     /// The source doesn't parse, or uses unsupported syntax (`ParseError`, `UnsupportedSyntax`).
@@ -37,6 +37,8 @@ pub enum Error {
     InvalidState { reason: String },
     /// A widget's view breaks a rule of views (widgets.md, "Keys and depth"): a program error in phase `view`.
     View { reason: String },
+    /// A live widget's draw post is invalid (more than 2,000 commands): a program error in phase `draw`.
+    Draw { reason: String },
 }
 
 impl Error {
@@ -80,7 +82,8 @@ impl Error {
             | Error::InvalidInput { reason }
             | Error::SliceBudget { reason, .. }
             | Error::InvalidState { reason }
-            | Error::View { reason } => reason,
+            | Error::View { reason }
+            | Error::Draw { reason } => reason,
         }
     }
 
@@ -95,6 +98,7 @@ impl Error {
             Error::SliceBudget { .. } => "sliceBudget",
             Error::InvalidState { .. } => "invalidState",
             Error::View { .. } => "view",
+            Error::Draw { .. } => "draw",
         }
     }
 
@@ -107,10 +111,11 @@ impl Error {
         }
     }
 
-    /// The widget phase it belongs to, when it isn't the step's or the run's: `"view"`.
+    /// The widget phase it belongs to, when it isn't the step's or the run's: `"view"` or `"draw"`.
     pub fn phase(&self) -> Option<&'static str> {
         match self {
             Error::View { .. } => Some("view"),
+            Error::Draw { .. } => Some("draw"),
             _ => None,
         }
     }

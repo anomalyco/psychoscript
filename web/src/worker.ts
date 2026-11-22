@@ -189,8 +189,6 @@ function finish(wid: number, live: Live) {
 interface Envelope {
   type: "post" | "warning" | "fetch" | "cancel"
   message?: unknown
-  /** A warning's phase when it is a program error the run survives (a draw over 2,000 commands, dropped). */
-  phase?: string
   id?: number
   url?: string
   method?: string
@@ -209,7 +207,7 @@ function flush(wid: number, live: Live) {
   for (const e of out) {
     // Render and draw posts come out under the post rate (widgets-live.md, Post rate), checked when posted.
     if (e.type === "post") messages.push(e.message)
-    else if (e.type === "warning") post({ t: "warning", wid, phase: e.phase, message: String(e.message) })
+    else if (e.type === "warning") post({ t: "warning", wid, message: String(e.message) })
     else if (e.type === "fetch") void transfer(wid, live, e)
     else if (e.type === "cancel" && e.id !== undefined) live.fetches.get(e.id)?.abort()
   }

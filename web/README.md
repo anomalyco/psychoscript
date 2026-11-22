@@ -91,7 +91,8 @@ Behavior, per the contract:
   240 a second; over it they wait, the latest render and the latest draw per canvas key replacing earlier ones, and go
   out as tokens come, or all at once when the run ends (not when the client stops it). They are checked when posted.
   Frame requests, `submit`, `dismiss`, `capture` and `send` are never counted. Nothing is dropped and the rate is
-  never an error. A `draw` post without a string `key` ends the run (`A draw post needs a string key`).
+  never an error. A `draw` post without a string `key` ends the run (`A draw post needs a string key`), and so does
+  one over 2,000 commands (phase `draw`); the client gets a draw's canvas id and commands only.
 - `onSubmit`/`onDismiss` fire once; the widget turns read-only right away. `onSend` is throttled to 10 a second.
 - `canvas`: Canvas2D, drawn on `requestAnimationFrame` only while `fps > 0` (or `duration` not reached) and
   visible; draw steps run in the worker, at most one in flight; 8 ms / 2,000 commands budget, three overruns in a row

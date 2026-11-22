@@ -153,7 +153,7 @@ export type FromWorker = {
     wid: number;
     messages: unknown[];
 }
-/** `phase`: a program error the run survives (an oversized draw), else a plain warning. */
+/** `phase`: a program error the run survives, else a plain warning. */
  | {
     t: "warning";
     wid: number;
