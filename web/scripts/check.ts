@@ -949,12 +949,12 @@ for (const query of ["?only=shader-broken", "?only=shader-broken&gl=1"]) {
   const got = await page.evaluate(async () => {
     const d = (window as unknown as { __demo: { host: { mount(el: HTMLElement, o: object): { destroy(): void } }; prelude: string } }).__demo
     const older = d.prelude.slice(d.prelude.indexOf("\n") + 1)
-    const run = async (name: string, program: string, mode: string, act?: (root: ShadowRoot) => void) => {
+    const run = async (name: string, program: string, mode: string, act?: (root: ShadowRoot) => void, extra?: object) => {
       const slot = document.createElement("div")
       document.body.prepend(slot)
       const reports: { phase: string; message: string }[] = []
       const clientErrors: string[] = []
-      const w = d.host.mount(slot, { program, data: null, mode, onReport: (e: { phase: string; message: string }) => reports.push(e), onClientError: (m: string) => clientErrors.push(m) })
+      const w = d.host.mount(slot, { program, data: null, mode, ...extra, onReport: (e: { phase: string; message: string }) => reports.push(e), onClientError: (m: string) => clientErrors.push(m) })
       const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
       await sleep(1200)
       const root = slot.querySelector(".psychoscript-widget")!.shadowRoot!
@@ -962,7 +962,7 @@ for (const query of ["?only=shader-broken", "?only=shader-broken&gl=1"]) {
         act(root)
         await sleep(800)
       }
-      const out = { name, reports, clientErrors, shown: (root.querySelector(".pw-error-card, .pw-error:not([hidden])") as HTMLElement | null)?.textContent ?? "", buttons: root.querySelectorAll(".pw-view .pw-btn").length }
+      const out = { name, reports, clientErrors, shown: (root.querySelector(".pw-error-card, .pw-error:not([hidden])") as HTMLElement | null)?.textContent ?? "", buttons: root.querySelectorAll(".pw-view .pw-btn").length, retry: root.querySelectorAll(".pw-error-card .pw-btn").length }
       w.destroy()
       slot.remove()
       return out
@@ -972,6 +972,9 @@ for (const query of ["?only=shader-broken", "?only=shader-broken&gl=1"]) {
       await run("older", older + "\nfunction view() { return ui.text('x') }", "step"),
       await run("older-live", older + "\nasync function main() { widget.render(ui.text('x')) }", "live"),
       await run("newer", "const __widget_protocol = 3\nfunction view() { return ui.text('x') }", "step"),
+      await run("older-shared", older + "\nfunction view() { return ui.text('x') }", "step", undefined, {
+        olderRuntimeMessage: "This artifact was shared with an older widget runtime; share it again from its widget template.",
+      }),
       await run(
         "key",
         step(`function view(state) {\n  return ui.column([ui.button("b", { key: state.bad ? { a: 1 } : "k", onPress: () => ({ bad: true }) })])\n}`),
@@ -986,15 +989,22 @@ for (const query of ["?only=shader-broken", "?only=shader-broken&gl=1"]) {
   const OLDER = "This widget was built with an older widget runtime; ask the agent to post it again"
   const NEWER = "This widget needs a newer version of this app"
   check(
-    JSON.stringify(by.older!.reports) === JSON.stringify([{ phase: "init", message: OLDER }]) && by.older!.shown.includes(OLDER),
-    "protocol: a program without `const __widget_protocol = 2` isn't run: the older-runtime error, reported in phase init",
+    JSON.stringify(by.older!.reports) === JSON.stringify([{ phase: "init", message: OLDER }]) && by.older!.shown === OLDER && by.older!.retry === 0,
+    "protocol: a program without `const __widget_protocol = 2` isn't run: the older-runtime error, reported in phase init, no Try again",
     by.older,
   )
   check(JSON.stringify(by["older-live"]!.reports) === JSON.stringify([{ phase: "main", message: OLDER }]), "protocol: an older live program is refused in phase main", by["older-live"])
   check(
-    by.newer!.reports.length === 0 && by.newer!.clientErrors.includes(NEWER) && by.newer!.shown.includes(NEWER),
-    "protocol: a newer program shows the newer-app message, a client error, never reported",
+    by.newer!.reports.length === 0 && by.newer!.clientErrors.includes(NEWER) && by.newer!.shown === NEWER && by.newer!.retry === 0,
+    "protocol: a newer program shows the newer-app message, no Try again, a client error, never reported",
     by.newer,
+  )
+  check(
+    by["older-shared"]!.shown === "This artifact was shared with an older widget runtime; share it again from its widget template." &&
+      JSON.stringify(by["older-shared"]!.reports) === JSON.stringify([{ phase: "init", message: OLDER }]) &&
+      by["older-shared"]!.retry === 0,
+    "protocol: olderRuntimeMessage replaces the older-runtime text shown; the report keeps the spec's message",
+    by["older-shared"],
   )
   check(
     JSON.stringify(by.key!.reports) === JSON.stringify([{ phase: "view", message: "A node's key must be a string, a number or a boolean" }]) && by.key!.buttons === 1,

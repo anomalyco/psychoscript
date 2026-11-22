@@ -77,6 +77,11 @@ export interface MountOptions {
     }): void;
     /** Text for the expand button and placeholders, if not English. */
     labels?: Partial<Labels>;
+    /**
+     * What the widget shows for a program built for an older widget runtime (widgets.md, Protocol) instead of "This widget
+     * was built with an older widget runtime; ask the agent to post it again". `onReport` still gets the spec's message.
+     */
+    olderRuntimeMessage?: string;
 }
 export interface Labels {
     fullscreen: string;
@@ -277,7 +282,7 @@ declare class Widget implements MountedWidget {
     private updateExpand;
     private inlineError;
     private button;
-    /** The first step failed (or the program didn't compile): an error card instead of a view. */
+    /** The first step failed (or the program didn't compile): an error card instead of a view, with "Try again" (`retry`). */
     private fatal;
     /** Classifies a failure: the widget template's (reported) or this host's (logged). */
     private problem;

@@ -78,8 +78,8 @@ Behavior, per the contract:
   2`. Steps run `__widget_native_step(__input())`, the view handed to `__widget_emit` and its tree built in the
   WebAssembly; live programs run `__widget_live(__input(), true)`, each render's tree built as posted. A program of an
   older protocol isn't run: "This widget was built with an older widget runtime; ask the agent to post it again", a
-  program error in phase `init` (`main` live); a newer one shows "This widget needs a newer version of this app", a
-  client error.
+  program error in phase `init` (`main` live; `olderRuntimeMessage` replaces the text shown); a newer one shows "This
+  widget needs a newer version of this app", a client error. Neither offers "Try again".
 - Step widgets share one worker; `init` runs when the widget first comes within 200 px of the viewport (a loading
   shimmer before). Each step runs off the page's thread; a failing step keeps the previous view and shows the error
   inline; a failing first step shows an error card with "Try again".

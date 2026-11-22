@@ -83,6 +83,11 @@ export interface MountOptions {
   onMetrics?(metric: { kind: "compile" | "init" | "step" | "draw"; ms: number }): void
   /** Text for the expand button and placeholders, if not English. */
   labels?: Partial<Labels>
+  /**
+   * What the widget shows for a program built for an older widget runtime (widgets.md, Protocol) instead of "This widget
+   * was built with an older widget runtime; ask the agent to post it again". `onReport` still gets the spec's message.
+   */
+  olderRuntimeMessage?: string
 }
 
 export interface Labels {
@@ -634,7 +639,9 @@ class Widget implements MountedWidget {
       const e: ErrorInfo = { type: "protocol", message: version < PROTOCOL ? OLDER : NEWER }
       if (version < PROTOCOL) this.report(phase, e)
       else this.clientError(NEWER)
-      return this.fatal(e, version < PROTOCOL ? phase : undefined)
+      // Running it again can't help: no "Try again".
+      const shown = version < PROTOCOL && this.options.olderRuntimeMessage ? { ...e, message: this.options.olderRuntimeMessage } : e
+      return this.fatal(shown, version < PROTOCOL ? phase : undefined, false)
     }
     const worker = live ? this.host.live() : this.host.steps()
     this.worker = worker
@@ -874,8 +881,8 @@ class Widget implements MountedWidget {
     return b
   }
 
-  /** The first step failed (or the program didn't compile): an error card instead of a view. */
-  private fatal(e: ErrorInfo, phase?: string) {
+  /** The first step failed (or the program didn't compile): an error card instead of a view, with "Try again" (`retry`). */
+  private fatal(e: ErrorInfo, phase?: string, retry = true) {
     this.shown = phase ? { phase, message: e.message } : undefined
     for (const el of this.viewEl.children) destroyTree(el)
     this.view = undefined
@@ -886,7 +893,7 @@ class Widget implements MountedWidget {
     msg.style.marginTop = "0"
     msg.textContent = describe(e)
     card.append(msg)
-    if (this.status === "open") card.append(this.button(this.label(this.mode() === "live" ? "restart" : "retry"), () => this.restart()))
+    if (retry && this.status === "open") card.append(this.button(this.label(this.mode() === "live" ? "restart" : "retry"), () => this.restart()))
     this.viewEl.replaceChildren(card)
     this.errorEl.hidden = true
     this.updateExpand()
