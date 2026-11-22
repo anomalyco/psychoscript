@@ -10,8 +10,9 @@ Web Worker) and hand programs JSON. The web counterpart of `psychoscript-mobile`
 class Program {
   constructor(source: string, inputName?: string)              // compile once; throws PsychoScriptError
   run(inputJson: string, timeoutMs?: number, maxOutputBytes?: number): string   // one run, its completion value as JSON
+  runStep(inputJson: string, timeoutMs?: number, maxOutputBytes?: number): string // a native widget step (below)
   startLive(inputJson: string, options?: { sliceBudgetMs?: number; maxPostsPerSecond?: number; httpsHosts?: string[];
-            allowLocalNetwork?: boolean }): LiveRun
+            allowLocalNetwork?: boolean; native?: boolean }): LiveRun
 }
 class LiveRun {
   pump(maxMs: number): number      // -3 ended (see exit()), -2 still computing: pump again soon,
@@ -29,7 +30,18 @@ function translateWgsl(wgsl: string): { code: string; block: string }   // featu
 ```
 
 Errors are `Error`s named `PsychoScriptError` with `type` (`syntax`, `runtime`, `timeout`, `outputTooLarge`,
-`invalidInput`, `sliceBudget`, `invalidState`), `kind` (the language's diagnostic kind) and 1-based `line`/`column`.
+`invalidInput`, `sliceBudget`, `invalidState`, `view`), `kind` (the language's diagnostic kind), 1-based
+`line`/`column`, and `phase: "view"` for a `view` error.
+
+Widgets run as a native host of widget protocol 2 (opencode `specs/v2/widgets.md`, Native hosts): functions cross as
+markers, and this crate builds the tree clients get (`src/tree.rs`). `runStep` runs a program ending in
+`return __widget_native_step(__input())` with `__widget_emit(view, failure?)` as a second host global: the result is the
+run's, its functions left out as JSON leaves them, with `view` (the emitted view's tree) added. A live run with
+`native: true` builds each posted `render`'s tree (`post` returns whether it has handlers) and maps a `draw`'s `key` to
+its canvas's id. A key that isn't a string, number or boolean, or a view over 100 levels, fails with type `view` (a step
+once it has run; a live run at once); a function anywhere but a node's handler props, in any host call's argument,
+throws the runtime's `TypeError` `Argument <n> to <name> contains a function, which cannot be passed to the host.` from
+the call. `tests/tree.rs` runs the 53 conformance fixtures (`tests/fixtures/wire`, opencode widgets 523750c6a).
 
 A live run has `__host.post/receive/sleep/now/fetch` as in `psychoscript-mobile` (and `widgets-live.md`), but nothing
 runs by itself: the host calls `pump` after a delivery, a fetch answer, a resume, or when the returned timer is due,

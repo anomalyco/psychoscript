@@ -1,27 +1,40 @@
-//! The native tree walk against the conformance fixtures (opencode `packages/widget/test/fixtures/wire`, at widgets
-//! 60732569a): each fixture's `built` (the view as the program built it, every function as `"$function"`) must walk to
-//! exactly `<name>.wire` (`JSON.stringify(view)`), with the same handlers and canvases. The view is given as the
-//! `HostValue` a post carries, with a host function for each `"$function"`.
+//! The native host against the conformance fixtures (opencode `packages/widget/test/fixtures/wire`, at widgets
+//! 523750c6a, with its `prelude.js`). Each fixture holds a widget template `source` and a step `input`, `built` (the
+//! view as emitted, each function as `"$function"`) when it crosses, and either `view`, `handlers`, `canvases` and
+//! `result`, or `error`. `<name>.wire` is `JSON.stringify(view)`, made from the fixture with
+//! `bun -e 'for (const f of fs.readdirSync(".")) if (f.endsWith(".json")) { const d = JSON.parse(fs.readFileSync(f)); if ("view" in d) fs.writeFileSync(f.replace(/json$/, "wire"), JSON.stringify(d.view)) }'`.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use psychoscript::{
-    Data, HostFunction, HostValue, Runtime, Translate, TranslateFunctions, TranslatePromises,
+    HostFunction, HostValue, Runtime, Translate, TranslateFunctions, TranslatePromises,
 };
-use psychoscript_web::tree::Walk;
+use psychoscript_web::tree::{DEEP, Walk, WalkError};
+use psychoscript_web::{Error, Program};
 use serde_json::Value;
 
+const ENTRY: &str = "\nreturn __widget_native_step(__input())";
+
+fn dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/wire")
+}
+
+/// A fixture's `built` as the host value `__widget_emit` gets.
 fn host(v: &Value) -> HostValue {
     match v {
         Value::Null => HostValue::Null,
         Value::Bool(b) => HostValue::Bool(*b),
         Value::Number(n) => HostValue::Number(n.as_f64().unwrap_or(f64::NAN)),
-        Value::String(s) if s == "$function" => {
-            HostValue::Function(HostFunction::new(|_, _| HostValue::Undefined))
-        }
-        Value::String(s) => HostValue::String(s.as_str().into()),
+        Value::String(s) => match s.as_str() {
+            "$function" => HostValue::FunctionMarker,
+            "$NaN" => HostValue::Number(f64::NAN),
+            "$Infinity" => HostValue::Number(f64::INFINITY),
+            "$-Infinity" => HostValue::Number(f64::NEG_INFINITY),
+            s => HostValue::String(s.into()),
+        },
         Value::Array(items) => HostValue::Array(items.iter().map(|i| Some(host(i))).collect()),
         Value::Object(props) => HostValue::Object(
             props
@@ -32,149 +45,282 @@ fn host(v: &Value) -> HostValue {
     }
 }
 
+/// An emitted view as a fixture's `built` writes it.
+fn built(v: &HostValue) -> Value {
+    match v {
+        HostValue::Null | HostValue::Undefined => Value::Null,
+        HostValue::Bool(b) => Value::Bool(*b),
+        HostValue::Number(n) if n.is_nan() => "$NaN".into(),
+        HostValue::Number(n) if n.is_infinite() => {
+            (if *n > 0.0 { "$Infinity" } else { "$-Infinity" }).into()
+        }
+        HostValue::Number(n) if n.fract() == 0.0 && n.abs() < 9e15 => (*n as i64).into(),
+        HostValue::Number(n) => (*n).into(),
+        HostValue::String(s) => s.to_string_lossy().into_owned().into(),
+        HostValue::FunctionMarker => "$function".into(),
+        HostValue::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|i| i.as_ref().map_or(Value::Null, built))
+                .collect(),
+        ),
+        HostValue::Object(props) => Value::Object(
+            props
+                .iter()
+                .filter(|(_, v)| !matches!(v, HostValue::Undefined))
+                .map(|(k, v)| (k.to_string_lossy().into_owned(), built(v)))
+                .collect(),
+        ),
+        other => panic!("not in a view: {other:?}"),
+    }
+}
+
 struct Fixture {
     name: String,
-    built: HostValue,
-    wire: String,
-    handlers: BTreeMap<String, String>,
-    canvases: BTreeMap<String, String>,
+    json: Value,
+    wire: Option<String>,
+}
+
+impl Fixture {
+    fn map(&self, field: &str) -> BTreeMap<String, String> {
+        self.json[field]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_owned()))
+            .collect()
+    }
+
+    fn program(&self) -> String {
+        format!(
+            "{}\n{}{ENTRY}",
+            prelude(),
+            self.json["source"].as_str().unwrap_or_default()
+        )
+    }
 }
 
 fn fixtures() -> Vec<Fixture> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/wire");
     let mut out = Vec::new();
-    for entry in std::fs::read_dir(&dir).expect("the fixtures") {
+    for entry in std::fs::read_dir(dir()).expect("the fixtures") {
         let path = entry.expect("an entry").path();
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
-        let fixture: Value =
+        let json: Value =
             serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("JSON");
-        let map = |v: &Value| -> BTreeMap<String, String> {
-            v.as_object()
-                .into_iter()
-                .flatten()
-                .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_owned()))
-                .collect()
-        };
         out.push(Fixture {
-            name: fixture["name"].as_str().unwrap_or_default().to_owned(),
-            built: host(&fixture["built"]),
-            wire: std::fs::read_to_string(path.with_extension("wire")).expect("the .wire file"),
-            handlers: map(&fixture["handlers"]),
-            canvases: map(&fixture["canvases"]),
+            name: json["name"].as_str().unwrap_or_default().to_owned(),
+            wire: std::fs::read_to_string(path.with_extension("wire")).ok(),
+            json,
         });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
+    assert_eq!(out.len(), 53);
     out
 }
 
-#[test]
-fn every_fixture_walks_to_its_wire_view_byte_for_byte() {
-    let all = fixtures();
-    assert_eq!(all.len(), 37);
-    for f in &all {
-        let mut out = String::new();
-        let tree = Walk::new()
-            .handlers()
-            .run(&f.built, &mut out)
-            .expect(&f.name);
-        assert_eq!(out, f.wire, "{}: the view", f.name);
-        // A later node with the same id takes it, as in the prelude's table.
-        let handlers: BTreeMap<String, String> = tree
-            .handlers
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(id, event)| (id, event.to_owned()))
-            .collect();
-        assert_eq!(handlers, f.handlers, "{}: the handlers", f.name);
-        assert_eq!(
-            tree.has_handlers,
-            !f.handlers.is_empty(),
-            "{}: has_handlers",
-            f.name
-        );
-        let canvases: BTreeMap<String, String> = tree
-            .canvases
-            .into_iter()
-            .map(|(k, (id, _))| (k, id))
-            .collect();
-        assert_eq!(canvases, f.canvases, "{}: the canvases", f.name);
-    }
-}
-
-/// The prelude a fixture's program starts with (opencode `packages/widget/src/prelude.js` at widgets 60732569a).
+/// The prelude a fixture's program starts with (opencode `packages/widget/src/prelude.js` at widgets 523750c6a).
 fn prelude() -> String {
-    std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/wire/prelude.js"),
-    )
-    .expect("the prelude")
+    std::fs::read_to_string(dir().join("prelude.js")).expect("the prelude")
 }
 
-/// Each fixture's program run natively on its input, with real function markers: the view in the run's result walks
-/// to exactly its wire view, with its handlers and canvases, and `Program::run_step` gives that same view.
+/// What the walk of `view` gives: its JSON, handlers (id -> event) and canvases (key -> id).
+type Walked = Result<(String, BTreeMap<String, String>, BTreeMap<String, String>), WalkError>;
+
+fn walk(view: &HostValue) -> Walked {
+    let mut out = String::new();
+    let tree = Walk::new().handlers().run(view, &mut out)?;
+    // A later node with the same id takes it, as in the prelude's table.
+    let handlers = tree
+        .handlers
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(id, event)| (id, event.to_owned()))
+        .collect();
+    let canvases = tree
+        .canvases
+        .into_iter()
+        .map(|(k, (id, _))| (k, id))
+        .collect();
+    Ok((out, handlers, canvases))
+}
+
+/// What a fixture expects of the walk of its view.
+fn expected(f: &Fixture) -> Walked {
+    let error = &f.json["error"];
+    if error["view"] == true {
+        let message = error["message"].as_str().unwrap_or_default();
+        return Err(WalkError::View(
+            [psychoscript_web::tree::KEY, DEEP]
+                .into_iter()
+                .find(|m| *m == message)
+                .expect("a view failure"),
+        ));
+    }
+    if error["message"]
+        .as_str()
+        .is_some_and(|m| m.contains("contains a function"))
+    {
+        return Err(WalkError::Function);
+    }
+    Ok((
+        f.wire.clone().unwrap_or_default(),
+        f.map("handlers"),
+        f.map("canvases"),
+    ))
+}
+
 #[test]
-fn every_fixture_runs_natively_to_its_wire_view_byte_for_byte() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/wire");
-    let prelude = prelude();
+fn every_fixture_walks_from_its_built_view() {
+    let mut walked = 0;
+    for f in fixtures() {
+        if f.json.get("built").is_none() {
+            continue;
+        }
+        let got = walk(&host(&f.json["built"]));
+        let want = expected(&f);
+        match (&got, &want) {
+            // A failing step's view: its error, unless the run fails for another reason (the result's).
+            (Ok(_), Ok(_)) if f.wire.is_none() => {}
+            _ => assert_eq!(got, want, "{}", f.name),
+        }
+        walked += 1;
+    }
+    assert_eq!(walked, 51);
+}
+
+/// Each fixture's program run natively on its input with real function markers: the view `__widget_emit` gets is
+/// `built` and walks to the fixture's (view byte for byte, handlers, canvases), and `Program::run_step` gives the
+/// fixture's `result` and view, or fails with its `error`.
+#[test]
+fn every_fixture_runs_natively_to_its_view_result_or_error() {
     let mut count = 0;
     for f in fixtures() {
-        let fixture: Value = serde_json::from_str(
-            &std::fs::read_to_string(dir.join(format!("{}.json", f.name))).expect("read"),
-        )
-        .expect("JSON");
-        let program = format!(
-            "{prelude}\n{}\nreturn __widget_step(__input(), true)",
-            fixture["source"].as_str().unwrap_or_default()
-        );
-        let input = host(&fixture["input"]);
+        let program = f.program();
+        // The run with an `__widget_emit` that keeps what it gets.
+        let input = host(&f.json["input"]);
+        let emitted: Arc<Mutex<Vec<Vec<HostValue>>>> = Arc::default();
+        let keep = emitted.clone();
         let runtime = Runtime::make()
             .globals(move |_run| {
                 let input = input.clone();
-                [("__input", HostFunction::new(move |_, _| input.clone()))]
+                let keep = keep.clone();
+                [
+                    ("__input", HostFunction::new(move |_, _| input.clone())),
+                    (
+                        "__widget_emit",
+                        HostFunction::new(move |args, _| {
+                            keep.lock().unwrap().push(args);
+                            HostValue::Undefined
+                        }),
+                    ),
+                ]
             })
             .translate(Translate {
                 functions: TranslateFunctions::Mark,
                 promises: TranslatePromises::Error,
             });
-        let result = runtime.execute(program.as_str()).result.expect(&f.name);
-        let view = result.get("view").expect("a view");
-        let mut out = String::new();
-        let tree = Walk::new().handlers().run(view, &mut out).expect(&f.name);
-        assert_eq!(out, f.wire, "{}: the view", f.name);
-        let handlers: BTreeMap<String, String> = tree
-            .handlers
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(id, event)| (id, event.to_owned()))
-            .collect();
-        assert_eq!(handlers, f.handlers, "{}: the handlers", f.name);
-        assert_eq!(
-            tree.has_handlers,
-            !f.handlers.is_empty(),
-            "{}: has_handlers",
-            f.name
+        let _ = runtime.execute(program.as_str());
+        let emitted = std::mem::take(&mut *emitted.lock().unwrap());
+        if let Some(want) = f.json.get("built") {
+            assert_eq!(emitted.len(), 1, "{}: one emit", f.name);
+            assert_eq!(&built(&emitted[0][0]), want, "{}: built", f.name);
+            let got = walk(&emitted[0][0]);
+            match expected(&f) {
+                Ok(_) if f.wire.is_none() => assert!(got.is_ok(), "{}", f.name),
+                want => assert_eq!(got, want, "{}", f.name),
+            }
+        } else {
+            // Too deep to cross: the prelude hands over the reason instead.
+            assert_eq!(emitted.len(), 1, "{}: one emit", f.name);
+            assert!(
+                matches!(&emitted[0][..], [HostValue::Null, HostValue::String(s)] if s == DEEP)
+            );
+        }
+
+        // The host's own entry point.
+        let step = Program::new(&program, None).unwrap().run_step(
+            &f.json["input"].to_string(),
+            None,
+            None,
         );
-        let canvases: BTreeMap<String, String> = tree
-            .canvases
-            .into_iter()
-            .map(|(k, (id, _))| (k, id))
-            .collect();
-        assert_eq!(canvases, f.canvases, "{}: the canvases", f.name);
-        // The host's own entry point writes the same view into the step output.
-        let step = psychoscript_web::Program::new(&program, None)
-            .unwrap()
-            .run_step(&fixture["input"].to_string(), None, None)
-            .expect(&f.name);
-        assert!(
-            step.contains(&format!("\"view\":{}", f.wire)),
-            "{}: run_step's view",
-            f.name
-        );
-        assert!(matches!(result, Data::Object(_)));
+        let error = &f.json["error"];
+        match step {
+            Ok(text) => {
+                assert!(error.is_null(), "{}: expected {error}, got {text}", f.name);
+                let wire = f.wire.as_deref().expect("a view");
+                assert!(
+                    text.ends_with(&format!(",\"view\":{wire}}}")),
+                    "{}: the view in {text}",
+                    f.name
+                );
+                let mut output: Value = serde_json::from_str(&text).expect("JSON");
+                output.as_object_mut().unwrap().shift_remove("view");
+                assert_eq!(output, f.json["result"], "{}: the result", f.name);
+            }
+            Err(e) => {
+                let mut want = error["message"].as_str().unwrap_or("(no error)");
+                // The function errors are thrown from `__widget_emit` as the runtime's `TypeError`, which the Rust
+                // runtime doesn't locate at the call yet (only its own failures): all but the position must match.
+                if want.contains("contains a function") && e.location().is_none() {
+                    want = want.rsplit_once(" (line ").map_or(want, |(head, _)| head);
+                }
+                assert_eq!(
+                    (matches!(e, Error::View { .. }), e.reason()),
+                    (error["view"] == true, want),
+                    "{}",
+                    f.name
+                );
+            }
+        }
         count += 1;
     }
-    assert_eq!(count, 37);
+    assert_eq!(count, 53);
+}
+
+/// The walk counts levels itself, for views the boundary lets through (its default depth stops them at 16 levels).
+#[test]
+fn a_view_nests_at_most_100_levels() {
+    let leaf = || HostValue::object([("type", HostValue::String("text".into()))]);
+    let column = |child: HostValue| {
+        HostValue::object([
+            ("type", HostValue::String("column".into())),
+            ("children", HostValue::array([child])),
+        ])
+    };
+    let nest = |levels: usize, wrap: &dyn Fn(HostValue) -> HostValue| {
+        (1..levels).fold(leaf(), |node, _| wrap(node))
+    };
+    assert!(
+        Walk::new()
+            .run(&nest(100, &column), &mut String::new())
+            .is_ok()
+    );
+    assert_eq!(
+        Walk::new()
+            .run(&nest(101, &column), &mut String::new())
+            .err(),
+        Some(WalkError::View(DEEP))
+    );
+    // An array inside children counts as a level: 50 columns of `[[node]]` put the leaf at level 101.
+    let arrays = |child: HostValue| column(HostValue::array([child]));
+    assert!(
+        Walk::new()
+            .run(&nest(50, &arrays), &mut String::new())
+            .is_ok()
+    );
+    assert_eq!(
+        Walk::new()
+            .run(&nest(51, &arrays), &mut String::new())
+            .err(),
+        Some(WalkError::View(DEEP))
+    );
+    // Strings don't count: a string at level 101 is fine.
+    let strings = (1..100).fold(column(HostValue::String("x".into())), |node, _| {
+        column(node)
+    });
+    assert!(Walk::new().run(&strings, &mut String::new()).is_ok());
 }
 
 #[test]
@@ -190,7 +336,10 @@ fn a_key_with_a_lone_surrogate_is_a_program_error() {
             ]))]),
         ),
     ]);
-    assert!(Walk::new().run(&view, &mut String::new()).is_err());
+    assert_eq!(
+        Walk::new().run(&view, &mut String::new()).err(),
+        Some(WalkError::Uri)
+    );
 }
 
 /// The walk's cost on the biggest fixtures:
@@ -198,49 +347,40 @@ fn a_key_with_a_lone_surrogate_is_a_program_error() {
 #[test]
 #[ignore = "timings: run in release with --ignored"]
 fn timings() {
+    let all = fixtures();
     for name in ["grid-200", "builtin-suggestions"] {
-        let all = fixtures();
         let f = all.iter().find(|f| f.name == name).expect(name);
-        let mut out = String::with_capacity(f.wire.len());
+        let view = host(&f.json["built"]);
+        let mut out = String::new();
         let runs = 400;
         let mut best = f64::MAX;
         for _ in 0..runs {
             out.clear();
             let t = Instant::now();
-            Walk::new().run(&f.built, &mut out).expect("walks");
+            Walk::new().run(&view, &mut out).expect("walks");
             best = best.min(t.elapsed().as_secs_f64() * 1e6);
         }
         println!("{name}: {best:.1} µs (min of {runs}), {} bytes", out.len());
     }
 }
 
-/// A whole step on the biggest fixtures, the prelude building the tree (`run`) against a native run whose view this
-/// crate walks (`run_step`, functions as markers).
+/// A whole step on the biggest fixtures, the prelude building the tree (`run`, protocol 1's entry) against a native
+/// step (`run_step`: the view emitted and walked here, functions as markers).
 #[test]
 #[ignore = "timings: run in release with --ignored"]
 fn step_timings() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/wire");
-    let prelude = prelude();
+    let all = fixtures();
     for name in ["grid-200", "builtin-suggestions"] {
-        let fixture: Value = serde_json::from_str(
-            &std::fs::read_to_string(dir.join(format!("{name}.json"))).expect("read"),
-        )
-        .expect("JSON");
+        let f = all.iter().find(|f| f.name == name).expect(name);
         let source = format!(
-            "{prelude}\n{}",
-            fixture["source"].as_str().unwrap_or_default()
+            "{}\n{}",
+            prelude(),
+            f.json["source"].as_str().unwrap_or_default()
         );
-        let input = fixture["input"].to_string();
-        let prelude_walk = psychoscript_web::Program::new(
-            &format!("{source}\nreturn __widget_step(__input())"),
-            None,
-        )
-        .unwrap();
-        let native = psychoscript_web::Program::new(
-            &format!("{source}\nreturn __widget_step(__input(), true)"),
-            None,
-        )
-        .unwrap();
+        let input = f.json["input"].to_string();
+        let prelude_walk =
+            Program::new(&format!("{source}\nreturn __widget_step(__input())"), None).unwrap();
+        let native = Program::new(&f.program(), None).unwrap();
         let (mut a, mut b) = (f64::MAX, f64::MAX);
         for _ in 0..200 {
             let t = Instant::now();
@@ -251,7 +391,7 @@ fn step_timings() {
             b = b.min(t.elapsed().as_secs_f64() * 1e6);
         }
         println!(
-            "{name}: step with the prelude's tree {a:.0} µs, native step + walk {b:.0} µs (min of 200)"
+            "{name}: step with the prelude's tree {a:.0} µs, native step {b:.0} µs (min of 200)"
         );
     }
 }

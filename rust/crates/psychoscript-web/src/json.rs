@@ -3,7 +3,7 @@
 
 use std::fmt;
 
-use psychoscript::{HostString, HostValue};
+use psychoscript::{HostError, HostString, HostValue};
 use serde::de::{Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 
 /// JSON text read as a host value: numbers as `f64`, objects keeping their keys' order.
@@ -78,15 +78,45 @@ impl<'de> Visitor<'de> for Json {
     }
 }
 
-/// A host value as `JSON.stringify` writes it: `undefined` and functions are left out of objects, `null` in arrays and
-/// at the top; non-finite numbers are `null`.
-pub(crate) fn write(value: &HostValue) -> String {
+/// A host call's argument as `JSON.stringify` writes it (`undefined` is left out of objects, `null` in arrays and at
+/// the top; non-finite numbers are `null`), or `None` when it holds a function, which a host call's argument may not.
+pub(crate) fn write_checked(value: &HostValue) -> Option<String> {
     let mut out = String::new();
-    write_into(value, &mut out);
-    out
+    write_into(value, &mut out).then_some(out)
 }
 
-fn write_into(value: &HostValue, out: &mut String) {
+/// What a host call throws for a function in its argument `n` (from 1), as the runtime does without `"mark"`
+/// (widgets.md, "Native hosts"): its `TypeError`, with the function's name as the program called it.
+pub(crate) fn carried(n: usize, name: &str) -> HostValue {
+    HostValue::Error(Box::new(HostError::named(
+        "TypeError",
+        format!("Argument {n} to {name} contains a function, which cannot be passed to the host."),
+    )))
+}
+
+/// Fails with [`carried`] for the first of `args`, from index `from`, that is or holds a function.
+pub(crate) fn unmarked(args: &[HostValue], name: &str, from: usize) -> Result<(), HostValue> {
+    match args.iter().skip(from).position(has_function) {
+        Some(i) => Err(carried(from + i + 1, name)),
+        None => Ok(()),
+    }
+}
+
+fn has_function(v: &HostValue) -> bool {
+    match v {
+        HostValue::Function(_) | HostValue::FunctionMarker => true,
+        HostValue::Array(items) => items.iter().flatten().any(has_function),
+        HostValue::Object(fields) => fields.iter().any(|(_, v)| has_function(v)),
+        HostValue::Map(entries) => entries
+            .iter()
+            .any(|(k, v)| has_function(k) || has_function(v)),
+        HostValue::Set(items) => items.iter().any(has_function),
+        _ => false,
+    }
+}
+
+/// Writes `value`; false when it holds a function.
+fn write_into(value: &HostValue, out: &mut String) -> bool {
     match value {
         HostValue::Null => out.push_str("null"),
         HostValue::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
@@ -99,7 +129,12 @@ fn write_into(value: &HostValue, out: &mut String) {
                     out.push(',');
                 }
                 match item {
-                    Some(item) if !skipped(item) => write_into(item, out),
+                    Some(HostValue::Function(_) | HostValue::FunctionMarker) => return false,
+                    Some(item) if !skipped(item) => {
+                        if !write_into(item, out) {
+                            return false;
+                        }
+                    }
                     _ => out.push_str("null"),
                 }
             }
@@ -108,31 +143,39 @@ fn write_into(value: &HostValue, out: &mut String) {
         HostValue::Object(fields) => {
             out.push('{');
             let mut first = true;
-            for (k, v) in fields.iter().filter(|(_, v)| !skipped(v)) {
+            for (k, v) in fields.iter() {
+                match v {
+                    HostValue::Function(_) | HostValue::FunctionMarker => return false,
+                    v if skipped(v) => continue,
+                    _ => {}
+                }
                 if !first {
                     out.push(',');
                 }
                 first = false;
                 string(&k.to_string_lossy(), out);
                 out.push(':');
-                write_into(v, out);
+                if !write_into(v, out) {
+                    return false;
+                }
             }
             out.push('}');
         }
+        HostValue::Function(_) | HostValue::FunctionMarker => return false,
+        HostValue::Map(_) | HostValue::Set(_) if has_function(value) => return false,
         other => match other.to_json() {
             Some(json) => out.push_str(&json.to_string()),
             None => out.push_str("null"),
         },
     }
+    true
 }
 
-/// What `JSON.stringify` leaves out of an object.
+/// What `JSON.stringify` leaves out of an object, functions aside.
 fn skipped(v: &HostValue) -> bool {
     matches!(
         v,
         HostValue::Undefined
-            | HostValue::Function(_)
-            | HostValue::FunctionMarker
             | HostValue::Durable(_)
             | HostValue::Namespace(_)
             | HostValue::Interrupt

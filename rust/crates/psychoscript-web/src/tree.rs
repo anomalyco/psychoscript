@@ -4,22 +4,33 @@
 //! `onChange`, `onPointer` and `children`; then `id` (the node's path) on controls, `pointer: true` on a canvas with a
 //! handler, and `children` last, flattened. It also tells which ids have handlers and the canvas ids by key.
 //!
-//! The walk is generic over the value it reads ([`View`]): the run's result ([`Data`]), a post's argument
-//! ([`HostValue`]), or JSON in tests. Numbers and strings are written as `JSON.stringify` writes them.
+//! It holds views to the rules of views (widgets.md, "Keys and depth"): a key is a string, a number or a boolean, and
+//! a view nests at most [`LEVELS`] levels. A function anywhere but a node's handler props fails, as it fails a host
+//! call's argument without `"mark"`.
+//!
+//! The walk is generic over the value it reads ([`View`]): a host call's argument ([`HostValue`]), or JSON in tests.
+//! Numbers and strings are written as `JSON.stringify` writes them.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use psychoscript::{Data, HostString, HostValue};
+use psychoscript::{HostString, HostValue};
+
+/// The most levels a view nests (widgets.md, "Keys and depth").
+pub const LEVELS: u32 = 100;
+/// The failure of a view deeper than [`LEVELS`].
+pub const DEEP: &str = "The view nests more than 100 levels";
+/// The failure of a view with a key of another type.
+pub const KEY: &str = "A node's key must be a string, a number or a boolean";
 
 /// What a value is, as far as the walk cares.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     /// `undefined`, or a hole: falsy, left out of an object, `null` in an array.
     Undefined,
-    /// A program function (the function marker): truthy, left out of an object, `null` in an array; as a handler
-    /// prop it makes the node's id a handler's.
+    /// A program function (the function marker): only a node's handler prop may hold one, which makes the node's id a
+    /// handler's.
     Function,
     Null,
     Bool,
@@ -27,6 +38,8 @@ pub enum Kind {
     String,
     Array,
     Object,
+    /// Another object (a `Date`, a `Map`, ...): written as JSON writes it ([`View::write_other`]).
+    Other,
 }
 
 /// A string as the walk reads it: UTF-8, or UTF-16 code units when it has an unpaired surrogate.
@@ -47,6 +60,10 @@ pub trait View: Sized {
     fn props(&self) -> impl Iterator<Item = (Text<'_>, &Self)>;
     /// An object's prop by name.
     fn get(&self, name: &str) -> Option<&Self>;
+    /// A [`Kind::Other`] value as JSON.
+    fn write_other(&self, out: &mut String) {
+        out.push_str("null");
+    }
 }
 
 /// The controls (widgets.md, Events): handler prop, event, whether it always has an id, whether a `key` gives one.
@@ -64,15 +81,7 @@ fn control(kind: &str) -> Option<(&'static str, &'static str, bool, bool)> {
     })
 }
 
-const REMOVED: [&str; 7] = [
-    "key",
-    "id",
-    "pointer",
-    "onPress",
-    "onChange",
-    "onPointer",
-    "children",
-];
+const HANDLERS: [&str; 3] = ["onPress", "onChange", "onPointer"];
 
 /// What the walk learned of a view besides its JSON.
 #[derive(Debug, Default)]
@@ -86,9 +95,16 @@ pub struct Tree {
     pub canvases: HashMap<String, (String, bool)>,
 }
 
-/// A key `encodeURIComponent` can't encode: a lone surrogate, which the prelude would throw on as a `URIError`.
+/// Why a view didn't walk.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WalkError(pub String);
+pub enum WalkError {
+    /// It breaks a rule of views ([`KEY`], [`DEEP`]): a program error in phase `view`.
+    View(&'static str),
+    /// A function where none may go: the host call fails with the runtime's `TypeError`.
+    Function,
+    /// A key `encodeURIComponent` can't encode (a lone surrogate): the prelude's `URIError`.
+    Uri,
+}
 
 /// One walk of one view.
 pub struct Walk {
@@ -110,30 +126,23 @@ impl Walk {
         self
     }
 
-    /// Writes the wire JSON of view `root` to `out`, and returns what it learned.
+    /// Writes the wire JSON of view `root` to `out`, and returns what it learned. `out` holds part of it on an error.
     pub fn run<V: View>(mut self, root: &V, out: &mut String) -> Result<Tree, WalkError> {
         self.path.clear();
-        if root.kind() == Kind::Object
-            && let Some(key) = root.get("key").filter(|k| keyed(*k))
-        {
-            segment(key, &mut self.path)?;
-        } else {
-            self.path.push('0');
+        if root.kind() != Kind::Object {
+            write_json(root, out)?;
+            return Ok(self.tree);
         }
-        if root.kind() == Kind::Undefined || root.kind() == Kind::Function {
-            out.push_str("null");
-        } else {
-            self.node(root, out)?;
+        match root.get("key") {
+            Some(key) if keyed(key)? => segment(key, &mut self.path)?,
+            _ => self.path.push('0'),
         }
+        self.node(root, 1, out)?;
         Ok(self.tree)
     }
 
-    /// A value at `self.path`: an object as a node, anything else as it is.
-    fn node<V: View>(&mut self, v: &V, out: &mut String) -> Result<(), WalkError> {
-        if v.kind() != Kind::Object {
-            write_json(v, out);
-            return Ok(());
-        }
+    /// Node `v` at `self.path`, at `level`, its key checked.
+    fn node<V: View>(&mut self, v: &V, level: u32, out: &mut String) -> Result<(), WalkError> {
         out.push('{');
         let mut first = true;
         let mut kind = None;
@@ -153,11 +162,19 @@ impl Walk {
                     children = Some(prop);
                     continue;
                 }
-                Some(n) if REMOVED.contains(&n) => continue,
+                Some(n) if HANDLERS.contains(&n) => continue,
+                Some("key" | "id" | "pointer") => {
+                    if carries_function(prop) {
+                        return Err(WalkError::Function);
+                    }
+                    continue;
+                }
                 _ => {}
             }
-            if matches!(prop.kind(), Kind::Undefined | Kind::Function) {
-                continue;
+            match prop.kind() {
+                Kind::Undefined => continue,
+                Kind::Function => return Err(WalkError::Function),
+                _ => {}
             }
             if !first {
                 out.push(',');
@@ -165,12 +182,13 @@ impl Walk {
             first = false;
             write_text(&text, out);
             out.push(':');
-            write_json(prop, out);
+            write_json(prop, out)?;
         }
         if let Some((canvas, (handler, event, always, by_key))) = kind {
             let handled = v.get(handler).is_some_and(|h| h.kind() == Kind::Function);
             let key = if by_key {
-                v.get("key").filter(|k| keyed(*k))
+                v.get("key")
+                    .filter(|k| !matches!(k.kind(), Kind::Undefined | Kind::Null))
             } else {
                 None
             };
@@ -209,9 +227,9 @@ impl Walk {
             let mut seen: HashMap<String, u32> = HashMap::new();
             let mut any = false;
             if list.kind() == Kind::Array {
-                self.flatten(list, "", out, &mut seen, &mut any)?;
+                self.flatten(list, "", level + 1, out, &mut seen, &mut any)?;
             } else {
-                self.child(list, "0", out, &mut seen, &mut any)?;
+                self.item(list, "0", level + 1, out, &mut seen, &mut any)?;
             }
             out.push(']');
         }
@@ -219,11 +237,12 @@ impl Walk {
         Ok(())
     }
 
-    /// An array of children at `prefix` (`""`, `"2."`, `"2.1."`).
+    /// An array of children at `prefix` (`""`, `"2."`, `"2.1."`), its items at `level`.
     fn flatten<V: View>(
         &mut self,
         list: &V,
         prefix: &str,
+        level: u32,
         out: &mut String,
         seen: &mut HashMap<String, u32>,
         any: &mut bool,
@@ -234,22 +253,17 @@ impl Walk {
             index.clear();
             index.push_str(prefix);
             let _ = write!(index, "{i}");
-            if item.kind() == Kind::Array {
-                let mut deeper = index.clone();
-                deeper.push('.');
-                self.flatten(item, &deeper, out, seen, any)?;
-            } else {
-                self.child(item, &index, out, seen, any)?;
-            }
+            self.item(item, &index, level, out, seen, any)?;
         }
         Ok(())
     }
 
-    /// One child, not an array, at `index` among its parent's.
-    fn child<V: View>(
+    /// One item among a node's children, at `index` and `level`: skipped when falsy, flattened when an array.
+    fn item<V: View>(
         &mut self,
         item: &V,
         index: &str,
+        level: u32,
         out: &mut String,
         seen: &mut HashMap<String, u32>,
         any: &mut bool,
@@ -257,19 +271,28 @@ impl Walk {
         if falsy(item) {
             return Ok(());
         }
+        let kind = item.kind();
+        if level > LEVELS && matches!(kind, Kind::Array | Kind::Object | Kind::Other) {
+            return Err(WalkError::View(DEEP));
+        }
+        if kind == Kind::Array {
+            let mut deeper = String::with_capacity(index.len() + 1);
+            deeper.push_str(index);
+            deeper.push('.');
+            return self.flatten(item, &deeper, level + 1, out, seen, any);
+        }
         if *any {
             out.push(',');
         }
         *any = true;
-        if item.kind() != Kind::Object {
-            // A string, a number, `true`, or a marker (`null`, as in an array).
-            write_json(item, out);
-            return Ok(());
+        if kind != Kind::Object {
+            // A string, a number, `true`, or another object.
+            return write_json(item, out);
         }
         let len = self.path.len();
         self.path.push('/');
-        match item.get("key").filter(|k| keyed(*k)) {
-            Some(key) => {
+        match item.get("key") {
+            Some(key) if keyed(key)? => {
                 let at = self.path.len();
                 segment(key, &mut self.path)?;
                 let n = seen.entry(self.path[at..].to_owned()).or_insert(0);
@@ -278,9 +301,9 @@ impl Walk {
                     let _ = write!(self.path, "~{n}");
                 }
             }
-            None => self.path.push_str(index),
+            _ => self.path.push_str(index),
         }
-        let done = self.node(item, out);
+        let done = self.node(item, level, out);
         self.path.truncate(len);
         done
     }
@@ -292,9 +315,24 @@ impl Default for Walk {
     }
 }
 
-/// A `key` that names a node: neither `undefined` nor `null`.
-fn keyed<V: View>(key: &V) -> bool {
-    !matches!(key.kind(), Kind::Undefined | Kind::Null)
+/// Whether `key` names a node: `undefined` and `null` don't, a string, a number or a boolean does, and anything else
+/// fails the view.
+fn keyed<V: View>(key: &V) -> Result<bool, WalkError> {
+    match key.kind() {
+        Kind::Undefined | Kind::Null => Ok(false),
+        Kind::String | Kind::Number | Kind::Bool => Ok(true),
+        Kind::Function | Kind::Array | Kind::Object | Kind::Other => Err(WalkError::View(KEY)),
+    }
+}
+
+/// Whether `v` is or holds a function.
+fn carries_function<V: View>(v: &V) -> bool {
+    match v.kind() {
+        Kind::Function => true,
+        Kind::Array => v.items().flatten().any(carries_function),
+        Kind::Object => v.props().any(|(_, p)| carries_function(p)),
+        _ => false,
+    }
 }
 
 /// JavaScript's truthiness, for children.
@@ -310,24 +348,24 @@ fn falsy<V: View>(v: &V) -> bool {
             Text::Str(s) => s.is_empty(),
             Text::Units(u) => u.is_empty(),
         },
-        Kind::Function | Kind::Array | Kind::Object => false,
+        Kind::Function | Kind::Array | Kind::Object | Kind::Other => false,
     }
 }
 
-/// `":" + encodeURIComponent(String(key))`, appended to `out`.
+/// `":" + encodeURIComponent(String(key))` of a key (a string, a number or a boolean), appended to `out`.
 fn segment<V: View>(key: &V, out: &mut String) -> Result<(), WalkError> {
     out.push(':');
     match key.kind() {
         Kind::String => match key.text() {
             Text::Str(s) => encode(s, out),
-            Text::Units(_) => return Err(WalkError("URIError: URI malformed".into())),
+            Text::Units(_) => return Err(WalkError::Uri),
         },
         _ => encode(&string_of(key), out),
     }
     Ok(())
 }
 
-/// `String(v)` for a key, lossy for a lone surrogate (which `segment` refuses first).
+/// `String(key)` of a key (a string, a number or a boolean), lossy for a lone surrogate (which `segment` refuses first).
 fn string_of<V: View>(v: &V) -> String {
     match v.kind() {
         Kind::String => match v.text() {
@@ -336,19 +374,7 @@ fn string_of<V: View>(v: &V) -> String {
         },
         Kind::Number => number(v.number()),
         Kind::Bool => (if v.boolean() { "true" } else { "false" }).to_owned(),
-        Kind::Null => "null".to_owned(),
-        Kind::Undefined => "undefined".to_owned(),
-        Kind::Object => "[object Object]".to_owned(),
-        Kind::Array => v
-            .items()
-            .map(|i| match i.map(|i| (i.kind(), i)) {
-                None | Some((Kind::Undefined | Kind::Null, _)) => String::new(),
-                Some((_, i)) => string_of(i),
-            })
-            .collect::<Vec<_>>()
-            .join(","),
-        // A function's source text isn't known here; a function as a key is never meant.
-        Kind::Function => "function".to_owned(),
+        _ => String::new(),
     }
 }
 
@@ -374,10 +400,12 @@ fn encode(s: &str, out: &mut String) {
     }
 }
 
-/// A value as `JSON.stringify` writes it (functions and `undefined` left out of objects, `null` in arrays).
-fn write_json<V: View>(v: &V, out: &mut String) {
+/// A value of a view as `JSON.stringify` writes it (`undefined` left out of objects, `null` in arrays, non-finite
+/// numbers `null`); a function fails.
+fn write_json<V: View>(v: &V, out: &mut String) -> Result<(), WalkError> {
     match v.kind() {
-        Kind::Undefined | Kind::Function | Kind::Null => out.push_str("null"),
+        Kind::Function => return Err(WalkError::Function),
+        Kind::Undefined | Kind::Null => out.push_str("null"),
         Kind::Bool => out.push_str(if v.boolean() { "true" } else { "false" }),
         Kind::Number => {
             let n = v.number();
@@ -388,6 +416,7 @@ fn write_json<V: View>(v: &V, out: &mut String) {
             }
         }
         Kind::String => write_text(&v.text(), out),
+        Kind::Other => v.write_other(out),
         Kind::Array => {
             out.push('[');
             for (i, item) in v.items().enumerate() {
@@ -395,7 +424,7 @@ fn write_json<V: View>(v: &V, out: &mut String) {
                     out.push(',');
                 }
                 match item {
-                    Some(item) => write_json(item, out),
+                    Some(item) => write_json(item, out)?,
                     None => out.push_str("null"),
                 }
             }
@@ -405,8 +434,10 @@ fn write_json<V: View>(v: &V, out: &mut String) {
             out.push('{');
             let mut first = true;
             for (name, prop) in v.props() {
-                if matches!(prop.kind(), Kind::Undefined | Kind::Function) {
-                    continue;
+                match prop.kind() {
+                    Kind::Undefined => continue,
+                    Kind::Function => return Err(WalkError::Function),
+                    _ => {}
                 }
                 if !first {
                     out.push(',');
@@ -414,11 +445,12 @@ fn write_json<V: View>(v: &V, out: &mut String) {
                 first = false;
                 write_text(&name, out);
                 out.push(':');
-                write_json(prop, out);
+                write_json(prop, out)?;
             }
             out.push('}');
         }
     }
+    Ok(())
 }
 
 fn write_text(t: &Text<'_>, out: &mut String) {
@@ -483,55 +515,6 @@ fn host_text(s: &HostString) -> Text<'_> {
     }
 }
 
-impl View for Data {
-    fn kind(&self) -> Kind {
-        match self {
-            Data::Null => Kind::Null,
-            Data::Bool(_) => Kind::Bool,
-            Data::Number(_) => Kind::Number,
-            Data::String(_) => Kind::String,
-            Data::Array(_) => Kind::Array,
-            Data::Object(_) => Kind::Object,
-            Data::FunctionMarker => Kind::Function,
-        }
-    }
-    fn boolean(&self) -> bool {
-        matches!(self, Data::Bool(true))
-    }
-    fn number(&self) -> f64 {
-        match self {
-            Data::Number(n) => n.as_f64().unwrap_or(f64::NAN),
-            _ => f64::NAN,
-        }
-    }
-    fn text(&self) -> Text<'_> {
-        match self {
-            Data::String(s) => host_text(s),
-            _ => Text::Str(""),
-        }
-    }
-    fn items(&self) -> impl Iterator<Item = Option<&Self>> {
-        let items: &[Data] = match self {
-            Data::Array(items) => items,
-            _ => &[],
-        };
-        items.iter().map(Some)
-    }
-    fn props(&self) -> impl Iterator<Item = (Text<'_>, &Self)> {
-        let props: &[(HostString, Data)] = match self {
-            Data::Object(props) => props,
-            _ => &[],
-        };
-        props.iter().map(|(k, v)| (host_text(k), v))
-    }
-    fn get(&self, name: &str) -> Option<&Self> {
-        match self {
-            Data::Object(props) => props.iter().rev().find(|(k, _)| k == name).map(|(_, v)| v),
-            _ => None,
-        }
-    }
-}
-
 impl View for HostValue {
     fn kind(&self) -> Kind {
         match self {
@@ -542,7 +525,11 @@ impl View for HostValue {
             HostValue::Array(_) => Kind::Array,
             HostValue::Object(_) => Kind::Object,
             HostValue::Function(_) | HostValue::FunctionMarker => Kind::Function,
-            _ => Kind::Undefined,
+            HostValue::Undefined
+            | HostValue::Interrupt
+            | HostValue::Durable(_)
+            | HostValue::Namespace(_) => Kind::Undefined,
+            _ => Kind::Other,
         }
     }
     fn boolean(&self) -> bool {
@@ -578,6 +565,14 @@ impl View for HostValue {
         match self {
             HostValue::Object(props) => props.iter().rev().find(|(k, _)| k == name).map(|(_, v)| v),
             _ => None,
+        }
+    }
+    fn write_other(&self, out: &mut String) {
+        match self.to_json() {
+            Some(json) => {
+                let _ = write!(out, "{json}");
+            }
+            None => out.push_str("null"),
         }
     }
 }

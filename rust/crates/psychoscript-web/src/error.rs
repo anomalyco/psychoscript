@@ -4,8 +4,8 @@ use psychoscript::{Diagnostic, DiagnosticKind};
 
 /// Why a program didn't compile or a run failed: the same cases as `psychoscript-mobile`'s error. In JavaScript it is
 /// an `Error` whose `name` is `"PsychoScriptError"`, with `type` (the variant, lowercase: `"syntax"`, `"runtime"`,
-/// `"timeout"`, `"outputTooLarge"`, `"invalidInput"`, `"sliceBudget"`, `"invalidState"`), `kind` (the language's
-/// diagnostic kind), and `line`/`column` (1-based) when known.
+/// `"timeout"`, `"outputTooLarge"`, `"invalidInput"`, `"sliceBudget"`, `"invalidState"`, `"view"`), `kind` (the
+/// language's diagnostic kind), `line`/`column` (1-based) when known, and `phase` when it is a phase's own (`"view"`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     /// The source doesn't parse, or uses unsupported syntax (`ParseError`, `UnsupportedSyntax`).
@@ -35,6 +35,8 @@ pub enum Error {
     SliceBudget { reason: String, budget_ms: u64 },
     /// A live run's method its state doesn't allow.
     InvalidState { reason: String },
+    /// A widget's view breaks a rule of views (widgets.md, "Keys and depth"): a program error in phase `view`.
+    View { reason: String },
 }
 
 impl Error {
@@ -77,7 +79,8 @@ impl Error {
             | Error::OutputTooLarge { reason, .. }
             | Error::InvalidInput { reason }
             | Error::SliceBudget { reason, .. }
-            | Error::InvalidState { reason } => reason,
+            | Error::InvalidState { reason }
+            | Error::View { reason } => reason,
         }
     }
 
@@ -91,6 +94,7 @@ impl Error {
             Error::InvalidInput { .. } => "invalidInput",
             Error::SliceBudget { .. } => "sliceBudget",
             Error::InvalidState { .. } => "invalidState",
+            Error::View { .. } => "view",
         }
     }
 
@@ -99,6 +103,14 @@ impl Error {
         match self {
             Error::Syntax { kind, .. } | Error::Runtime { kind, .. } => Some(kind),
             Error::Timeout { .. } => Some("TimeoutExceeded"),
+            _ => None,
+        }
+    }
+
+    /// The widget phase it belongs to, when it isn't the step's or the run's: `"view"`.
+    pub fn phase(&self) -> Option<&'static str> {
+        match self {
+            Error::View { .. } => Some("view"),
             _ => None,
         }
     }
@@ -120,7 +132,7 @@ impl Error {
         }
     }
 
-    /// `{ type, kind?, message, line?, column? }`, as JSON.
+    /// `{ type, kind?, message, line?, column?, phase? }`, as JSON.
     pub fn to_json(&self) -> String {
         let mut out = serde_json::Map::new();
         out.insert("type".into(), self.type_name().into());
@@ -131,6 +143,9 @@ impl Error {
         if let Some((l, c)) = self.location() {
             out.insert("line".into(), l.into());
             out.insert("column".into(), c.into());
+        }
+        if let Some(phase) = self.phase() {
+            out.insert("phase".into(), phase.into());
         }
         serde_json::Value::Object(out).to_string()
     }

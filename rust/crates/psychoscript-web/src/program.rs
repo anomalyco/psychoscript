@@ -1,11 +1,13 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
-use psychoscript::{Compiled, Data, HostFunction, HostValue, Limits, Runtime};
+use psychoscript::{
+    Compiled, Data, HostError, HostFunction, HostResult, HostValue, Limits, Runtime,
+};
 
 use crate::error::Error;
-use crate::json::Input;
+use crate::json::{self, Input};
 use crate::live::{LiveOptions, LiveRun, MARK};
-use crate::tree::Walk;
+use crate::tree::{Walk, WalkError};
 
 /// A program compiled once, to run as often as needed: each run has its own VM. A run reads its JSON input through
 /// one sync host function, `input_name` (`__input` by default), and its result is the program's completion value.
@@ -35,58 +37,51 @@ impl Program {
         timeout_ms: Option<u64>,
         max_output_bytes: Option<u64>,
     ) -> Result<String, Error> {
-        let out = self
-            .execute(input_json, timeout_ms, false)?
-            .to_json_string();
+        let out = self.execute(input_json, timeout_ms, None)?.to_json_string();
         limit(out, max_output_bytes)
     }
 
-    /// [`Program::run`] for a widget step run natively (`__widget_step(__input(), true)`, widgets.md, "Native hosts"):
-    /// the result's `view` is the view as the program built it, and goes out as the tree clients get, built while it
-    /// is written ([`crate::tree`]). A key it can't encode is a runtime error (`URIError`), as in the prelude.
+    /// [`Program::run`] for a widget step run natively (`return __widget_native_step(__input())`, widgets.md, "Native
+    /// hosts"): functions cross as markers, and `__widget_emit(view)` hands over the view as built, which goes out as
+    /// the tree clients get, built while it is written ([`crate::tree`]). The result is the run's, its functions left
+    /// out as JSON leaves them, with `view` added when one was emitted (`init` and `event` steps; a `draw` step emits
+    /// none). A view that breaks a rule of views (or that the prelude found too deep to hand over, `__widget_emit(null,
+    /// message)`) fails the step with [`Error::View`] once it has run; a function where none may go, or a key
+    /// `encodeURIComponent` can't encode, is thrown from `__widget_emit` as the runtime's own error.
     pub fn run_step(
         &self,
         input_json: &str,
         timeout_ms: Option<u64>,
         max_output_bytes: Option<u64>,
     ) -> Result<String, Error> {
-        let data = self.execute(input_json, timeout_ms, true)?;
-        let mut out = String::new();
-        match &data {
-            Data::Object(fields) => {
-                out.push('{');
-                for (i, (name, value)) in fields.iter().enumerate() {
-                    if i > 0 {
-                        out.push(',');
-                    }
-                    out.push_str(&Data::String(name.clone()).to_json_string());
-                    out.push(':');
-                    if name == "view" {
-                        Walk::new()
-                            .run(value, &mut out)
-                            .map_err(|e| Error::Runtime {
-                                kind: "ExecutionFailure".into(),
-                                reason: e.0,
-                                line: None,
-                                column: None,
-                            })?;
-                    } else {
-                        out.push_str(&value.to_json_string());
-                    }
-                }
-                out.push('}');
+        let emitted = Arc::new(Mutex::new(Emitted::default()));
+        let result = self.execute(input_json, timeout_ms, Some(&emitted));
+        let emitted = std::mem::take(&mut *emitted.lock().unwrap_or_else(PoisonError::into_inner));
+        if let Some(reason) = emitted.failure {
+            return Err(Error::View { reason });
+        }
+        let mut out = result?.to_json_string();
+        if let Some(view) = emitted.view
+            && out.ends_with('}')
+        {
+            out.pop();
+            if out.len() > 1 {
+                out.push(',');
             }
-            other => out.push_str(&other.to_json_string()),
+            out.push_str("\"view\":");
+            out.push_str(&view);
+            out.push('}');
         }
         limit(out, max_output_bytes)
     }
 
-    /// One run's result; `mark`: functions in it cross as markers (a native step).
+    /// One run's result; with `emitted`, a native step's: functions cross as markers, and `__widget_emit` writes the
+    /// view there.
     fn execute(
         &self,
         input_json: &str,
         timeout_ms: Option<u64>,
-        mark: bool,
+        emitted: Option<&Arc<Mutex<Emitted>>>,
     ) -> Result<Data, Error> {
         if timeout_ms == Some(0) {
             return Err(Error::invalid_input("timeout_ms must be at least 1"));
@@ -98,21 +93,37 @@ impl Program {
             first: Some(first),
         }));
         let name = self.input_name.clone();
+        let emit = emitted.cloned();
         let mut runtime = Runtime::make()
             .globals(move |_run| {
                 let slot = slot.clone();
-                [(
+                let input_name = name.clone();
+                let mut globals = vec![(
                     name.clone(),
-                    HostFunction::new(move |_args, _call| {
-                        slot.lock().unwrap_or_else(PoisonError::into_inner).read()
+                    HostFunction::new(move |args: Vec<HostValue>, _call| -> HostResult {
+                        json::unmarked(&args, &input_name, 0)?;
+                        Ok(slot.lock().unwrap_or_else(PoisonError::into_inner).read())
                     }),
-                )]
+                )];
+                if let Some(emitted) = emit.clone() {
+                    globals.push((
+                        EMIT.to_owned(),
+                        HostFunction::new(move |args: Vec<HostValue>, _call| {
+                            emitted
+                                .lock()
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .take(&args)
+                        })
+                        .length(1),
+                    ));
+                }
+                globals
             })
             .limits(Limits {
                 timeout_ms,
                 ..Limits::default()
             });
-        if mark {
+        if emitted.is_some() {
             runtime = runtime.translate(MARK);
         }
         let outcome = runtime.execute(&self.compiled);
@@ -121,6 +132,40 @@ impl Program {
             .result
             .map_err(|d| Error::from_diagnostic(d, timeout_ms))
     }
+}
+
+/// The host global a native step hands its view to.
+const EMIT: &str = "__widget_emit";
+
+/// What a native step's `__widget_emit` took: the view's wire JSON, or why the view failed.
+#[derive(Default)]
+struct Emitted {
+    view: Option<String>,
+    failure: Option<String>,
+}
+
+impl Emitted {
+    /// `__widget_emit(view, failure?)`: a string `failure` fails the view with it; else the view is walked.
+    fn take(&mut self, args: &[HostValue]) -> HostResult {
+        json::unmarked(args, EMIT, 1)?;
+        if let Some(HostValue::String(failure)) = args.get(1) {
+            self.failure = Some(failure.to_string_lossy().into_owned());
+            return Ok(HostValue::Undefined);
+        }
+        let mut out = String::new();
+        match Walk::new().run(args.first().unwrap_or(&HostValue::Undefined), &mut out) {
+            Ok(_) => self.view = Some(out),
+            Err(WalkError::View(reason)) => self.failure = Some(reason.to_owned()),
+            Err(WalkError::Function) => return Err(json::carried(1, EMIT)),
+            Err(WalkError::Uri) => return Err(uri_error()),
+        }
+        Ok(HostValue::Undefined)
+    }
+}
+
+/// The prelude's error for a key `encodeURIComponent` can't encode.
+pub(crate) fn uri_error() -> HostValue {
+    HostValue::Error(Box::new(HostError::named("URIError", "URI malformed")))
 }
 
 /// `out`, unless it's over `max_output_bytes`.

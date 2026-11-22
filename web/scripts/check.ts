@@ -930,7 +930,7 @@ for (const query of ["?only=shader-broken", "?only=shader-broken&gl=1"]) {
     const clientErrors: string[] = []
     const host = new d.WidgetHost({ workerUrl: "/no-such-worker.js" })
     host.mount(slot, {
-      program: "function view() { return ui.text('x') }",
+      program: "const __widget_protocol = 2\nfunction view() { return ui.text('x') }",
       data: {},
       onReport: (e: unknown) => reports.push(e),
       onClientError: (m: string) => clientErrors.push(m),
@@ -940,6 +940,74 @@ for (const query of ["?only=shader-broken", "?only=shader-broken&gl=1"]) {
     return { reports, clientErrors }
   })
   check(got.reports.length === 0 && got.clientErrors.length > 0, "failures: a host failure (no worker) goes to onClientError, not onReport", got)
+  await page.close()
+}
+
+// ---------- widget protocol 2: the protocol check, rules of views, functions where none may go ----------
+{
+  const { page, errors } = await open("?only=confirm")
+  const got = await page.evaluate(async () => {
+    const d = (window as unknown as { __demo: { host: { mount(el: HTMLElement, o: object): { destroy(): void } }; prelude: string } }).__demo
+    const older = d.prelude.slice(d.prelude.indexOf("\n") + 1)
+    const run = async (name: string, program: string, mode: string, act?: (root: ShadowRoot) => void) => {
+      const slot = document.createElement("div")
+      document.body.prepend(slot)
+      const reports: { phase: string; message: string }[] = []
+      const clientErrors: string[] = []
+      const w = d.host.mount(slot, { program, data: null, mode, onReport: (e: { phase: string; message: string }) => reports.push(e), onClientError: (m: string) => clientErrors.push(m) })
+      const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+      await sleep(1200)
+      const root = slot.querySelector(".psychoscript-widget")!.shadowRoot!
+      if (act) {
+        act(root)
+        await sleep(800)
+      }
+      const out = { name, reports, clientErrors, shown: (root.querySelector(".pw-error-card, .pw-error:not([hidden])") as HTMLElement | null)?.textContent ?? "", buttons: root.querySelectorAll(".pw-view .pw-btn").length }
+      w.destroy()
+      slot.remove()
+      return out
+    }
+    const step = (source: string) => d.prelude + "\n" + source
+    return [
+      await run("older", older + "\nfunction view() { return ui.text('x') }", "step"),
+      await run("older-live", older + "\nasync function main() { widget.render(ui.text('x')) }", "live"),
+      await run("newer", "const __widget_protocol = 3\nfunction view() { return ui.text('x') }", "step"),
+      await run(
+        "key",
+        step(`function view(state) {\n  return ui.column([ui.button("b", { key: state.bad ? { a: 1 } : "k", onPress: () => ({ bad: true }) })])\n}`),
+        "step",
+        (root) => (root.querySelector(".pw-view .pw-btn") as HTMLElement).click(),
+      ),
+      await run("deep", step(`async function main() {\n  let node = ui.text("x")\n  for (let i = 1; i < 101; i++) node = ui.column([node])\n  widget.render(node)\n}`), "live"),
+      await run("function", step(`function view() {\n  return ui.column({ onHover: (s) => s }, [ui.text("t")])\n}`), "step"),
+    ]
+  })
+  const by = Object.fromEntries(got.map((g) => [g.name, g]))
+  const OLDER = "This widget was built with an older widget runtime; ask the agent to post it again"
+  const NEWER = "This widget needs a newer version of this app"
+  check(
+    JSON.stringify(by.older!.reports) === JSON.stringify([{ phase: "init", message: OLDER }]) && by.older!.shown.includes(OLDER),
+    "protocol: a program without `const __widget_protocol = 2` isn't run: the older-runtime error, reported in phase init",
+    by.older,
+  )
+  check(JSON.stringify(by["older-live"]!.reports) === JSON.stringify([{ phase: "main", message: OLDER }]), "protocol: an older live program is refused in phase main", by["older-live"])
+  check(
+    by.newer!.reports.length === 0 && by.newer!.clientErrors.includes(NEWER) && by.newer!.shown.includes(NEWER),
+    "protocol: a newer program shows the newer-app message, a client error, never reported",
+    by.newer,
+  )
+  check(
+    JSON.stringify(by.key!.reports) === JSON.stringify([{ phase: "view", message: "A node's key must be a string, a number or a boolean" }]) && by.key!.buttons === 1,
+    "rules of views: a key of another type fails the step in phase view, the view kept",
+    by.key,
+  )
+  check(JSON.stringify(by.deep!.reports) === JSON.stringify([{ phase: "view", message: "The view nests more than 100 levels" }]), "rules of views: a live view over 100 levels ends the run in phase view", by.deep)
+  check(
+    JSON.stringify(by.function!.reports) === JSON.stringify([{ phase: "init", message: "TypeError: Argument 1 to __widget_emit contains a function, which cannot be passed to the host." }]),
+    "functions: a function in a view's prop fails the step with the runtime's TypeError",
+    by.function,
+  )
+  check(errors.length === 0, "protocol 2: no page errors", errors)
   await page.close()
 }
 

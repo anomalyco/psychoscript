@@ -8,13 +8,12 @@ import type { ErrorInfo, FromWorker, LiveExit, StepOutput, ToWorker } from "./pr
 import { DRAW_TIMEOUT_MS, MAX_COMMANDS, STEP_TIMEOUT_MS } from "./protocol.js"
 
 /**
- * Native tree building (widgets.md, "Native hosts"): the prelude hands views over as built, functions crossing as
- * markers (`translate.functions = "mark"`), and the WebAssembly walks them into the tree clients get (`runStep`, live
- * `native`).
+ * Widget protocol 2, a native host (widgets.md, "Protocol", "Native hosts"): functions cross as markers, steps hand
+ * their view to `__widget_emit` and the WebAssembly walks it into the tree clients get (`runStep`), live renders are
+ * walked as posted (`native`).
  */
-const NATIVE = true
-const STEP_ENTRY = NATIVE ? "\nreturn __widget_step(__input(), true)" : "\nreturn __widget_step(__input())"
-const LIVE_ENTRY = NATIVE ? "\nreturn await __widget_live(__input(), true)" : "\nreturn await __widget_live(__input())"
+const STEP_ENTRY = "\nreturn __widget_native_step(__input())"
+const LIVE_ENTRY = "\nreturn await __widget_live(__input(), true)"
 /** Longest one `pump` computes before letting this worker's event loop run (messages, timers). */
 const PUMP_SLICE_MS = 8
 
@@ -50,7 +49,7 @@ let memory: WebAssembly.Memory | undefined
 
 function info(e: unknown): ErrorInfo {
   if (e && typeof e === "object" && "message" in e) {
-    const o = e as { type?: string; kind?: string; message: string; line?: number; column?: number; name?: string; program?: boolean }
+    const o = e as { type?: string; kind?: string; message: string; line?: number; column?: number; name?: string; program?: boolean; phase?: string }
     return {
       type: o.type ?? (o.name === "ShaderError" ? "shader" : "host"),
       program: o.program,
@@ -58,6 +57,7 @@ function info(e: unknown): ErrorInfo {
       message: String(o.message),
       line: o.line,
       column: o.column,
+      phase: o.phase,
     }
   }
   return { type: "host", message: String(e) }
@@ -82,7 +82,7 @@ function step(wid: number, s: StepSession, phase: "init" | "event", input: strin
   const started = performance.now()
   let text: string
   try {
-    text = NATIVE ? c.program.runStep(input, STEP_TIMEOUT_MS) : c.program.run(input, STEP_TIMEOUT_MS)
+    text = c.program.runStep(input, STEP_TIMEOUT_MS)
   } catch (e) {
     if (trapped(e, wid)) return
     post({ t: "step", wid, phase, error: info(e), ms: performance.now() - started })
@@ -112,7 +112,7 @@ function draw(wid: number, req: number, frame: unknown) {
   const input = `{"phase":"draw","data":${s.data},"state":${s.state},"frame":${JSON.stringify(frame)}}`
   const started = performance.now()
   try {
-    const out = JSON.parse(program.run(input, DRAW_TIMEOUT_MS)) as { commands?: unknown }
+    const out = JSON.parse(program.runStep(input, DRAW_TIMEOUT_MS)) as { commands?: unknown }
     const ms = performance.now() - started
     const commands = out?.commands
     if (!Array.isArray(commands)) post({ t: "drawn", wid, req, error: { type: "draw", message: "draw returned no commands" }, ms })
@@ -400,7 +400,7 @@ function handle(m: ToWorker) {
       }
       try {
         const run = c.program.startLive(`{"data":${m.data}}`, {
-          native: NATIVE,
+          native: true,
           httpsHosts: m.hosts,
           allowLocalNetwork: m.localNetwork === true,
           sliceBudgetMs: m.sliceBudgetMs,

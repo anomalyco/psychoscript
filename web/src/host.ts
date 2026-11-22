@@ -4,7 +4,7 @@ import type { Command } from "./canvas.js"
 import { Images } from "./canvas.js"
 import type { ErrorInfo, Frame, FromWorker, LiveExit, Rect, StepOutput, ToWorker, ViewNode, WidgetEvent } from "./protocol.js"
 import { Input } from "./input.js"
-import { SLICE_BUDGET_MS } from "./protocol.js"
+import { NEWER, OLDER, PROTOCOL, SLICE_BUDGET_MS, protocol } from "./protocol.js"
 import type { RenderContext } from "./render.js"
 import { CanvasView, Ticker, destroy as destroyTree, hasSurface, icon, rectIn, reconcile, surfaces } from "./render.js"
 import type { ShaderError } from "./shader.js"
@@ -626,6 +626,16 @@ class Widget implements MountedWidget {
       this.renderStatus()
       return
     }
+    // A program built for another prelude<->host contract isn't run (widgets.md, Protocol): an older one is the widget
+    // template's error, reported in the phase refused; a newer one is this host's, logged and not reported.
+    const version = protocol(this.options.program)
+    if (version !== PROTOCOL) {
+      const phase = live ? "main" : "init"
+      const e: ErrorInfo = { type: "protocol", message: version < PROTOCOL ? OLDER : NEWER }
+      if (version < PROTOCOL) this.report(phase, e)
+      else this.clientError(NEWER)
+      return this.fatal(e, version < PROTOCOL ? phase : undefined)
+    }
     const worker = live ? this.host.live() : this.host.steps()
     this.worker = worker
     worker.widgets.set(this.wid, this)
@@ -715,9 +725,11 @@ class Widget implements MountedWidget {
   private stepped(m: Extract<FromWorker, { t: "step" }>) {
     if (m.error) {
       const e = this.relative(m.error)
-      this.problem(m.phase, e)
-      if (!this.view) return this.fatal(e, m.phase)
-      this.inlineError(e, m.phase)
+      // A view that breaks a rule of views fails in phase `view`, keeping the state and view.
+      const phase = e.phase ?? m.phase
+      this.problem(phase, e)
+      if (!this.view) return this.fatal(e, phase)
+      this.inlineError(e, phase)
       return
     }
     this.metric("step", m.ms)
@@ -770,8 +782,8 @@ class Widget implements MountedWidget {
     this.stopWorker()
     if (exit.type === "failed" && this.status === "open") {
       const e = this.relative(exit.error)
-      this.problem("main", e)
-      this.inlineError(e, "main", true)
+      this.problem(e.phase ?? "main", e)
+      this.inlineError(e, e.phase ?? "main", true)
     }
   }
 

@@ -48,6 +48,8 @@ export interface StepOutput {
 }
 /** A failure: the language's (`type`, `kind`, `line`, `column`) or the host's. */
 export interface ErrorInfo {
+    /** The phase it belongs to when not the step's or the run's: `view` for a view that breaks a rule of views. */
+    phase?: string;
     type: string;
     /** For `type: "shader"`: the widget template's WGSL is at fault (a program error), not this host. */
     program?: boolean;
@@ -178,6 +180,13 @@ export type FromWorker = {
     programs: number;
     widgets: number;
 };
+/** The prelude<->host contract this host implements (widgets.md, Protocol). */
+export declare const PROTOCOL = 2;
+/** Why a program built for another contract isn't run: a program error for an older one, a client error otherwise. */
+export declare const OLDER = "This widget was built with an older widget runtime; ask the agent to post it again";
+export declare const NEWER = "This widget needs a newer version of this app";
+/** The contract `program` was built for: its first line's `__widget_protocol`, or 1 without one. */
+export declare function protocol(program: string): number;
 /** The contract's budgets. */
 export declare const STEP_TIMEOUT_MS = 250;
 export declare const DRAW_BUDGET_MS = 8;

@@ -199,6 +199,20 @@ const caught = []
 for (const key of ["nope", "sky"]) {
   try { __host.post({ type: "draw", key, commands: [] }) } catch (e) { caught.push(e.message) }
 }
+// A function anywhere but a node's handler props fails the call with the runtime's TypeError.
+const functions = [
+  () => __host.post({ type: "send", value: { f: () => 1 } }),
+  () => __host.post({ type: "draw", key: "board", commands: [["rect", 0, 0, 1, 1, { fill: () => 1 }]] }),
+  () => __host.post({ type: "render", node: { type: "text", text: "x", extra: [() => 1] } }),
+  () => __host.post({ type: "render", node: { type: "button", label: "b", id: () => 1 } }),
+  () => __host.post({ type: "render", node: { type: "column", children: [() => 1] } }),
+  () => __host.post({ type: "render", node: view }, () => 1),
+  () => __host.now(() => 1),
+]
+for (const f of functions) {
+  try { f() } catch (e) { caught.push(e.name + ": " + e.message) }
+}
+try { await __host.sleep(() => 1) } catch (e) { caught.push(e.name + ": " + e.message) }
 __host.post({ type: "result", interactive, still, caught })
 "#;
     let mut run = Program::new(NATIVE, None)
@@ -230,7 +244,85 @@ __host.post({ type: "result", interactive, still, caught })
         json!({ "type": "result", "interactive": true, "still": false, "caught": [
             "No canvas with key \"nope\" in the rendered view",
             "Canvas \"sky\" is drawn by its wgsl; it takes no draw commands",
+            "TypeError: Argument 1 to __host.post contains a function, which cannot be passed to the host.",
+            "TypeError: Argument 1 to __host.post contains a function, which cannot be passed to the host.",
+            "TypeError: Argument 1 to __host.post contains a function, which cannot be passed to the host.",
+            "TypeError: Argument 1 to __host.post contains a function, which cannot be passed to the host.",
+            "TypeError: Argument 1 to __host.post contains a function, which cannot be passed to the host.",
+            "TypeError: Argument 2 to __host.post contains a function, which cannot be passed to the host.",
+            "TypeError: Argument 1 to __host.now contains a function, which cannot be passed to the host.",
+            "TypeError: Argument 1 to __host.sleep contains a function, which cannot be passed to the host.",
         ] })
     );
     assert_eq!(out.len(), 5);
+}
+
+/// A live program on the prelude (opencode widgets 523750c6a), run natively.
+fn widget(source: &str) -> (Vec<Value>, Option<LiveExit>) {
+    let prelude = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/wire/prelude.js"),
+    )
+    .unwrap();
+    let program = format!("{prelude}\n{source}\nreturn await __widget_live(__input(), true)");
+    let mut run = Program::new(&program, None)
+        .unwrap()
+        .start_live(
+            r#"{"data":null}"#,
+            LiveOptions {
+                native: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let out = posts(&settle(&mut run));
+    (out, run.exit().cloned())
+}
+
+#[test]
+fn a_render_that_breaks_a_rule_of_views_ends_the_run_in_phase_view() {
+    let view = |reason: &str| {
+        Some(LiveExit::Failed {
+            error: psychoscript_web::Error::View {
+                reason: reason.into(),
+            },
+        })
+    };
+    // Rendered first, then the key of another type: the first render went out, the run ends at the second.
+    let (out, exit) = widget(
+        r#"async function main() {
+  widget.render(ui.text("first"))
+  try { widget.render(ui.column([ui.button("b", { key: {} })])) } catch (e) { widget.send("caught " + e.message) }
+  widget.send("after")
+}"#,
+    );
+    assert_eq!(
+        out,
+        vec![json!({ "type": "render", "node": { "type": "text", "text": "first" } })]
+    );
+    assert_eq!(exit, view(psychoscript_web::tree::KEY));
+    // Too deep to cross the boundary: the prelude posts the reason instead.
+    let (out, exit) = widget(
+        r#"async function main() {
+  let node = ui.text("x")
+  for (let i = 1; i < 101; i++) node = ui.column([node])
+  widget.render(node)
+}"#,
+    );
+    assert!(out.is_empty());
+    assert_eq!(exit, view(psychoscript_web::tree::DEEP));
+    // Deep only in a prop: the boundary's own error, which the program gets.
+    let (_, exit) = widget(
+        r#"async function main() {
+  widget.render(ui.text("x", { extra: JSON.parse("[".repeat(40) + "]".repeat(40)) }))
+}"#,
+    );
+    match exit {
+        Some(LiveExit::Failed { error }) => {
+            assert!(
+                error.reason().contains("exceeds the maximum value depth"),
+                "{error}"
+            )
+        }
+        other => panic!("{other:?}"),
+    }
 }

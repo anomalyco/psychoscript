@@ -1,5 +1,5 @@
 //! The JavaScript bindings (`wasm32-unknown-unknown`, wasm-bindgen). Errors are thrown as `Error`s named
-//! `PsychoScriptError` with `type`, `kind`, `line` and `column` (see [`crate::Error`]).
+//! `PsychoScriptError` with `type`, `kind`, `line`, `column` and `phase` (see [`crate::Error`]).
 
 use wasm_bindgen::prelude::*;
 
@@ -22,6 +22,9 @@ fn thrown(e: Error) -> JsValue {
     if let Some((line, column)) = e.location() {
         set(&value, "line", line.into());
         set(&value, "column", column.into());
+    }
+    if let Some(phase) = e.phase() {
+        set(&value, "phase", phase.into());
     }
     value
 }
@@ -58,8 +61,8 @@ impl JsProgram {
             .map_err(thrown)
     }
 
-    /// Runs a widget step natively (`__widget_step(__input(), true)`): as `run`, with the result's `view` written as
-    /// the tree clients get (widgets.md, "Native hosts").
+    /// Runs a widget step natively (`return __widget_native_step(__input())`, widgets.md "Native hosts"): as `run`,
+    /// with the view the program gave `__widget_emit` added as `view`, written as the tree clients get.
     #[wasm_bindgen(js_name = runStep)]
     pub fn run_step(
         &self,

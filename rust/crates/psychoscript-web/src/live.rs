@@ -22,15 +22,16 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
 use psychoscript::{
-    Compiled, HostError, HostFunction, HostResult, HostValue, Interrupted, ProgramOptions,
-    RunOutcome, Runtime, Translate, TranslateFunctions, TranslatePromises,
+    Compiled, HostError, HostFunction, HostResult, HostString, HostValue, Interrupted,
+    ProgramOptions, RunOutcome, Runtime, Translate, TranslateFunctions, TranslatePromises,
 };
 
 use crate::error::Error;
 use crate::fetch::{self, Rejection, Request};
 use crate::json::{self, Input};
+use crate::program::uri_error;
 use crate::time::Instant;
-use crate::tree::Walk;
+use crate::tree::{Walk, WalkError};
 
 /// A live run's budgets and capabilities.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,9 +47,11 @@ pub struct LiveOptions {
     /// link-local destinations and local names, over `http:` too, when the widget template declares them (not through `*`).
     /// Off by default.
     pub allow_local_network: bool,
-    /// A native run (`__widget_live(__input(), true)`, widgets.md, "Native hosts"): a posted `render` carries the view
-    /// as built, which goes out as the tree clients get, and `post` returns whether it has handlers; a `draw` names its
-    /// canvas by `key`, mapped to the canvas's id from the last render.
+    /// A native run (`__widget_live(__input(), true)`, widgets.md, "Native hosts"): functions cross as markers; a posted
+    /// `render` carries the view as built, which goes out as the tree clients get, and `post` returns whether it has
+    /// handlers; a `draw` names its canvas by `key`, mapped to the canvas's id from the last render. A render whose view
+    /// breaks a rule of views (or that the prelude found too deep to post, `{ type: "render", node: null, failure }`)
+    /// ends the run at once with [`Error::View`]. A function anywhere else in a host call's argument fails the call.
     pub native: bool,
 }
 
@@ -170,6 +173,8 @@ struct Shared {
     /// When the current stretch of compute began, or `None` while waiting on the host.
     slice: Option<Instant>,
     stopping: bool,
+    /// Why a native render ended the run.
+    failed: Option<Error>,
 }
 
 impl Shared {
@@ -188,23 +193,45 @@ impl Shared {
     }
 
     /// Takes a posted message; a native `render` returns whether its view has handlers, a native `draw` with an unknown
-    /// or GPU canvas's key throws.
+    /// or GPU canvas's key throws. A function where none may go throws; a render that breaks a rule of views ends the run.
     fn post(&mut self, message: &HostValue) -> HostResult {
         let mut reply = HostValue::Undefined;
         let mut native = None;
         if self.native {
             match message.get("type").and_then(HostValue::as_str) {
                 Some("render") => {
+                    if let Some(HostValue::String(failure)) = message.get("failure") {
+                        return Err(self.fail(failure.to_string_lossy().into_owned()));
+                    }
                     let mut node = String::new();
-                    let tree = Walk::new()
-                        .run(
-                            message.get("node").unwrap_or(&HostValue::Undefined),
-                            &mut node,
-                        )
-                        .map_err(|e| error("URIError", &e.0))?;
+                    let mut out = String::from(r#"{"type":"render""#);
+                    for (name, value) in fields(message) {
+                        if name == "type" || name == "node" || name == "failure" {
+                            continue;
+                        }
+                        let value =
+                            json::write_checked(value).ok_or_else(|| json::carried(1, POST))?;
+                        out.push(',');
+                        out.push_str(&serde_json::Value::from(name.to_string_lossy()).to_string());
+                        out.push(':');
+                        out.push_str(&value);
+                    }
+                    let walked = Walk::new().run(
+                        message.get("node").unwrap_or(&HostValue::Undefined),
+                        &mut node,
+                    );
+                    let tree = match walked {
+                        Ok(tree) => tree,
+                        Err(WalkError::View(reason)) => return Err(self.fail(reason.to_owned())),
+                        Err(WalkError::Function) => return Err(json::carried(1, POST)),
+                        Err(WalkError::Uri) => return Err(uri_error()),
+                    };
                     reply = HostValue::Bool(tree.has_handlers);
                     self.canvases = tree.canvases;
-                    native = Some(format!(r#"{{"type":"render","node":{node}}}"#));
+                    out.push_str(r#","node":"#);
+                    out.push_str(&node);
+                    out.push('}');
+                    native = Some(out);
                 }
                 Some("draw") => {
                     let key = message
@@ -228,20 +255,42 @@ impl Shared {
                         }
                         Some((id, false)) => id,
                     };
-                    let commands = json::write(message.get("commands").unwrap_or(&HostValue::Null));
-                    native = Some(format!(
-                        r#"{{"type":"draw","id":{},"commands":{commands}}}"#,
+                    let mut out = format!(
+                        r#"{{"type":"draw","id":{}"#,
                         serde_json::Value::from(id.as_str())
-                    ));
+                    );
+                    for (name, value) in fields(message) {
+                        if name == "type" || name == "key" {
+                            continue;
+                        }
+                        let value =
+                            json::write_checked(value).ok_or_else(|| json::carried(1, POST))?;
+                        out.push(',');
+                        out.push_str(&serde_json::Value::from(name.to_string_lossy()).to_string());
+                        out.push(':');
+                        out.push_str(&value);
+                    }
+                    out.push('}');
+                    native = Some(out);
                 }
                 _ => {}
             }
         }
+        let message = match native {
+            Some(message) => message,
+            None => json::write_checked(message).ok_or_else(|| json::carried(1, POST))?,
+        };
         if self.admit() {
-            let message = native.unwrap_or_else(|| json::write(message));
             self.push(&format!(r#"{{"type":"post","message":{message}}}"#));
         }
         Ok(reply)
+    }
+
+    /// Ends the run with a view's failure: what `post` throws, which the program can't catch.
+    fn fail(&mut self, reason: String) -> HostValue {
+        self.failed = Some(Error::View { reason });
+        self.stopping = true;
+        HostValue::Interrupt
     }
 
     /// Counts a post against the rate: whether it goes out (one warning a second for the rest).
@@ -272,6 +321,17 @@ impl Shared {
         self.slice = Some(Instant::now());
     }
 }
+
+/// An object's fields; none for anything else.
+fn fields(v: &HostValue) -> &[(HostString, HostValue)] {
+    match v {
+        HostValue::Object(fields) => fields,
+        _ => &[],
+    }
+}
+
+/// What the program called `__host.post` as, for its errors.
+const POST: &str = "__host.post";
 
 /// An error the program can catch, thrown from a host call.
 fn error(name: &str, message: &str) -> HostValue {
@@ -372,6 +432,7 @@ impl LiveRun {
             out: String::new(),
             slice: None,
             stopping: false,
+            failed: None,
         }));
         let mut runtime = runtime(&shared, input_name);
         if options.native {
@@ -417,8 +478,10 @@ impl LiveRun {
             self.woken.0.store(false, Ordering::SeqCst);
             match future.as_mut().poll(&mut cx) {
                 Poll::Ready(result) => {
-                    let exit = match result {
-                        Ok(RunOutcome::Done(outcome)) => match outcome.result {
+                    let failed = lock(&self.shared).failed.take();
+                    let exit = match (failed, result) {
+                        (Some(error), _) => LiveExit::Failed { error },
+                        (None, Ok(RunOutcome::Done(outcome))) => match outcome.result {
                             Ok(data) => LiveExit::Finished {
                                 result_json: data.to_json_string(),
                             },
@@ -426,7 +489,7 @@ impl LiveRun {
                                 error: Error::from_diagnostic(d, None),
                             },
                         },
-                        Ok(RunOutcome::Suspended(_)) | Err(_) => LiveExit::Stopped,
+                        (None, Ok(RunOutcome::Suspended(_)) | Err(_)) => LiveExit::Stopped,
                     };
                     self.end(exit);
                     return Pump::Ended;
@@ -652,7 +715,9 @@ fn runtime(shared: &Arc<Mutex<Shared>>, input_name: String) -> Runtime {
     let shared = shared.clone();
     Runtime::make().globals(move |_run| {
         let s = shared.clone();
-        let input = HostFunction::new(move |_args, _call| -> HostResult {
+        let name = input_name.clone();
+        let input = HostFunction::new(move |args: Vec<HostValue>, _call| -> HostResult {
+            json::unmarked(&args, &name, 0)?;
             let text = lock(&s).input.clone();
             Ok(Input::parse(&text).unwrap_or_default())
         });
@@ -662,16 +727,22 @@ fn runtime(shared: &Arc<Mutex<Shared>>, input_name: String) -> Runtime {
             if s.stopping {
                 return Err(HostValue::Interrupt);
             }
+            json::unmarked(&args, POST, 1)?;
             s.post(args.first().unwrap_or(&HostValue::Undefined))
         });
         let s = shared.clone();
-        let now = HostFunction::new(move |_args, _call| -> HostResult {
+        let now = HostFunction::new(move |args: Vec<HostValue>, _call| -> HostResult {
+            json::unmarked(&args, "__host.now", 0)?;
             Ok(HostValue::Number(lock(&s).now_ms()))
         });
         let s = shared.clone();
-        let receive = HostFunction::new_async(move |_args, _call| {
+        let receive = HostFunction::new_async(move |args: Vec<HostValue>, _call| {
             let s = s.clone();
+            let mut checked = Some(json::unmarked(&args, "__host.receive", 0));
             std::future::poll_fn(move |cx| {
+                if let Some(Err(e)) = checked.take() {
+                    return Poll::Ready(Err(e));
+                }
                 let mut s = lock(&s);
                 if s.stopping {
                     return Poll::Ready(Err(HostValue::Interrupt));
@@ -704,7 +775,11 @@ fn runtime(shared: &Arc<Mutex<Shared>>, input_name: String) -> Runtime {
                 .unwrap_or(0.0)
                 .max(0.0);
             let key = call.key();
+            let mut checked = Some(json::unmarked(&args, "__host.sleep", 0));
             std::future::poll_fn(move |cx| {
+                if let Some(Err(e)) = checked.take() {
+                    return Poll::Ready(Err(e));
+                }
                 let mut s = lock(&s);
                 if s.stopping {
                     return Poll::Ready(Err(HostValue::Interrupt));
@@ -727,11 +802,14 @@ fn runtime(shared: &Arc<Mutex<Shared>>, input_name: String) -> Runtime {
         .idempotent();
         let s = shared.clone();
         let fetch = HostFunction::new_async(move |args: Vec<HostValue>, _call| {
-            let started = start_fetch(&s, args.first());
+            let started = json::unmarked(&args, "__host.fetch", 0)
+                .map_err(Err)
+                .and_then(|()| start_fetch(&s, args.first()).map_err(Ok));
             async move {
                 match started {
                     Ok(fetching) => fetching.await,
-                    Err(rejection) => Err(rejection.value()),
+                    Err(Ok(rejection)) => Err(rejection.value()),
+                    Err(Err(thrown)) => Err(thrown),
                 }
             }
         });

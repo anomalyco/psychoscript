@@ -41,7 +41,7 @@ gzip; see Size). The files never change for a given commit, so they can be cache
 import { mount } from "psychoscript-web"
 
 const widget = mount(element, {
-  program,            // Program.program from opencode.widget/program: prelude + "\n" + source
+  program,            // Program.program from opencode.widget/program: prelude + "\n" + source (widget protocol 2)
   data,               // the widget tool call's data
   mode: "step",       // or "live" (Program.mode)
   capabilities,       // Program.capabilities (live): { https: { hosts } }, granted as declared, shown as a chip
@@ -74,6 +74,12 @@ widget.destroy()                       // stops the program, frees the worker si
 
 Behavior, per the contract:
 
+- Widget protocol 2 (widgets.md, Protocol, Native hosts): the program's first line must be `const __widget_protocol =
+  2`. Steps run `__widget_native_step(__input())`, the view handed to `__widget_emit` and its tree built in the
+  WebAssembly; live programs run `__widget_live(__input(), true)`, each render's tree built as posted. A program of an
+  older protocol isn't run: "This widget was built with an older widget runtime; ask the agent to post it again", a
+  program error in phase `init` (`main` live); a newer one shows "This widget needs a newer version of this app", a
+  client error.
 - Step widgets share one worker; `init` runs when the widget first comes within 200 px of the viewport (a loading
   shimmer before). Each step runs off the page's thread; a failing step keeps the previous view and shows the error
   inline; a failing first step shows an error card with "Try again".
@@ -122,12 +128,15 @@ The host sorts every error into one of two kinds:
 
 - **Program errors** (the widget template's): a parse error or exception (in `init`, a handler or hook, `draw`, `main`), an
   invalid view or draw output, WGSL that fails validation (WebGPU's compiler or naga) or is over 16 KB, the 250 ms
-  step, the 50 ms live slice, the post rate (240/s) and the send rate (10/s). The widget shows them (error card, or
-  inline under the last good view) and calls `onReport({ phase, message, line?, column? })` once per distinct error;
-  `phase` is `init`, `event`, `draw`, `main` or `shader`, and `line`/`column` are in the widget template's source (the
+  step, the 50 ms live slice, the post rate (240/s) and the send rate (10/s), a view that breaks a rule of views (a
+  key not a string, number or boolean; more than 100 levels), a function where none may go (anywhere in a view but a
+  node's `onPress`/`onChange`/`onPointer`, in a post or a host call: the runtime's `TypeError`), an older widget
+  protocol. The widget shows them (error card, or inline under the last good view) and calls `onReport({ phase,
+  message, line?, column? })` once per distinct error; `phase` is `init`, `event`, `draw`, `main`, `view` (the rules
+  of views) or `shader`, and `line`/`column` are in the widget template's source (the
   prelude's lines subtracted; dropped when they fall in the prelude or past the widget template; a shader's WGSL position goes
   into the message as "WGSL line N"). Post it with `report` (`client: "web"`).
-- **Client errors** (this host's): a worker or WebAssembly crash, a missing worker or module, valid WGSL the GPU path
+- **Client errors** (this host's): a newer widget protocol, a worker or WebAssembly crash, a missing worker or module, valid WGSL the GPU path
   can't run, a draw or shader too slow on this device (the 8 ms draw / 50 ms shader stops), the host's own 100 ms draw
   cut-off, Fullscreen API refusals, a throwing `onReport` or failing `onAsk`. They go only to `onClientError(message,
   cause)`: log them in dev mode, never report them. A fetch error a live program catches is its own business.
