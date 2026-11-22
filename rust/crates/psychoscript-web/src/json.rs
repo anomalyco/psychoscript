@@ -3,9 +3,7 @@
 
 use std::fmt;
 
-use psychoscript::{Failure, HostString, HostValue};
-
-use crate::error::Error;
+use psychoscript::{HostError, HostString, HostValue};
 use serde::de::{Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 
 /// JSON text read as a host value: numbers as `f64`, objects keeping their keys' order.
@@ -98,45 +96,21 @@ fn is_function(v: &HostValue) -> bool {
     matches!(v, HostValue::Function(_) | HostValue::FunctionMarker)
 }
 
-/// Why a host call fails for a function in its argument `n` (from 1), as the runtime's own error says it without
-/// `"mark"` (widgets.md, "Native hosts"), with the function's name as the program called it.
-pub(crate) fn carried(n: usize, name: &str) -> String {
-    format!("Argument {n} to {name} contains a function, which cannot be passed to the host.")
+/// What a host call throws for a function in its argument `n` (from 1), as the runtime does without `"mark"`
+/// (widgets.md, "Native hosts"): its `TypeError`, located at the call, with the function's name as the program called
+/// it.
+pub(crate) fn carried(n: usize, name: &str) -> HostValue {
+    HostError::located(
+        "TypeError",
+        format!("Argument {n} to {name} contains a function, which cannot be passed to the host."),
+    )
 }
 
 /// Fails with [`carried`] for the first of `args`, from index `from`, that is or holds a function.
-pub(crate) fn unmarked(args: &[HostValue], name: &str, from: usize) -> Result<(), String> {
+pub(crate) fn unmarked(args: &[HostValue], name: &str, from: usize) -> Result<(), HostValue> {
     match args.iter().skip(from).position(has_function) {
         Some(i) => Err(carried(from + i + 1, name)),
         None => Ok(()),
-    }
-}
-
-/// Host-call errors thrown located at the call: the runtime locates a failure of its own kinds there (an error a host
-/// function throws, it doesn't), so a [`carried`] error is thrown as an `ExecutionFailure`, which the program sees as
-/// an `Error`; uncaught, [`Thrown::name`] names it a `TypeError` on the run's error, as the runtime's own is.
-#[derive(Debug, Default)]
-pub(crate) struct Thrown(Vec<String>);
-
-impl Thrown {
-    /// What the host call throws for `message`.
-    pub(crate) fn throw(&mut self, message: String) -> HostValue {
-        let failure = HostValue::Failure(Failure::new("ExecutionFailure", message.as_str()));
-        if !self.0.contains(&message) {
-            self.0.push(message);
-        }
-        failure
-    }
-
-    /// `error` as the runtime's `TypeError` when it is an uncaught error thrown here.
-    pub(crate) fn name(&self, error: &mut Error) {
-        if let Error::Runtime { kind, reason, .. } = error
-            && kind == "ExecutionFailure"
-            && let Some(rest) = reason.strip_prefix("Error: ")
-            && self.0.iter().any(|m| rest.starts_with(m.as_str()))
-        {
-            *reason = format!("TypeError: {rest}");
-        }
     }
 }
 

@@ -365,6 +365,23 @@ fn a_native_step_takes_views_of_100_levels() {
     );
 }
 
+/// A function where none may go is the runtime's own `TypeError` to a program that catches it.
+#[test]
+fn a_caught_function_error_is_a_real_type_error() {
+    let program = format!(
+        "{}\nfunction view() {{\n  try {{ __widget_emit(ui.text(\"x\", {{ f: () => 1 }})) }} catch (e) {{\n    return ui.text([e instanceof TypeError, e.constructor === TypeError, e.name, e.message].join(\" | \"))\n  }}\n}}{ENTRY}",
+        prelude()
+    );
+    let out = Program::new(&program, None)
+        .unwrap()
+        .run_step(r#"{"phase":"init","data":null}"#, None, None)
+        .unwrap();
+    assert!(
+        out.ends_with(r#""view":{"type":"text","text":"true | true | TypeError | Argument 1 to __widget_emit contains a function, which cannot be passed to the host."}}"#),
+        "{out}"
+    );
+}
+
 #[test]
 fn a_key_with_a_lone_surrogate_is_a_program_error() {
     let lone = psychoscript::HostString::from_utf16(&[0xd800]);

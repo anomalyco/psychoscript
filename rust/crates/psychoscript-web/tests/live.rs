@@ -213,10 +213,12 @@ const functions = [
   () => __host.post({ type: "render", node: view }, () => 1),
   () => __host.now(() => 1),
 ]
+// A real TypeError, sync or async.
+const named = (e) => (e instanceof TypeError && e.constructor === TypeError ? "" : "not a TypeError: ") + e.name + ": " + e.message
 for (const f of functions) {
-  try { f() } catch (e) { caught.push(e.name + ": " + e.message) }
+  try { f() } catch (e) { caught.push(named(e)) }
 }
-try { await __host.sleep(() => 1) } catch (e) { caught.push(e.name + ": " + e.message) }
+try { await __host.sleep(() => 1) } catch (e) { caught.push(named(e)) }
 __host.post({ type: "result", interactive, still, caught })
 "#;
     let mut run = Program::new(NATIVE, None)
@@ -248,14 +250,14 @@ __host.post({ type: "result", interactive, still, caught })
         json!({ "type": "result", "interactive": true, "still": false, "caught": [
             "No canvas with key \"nope\" in the rendered view",
             "Canvas \"sky\" is drawn by its wgsl; it takes no draw commands",
-            "Error: Argument 1 to __host.post contains a function, which cannot be passed to the host.",
-            "Error: Argument 1 to __host.post contains a function, which cannot be passed to the host.",
-            "Error: Argument 1 to __host.post contains a function, which cannot be passed to the host.",
-            "Error: Argument 1 to __host.post contains a function, which cannot be passed to the host.",
-            "Error: Argument 1 to __host.post contains a function, which cannot be passed to the host.",
-            "Error: Argument 2 to __host.post contains a function, which cannot be passed to the host.",
-            "Error: Argument 1 to __host.now contains a function, which cannot be passed to the host.",
-            "Error: Argument 1 to __host.sleep contains a function, which cannot be passed to the host.",
+            "TypeError: Argument 1 to __host.post contains a function, which cannot be passed to the host.",
+            "TypeError: Argument 1 to __host.post contains a function, which cannot be passed to the host.",
+            "TypeError: Argument 1 to __host.post contains a function, which cannot be passed to the host.",
+            "TypeError: Argument 1 to __host.post contains a function, which cannot be passed to the host.",
+            "TypeError: Argument 1 to __host.post contains a function, which cannot be passed to the host.",
+            "TypeError: Argument 2 to __host.post contains a function, which cannot be passed to the host.",
+            "TypeError: Argument 1 to __host.now contains a function, which cannot be passed to the host.",
+            "TypeError: Argument 1 to __host.sleep contains a function, which cannot be passed to the host.",
         ] })
     );
     assert_eq!(out.len(), 5);
@@ -282,14 +284,16 @@ fn widget(source: &str) -> (Vec<Value>, Option<LiveExit>) {
     (out, run.exit().cloned())
 }
 
-/// Uncaught, a function where none may go fails the run as the runtime's TypeError, at the call. (An async host call's
-/// rejection isn't located by the runtime: `__host.sleep`'s has no position.)
+/// Uncaught, a function where none may go fails the run as the runtime's TypeError, at the call, sync or async; so
+/// does a draw to an unknown canvas key.
 #[test]
 fn a_function_posted_where_none_may_go_fails_the_run_at_the_call() {
     for (call, line) in [
         ("widget.send({ f: () => 1 })", 2),
         ("__host.post({ type: \"send\", value: 1 }, () => 1)", 2),
-        ("await __host.sleep(() => 1)", 0),
+        ("await __host.sleep(() => 1)", 2),
+        ("await __host.receive(() => 1)", 2),
+        ("__host.now(() => 1)", 2),
     ] {
         let (_, exit) = widget(&format!("async function main() {{\n  {call}\n}}"));
         let Some(LiveExit::Failed { error }) = exit else {
@@ -311,6 +315,23 @@ fn a_function_posted_where_none_may_go_fails_the_run_at_the_call() {
             );
         }
     }
+    let (_, exit) = widget(
+        "async function main() {\n  __host.post({ type: \"draw\", key: \"nope\", commands: [] })\n}",
+    );
+    let Some(LiveExit::Failed { error }) = exit else {
+        panic!("{exit:?}")
+    };
+    assert_eq!(
+        (error.reason(), error.location().map(|(l, _)| l)),
+        (
+            format!(
+                "Error: No canvas with key \"nope\" in the rendered view (line {}, col 3)",
+                prelude_lines() + 3
+            )
+            .as_str(),
+            Some(prelude_lines() + 3)
+        )
+    );
 }
 
 /// The prelude's lines; it ends with a newline, so with the joining one the widget template starts two lines on.

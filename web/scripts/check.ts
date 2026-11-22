@@ -952,9 +952,9 @@ for (const query of ["?only=shader-broken", "?only=shader-broken&gl=1"]) {
     const run = async (name: string, program: string, mode: string, act?: (root: ShadowRoot) => void, extra?: object) => {
       const slot = document.createElement("div")
       document.body.prepend(slot)
-      const reports: { phase: string; message: string }[] = []
+      const reports: { phase: string; message: string; line?: number }[] = []
       const clientErrors: string[] = []
-      const w = d.host.mount(slot, { program, data: null, mode, ...extra, onReport: (e: { phase: string; message: string }) => reports.push(e), onClientError: (m: string) => clientErrors.push(m) })
+      const w = d.host.mount(slot, { program, data: null, mode, ...extra, onReport: (e: { phase: string; message: string; line?: number }) => reports.push(e), onClientError: (m: string) => clientErrors.push(m) })
       const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
       await sleep(1200)
       const root = slot.querySelector(".psychoscript-widget")!.shadowRoot!
@@ -962,7 +962,7 @@ for (const query of ["?only=shader-broken", "?only=shader-broken&gl=1"]) {
         act(root)
         await sleep(800)
       }
-      const out = { name, reports, clientErrors, shown: (root.querySelector(".pw-error-card, .pw-error:not([hidden])") as HTMLElement | null)?.textContent ?? "", buttons: root.querySelectorAll(".pw-view .pw-btn").length, retry: root.querySelectorAll(".pw-error-card .pw-btn").length }
+      const out = { name, reports, clientErrors, shown: (root.querySelector(".pw-error-card, .pw-error:not([hidden])") as HTMLElement | null)?.textContent ?? "", buttons: root.querySelectorAll(".pw-view .pw-btn").length, text: root.querySelector(".pw-view .pw-text")?.textContent ?? "", retry: root.querySelectorAll(".pw-error-card .pw-btn").length }
       w.destroy()
       slot.remove()
       return out
@@ -984,6 +984,8 @@ for (const query of ["?only=shader-broken", "?only=shader-broken&gl=1"]) {
       await run("step-100", step(`function view() {\n  let node = ui.button("deep", { onPress: (s) => s })\n  for (let i = 1; i < 100; i++) node = ui.column([node])\n  return node\n}`), "step"),
       await run("step-101", step(`function view() {\n  let node = ui.button("deep", { onPress: (s) => s })\n  for (let i = 1; i < 101; i++) node = ui.column([node])\n  return node\n}`), "step"),
       await run("live-100", step(`async function main() {\n  let node = ui.button("deep", { onPress: () => {} })\n  for (let i = 1; i < 100; i++) node = ui.column([node])\n  widget.render(node)\n}`), "live"),
+      await run("caught", step(`async function main() {\n  try { widget.send({ f: () => 1 }) } catch (e) {\n    widget.render(ui.text([e instanceof TypeError, e.name, e.message].join(" | ")))\n  }\n}`), "live"),
+      await run("async", step(`async function main() {\n  await __host.sleep(() => 1)\n}`), "live"),
       await run("deep", step(`async function main() {\n  let node = ui.text("x")\n  for (let i = 1; i < 101; i++) node = ui.column([node])\n  widget.render(node)\n}`), "live"),
       await run("function", step(`function view() {\n  return ui.column({ onHover: (s) => s }, [ui.text("t")])\n}`), "step"),
     ]
@@ -1026,6 +1028,17 @@ for (const query of ["?only=shader-broken", "?only=shader-broken&gl=1"]) {
     JSON.stringify(by.function!.reports) === JSON.stringify([{ phase: "init", message: "TypeError: Argument 1 to __widget_emit contains a function, which cannot be passed to the host." }]),
     "functions: a function in a view's prop fails the step with the runtime's TypeError",
     by.function,
+  )
+  check(
+    by.caught!.text === "true | TypeError | Argument 1 to __host.post contains a function, which cannot be passed to the host." && by.caught!.reports.length === 0,
+    "functions: a program that catches the error sees a real TypeError",
+    by.caught,
+  )
+  check(
+    JSON.stringify(by.async!.reports) ===
+      JSON.stringify([{ phase: "main", message: "TypeError: Argument 1 to __host.sleep contains a function, which cannot be passed to the host.", line: 2, column: 9 }]),
+    "functions: an async host call's error is located at the call (line 2 of the widget template)",
+    by.async,
   )
   check(errors.length === 0, "protocol 2: no page errors", errors)
   await page.close()

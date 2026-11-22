@@ -60,12 +60,7 @@ impl Program {
         if let Some(reason) = emitted.failure {
             return Err(Error::View { reason });
         }
-        let mut out = result
-            .map_err(|mut e| {
-                emitted.thrown.name(&mut e);
-                e
-            })?
-            .to_json_string();
+        let mut out = result?.to_json_string();
         if let Some(view) = emitted.view
             && out.ends_with('}')
         {
@@ -96,10 +91,7 @@ impl Program {
         }));
         let result = self.execute(input_json, timeout_ms, Some(&emitted));
         let emitted = std::mem::take(&mut *emitted.lock().unwrap_or_else(PoisonError::into_inner));
-        result.map_err(|mut e| {
-            emitted.thrown.name(&mut e);
-            e
-        })?;
+        result?;
         limit(
             emitted.view.unwrap_or_else(|| "null".to_owned()),
             max_output_bytes,
@@ -129,18 +121,10 @@ impl Program {
             .globals(move |_run| {
                 let slot = slot.clone();
                 let input_name = name.clone();
-                let thrown = emit.clone();
                 let mut globals = vec![(
                     name.clone(),
                     HostFunction::new(move |args: Vec<HostValue>, _call| -> HostResult {
-                        if let (Err(m), Some(e)) = (json::unmarked(&args, &input_name, 0), &thrown)
-                        {
-                            return Err(e
-                                .lock()
-                                .unwrap_or_else(PoisonError::into_inner)
-                                .thrown
-                                .throw(m));
-                        }
+                        json::unmarked(&args, &input_name, 0)?;
                         Ok(slot.lock().unwrap_or_else(PoisonError::into_inner).read())
                     }),
                 )];
@@ -178,23 +162,20 @@ impl Program {
 const EMIT: &str = "__widget_emit";
 
 /// What a native step's `__widget_emit` took: the view's wire JSON (a draw step's commands as JSON), or why the view
-/// failed; and what its host calls threw.
+/// failed.
 #[derive(Default)]
 struct Emitted {
     /// A draw step: `__widget_emit(commands)`.
     draw: bool,
     view: Option<String>,
     failure: Option<String>,
-    thrown: json::Thrown,
 }
 
 impl Emitted {
     /// `__widget_emit(view, failure?)`: a string `failure` fails the view with it; else the view is walked. In a draw
     /// step, `__widget_emit(commands)`.
     fn take(&mut self, args: &[HostValue]) -> HostResult {
-        if let Err(m) = json::unmarked(args, EMIT, 1) {
-            return Err(self.thrown.throw(m));
-        }
+        json::unmarked(args, EMIT, 1)?;
         if self.draw {
             self.view = Some(json::write(args.first().unwrap_or(&HostValue::Undefined)));
             return Ok(HostValue::Undefined);
@@ -207,16 +188,16 @@ impl Emitted {
         match Walk::new().run(args.first().unwrap_or(&HostValue::Undefined), &mut out) {
             Ok(_) => self.view = Some(out),
             Err(WalkError::View(reason)) => self.failure = Some(reason.to_owned()),
-            Err(WalkError::Function) => return Err(self.thrown.throw(json::carried(1, EMIT))),
+            Err(WalkError::Function) => return Err(json::carried(1, EMIT)),
             Err(WalkError::Uri) => return Err(uri_error()),
         }
         Ok(HostValue::Undefined)
     }
 }
 
-/// The prelude's error for a key `encodeURIComponent` can't encode.
+/// The prelude's error for a key `encodeURIComponent` can't encode, located at the call.
 pub(crate) fn uri_error() -> HostValue {
-    HostValue::Error(Box::new(HostError::named("URIError", "URI malformed")))
+    HostError::located("URIError", "URI malformed")
 }
 
 /// `out`, unless it's over `max_output_bytes`.
