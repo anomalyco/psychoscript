@@ -316,14 +316,15 @@ impl Shared {
                         }
                         Some((id, false)) => id,
                     };
-                    // The client gets the canvas's id and the commands, nothing else. A function in them fails the
-                    // call; an invalid draw is an invalid post: the run ends with a program error in phase `draw`.
+                    // The client gets the canvas's id and the normalised commands, nothing else. A function in them
+                    // fails the call; an invalid draw is an invalid post: the run ends with a program error in phase
+                    // `draw` (widgets.md, Canvas, "Draw command checks").
                     let commands = message.get("commands").unwrap_or(&HostValue::Undefined);
-                    let written =
-                        json::write_checked(commands).ok_or_else(|| json::carried(1, POST))?;
-                    if let Err(reason) = draw::check(Some(commands)) {
-                        return Err(self.fail(Error::Draw { reason }));
-                    }
+                    json::unmarked(std::slice::from_ref(commands), POST, 0)?;
+                    let written = match draw::check(commands) {
+                        Ok(written) => written,
+                        Err(reason) => return Err(self.fail(Error::Draw { reason })),
+                    };
                     let out = format!(
                         r#"{{"type":"draw","id":{},"commands":{written}}}"#,
                         serde_json::Value::from(id.as_str())

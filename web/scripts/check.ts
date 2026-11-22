@@ -984,6 +984,7 @@ for (const query of ["?only=shader-broken", "?only=shader-broken&gl=1"]) {
       await run("step-100", step(`function view() {\n  let node = ui.button("deep", { onPress: (s) => s })\n  for (let i = 1; i < 100; i++) node = ui.column([node])\n  return node\n}`), "step"),
       await run("step-101", step(`function view() {\n  let node = ui.button("deep", { onPress: (s) => s })\n  for (let i = 1; i < 101; i++) node = ui.column([node])\n  return node\n}`), "step"),
       await run("live-100", step(`async function main() {\n  let node = ui.button("deep", { onPress: () => {} })\n  for (let i = 1; i < 100; i++) node = ui.column([node])\n  widget.render(node)\n}`), "live"),
+      await run("step-draw", step(`function view() {\n  return ui.canvas({ key: "c", height: 20 })\n}\nfunction draw() {\n  return [["save"], ["text", 0, 10, "t", { weight: 800 }]]\n}`), "step"),
       await run("caught", step(`async function main() {\n  try { widget.send({ f: () => 1 }) } catch (e) {\n    widget.render(ui.text([e instanceof TypeError, e.name, e.message].join(" | ")))\n  }\n}`), "live"),
       await run("async", step(`async function main() {\n  await __host.sleep(() => 1)\n}`), "live"),
       await run("deep", step(`async function main() {\n  let node = ui.text("x")\n  for (let i = 1; i < 101; i++) node = ui.column([node])\n  widget.render(node)\n}`), "live"),
@@ -1039,6 +1040,11 @@ for (const query of ["?only=shader-broken", "?only=shader-broken&gl=1"]) {
       JSON.stringify([{ phase: "main", message: "TypeError: Argument 1 to __host.sleep contains a function, which cannot be passed to the host.", line: 2, column: 9 }]),
     "functions: an async host call's error is located at the call (line 2 of the widget template)",
     by.async,
+  )
+  check(
+    JSON.stringify(by["step-draw"]!.reports) === JSON.stringify([{ phase: "draw", message: "draw command 1: a text weight must be 400, 500, 600 or 700" }]),
+    "draw checks: a draw step with an invalid command fails in phase draw, named by its index",
+    by["step-draw"],
   )
   check(errors.length === 0, "protocol 2: no page errors", errors)
   await page.close()

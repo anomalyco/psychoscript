@@ -4,6 +4,7 @@ use psychoscript::{
     Compiled, Data, HostError, HostFunction, HostResult, HostValue, Limits, Runtime,
 };
 
+use crate::draw;
 use crate::error::Error;
 use crate::json::{self, Input};
 use crate::live::{LiveOptions, LiveRun, MARK, WIDGET_DEPTH};
@@ -57,8 +58,8 @@ impl Program {
         let emitted = Arc::new(Mutex::new(Emitted::default()));
         let result = self.execute(input_json, timeout_ms, Some(&emitted));
         let emitted = std::mem::take(&mut *emitted.lock().unwrap_or_else(PoisonError::into_inner));
-        if let Some(reason) = emitted.failure {
-            return Err(Error::View { reason });
+        if let Some(failure) = emitted.failure {
+            return Err(failure);
         }
         let mut out = result?.to_json_string();
         if let Some(view) = emitted.view
@@ -76,9 +77,9 @@ impl Program {
     }
 
     /// A widget draw step run natively (`return __widget_native_step(__input())` on a `draw` input, widgets.md,
-    /// "Native hosts"): functions cross as markers, and the commands the program gives `__widget_emit(commands)` come
-    /// back as JSON reads them (functions and `undefined` props left out, `null` for `undefined` items and non-finite
-    /// numbers), or `null` when it gave none. The run's own result isn't read.
+    /// "Native hosts"): functions cross as markers, and the commands the program gives `__widget_emit(commands)`, read
+    /// as JSON reads them and checked (widgets.md, Canvas, "Draw command checks"), come back normalised, or `null` when
+    /// it gave none; invalid ones fail with [`Error::Draw`]. The run's own result isn't read.
     pub fn run_draw(
         &self,
         input_json: &str,
@@ -91,6 +92,9 @@ impl Program {
         }));
         let result = self.execute(input_json, timeout_ms, Some(&emitted));
         let emitted = std::mem::take(&mut *emitted.lock().unwrap_or_else(PoisonError::into_inner));
+        if let Some(failure) = emitted.failure {
+            return Err(failure);
+        }
         result?;
         limit(
             emitted.view.unwrap_or_else(|| "null".to_owned()),
@@ -168,7 +172,7 @@ struct Emitted {
     /// A draw step: `__widget_emit(commands)`.
     draw: bool,
     view: Option<String>,
-    failure: Option<String>,
+    failure: Option<Error>,
 }
 
 impl Emitted {
@@ -177,17 +181,26 @@ impl Emitted {
     fn take(&mut self, args: &[HostValue]) -> HostResult {
         json::unmarked(args, EMIT, 1)?;
         if self.draw {
-            self.view = Some(json::write(args.first().unwrap_or(&HostValue::Undefined)));
+            match draw::check_read(args.first().unwrap_or(&HostValue::Undefined)) {
+                Ok(commands) => self.view = Some(commands),
+                Err(reason) => self.failure = Some(Error::Draw { reason }),
+            }
             return Ok(HostValue::Undefined);
         }
         if let Some(HostValue::String(failure)) = args.get(1) {
-            self.failure = Some(failure.to_string_lossy().into_owned());
+            self.failure = Some(Error::View {
+                reason: failure.to_string_lossy().into_owned(),
+            });
             return Ok(HostValue::Undefined);
         }
         let mut out = String::new();
         match Walk::new().run(args.first().unwrap_or(&HostValue::Undefined), &mut out) {
             Ok(_) => self.view = Some(out),
-            Err(WalkError::View(reason)) => self.failure = Some(reason.to_owned()),
+            Err(WalkError::View(reason)) => {
+                self.failure = Some(Error::View {
+                    reason: reason.to_owned(),
+                })
+            }
             Err(WalkError::Function) => return Err(json::carried(1, EMIT)),
             Err(WalkError::Uri) => return Err(uri_error()),
         }

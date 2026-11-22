@@ -600,7 +600,7 @@ fn an_invalid_draw_command_ends_the_run_in_phase_draw() {
             "draw command 0: a command starts with its name",
         ),
         (r#", commands: "x""#, "draw commands must be a list"),
-        ("", "a draw post needs commands"),
+        ("", "draw commands must be a list"),
     ] {
         assert_eq!(draw(commands), Err(message.to_owned()), "{commands}");
     }

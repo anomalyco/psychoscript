@@ -432,7 +432,9 @@ fn timings() {
     }
 }
 
-/// A native draw step: the commands `__widget_emit` gets come back as JSON reads them, `[]` when `draw` returns nothing.
+/// A native draw step: the commands `__widget_emit` gets are read as JSON reads them (functions and `undefined` fields
+/// left out, an `undefined` item `null`), then checked and normalised; `[]` when `draw` returns nothing. The checks
+/// themselves: `tests/draw.rs`.
 #[test]
 fn a_draw_step_emits_its_commands_as_json_reads_them() {
     let draw = |source: &str| {
@@ -444,11 +446,17 @@ fn a_draw_step_emits_its_commands_as_json_reads_them() {
         )
     };
     assert_eq!(
-        draw(r#"function draw(state, data, frame) {
-  return ui.draw().rect(0, 0, 1, 1, "accent").commands.concat([["text", frame.key, NaN, undefined, () => 1, { fill: "red", f: () => 1, u: undefined }]])
-}"#)
+        draw(r##"function draw(state, data, frame) {
+  return ui.draw().rect(0, 0, 1, 1, "accent").commands.concat([["text", 1, 2, frame.key, undefined], ["rect", 0, 0, 1, 1, { u: undefined, f: () => 1, fill: "#fff" }]])
+}"##)
         .unwrap(),
-        r#"[["rect",0,0,1,1,{"fill":"accent"}],["text","c",null,null,null,{"fill":"red"}]]"#
+        r##"[["rect",0,0,1,1,{"fill":"accent"}],["text",1,2,"c",{}],["rect",0,0,1,1,{"fill":"#fff"}]]"##
+    );
+    assert_eq!(
+        draw("function draw() {\n  return [[\"text\", 1, NaN, \"t\"]]\n}"),
+        Err(Error::Draw {
+            reason: "draw command 0: \"text\" argument 2 must be a finite number".into()
+        })
     );
     assert_eq!(draw("function draw() {}").unwrap(), "[]");
     assert_eq!(draw("").unwrap(), "[]");

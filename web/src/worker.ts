@@ -5,7 +5,7 @@
 import { initSync, LiveRun, Program } from "../wasm/psychoscript_web.js"
 import { initSync as initShader, translateWgsl } from "../wasm/psychoscript_web_shader.js"
 import type { ErrorInfo, FromWorker, LiveExit, StepOutput, ToWorker } from "./protocol.js"
-import { DRAW_TIMEOUT_MS, MAX_COMMANDS, STEP_TIMEOUT_MS } from "./protocol.js"
+import { DRAW_TIMEOUT_MS, STEP_TIMEOUT_MS } from "./protocol.js"
 
 /**
  * Widget protocol 2, a native host (widgets.md, "Protocol", "Native hosts"): functions cross as markers, steps hand
@@ -112,12 +112,11 @@ function draw(wid: number, req: number, frame: unknown) {
   const input = `{"phase":"draw","data":${s.data},"state":${s.state},"frame":${JSON.stringify(frame)}}`
   const started = performance.now()
   try {
-    // The run emits its commands (`__widget_emit(commands)`), read here as JSON reads them.
+    // The run emits its commands (`__widget_emit(commands)`), checked and normalised there (widgets.md, Canvas, Draw
+    // command checks); an invalid draw throws, in phase `draw`.
     const commands = JSON.parse(program.runDraw(input, DRAW_TIMEOUT_MS)) as unknown
     const ms = performance.now() - started
     if (!Array.isArray(commands)) post({ t: "drawn", wid, req, error: { type: "draw", message: "draw returned no commands" }, ms })
-    else if (commands.length > MAX_COMMANDS)
-      post({ t: "drawn", wid, req, error: { type: "draw", message: `${commands.length} draw commands, over the limit of ${MAX_COMMANDS}` }, ms })
     else post({ t: "drawn", wid, req, commands: commands as unknown[][], ms })
   } catch (e) {
     if (trapped(e, wid)) return
