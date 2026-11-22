@@ -256,6 +256,9 @@ pub struct Vm {
     pub jobs: VecDeque<Job>,
     pub inbox: VecDeque<(Id, crate::host::Settlement)>,
     pub coroutines: Vec<Coroutine>,
+    /// Coroutines whose async function finished, for the next calls to reuse: nothing refers to them any more, and
+    /// kept they would keep their promises reachable for the rest of the run.
+    free_coroutines: Vec<u32>,
     pub logs: Vec<String>,
     pub host: crate::host::RunHost,
     /// Boxed: it sits among the fields the dispatch loop never reads, and a larger one moved `stack` out of the
@@ -398,6 +401,7 @@ impl Vm {
             jobs: VecDeque::new(),
             inbox: VecDeque::new(),
             coroutines: Vec::new(),
+            free_coroutines: Vec::new(),
             logs: Vec::new(),
             host,
             limits: Box::new(limits),
@@ -1408,11 +1412,7 @@ impl Vm {
             } else {
                 Some(self.new_promise())
             };
-            self.coroutines.push(Coroutine {
-                saved: None,
-                promise,
-            });
-            FrameKind::Async(self.coroutines.len() as u32 - 1)
+            FrameKind::Async(self.new_coroutine(promise))
         } else {
             FrameKind::Normal
         };
@@ -1992,6 +1992,7 @@ impl Vm {
                 FrameKind::Async(c) if !fatal => {
                     let result = match self.coroutines[c as usize].promise {
                         Some(p) => {
+                            self.free_coroutine(c);
                             self.reject(p, e);
                             Value::Obj(p)
                         }
@@ -2153,20 +2154,12 @@ impl Vm {
                 FrameKind::Generator(g, _) if !f.is_base && !self.is_async_generator(g) => {}
                 // An async generator, which runs from native code, parks as its `await` does.
                 FrameKind::Generator(g, _) if f.is_base && self.is_async_generator(g) => {
-                    self.coroutines.push(Coroutine {
-                        saved: None,
-                        promise: None,
-                    });
-                    return Some(self.coroutines.len() as u32 - 1);
+                    return Some(self.new_coroutine(None));
                 }
                 FrameKind::Generator(..) => return None,
                 // A promise job's, or the program result's crossing, run as the base of a resumable run.
                 FrameKind::Native(..) if f.is_base && i == 0 => {
-                    self.coroutines.push(Coroutine {
-                        saved: None,
-                        promise: None,
-                    });
-                    return Some(self.coroutines.len() as u32 - 1);
+                    return Some(self.new_coroutine(None));
                 }
                 FrameKind::Normal | FrameKind::Native(..) if f.is_base => return None,
                 FrameKind::Normal | FrameKind::Native(..) => {}
@@ -2343,6 +2336,38 @@ impl Vm {
     }
 
     /// Resumes a suspended async function with the settled value of what it awaited.
+    /// A coroutine record for an async function (with its promise) or a park: a free one again, or a new one.
+    fn new_coroutine(&mut self, promise: Option<Id>) -> u32 {
+        match self.free_coroutines.pop() {
+            Some(c) => {
+                self.coroutines[c as usize].promise = promise;
+                c
+            }
+            None => {
+                self.coroutines.push(Coroutine {
+                    saved: None,
+                    promise,
+                });
+                self.coroutines.len() as u32 - 1
+            }
+        }
+    }
+
+    /// Frees a coroutine record nothing refers to any more. Its saved frame, emptied when it was restored, stays for
+    /// the next one to reuse.
+    fn free_coroutine(&mut self, c: u32) {
+        let co = &mut self.coroutines[c as usize];
+        co.promise = None;
+        if co
+            .saved
+            .as_ref()
+            .is_some_and(|s| s.frame.is_some() || !s.stack.is_empty() || !s.above.is_empty())
+        {
+            co.saved = None;
+        }
+        self.free_coroutines.push(c);
+    }
+
     pub fn resume_coroutine(&mut self, c: u32, outcome: Result<Value, Value>) -> Result<(), Value> {
         let Some(mut saved) = self.coroutines[c as usize].saved.take() else {
             return Ok(());
@@ -3960,6 +3985,7 @@ impl Vm {
                             FrameKind::Normal | FrameKind::Native(..) => v,
                             FrameKind::Async(c) => match self.coroutines[c as usize].promise {
                                 Some(p) => {
+                                    self.free_coroutine(c);
                                     self.resolve_promise(p, v);
                                     Value::Obj(p)
                                 }

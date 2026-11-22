@@ -124,3 +124,18 @@ fn no_limit_by_default() {
 fn a_zero_limit_is_refused() {
     let _ = capped(0);
 }
+
+#[test]
+fn finished_async_functions_dont_pile_up() {
+    // Each call's record and promise go once it has finished: 100,000 calls fit in 256 KB.
+    let rt = capped(256 * 1024);
+    for code in [
+        "let resolveNext = null; const frame = async () => new Promise((r) => { resolveNext = r }); let i = 0; async function main() { while (i < 100000) { const p = frame(); resolveNext(i); await p; i++ } return i } return await main()",
+        "let resolveNext = null; const frame = () => new Promise((r) => { resolveNext = r }); let i = 0; async function main() { while (i < 100000) { const p = frame(); resolveNext(i); await p; i++ } return i } return await main()",
+        "const f = async () => 1; let i = 0; while (i < 100000) { await f(); i++ } return i",
+        "const f = async (i) => { try { await null; throw new Error('x' + i) } catch (e) { return i } }; let i = 0; while (i < 100000) { await f(i); i++ } return i",
+    ] {
+        let result = rt.execute(code).json().map_err(|d| d.message_lossy());
+        assert_eq!(result, Ok(json!(100000)), "{code}");
+    }
+}
