@@ -47,7 +47,8 @@
 //   `compile` (`{ ok: true }`, or `{ ok: false, error }` with the diagnostic, when `outcome` is its source's run), and
 //   runs the compiled program twice in the same runtime: `outcome`, then `again`.
 // - `outcome` and `resume`: the run's `Result` as the reference gives it (`ok`, `value` or `error` with `kind`,
-//   `message` and `suggestions?`, `warnings?`, `logs?`, `truncated?`, `metadata`).
+//   `message` and `suggestions?`, `warnings?`, `logs?`, `truncated?`, `metadata`), with each `Host.functionMarker` in
+//   `value` as `{ functionMarker: true }`.
 // - A suspension runs the program until `never`, `grab`, `wait` or the durable `job`'s `wait` is first called,
 //   suspends it (`program.suspend()`), then: on a `SuspendError`, records `suspend: { ok: false, message, running }`
 //   and interrupts the run; on success, records `suspend: { ok: true, metadata, same }` (the saved header's
@@ -159,21 +160,33 @@ const make = (entry: Entry) => {
 
 const named = (entry: Entry) => ({ ...entry, runId: entry.runId ?? "run" })
 
+// A result with its function markers spelled out, which JSON would leave out.
+const marks = (v: unknown): unknown =>
+  typeof v === "symbol"
+    ? { functionMarker: true }
+    : Array.isArray(v)
+      ? v.map(marks)
+      : v !== null && typeof v === "object"
+        ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, marks(x)]))
+        : v
+const shown = <T extends { ok: unknown }>(result: T): T =>
+  result.ok === true ? { ...result, value: marks((result as { value?: unknown }).value) } : result
+
 const execute = async (entry: Entry) => {
   const made = make(entry)
   const options = { runId: named(entry).runId }
   if (entry.compiled !== true) {
     const result = await Effect.runPromise(made.runtime.execute(entry.code, options))
-    return { ...named(entry), outcome: result, log: made.log }
+    return { ...named(entry), outcome: shown(result), log: made.log }
   }
   const compiled = made.runtime.compile(entry.code)
   if (!compiled.ok) {
     const result = await Effect.runPromise(made.runtime.execute(entry.code, options))
-    return { ...named(entry), compile: compiled, outcome: result, log: made.log }
+    return { ...named(entry), compile: compiled, outcome: shown(result), log: made.log }
   }
   const outcome = await Effect.runPromise(made.runtime.execute(compiled.compiled, options))
   const again = await Effect.runPromise(made.runtime.execute(compiled.compiled, options))
-  return { ...named(entry), compile: { ok: true }, outcome, again, log: made.log }
+  return { ...named(entry), compile: { ok: true }, outcome: shown(outcome), again: shown(again), log: made.log }
 }
 
 // The program an entry runs: its source, or with `compiled`, what `runtime.compile` made of it.
@@ -202,19 +215,20 @@ const suspend = async (entry: Entry) => {
   const outcome = suspended.success
   const ran = await Effect.runPromise(Fiber.join(fiber))
   if (outcome.ok !== "suspended")
-    return { ...named(entry), suspend: { ok: false, outcome }, made: made.state.made, log: made.log }
+    return { ...named(entry), suspend: { ok: false, outcome: shown(outcome) }, made: made.state.made, log: made.log }
   made.state.resumed = true
   const resumed = await Effect.runPromise(made.runtime.resume(ref.Language.toBytes(outcome.state)).run())
   return {
     ...named(entry),
     suspend: { ok: true, metadata: outcome.state.header.metadata, same: ran === outcome },
-    resume: resumed,
+    resume: shown(resumed),
     made: made.state.made,
     log: made.log,
   }
 }
 
 const drop = { functions: "drop" }
+const mark = { functions: "mark" }
 const wait = { promises: "await" }
 const executes: Array<Entry> = [
   // Sync, async and sync-thenable functions.
@@ -273,6 +287,28 @@ const executes: Array<Entry> = [
     translate: drop,
   },
   { code: `note({ p: Promise.resolve(1) })`, translate: drop },
+  // functions: "mark": `Host.functionMarker` where each function was; it cannot come back.
+  {
+    code: `const e = new Error("x"); e.f = () => 1
+note({ q: "x", format(v) { return v }, nested: { f: Math.max, list: [class A {}, note.bind(null)] } }, [1, () => 2, note], () => 3, new Map([["k", () => 1]]), new Set([() => 1]), e)`,
+    translate: mark,
+  },
+  { code: `note({ f() {}, p: load(1) }, Promise.resolve([() => 2]))`, translate: { functions: "mark", promises: "await" } },
+  { code: `return await load({ f() {} })`, translate: mark },
+  { code: `try { await load([() => 1]) } catch (e) { return [e.name, e.message] }`, translate: mark },
+  { code: `return [takes({ read: open().read, f() {} }), takes(() => 1)]`, translate: mark },
+  { code: `note({ p: Promise.resolve(1) })`, translate: mark },
+  // The result marks its functions too, on the fast path and in the walk (a promise, a `toJSON`).
+  {
+    code: `const e = new Error("x"); e.f = () => 1
+return { a: 1, f() {}, list: [() => 1, 2, double], s: new Set([() => 1]), e, m: new Map([["k", () => 1]]), api: api.issues.list, read: open().read, n: { g: class {} } }`,
+    translate: mark,
+  },
+  { code: `return () => 1`, translate: mark },
+  { code: `return [{ p: load(1).then(() => ({ f() {} })), t: { toJSON() { return () => 1 } } }, Promise.resolve([() => 1])]`, translate: mark },
+  { code: `return { a: 1, f() {}, list: [() => 1] }`, translate: drop },
+  { code: `return { f() {}, list: [() => 1, "x".repeat(20)] }`, translate: mark, limits: { maxOutputBytes: 30 } },
+  { code: `return { f() {}, list: [() => 1, "x".repeat(10)] }`, translate: mark, limits: { maxOutputBytes: 30 } },
   // promises: "await".
   {
     code: `const slow = (async () => { await null; await null; return "slow" })()
@@ -412,6 +448,10 @@ const suspensions: Array<Entry> = [
   { code: `return (await job()) + 1`, runId: "d" },
   { code: `return (await job()) + 1`, runId: "d", compiled: true },
   { code: `const a = job(1, { b: [2] }); const b = job(); return [await a, await b, count()]`, runId: "d" },
+  // functions: "mark" keeps a call's markers across a suspend.
+  { code: `return (await job({ on() {} }, [() => 1, 2])) + 1`, runId: "d", translate: mark },
+  { code: `return [await wait({ on() {} }, [() => 1]), 1]`, runId: "i", translate: mark },
+  { code: `const on = () => 1; await wait(); return { on, list: [on, await load(1)] }`, runId: "i", translate: mark },
   // promises: "await" keeps waiting across a suspend.
   { code: `return [note({ n: wait() }), await wait()]`, runId: "t", translate: wait },
   // Accessors and their halves are saved with the run.

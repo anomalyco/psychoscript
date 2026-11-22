@@ -39,6 +39,7 @@ fn check(name: &str, code: &str, expected: &Json, future: bool) -> Result<(), St
     let translate = Translate {
         functions: match expected["translate"]["functions"].as_str() {
             Some("drop") => TranslateFunctions::Drop,
+            Some("mark") => TranslateFunctions::Mark,
             _ => TranslateFunctions::Error,
         },
         promises: match expected["translate"]["promises"].as_str() {

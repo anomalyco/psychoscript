@@ -1426,8 +1426,9 @@ pub(crate) fn function_name(vm: &Vm, v: &Value) -> String {
 
 /// A program value copied out for a host function, as the reference's `toHost` copies it under the runtime's
 /// translation. A function that came from a host result crosses back as the host function when the call takes
-/// functions (`back`). Otherwise a function fails the call, or is left out under `functions: drop` (`None`: an
-/// object's key is skipped, an array's item is `null`, a Map's or Set's is undefined). A promise fails the call, or
+/// functions (`back`). Otherwise a function fails the call, is left out under `functions: drop` (`None`: an
+/// object's key is skipped, an array's item is `null`, a Map's or Set's is undefined), or is a
+/// [`HostValue::FunctionMarker`] under `functions: mark`. A promise fails the call, or
 /// under `promises: await` is its value once fulfilled; one that hasn't fulfilled goes in `waiting`, for the call to
 /// wait for.
 fn to_host(
@@ -1469,9 +1470,11 @@ fn to_host(
         *back = true;
         return Ok(Some(HostValue::Function(f)));
     }
-    if vm.host.translate.functions == TranslateFunctions::Drop && vm.heap[id as usize].is_callable()
+    if vm.host.translate.functions != TranslateFunctions::Error
+        && vm.heap[id as usize].is_callable()
     {
-        return Ok(None);
+        return Ok((vm.host.translate.functions == TranslateFunctions::Mark)
+            .then_some(HostValue::FunctionMarker));
     }
     if cx.seen.contains(&id) {
         return Err(vm.type_error(&format!("{} contains a circular value.", cx.label())));
@@ -1651,6 +1654,10 @@ fn from_host(
             wrap(vm, Callee::Fn(f.clone()), label, place, owner)
         }
         HostValue::Durable(f) => wrap(vm, Callee::Durable(f.clone()), label, place, None),
+        HostValue::FunctionMarker => {
+            let msg = format!("{label} produced a function marker, which the program cannot hold.");
+            return Err(vm.type_error(&msg));
+        }
         HostValue::Namespace(ns) => match &place.global {
             Some(global) => {
                 let name = vm.atoms.intern(label);

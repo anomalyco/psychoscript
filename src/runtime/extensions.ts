@@ -1,4 +1,13 @@
-import { type Call, DurableFn, Fn, HostWork, Namespace, promiseControllers, type Snapshot } from "./contract.js"
+import {
+  type Call,
+  DurableFn,
+  Fn,
+  functionMarker,
+  HostWork,
+  Namespace,
+  promiseControllers,
+  type Snapshot,
+} from "./contract.js"
 import type { HostTarget } from "../host.js"
 import { BufferObj } from "../stdlib/buffer.js"
 import { StreamingResponse } from "../streaming-response.js"
@@ -116,7 +125,9 @@ export const hostGlobals = <R>(
       back.push(host)
       return host
     }
-    if (translate.functions === "drop" && typeofValue(value) === "function") return OMITTED
+    if (translate.functions !== "error" && typeofValue(value) === "function") {
+      return translate.functions === "drop" ? OMITTED : functionMarker
+    }
     if (seen.has(value as object)) throw typeError(`${label} contains a circular value.`)
     if (waiting !== undefined && value instanceof PromiseObj) {
       if (value.state !== "fulfilled") {
@@ -563,6 +574,7 @@ const isPrimitive = (value: unknown): value is string | number | boolean | null 
   typeof value === "boolean"
 
 const describeHost = (value: unknown): string => {
+  if (value === functionMarker) return "a function marker"
   if (typeof value !== "object" || value === null) return `a ${typeof value}`
   const name = (value as { constructor?: { name?: string } }).constructor?.name
   if (name === undefined || name === "") return "an object"

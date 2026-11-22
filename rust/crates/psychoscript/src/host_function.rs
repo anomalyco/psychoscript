@@ -305,6 +305,10 @@ pub enum HostValue {
     TypedArray(TypedArray),
     /// A live HTTP response whose body the host streams, the reference's `StreamingResponse`.
     Response(crate::streaming::StreamingResponse),
+    /// A program function inside an argument under [`TranslateFunctions::Mark`](crate::TranslateFunctions::Mark), the
+    /// reference's `Host.functionMarker`: nothing to call and no identity, only where a function was. `to_json`
+    /// leaves it out, as it would the function. It cannot be passed back.
+    FunctionMarker,
     /// What a host function throws (`Err(HostValue::Interrupt)`) to interrupt the whole run, as the reference's
     /// host functions do with `Effect.interrupt`: the run ends with [`Interrupted`](crate::Interrupted).
     Interrupt,
@@ -372,6 +376,7 @@ impl HostValue {
             | HostValue::Function(_)
             | HostValue::Durable(_)
             | HostValue::Namespace(_)
+            | HostValue::FunctionMarker
             | HostValue::Interrupt => return None,
             HostValue::Null => Json::Null,
             HostValue::Bool(b) => Json::Bool(*b),

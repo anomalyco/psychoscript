@@ -11,7 +11,7 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
 use psychoscript::{
-    Diagnostic, DurableFunction, Failure, HostFunction, HostValue, Json, Limits, Namespace,
+    Data, Diagnostic, DurableFunction, Failure, HostFunction, HostValue, Json, Limits, Namespace,
     Outcome, ProgramOptions, Resolved, Returned, RunOutcome, Runtime, Translate,
     TranslateFunctions, TranslatePromises, to_bytes,
 };
@@ -321,6 +321,7 @@ fn runtime(entry: &Json, state: &State) -> Runtime {
     let translate = Translate {
         functions: match entry["translate"]["functions"].as_str() {
             Some("drop") => TranslateFunctions::Drop,
+            Some("mark") => TranslateFunctions::Mark,
             _ => TranslateFunctions::Error,
         },
         promises: match entry["translate"]["promises"].as_str() {
@@ -353,10 +354,25 @@ fn diagnostic(d: &Diagnostic) -> Json {
     out
 }
 
+/// A result as `shown` in `conformance/host.ts` writes it: each function marker as `{ functionMarker: true }`.
+fn marks(d: &Data) -> Json {
+    match d {
+        Data::FunctionMarker => json!({ "functionMarker": true }),
+        Data::Array(items) => Json::Array(items.iter().map(marks).collect()),
+        Data::Object(fields) => Json::Object(
+            fields
+                .iter()
+                .map(|(k, v)| (k.to_string_lossy().into_owned(), marks(v)))
+                .collect(),
+        ),
+        other => other.to_json(),
+    }
+}
+
 /// The run's `Result` as the reference gives it.
 fn result(o: &Outcome) -> Json {
     let mut out = match &o.result {
-        Ok(value) => json!({ "ok": true, "value": value.to_json() }),
+        Ok(value) => json!({ "ok": true, "value": marks(value) }),
         Err(d) => json!({ "ok": false, "error": diagnostic(d) }),
     };
     if !o.warnings.is_empty() {

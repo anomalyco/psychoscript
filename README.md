@@ -152,7 +152,9 @@ except typed arrays (below).
   `Uint8Array` still crosses as a copy.
 - **`translate`** (runtime option): what happens to a program function or promise inside an argument. By default both
   fail the call; `{ functions: "drop", promises: "await" }` drops functions (as `JSON.stringify` does) and awaits
-  promises.
+  promises. `functions: "mark"` puts `Host.functionMarker` (a symbol; `HostValue::FunctionMarker` and
+  `Data::FunctionMarker` in Rust) where each function was, in arguments and in the run's result (typed `Data`: JSON
+  plus the marker), so a host can tell which props held one (`onPress`, say) without calling it.
 
 ```ts
 import { Host, Runtime } from "psychoscript"

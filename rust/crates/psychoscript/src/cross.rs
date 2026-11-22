@@ -183,7 +183,7 @@ impl FastWalk {
             Value::Obj(id) => *id,
         };
         if vm.heap[id as usize].is_callable() {
-            return Ok(Some(None));
+            return Ok(Some(marked(vm)));
         }
         if matches!(vm.heap[id as usize].kind, Kind::Promise(_)) {
             return Ok(None);
@@ -296,6 +296,13 @@ impl FastWalk {
     }
 }
 
+/// A function in the result: under `functions: mark`, the marker (see [`crate::data::FUNCTION_MARKER`]); otherwise it
+/// is left out.
+pub(crate) fn marked(vm: &Vm) -> Option<Json> {
+    (vm.host.translate.functions == crate::TranslateFunctions::Mark)
+        .then(|| Json::String(crate::data::FUNCTION_MARKER.to_owned()))
+}
+
 /// An object `{}` makes: an ordinary object whose prototype is `Object.prototype`.
 fn is_plain(vm: &Vm, id: Id) -> bool {
     let o = &vm.heap[id as usize];
@@ -324,7 +331,8 @@ fn builtin_to_json(vm: &mut Vm, id: Id, f: &Value) -> Option<Json> {
     })
 }
 
-/// The reference's `toPlainJson`: what the walk built, as host JSON; `None` for undefined.
+/// The reference's `toPlainJson`: what the walk built, as host JSON; `None` for undefined. A function here is one the
+/// result marks: the walk leaves out every other.
 fn plain_json(vm: &Vm, v: &Value) -> Option<Json> {
     Some(match v {
         Value::Undef | Value::Uninit => return None,
@@ -340,6 +348,9 @@ fn plain_json(vm: &Vm, v: &Value) -> Option<Json> {
                     .map(|i| plain_json(vm, i).unwrap_or(Json::Null))
                     .collect(),
             ),
+            _ if vm.heap[*id as usize].is_callable() => {
+                Json::String(crate::data::FUNCTION_MARKER.to_owned())
+            }
             _ => {
                 let mut out = serde_json::Map::new();
                 for p in &vm.heap[*id as usize].props.items {
@@ -895,7 +906,14 @@ fn classify(vm: &mut Vm, v: &Value, ancestors: &[Value]) -> Result<Class, Value>
         Value::Obj(id) => *id,
     };
     if vm.heap[id as usize].is_callable() {
-        return Ok(Class::Undefined);
+        // A function the result marks is kept, and `plain_json` makes it the marker.
+        return Ok(
+            if vm.host.translate.functions == crate::TranslateFunctions::Mark {
+                Class::Data
+            } else {
+                Class::Undefined
+            },
+        );
     }
     match vm.heap[id as usize].kind {
         Kind::Bytes(_) => {

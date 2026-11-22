@@ -12,6 +12,9 @@
 - `limits.maxHeapBytes`: an optional cap on what a run can still reach, measured in a fixed size model rather than
   process memory, so garbage never counts and the result is the same everywhere. A run over it stops with the new
   diagnostic kind `MemoryLimitExceeded`; a suspended run keeps its limit.
+- `translate: { functions: "mark" }`: a program function inside a host call's argument, or in the run's result,
+  crosses as `Host.functionMarker` (Rust: `HostValue::FunctionMarker`, `Data::FunctionMarker`) instead of failing
+  the call or being left out.
 
 ## 0.2.1
 
