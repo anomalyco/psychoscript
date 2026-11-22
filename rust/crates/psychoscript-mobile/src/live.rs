@@ -383,6 +383,8 @@ pub(crate) struct Control {
     transport: Option<Arc<dyn FetchTransport>>,
     /// With an encoder, posts as its bytes, not JSON; the failure it threw at a post.
     encoded: Option<Mutex<Box<dyn EncodePosts>>>,
+    /// The encoder's boundary depth.
+    max_value_depth: Option<usize>,
     /// A program error that ended the run at once (a view the encoder refused).
     ended: Mutex<Option<PsychoScriptError>>,
     thrown: Thrown,
@@ -421,6 +423,7 @@ impl Control {
             options,
             input_name,
             transport,
+            max_value_depth: encoder.as_ref().and_then(|e| e.0.max_value_depth()),
             encoded: encoder.map(|e| Mutex::new(e.0.live())),
             ended: Mutex::new(None),
             thrown: Thrown::default(),
@@ -588,6 +591,7 @@ impl Control {
         };
         let limits = Limits {
             max_heap_bytes: self.options.max_heap_bytes,
+            max_value_depth: self.max_value_depth,
             ..Default::default()
         };
         Runtime::make()

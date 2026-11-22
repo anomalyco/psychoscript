@@ -17,6 +17,11 @@ pub trait EncodeValues: Send + Sync {
     }
     /// The host global `run_bytes` defines; the program passes its output, or part of it, to it.
     fn emit_name(&self) -> &str;
+    /// The deepest nesting a value may have where it crosses to or from the host in runs with this encoder (the
+    /// language's `max_value_depth`); `None` keeps its default, 32.
+    fn max_value_depth(&self) -> Option<usize> {
+        None
+    }
     /// What one `run_bytes` keeps between its emit calls and its result, for a run with this input.
     fn step(&self, input: &HostValue) -> Box<dyn EncodeStep>;
     /// What a live run keeps between its posts.
@@ -208,6 +213,9 @@ mod widget {
         }
         fn emit_name(&self) -> &str {
             widget_wire::EMIT
+        }
+        fn max_value_depth(&self) -> Option<usize> {
+            Some(widget_wire::MAX_VALUE_DEPTH)
         }
         fn step(&self, input: &HostValue) -> Box<dyn EncodeStep> {
             let draw = input.get("phase").and_then(HostValue::as_str) == Some("draw");

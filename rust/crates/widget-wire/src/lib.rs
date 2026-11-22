@@ -44,6 +44,10 @@ pub const EMIT: &str = "__widget_emit";
 pub const STEP: &str = "\nreturn __widget_native_step(__input())";
 pub const LIVE: &str = "\nreturn await __widget_live(__input(), true)";
 
+/// The boundary value depth a native host runs with (`widgets.md`, Native hosts): the deepest value of a view of
+/// [`LEVELS`] levels, 1 + 2 × 99 + 3.
+pub const MAX_VALUE_DEPTH: usize = 202;
+
 /// The prelude<->host contract this host implements (`widgets.md`, Protocol).
 pub const PROTOCOL: u32 = 2;
 /// A program built for an older protocol: a program error in the phase of the step or run refused.

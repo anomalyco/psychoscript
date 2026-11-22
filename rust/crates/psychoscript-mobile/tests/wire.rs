@@ -1083,3 +1083,96 @@ fn step_output_values_with_to_json_read_as_their_json_does() {
     .unwrap_err();
     assert_eq!(bin, json);
 }
+
+/// A view `levels` levels deep, columns down to a select (whose options' labels are the deepest values a valid view
+/// has: 1 + 2 × 99 + 3 = 202 at 100 levels), its handler at the bottom.
+fn deep_view(levels: usize) -> String {
+    format!(
+        "function deep() {{\n  let v = ui.select([\"a\"], {{ onChange: () => 1 }})\n  for (let i = 1; i < {levels}; i++) v = ui.column([v])\n  return v\n}}\n"
+    )
+}
+
+#[test]
+fn views_of_100_levels_cross_and_deeper_ones_fail_the_view() {
+    let step = |levels: usize| {
+        program(format!(
+            "{PRELUDE}\n{}function view() {{ return deep() }}{EMIT}",
+            deep_view(levels)
+        ))
+        .run_bytes(
+            r#"{"phase":"init","data":null}"#.into(),
+            ValueEncoder::widget(),
+            RunOptions::default(),
+        )
+    };
+    let Output::Step(s) = decode_output(&step(100).unwrap()).unwrap() else {
+        panic!()
+    };
+    let mut node = &s.view;
+    let mut path = "0".to_owned();
+    for _ in 1..100 {
+        node = &node.children()[0];
+        path.push_str("/0");
+    }
+    assert!(
+        matches!(node, Node::Select { id, .. } if *id == path),
+        "{node:?}"
+    );
+    // 101 levels cross (as values 204 deep they don't: the prelude says so) and fail the view.
+    for levels in [101, 102, 150] {
+        assert_eq!(
+            step(levels),
+            Err(PsychoScriptError::Runtime {
+                kind: "InvalidView".into(),
+                reason: widget_wire::DEEP.into(),
+                line: None,
+                column: None,
+            }),
+            "{levels}"
+        );
+    }
+
+    // Live: the render of 100 levels returns its handler; 101 ends the run.
+    for (levels, ok) in [(100, true), (101, false)] {
+        let source = format!(
+            "{PRELUDE}\n{}async function main() {{ widget.render(deep()) }}{NATIVE_LIVE}",
+            deep_view(levels)
+        );
+        let (h, rx) = handler();
+        let run = program(source)
+            .start_live(
+                r#"{"data":null}"#.into(),
+                h,
+                LiveOptions::default(),
+                None,
+                Some(ValueEncoder::widget()),
+            )
+            .unwrap();
+        match next(&rx) {
+            Event::Bytes(list) if ok => {
+                let Post::Render(mut node) = decode_post(&list[0]).unwrap() else {
+                    panic!()
+                };
+                for _ in 1..100 {
+                    node = node.children()[0].clone();
+                }
+                assert!(matches!(node, Node::Select { .. }), "{node:?}");
+                assert!(
+                    run.is_running(),
+                    "a view with a handler keeps the run going"
+                );
+            }
+            Event::Exit(LiveExit::Failed { error }) if !ok => assert_eq!(
+                error,
+                PsychoScriptError::Runtime {
+                    kind: "InvalidView".into(),
+                    reason: widget_wire::DEEP.into(),
+                    line: None,
+                    column: None,
+                }
+            ),
+            _ => panic!("{levels}"),
+        }
+        run.stop();
+    }
+}
