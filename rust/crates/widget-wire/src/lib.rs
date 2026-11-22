@@ -17,6 +17,7 @@ pub mod draw;
 mod encode;
 mod gpu;
 mod json;
+mod native;
 pub mod node;
 mod schema;
 pub mod step;
@@ -24,9 +25,11 @@ pub mod step;
 pub use decode::{DecodeError, Output, Post, decode_output, decode_post};
 pub use draw::{Command, DrawOutput};
 pub use encode::{
-    EncodeError, INVALID_DATA, INVALID_DRAW, INVALID_GPU, INVALID_VIEW, encode_output, encode_post,
+    EncodeError, INVALID_DATA, INVALID_DRAW, INVALID_GPU, INVALID_VIEW, LivePosts, PostError,
+    encode_output, encode_output_native, encode_post,
 };
 pub use gpu::{Arg, Batch};
+pub use native::{Canvas, Found, IsMarker};
 pub use node::Node;
 pub use psychoscript::HostValue;
 pub use schema::{MAX_ARG_DEPTH, MAX_DEPTH, MAX_GPU_BYTES, MAX_GPU_OPS};

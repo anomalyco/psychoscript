@@ -10,6 +10,7 @@ use crate::draw::{
     Cap, Color, Fill, Gradient, GradientShape, MAX_COMMANDS, Paint, TextAlign, TextOptions, Token,
 };
 use crate::json;
+use crate::native::{Found, IsMarker};
 use crate::schema::*;
 
 /// Why a value can't be written: a program error in the phase its kind names (`widgets-binary.md`, Errors).
@@ -38,6 +39,16 @@ pub const INVALID_DATA: &str = "InvalidDataValue";
 /// event step's `{ state, view, submit?, dismiss?, send? }` as `01 S`. Fails for an invalid draw (`InvalidDraw`) or
 /// a value that isn't a step output.
 pub fn encode_output(v: &HostValue) -> Result<Vec<u8>, EncodeError> {
+    output(v, None)
+}
+
+/// [`encode_output`] for a native host, whose program runs `__widget_step(input, true)`: the view, as the program
+/// built it, is walked as it is encoded (`widgets.md`, Native hosts), `is_marker` telling its handlers.
+pub fn encode_output_native(v: &HostValue, is_marker: IsMarker) -> Result<Vec<u8>, EncodeError> {
+    output(v, Some(is_marker))
+}
+
+fn output(v: &HostValue, native: Option<IsMarker>) -> Result<Vec<u8>, EncodeError> {
     let v = &*as_json(v);
     let fail = |kind| move |message| EncodeError { kind, message };
     if !matches!(v, HostValue::Object(_)) {
@@ -48,9 +59,104 @@ pub fn encode_output(v: &HostValue) -> Result<Vec<u8>, EncodeError> {
     let mut out = vec![VERSION];
     match field(v, "commands") {
         Some(commands) => draw_section(commands, &mut out).map_err(fail(INVALID_DRAW))?,
-        None => step(v, &mut out).map_err(fail(INVALID_VIEW))?,
+        None => step(v, &mut out, native).map_err(fail(INVALID_VIEW))?,
     }
     Ok(out)
+}
+
+/// A native host's live posts (`widgets-live.md`): each render is walked as it is encoded, and a draw names its canvas
+/// by key, which the last render's canvases map to the canvas's id.
+#[derive(Debug)]
+pub struct LivePosts {
+    is_marker: IsMarker,
+    last: Found,
+}
+
+/// Why a native post fails: an invalid post (a program error), or an `Error` to throw at the post, which the program
+/// can catch (a draw for a key the last render has no canvas for, or a GPU canvas).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PostError {
+    Invalid(EncodeError),
+    Throw(String),
+}
+
+impl LivePosts {
+    pub fn new(is_marker: IsMarker) -> LivePosts {
+        LivePosts {
+            is_marker,
+            last: Found::default(),
+        }
+    }
+
+    /// What the last render found: its handler ids and canvases.
+    pub fn last_render(&self) -> &Found {
+        &self.last
+    }
+
+    /// `message` as bytes, or `None` when `keep` is false (a post dropped over the rate: a render is still walked),
+    /// and for a render whether its view has a handler, which `post` returns.
+    pub fn post(
+        &mut self,
+        m: &HostValue,
+        keep: bool,
+    ) -> Result<(Option<Vec<u8>>, Option<bool>), PostError> {
+        let invalid = |kind| {
+            move |e: String| {
+                PostError::Invalid(EncodeError {
+                    kind,
+                    message: format!("invalid post: {e}"),
+                })
+            }
+        };
+        match field(m, "type").and_then(HostValue::as_str) {
+            Some("render") => {
+                let m = &*as_json(m);
+                let node = field(m, "node").unwrap_or(&HostValue::Null);
+                let mut s = Streams::default();
+                let found = crate::native::walk(keep.then_some(&mut s), node, self.is_marker)
+                    .map_err(invalid(INVALID_VIEW))?;
+                let handled = !found.handlers.is_empty();
+                self.last = found;
+                let bytes = keep.then(|| {
+                    let mut out = vec![VERSION, RENDER];
+                    s.finish_into(&mut out);
+                    out
+                });
+                Ok((bytes, Some(handled)))
+            }
+            Some("draw") if field(m, "key").is_some() => {
+                let m = &*as_json(m);
+                let key = match field(m, "key") {
+                    Some(HostValue::String(k)) => k.to_string_lossy().into_owned(),
+                    Some(HostValue::Number(n)) => crate::native::js_number(*n),
+                    _ => return Err(invalid(INVALID_DRAW)("a draw's key is a string".into())),
+                };
+                let Some(canvas) = self.last.canvases.iter().find(|c| c.key == key) else {
+                    return Err(PostError::Throw(format!(
+                        "No canvas with key \"{key}\" in the rendered view"
+                    )));
+                };
+                if canvas.wgsl {
+                    return Err(PostError::Throw(format!(
+                        "Canvas \"{key}\" is drawn by its wgsl; it takes no draw commands"
+                    )));
+                }
+                if !keep {
+                    return Ok((None, None));
+                }
+                let mut out = vec![VERSION, DRAW];
+                put_str(&mut out, &canvas.id);
+                let commands = field(m, "commands")
+                    .ok_or_else(|| invalid(INVALID_DRAW)("a draw post needs commands".into()))?;
+                draw_section(commands, &mut out).map_err(invalid(INVALID_DRAW))?;
+                Ok((Some(out), None))
+            }
+            _ if keep => encode_post(m)
+                .map(|b| (Some(b), None))
+                .map_err(PostError::Invalid),
+            _ => Ok((None, None)),
+        }
+    }
 }
 
 /// A live post (`__host.post(message)`). Fails for an invalid post: a render's view (`InvalidView`), a draw
@@ -159,15 +265,35 @@ fn as_json(v: &HostValue) -> Cow<'_, HostValue> {
     if plain(v) {
         Cow::Borrowed(v)
     } else {
-        Cow::Owned(
-            v.to_json()
-                .map_or(HostValue::Undefined, |j| HostValue::from_json(&j)),
-        )
+        Cow::Owned(json_view(v))
+    }
+}
+
+/// Arrays and objects as they are, other values as their JSON.
+fn json_view(v: &HostValue) -> HostValue {
+    match v {
+        HostValue::Array(items) => {
+            HostValue::Array(items.iter().map(|i| i.as_ref().map(json_view)).collect())
+        }
+        HostValue::Object(fields) => HostValue::Object(
+            fields
+                .iter()
+                .map(|(k, v)| (k.clone(), json_view(v)))
+                .collect(),
+        ),
+        HostValue::Undefined
+        | HostValue::Null
+        | HostValue::Bool(_)
+        | HostValue::Number(_)
+        | HostValue::String(_) => v.clone(),
+        other => other
+            .to_json()
+            .map_or(HostValue::Undefined, |j| HostValue::from_json(&j)),
     }
 }
 
 /// An object's field, absent when `undefined` (as JSON leaves it out).
-fn field<'a>(v: &'a HostValue, key: &str) -> Option<&'a HostValue> {
+pub(crate) fn field<'a>(v: &'a HostValue, key: &str) -> Option<&'a HostValue> {
     v.get(key).filter(|v| !matches!(v, HostValue::Undefined))
 }
 
@@ -199,7 +325,7 @@ fn lossy(s: &HostString) -> Cow<'_, str> {
 
 // ---- steps and views ----
 
-fn step(v: &HostValue, out: &mut Vec<u8>) -> Result<(), String> {
+fn step(v: &HostValue, out: &mut Vec<u8>, native: Option<IsMarker>) -> Result<(), String> {
     let submit = field(v, "submit").filter(|s| !json::skipped(s));
     let dismiss = matches!(field(v, "dismiss"), Some(HostValue::Bool(true)));
     let send = field(v, "send").filter(|s| matches!(s, HostValue::Object(_)));
@@ -228,33 +354,37 @@ fn step(v: &HostValue, out: &mut Vec<u8>) -> Result<(), String> {
         );
     }
     let mut s = Streams::default();
-    write_node(&mut s, field(v, "view").unwrap_or(&HostValue::Null), 0)?;
+    let view = field(v, "view").unwrap_or(&HostValue::Null);
+    match native {
+        Some(is_marker) => drop(crate::native::walk(Some(&mut s), view, is_marker)?),
+        None => write_node(&mut s, view, 0)?,
+    }
     s.finish_into(out);
     Ok(())
 }
 
 /// Section `N`'s three streams.
 #[derive(Default)]
-struct Streams {
+pub(crate) struct Streams {
     ints: Vec<u8>,
     floats: Vec<u8>,
     strs: Vec<u8>,
 }
 
 impl Streams {
-    fn int(&mut self, v: u32) {
+    pub(crate) fn int(&mut self, v: u32) {
         varint(&mut self.ints, v as u64);
     }
     fn f64(&mut self, v: f64) {
         self.floats.extend_from_slice(&v.to_le_bytes());
     }
-    fn str(&mut self, s: &str) {
+    pub(crate) fn str(&mut self, s: &str) {
         put_str(&mut self.strs, s);
     }
-    fn tag(&mut self, id: u32, kind: u32) {
+    pub(crate) fn tag(&mut self, id: u32, kind: u32) {
         self.int(id << 3 | kind);
     }
-    fn finish_into(&self, out: &mut Vec<u8>) {
+    pub(crate) fn finish_into(&self, out: &mut Vec<u8>) {
         out.reserve(31 + self.ints.len() + self.floats.len() + self.strs.len());
         out.push(b'N');
         varint(out, self.ints.len() as u64);
@@ -305,7 +435,7 @@ fn option(o: &Option<HostValue>) -> Option<SelectOption<'_>> {
 }
 
 /// One prop, when the format knows its key and its value has a shape the prop takes; otherwise it's left out.
-fn prop(s: &mut Streams, key: &str, v: &HostValue) {
+pub(crate) fn prop(s: &mut Streams, key: &str, v: &HostValue) {
     let id = prop_id(key);
     if id == 0 {
         return;
@@ -384,7 +514,7 @@ fn prop(s: &mut Streams, key: &str, v: &HostValue) {
     }
 }
 
-fn too_deep() -> String {
+pub(crate) fn too_deep() -> String {
     format!("the view nests deeper than {MAX_DEPTH} levels")
 }
 
@@ -407,7 +537,7 @@ fn flat_children<'a>(
     Ok(())
 }
 
-fn write_node(s: &mut Streams, v: &HostValue, depth: usize) -> Result<(), String> {
+pub(crate) fn write_node(s: &mut Streams, v: &HostValue, depth: usize) -> Result<(), String> {
     if depth > MAX_DEPTH {
         return Err(too_deep());
     }
@@ -494,7 +624,7 @@ impl DrawStreams {
 }
 
 /// A command list as section `D`, held to the budget and to Rune's rules for commands (`Command::from_value`).
-fn draw_section(commands: &HostValue, out: &mut Vec<u8>) -> Result<(), String> {
+pub(crate) fn draw_section(commands: &HostValue, out: &mut Vec<u8>) -> Result<(), String> {
     let HostValue::Array(list) = commands else {
         return Err("draw commands must be a list".into());
     };
