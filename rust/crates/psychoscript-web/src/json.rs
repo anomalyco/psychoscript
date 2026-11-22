@@ -132,6 +132,7 @@ fn skipped(v: &HostValue) -> bool {
         v,
         HostValue::Undefined
             | HostValue::Function(_)
+            | HostValue::FunctionMarker
             | HostValue::Durable(_)
             | HostValue::Namespace(_)
             | HostValue::Interrupt

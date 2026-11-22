@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use psychoscript::{
     Compiled, HostError, HostFunction, HostResult, HostValue, Interrupted, ProgramOptions,
-    RunOutcome, Runtime,
+    RunOutcome, Runtime, Translate, TranslateFunctions, TranslatePromises,
 };
 
 use crate::error::Error;
@@ -373,7 +373,11 @@ impl LiveRun {
             slice: None,
             stopping: false,
         }));
-        let runtime = runtime(&shared, input_name);
+        let mut runtime = runtime(&shared, input_name);
+        if options.native {
+            // A native run posts views as built: handler functions cross as markers.
+            runtime = runtime.translate(MARK);
+        }
         let future: RunFuture = Box::pin(async move {
             let program = runtime.program(&compiled, &ProgramOptions::new());
             program.run_resumable_async().await
@@ -636,6 +640,12 @@ fn next_timer(s: &Shared) -> Option<f64> {
         .map(|sleep| (sleep.deadline - now).max(0.0))
         .min_by(f64::total_cmp)
 }
+
+/// How a native run's functions cross into posts and results: as markers (widgets.md, "Native hosts").
+pub(crate) const MARK: Translate = Translate {
+    functions: TranslateFunctions::Mark,
+    promises: TranslatePromises::Error,
+};
 
 /// The runtime for one run: the input function and `__host`.
 fn runtime(shared: &Arc<Mutex<Shared>>, input_name: String) -> Runtime {

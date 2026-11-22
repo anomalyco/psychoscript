@@ -8,12 +8,11 @@ import type { ErrorInfo, FromWorker, LiveExit, StepOutput, ToWorker } from "./pr
 import { DRAW_TIMEOUT_MS, MAX_COMMANDS, STEP_TIMEOUT_MS } from "./protocol.js"
 
 /**
- * Native tree building (widgets.md, "Native hosts"): the prelude hands views over as built and the WebAssembly walks
- * them into the tree clients get (`runStep`, live `native`). Off until PsychoScript passes program functions as
- * markers (`translate.functions = "mark"`): until then handler props drop out of results and posts, and handlers
- * with them.
+ * Native tree building (widgets.md, "Native hosts"): the prelude hands views over as built, functions crossing as
+ * markers (`translate.functions = "mark"`), and the WebAssembly walks them into the tree clients get (`runStep`, live
+ * `native`).
  */
-const NATIVE = false
+const NATIVE = true
 const STEP_ENTRY = NATIVE ? "\nreturn __widget_step(__input(), true)" : "\nreturn __widget_step(__input())"
 const LIVE_ENTRY = NATIVE ? "\nreturn await __widget_live(__input(), true)" : "\nreturn await __widget_live(__input())"
 /** Longest one `pump` computes before letting this worker's event loop run (messages, timers). */

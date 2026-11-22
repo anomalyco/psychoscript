@@ -4,7 +4,7 @@ use psychoscript::{Compiled, Data, HostFunction, HostValue, Limits, Runtime};
 
 use crate::error::Error;
 use crate::json::Input;
-use crate::live::{LiveOptions, LiveRun};
+use crate::live::{LiveOptions, LiveRun, MARK};
 use crate::tree::Walk;
 
 /// A program compiled once, to run as often as needed: each run has its own VM. A run reads its JSON input through
@@ -35,7 +35,9 @@ impl Program {
         timeout_ms: Option<u64>,
         max_output_bytes: Option<u64>,
     ) -> Result<String, Error> {
-        let out = self.execute(input_json, timeout_ms)?.to_json_string();
+        let out = self
+            .execute(input_json, timeout_ms, false)?
+            .to_json_string();
         limit(out, max_output_bytes)
     }
 
@@ -48,7 +50,7 @@ impl Program {
         timeout_ms: Option<u64>,
         max_output_bytes: Option<u64>,
     ) -> Result<String, Error> {
-        let data = self.execute(input_json, timeout_ms)?;
+        let data = self.execute(input_json, timeout_ms, true)?;
         let mut out = String::new();
         match &data {
             Data::Object(fields) => {
@@ -79,7 +81,13 @@ impl Program {
         limit(out, max_output_bytes)
     }
 
-    fn execute(&self, input_json: &str, timeout_ms: Option<u64>) -> Result<Data, Error> {
+    /// One run's result; `mark`: functions in it cross as markers (a native step).
+    fn execute(
+        &self,
+        input_json: &str,
+        timeout_ms: Option<u64>,
+        mark: bool,
+    ) -> Result<Data, Error> {
         if timeout_ms == Some(0) {
             return Err(Error::invalid_input("timeout_ms must be at least 1"));
         }
@@ -90,7 +98,7 @@ impl Program {
             first: Some(first),
         }));
         let name = self.input_name.clone();
-        let runtime = Runtime::make()
+        let mut runtime = Runtime::make()
             .globals(move |_run| {
                 let slot = slot.clone();
                 [(
@@ -104,6 +112,9 @@ impl Program {
                 timeout_ms,
                 ..Limits::default()
             });
+        if mark {
+            runtime = runtime.translate(MARK);
+        }
         let outcome = runtime.execute(&self.compiled);
         drop(runtime);
         outcome

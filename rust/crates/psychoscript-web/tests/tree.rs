@@ -7,7 +7,9 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Instant;
 
-use psychoscript::{HostFunction, HostValue};
+use psychoscript::{
+    Data, HostFunction, HostValue, Runtime, Translate, TranslateFunctions, TranslatePromises,
+};
 use psychoscript_web::tree::Walk;
 use serde_json::Value;
 
@@ -101,6 +103,80 @@ fn every_fixture_walks_to_its_wire_view_byte_for_byte() {
     }
 }
 
+/// The prelude a fixture's program starts with (opencode `packages/widget/src/prelude.js` at widgets 60732569a).
+fn prelude() -> String {
+    std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/wire/prelude.js"),
+    )
+    .expect("the prelude")
+}
+
+/// Each fixture's program run natively on its input, with real function markers: the view in the run's result walks
+/// to exactly its wire view, with its handlers and canvases, and `Program::run_step` gives that same view.
+#[test]
+fn every_fixture_runs_natively_to_its_wire_view_byte_for_byte() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/wire");
+    let prelude = prelude();
+    let mut count = 0;
+    for f in fixtures() {
+        let fixture: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join(format!("{}.json", f.name))).expect("read"),
+        )
+        .expect("JSON");
+        let program = format!(
+            "{prelude}\n{}\nreturn __widget_step(__input(), true)",
+            fixture["source"].as_str().unwrap_or_default()
+        );
+        let input = host(&fixture["input"]);
+        let runtime = Runtime::make()
+            .globals(move |_run| {
+                let input = input.clone();
+                [("__input", HostFunction::new(move |_, _| input.clone()))]
+            })
+            .translate(Translate {
+                functions: TranslateFunctions::Mark,
+                promises: TranslatePromises::Error,
+            });
+        let result = runtime.execute(program.as_str()).result.expect(&f.name);
+        let view = result.get("view").expect("a view");
+        let mut out = String::new();
+        let tree = Walk::new().handlers().run(view, &mut out).expect(&f.name);
+        assert_eq!(out, f.wire, "{}: the view", f.name);
+        let handlers: BTreeMap<String, String> = tree
+            .handlers
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(id, event)| (id, event.to_owned()))
+            .collect();
+        assert_eq!(handlers, f.handlers, "{}: the handlers", f.name);
+        assert_eq!(
+            tree.has_handlers,
+            !f.handlers.is_empty(),
+            "{}: has_handlers",
+            f.name
+        );
+        let canvases: BTreeMap<String, String> = tree
+            .canvases
+            .into_iter()
+            .map(|(k, (id, _))| (k, id))
+            .collect();
+        assert_eq!(canvases, f.canvases, "{}: the canvases", f.name);
+        // The host's own entry point writes the same view into the step output.
+        let step = psychoscript_web::Program::new(&program, None)
+            .unwrap()
+            .run_step(&fixture["input"].to_string(), None, None)
+            .expect(&f.name);
+        assert!(
+            step.contains(&format!("\"view\":{}", f.wire)),
+            "{}: run_step's view",
+            f.name
+        );
+        assert!(matches!(result, Data::Object(_)));
+        count += 1;
+    }
+    assert_eq!(count, 37);
+}
+
 #[test]
 fn a_key_with_a_lone_surrogate_is_a_program_error() {
     let lone = psychoscript::HostString::from_utf16(&[0xd800]);
@@ -139,13 +215,12 @@ fn timings() {
 }
 
 /// A whole step on the biggest fixtures, the prelude building the tree (`run`) against a native run whose view this
-/// crate walks (`run_step`). Until PsychoScript passes functions as markers, the native view has lost its handler
-/// props, so this times the work but doesn't compare the views.
+/// crate walks (`run_step`, functions as markers).
 #[test]
 #[ignore = "timings: run in release with --ignored"]
 fn step_timings() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/wire");
-    let prelude = std::fs::read_to_string(dir.join("prelude.js")).expect("the prelude");
+    let prelude = prelude();
     for name in ["grid-200", "builtin-suggestions"] {
         let fixture: Value = serde_json::from_str(
             &std::fs::read_to_string(dir.join(format!("{name}.json"))).expect("read"),

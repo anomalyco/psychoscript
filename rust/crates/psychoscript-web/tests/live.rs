@@ -188,16 +188,18 @@ fn fetches_need_the_capability_and_go_through_the_host() {
 fn native_runs_build_render_trees_and_draw_by_key() {
     const NATIVE: &str = r#"
 const view = { type: "column", children: [
-  [null, { type: "canvas", key: "board", height: 10 }],
+  [null, { type: "canvas", key: "board", height: 10, onPointer: () => {} }],
   { type: "canvas", key: "sky", wgsl: "fn shade(p: vec2f) -> vec4f { return vec4f(1.0); }", height: 10 },
 ] }
 const interactive = __host.post({ type: "render", node: view })
+const still = __host.post({ type: "render", node: { ...view, children: [view.children[1]] } })
+__host.post({ type: "render", node: view })
 __host.post({ type: "draw", key: "board", commands: [["rect", 0, 0, 1, 1, "accent"]] })
 const caught = []
 for (const key of ["nope", "sky"]) {
   try { __host.post({ type: "draw", key, commands: [] }) } catch (e) { caught.push(e.message) }
 }
-__host.post({ type: "result", interactive, caught })
+__host.post({ type: "result", interactive, still, caught })
 "#;
     let mut run = Program::new(NATIVE, None)
         .unwrap()
@@ -213,20 +215,22 @@ __host.post({ type: "result", interactive, caught })
     assert_eq!(
         out[0],
         json!({ "type": "render", "node": { "type": "column", "children": [
-            { "type": "canvas", "height": 10, "id": "0/:board" },
+            { "type": "canvas", "height": 10, "id": "0/:board", "pointer": true },
             { "type": "canvas", "wgsl": "fn shade(p: vec2f) -> vec4f { return vec4f(1.0); }", "height": 10, "id": "0/:sky" },
         ] } })
     );
+    assert_eq!(out[1]["node"]["children"][0]["id"], "0/:sky");
+    assert_eq!(out[2], out[0]);
     assert_eq!(
-        out[1],
+        out[3],
         json!({ "type": "draw", "id": "0/:board", "commands": [["rect", 0, 0, 1, 1, "accent"]] })
     );
     assert_eq!(
-        out[2],
-        json!({ "type": "result", "interactive": false, "caught": [
+        out[4],
+        json!({ "type": "result", "interactive": true, "still": false, "caught": [
             "No canvas with key \"nope\" in the rendered view",
             "Canvas \"sky\" is drawn by its wgsl; it takes no draw commands",
         ] })
     );
-    assert_eq!(out.len(), 3);
+    assert_eq!(out.len(), 5);
 }
