@@ -1222,6 +1222,7 @@ dependencies = [
  "serde_json",
  "uniffi",
  "url",
+ "widget-wire",
 ]
 
 [[package]]
@@ -1769,6 +1770,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "998d2c24ec099a87daf9467808859f9d82b61f1d9c9701251aea037f514eae0e"
 dependencies = [
  "nom",
+]
+
+[[package]]
+name = "widget-wire"
+version = "0.1.0"
+dependencies = [
+ "psychoscript",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
