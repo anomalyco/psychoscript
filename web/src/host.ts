@@ -566,7 +566,7 @@ class Widget implements MountedWidget {
       escape: () => {
         if (this.isFullscreen) void this.closeFullscreen()
       },
-      pointerId: () => surfaces(this.viewEl).find((s) => s.id !== null)?.id ?? "",
+      pointerId: () => surfaces(this.viewEl).find((s) => s.id !== null && s.node.pointer === true)?.id ?? "",
       changed: (focused, captured, keys) => {
         if (focused) this.element.dataset.focused = ""
         else delete this.element.dataset.focused

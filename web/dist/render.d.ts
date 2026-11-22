@@ -82,7 +82,7 @@ declare abstract class SurfaceBase {
     constructor(ctx: RenderContext, node: ViewNode);
     /** Point in the canvas, logical px. */
     private local;
-    /** A `pointer` event for a canvas with an `id` (2D or GPU alike). */
+    /** A `pointer` event for a canvas with `pointer: true` (2D or GPU alike). */
     private send;
     /** Tracks the pointer for frames and uniforms; sends `down` and `up` at once, `move` only while down, at most once a frame. */
     private listen;

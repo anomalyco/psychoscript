@@ -327,6 +327,8 @@ for (const [query, backend] of [["?only=shader-demo", "webgpu"], ["?only=shader-
       return {
         stack: r(root.querySelector(".pw-stack")),
         canvas: r(root.querySelector(".pw-stack > .pw-surface")),
+        glass: (root.querySelectorAll(".pw-stack > .pw-surface")[1] as HTMLElement | undefined)?.hasAttribute("data-pointer"),
+        sky: (root.querySelector(".pw-stack > .pw-surface") as HTMLElement).hasAttribute("data-pointer"),
         hud: r(root.querySelector(".pw-stack > .pw-col")),
         button: r(root.querySelector(".pw-stack > .pw-btn")),
         kind: (root.querySelector(".pw-surface") as HTMLElement).dataset.kind,
@@ -340,6 +342,7 @@ for (const [query, backend] of [["?only=shader-demo", "webgpu"], ["?only=shader-
     g,
   )
   check(g.hud.x === g.stack.x + 12 && g.hud.y === g.stack.y + 12, "stack: the HUD sits top-left, inset 12", g.hud)
+  check(g.sky === true && g.glass === false, "stack: only the canvas with onPointer takes input (pointer: true); the keyed vignette doesn't", g)
   check(g.button.r === g.stack.r - 12 && g.button.b === g.stack.b - 12, "stack: the button sits bottom-right, inset 12", g.button)
   const caption = async () => (await w.locator(".pw-code").textContent()) ?? ""
   const until = async (re: RegExp) => {
@@ -356,7 +359,7 @@ for (const [query, backend] of [["?only=shader-demo", "webgpu"], ["?only=shader-
   check(/canvas taps 0 · button presses 1/.test(t), "stack: the button on top takes its tap", t)
   await page.mouse.click((g.stack.x + g.stack.r) / 2, (g.stack.y + g.stack.b) / 2)
   t = await until(/canvas taps 1/)
-  check(/canvas taps 1 · button presses 1/.test(t), "stack: a tap on empty space reaches the canvas below", t)
+  check(/canvas taps 1 · button presses 1/.test(t), "stack: a tap on empty space passes the keyed canvas and reaches the one with onPointer", t)
   const title = (await w.locator(".pw-stack .pw-title").boundingBox())!
   await page.mouse.click(title.x + 10, title.y + title.height / 2)
   t = await until(/canvas taps 2/)
@@ -366,6 +369,12 @@ for (const [query, backend] of [["?only=shader-demo", "webgpu"], ["?only=shader-
   await page.mouse.move(5, 5)
   await page.waitForTimeout(400)
   if (shots) await page.locator('.slot[data-name="hud-demo"]').screenshot({ path: `${shots}/canvas-stack/web.png` })
+  // Directions are physical: right-to-left doesn't move top-left or bottom-right.
+  await w.evaluate((el) => (el.dir = "rtl"))
+  await page.waitForTimeout(200)
+  const rtl = await geo()
+  check(rtl.hud.x === rtl.stack.x + 12 && rtl.button.r === rtl.stack.r - 12, "stack: place and inset don't flip right-to-left", rtl)
+  await w.evaluate((el) => el.removeAttribute("dir"))
   // Full screen: the stack grows like a canvas and its fill canvas with it; the button stays in its corner.
   await w.hover()
   await w.locator(".pw-expand").click()

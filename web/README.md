@@ -92,10 +92,12 @@ Behavior, per the contract:
 - Canvases are never drawn or rendered while they have a zero width or height; `Frame.width`/`height` are > 0.
 - `stack` layers its children in one cell (first at the bottom): a child's area is the stack minus its `inset`;
   `place` aligns its natural size there (`top-left` default … `bottom-right`), `fill` stretches it (a canvas then draws
-  at that size). The stack is as tall as its tallest child plus insets. Children let the pointer through to the layer
-  below (text, markdown, images, a canvas without an `id`, empty space) except controls, cards and carousels with an
-  `id`, and canvases with an `id`. In full screen a stack with a canvas grows like one.
-- Canvases (2D or GPU) with an `id` (the prelude gives one to nodes with `onPointer` or a `key`) send `pointer`
+  at that size); `left`/`right` are physical, they don't flip right-to-left. The stack is as tall as its tallest child
+  plus insets. Children let the pointer through to the layer below (text, markdown, images, a canvas without
+  `pointer: true`, empty space) except controls, cards and carousels with an `id`, and canvases with `pointer: true`.
+  In full screen a stack with a canvas grows like one.
+- Canvases (2D or GPU) with `pointer: true` (the prelude sets it for an `onPointer`; a canvas with only a `key` has an
+  `id` for `widget.draw` but takes no input) send `pointer`
   events, which the prelude routes to `onPointer`: `down`, `up`, and `move`
   at most once a frame, with `down: true` while a button is held and, on desktop and web, hover moves
   `{ kind: "move", x, y, down: false, width, height }` while the pointer is over the node (touch has no hover).
@@ -152,7 +154,7 @@ calls `onAsk(error)` (the embedder calls `report` with `ask: true`; "Asking the 
 - Pointer capture: root `capture: "pointer"` (step or live) or a live program posting `{ type: "capture", value: true }`
   (what the prelude's `widget.capturePointer()` posts; `releasePointer()` posts `value: false`). Granted on the next
   click inside the widget with the Pointer Lock API (cursor hidden); then `{ id, type: "pointer", value: { kind: "move",
-  dx, dy } }` at most once a frame and `{ kind: "down" | "up", button }`, with `id` the first canvas `id` in the
+  dx, dy } }` at most once a frame and `{ kind: "down" | "up", button }`, with `id` the first `pointer: true` canvas's `id` in the
   view (else `""`). The program gets `{ id: "", type: "capture", value: true }` when granted.
 - Esc is never delivered. One Esc releases both (the browser itself ends Pointer Lock on Esc; that also drops focus),
   as do leaving full screen, the window losing focus, submit/dismiss and `destroy()`. The program gets

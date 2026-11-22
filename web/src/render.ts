@@ -649,15 +649,16 @@ const BUILDERS: Record<string, Builder> = {
 // ---------- stack ----------
 
 const PLACES: Record<string, [string, string]> = {
-  "top-left": ["start", "start"],
+  // Physical: left and right don't flip in a right-to-left layout (widgets.md, Stack).
+  "top-left": ["left", "start"],
   top: ["center", "start"],
-  "top-right": ["end", "start"],
-  left: ["start", "center"],
+  "top-right": ["right", "start"],
+  left: ["left", "center"],
   center: ["center", "center"],
-  right: ["end", "center"],
-  "bottom-left": ["start", "end"],
+  right: ["right", "center"],
+  "bottom-left": ["left", "end"],
   bottom: ["center", "end"],
-  "bottom-right": ["end", "end"],
+  "bottom-right": ["right", "end"],
   fill: ["stretch", "stretch"],
 }
 
@@ -746,10 +747,11 @@ abstract class SurfaceBase {
     return { x: e.clientX - r.left, y: e.clientY - r.top }
   }
 
-  /** A `pointer` event for a canvas with an `id` (2D or GPU alike). */
+  /** A `pointer` event for a canvas with `pointer: true` (2D or GPU alike). */
   private send(kind: "down" | "move" | "up", e: PointerEvent, down?: boolean) {
     const id = this.id
-    if (id === null || this.ctx.readOnly()) return
+    // Only a canvas with `pointer: true` sends pointer events; any canvas keeps `frame.pointer` for its own visuals.
+    if (id === null || this.node.pointer !== true || this.ctx.readOnly()) return
     const p = this.local(e)
     const value: Record<string, unknown> = { kind, x: p.x, y: p.y, width: this.width, height: this.height }
     // The close button's area, as the drawing saw it, for hit tests that keep clear of it.
@@ -826,8 +828,9 @@ abstract class SurfaceBase {
 
   /** Applies the node's size; returns whether the backing store changed. */
   protected layout(n: ViewNode): boolean {
-    // Takes pointer input (in a stack, the rest lets it through): a canvas with an id.
-    this.el.toggleAttribute("data-id", typeof n.id === "string")
+    // Takes pointer input only with `pointer: true` (the prelude's mark for an `onPointer`); in a stack the rest lets
+    // taps through. A canvas with only a `key` has an id for `widget.draw`, but takes no input.
+    this.el.toggleAttribute("data-pointer", n.pointer === true)
     const height = Math.max(1, Math.min(4096, finite(n.height, 160)))
     const width = finite(n.width, 0)
     // Live programs re-render every frame: touch the DOM only when the size or label changes.

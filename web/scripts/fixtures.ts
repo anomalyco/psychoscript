@@ -315,12 +315,20 @@ function view(state, data) {
       alt: "A starfield",
       onPointer: (state, p) => (p.kind === "down" ? { ...state, taps: state.taps + 1, at: [p.x, p.y] } : state),
     }),
+    // A keyed 2D canvas without onPointer (a vignette over the sky): it takes no input, taps pass through it.
+    ui.canvas({ key: "glass", place: "fill", height: 220 }),
     ui.column({ place: "top-left", inset: 12, gap: 0 }, [
       ui.text(data.title, { style: "title" }),
       ui.text("canvas taps " + state.taps + " · button presses " + state.presses, { style: "code" }),
     ]),
     ui.button("Fire", { place: "bottom-right", inset: 12, variant: "primary", onPress: (state) => ({ ...state, presses: state.presses + 1 }) }),
   ])
+}
+
+function draw(state, data, frame) {
+  const g = ui.draw()
+  g.rect(0, 0, frame.width, frame.height, { fill: { radial: [frame.width / 2, frame.height / 2, frame.width * 0.7], stops: [[0, "#00000000"], [0.7, "#00000000"], [1, "#00000088"]] } })
+  return g
 }`,
   },
   "runaway-demo": {
