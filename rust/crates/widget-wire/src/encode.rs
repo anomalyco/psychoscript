@@ -371,9 +371,14 @@ impl LivePosts {
                 let m = &*as_json(m);
                 let mut out = vec![VERSION, DRAW];
                 put_str(&mut out, &canvas.id);
-                let commands = field(m, "commands")
-                    .ok_or_else(|| invalid(INVALID_DRAW)("a draw post needs commands".into()))?;
-                draw_section(commands, &mut out).map_err(invalid(INVALID_DRAW))?;
+                let commands = field(m, "commands").unwrap_or(&HostValue::Undefined);
+                // The check's message as it is (`widgets.md`, Draw command checks).
+                draw_section(commands, &mut out).map_err(|message| {
+                    CallError::Invalid(EncodeError {
+                        kind: INVALID_DRAW,
+                        message,
+                    })
+                })?;
                 Ok((self.counted(Some(key), out, now), None))
             }
             _ if crate::native::marked(m) => Err(CallError::Function { arg: 1 }),
@@ -466,11 +471,32 @@ pub fn encode_post(m: &HostValue) -> Result<Vec<u8>, EncodeError> {
     };
     post(m).map_err(|e| EncodeError {
         kind,
-        message: format!("invalid post: {e}"),
+        message: match e {
+            PostError::Post(e) => format!("invalid post: {e}"),
+            PostError::Draw(e) => e,
+        },
     })
 }
 
-fn post(m: &HostValue) -> Result<Vec<u8>, String> {
+/// Why a post can't be written: a draw's commands fail their check (its message as it is), or the post is invalid.
+enum PostError {
+    Post(String),
+    Draw(String),
+}
+
+impl From<String> for PostError {
+    fn from(e: String) -> Self {
+        PostError::Post(e)
+    }
+}
+
+impl From<&str> for PostError {
+    fn from(e: &str) -> Self {
+        PostError::Post(e.into())
+    }
+}
+
+fn post(m: &HostValue) -> Result<Vec<u8>, PostError> {
     // A GPU batch keeps its bytes as they are; its ops are written as JSON reads them (`gpu::put_arg`).
     let gpu = match field(m, "type").and_then(HostValue::as_str) {
         Some("gpu") => true,
@@ -501,8 +527,8 @@ fn post(m: &HostValue) -> Result<Vec<u8>, String> {
                 return Err("a draw post needs its canvas's id".into());
             };
             put_str(&mut out, &id.to_string_lossy());
-            let commands = field(m, "commands").ok_or("a draw post needs commands")?;
-            draw_section(commands, &mut out)?;
+            let commands = field(m, "commands").unwrap_or(&HostValue::Undefined);
+            draw_section(commands, &mut out).map_err(PostError::Draw)?;
         }
         "frame" => match field(m, "gpu").filter(|g| !matches!(g, HostValue::Null)) {
             Some(batch) => {
@@ -535,7 +561,7 @@ fn post(m: &HostValue) -> Result<Vec<u8>, String> {
             out.push(CAPTURE);
             out.push(matches!(field(m, "value"), Some(HostValue::Bool(true))) as u8);
         }
-        other => return Err(format!("unknown post type \"{other}\"")),
+        other => return Err(format!("unknown post type \"{other}\"").into()),
     }
     Ok(out)
 }
@@ -596,15 +622,6 @@ fn json_view(v: &HostValue) -> HostValue {
 /// An object's field, absent when `undefined` (as JSON leaves it out).
 pub(crate) fn field<'a>(v: &'a HostValue, key: &str) -> Option<&'a HostValue> {
     v.get(key).filter(|v| !matches!(v, HostValue::Undefined))
-}
-
-/// A field unless JSON writes it as `null` or leaves it out (`undefined`, `null`, a non-finite number).
-fn present<'a>(v: &'a HostValue, key: &str) -> Option<&'a HostValue> {
-    field(v, key).filter(|v| match v {
-        HostValue::Null => false,
-        HostValue::Number(n) => n.is_finite(),
-        _ => true,
-    })
 }
 
 pub(crate) fn varint(out: &mut Vec<u8>, mut v: u64) {
@@ -911,7 +928,7 @@ impl DrawStreams {
     }
 }
 
-/// A command list as section `D`, held to the budget and to Rune's rules for commands (`Command::from_value`).
+/// A command list as section `D`: the normalised commands, or the failure (`widgets.md`, Draw command checks).
 pub(crate) fn draw_section(commands: &HostValue, out: &mut Vec<u8>) -> Result<(), String> {
     let HostValue::Array(list) = commands else {
         return Err("draw commands must be a list".into());
@@ -929,9 +946,14 @@ pub(crate) fn draw_section(commands: &HostValue, out: &mut Vec<u8>) -> Result<()
     d.finish_into(out)
 }
 
-fn num(v: Option<&Option<HostValue>>, what: &str) -> Result<f32, String> {
+/// An array item as it crossed: `undefined` for a hole.
+fn item(v: &Option<HostValue>) -> &HostValue {
+    v.as_ref().unwrap_or(&HostValue::Undefined)
+}
+
+fn num(v: &HostValue, what: &str) -> Result<f32, String> {
     match v {
-        Some(Some(HostValue::Number(n))) if n.is_finite() => Ok(*n as f32),
+        HostValue::Number(n) if n.is_finite() => Ok(*n as f32),
         _ => Err(format!("{what} must be a finite number")),
     }
 }
@@ -944,6 +966,16 @@ fn color(v: &HostValue) -> Result<Color, String> {
     .ok_or_else(|| "not a color".to_owned())
 }
 
+/// One of `table`'s strings, else `message`.
+fn one_of<T: Copy>(v: &HostValue, table: &[(&str, T)], message: &str) -> Result<T, String> {
+    let s = v.as_str();
+    table
+        .iter()
+        .find(|(name, _)| Some(*name) == s)
+        .map(|(_, t)| *t)
+        .ok_or_else(|| message.to_owned())
+}
+
 fn gradient(m: &HostValue) -> Result<Gradient, String> {
     let coords = |key: &str, n: usize| -> Result<Option<Vec<f32>>, String> {
         let Some(a) = field(m, key) else {
@@ -952,7 +984,7 @@ fn gradient(m: &HostValue) -> Result<Gradient, String> {
         match a {
             HostValue::Array(a) if a.len() == n => a
                 .iter()
-                .map(|x| num(Some(x), key))
+                .map(|x| num(item(x), key))
                 .collect::<Result<Vec<_>, _>>()
                 .map(Some),
             _ => Err(format!("a {key} gradient takes {n} numbers")),
@@ -968,10 +1000,10 @@ fn gradient(m: &HostValue) -> Result<Gradient, String> {
     };
     let stops = stops
         .iter()
-        .map(|s| match s {
-            Some(HostValue::Array(p)) if p.len() == 2 => Ok((
-                num(p.first(), "a stop's offset")?.clamp(0.0, 1.0),
-                color(p[1].as_ref().unwrap_or(&HostValue::Null))?,
+        .map(|s| match item(s) {
+            HostValue::Array(p) if p.len() == 2 => Ok((
+                num(item(&p[0]), "a stop's offset")?.clamp(0.0, 1.0),
+                color(item(&p[1]))?,
             )),
             _ => Err("a stop is [offset, color]".to_owned()),
         })
@@ -979,25 +1011,28 @@ fn gradient(m: &HostValue) -> Result<Gradient, String> {
     Ok(Gradient { shape, stops })
 }
 
-fn paint(v: Option<&Option<HostValue>>) -> Result<Paint, String> {
-    let Some(Some(m @ HostValue::Object(_))) = v else {
+/// A paint's fields in their order; absent or `undefined` ones take their defaults, `null` is a wrong value.
+fn paint(m: &HostValue) -> Result<Paint, String> {
+    if !matches!(m, HostValue::Object(_)) {
         return Err("a paint is an object".into());
-    };
-    let fill = match present(m, "fill") {
+    }
+    let fill = match field(m, "fill") {
         None => None,
         Some(g @ HostValue::Object(_)) => Some(Fill::Gradient(gradient(g)?)),
         Some(c) => Some(Fill::Color(color(c)?)),
     };
-    let stroke = present(m, "stroke").map(color).transpose()?;
-    let width = match present(m, "width") {
+    let stroke = field(m, "stroke").map(color).transpose()?;
+    let width = match field(m, "width") {
         None => 1.0,
-        Some(HostValue::Number(n)) => (*n as f32).max(0.0),
-        Some(_) => return Err("a stroke's width must be a finite number".into()),
+        Some(w) => num(w, "a stroke's width")?.max(0.0),
     };
-    let cap = if field(m, "cap").and_then(HostValue::as_str) == Some("round") {
-        Cap::Round
-    } else {
-        Cap::Butt
+    let cap = match field(m, "cap") {
+        None => Cap::Butt,
+        Some(c) => one_of(
+            c,
+            &[("butt", Cap::Butt), ("round", Cap::Round)],
+            "a stroke's cap must be \"butt\" or \"round\"",
+        )?,
     };
     Ok(Paint {
         fill,
@@ -1007,30 +1042,42 @@ fn paint(v: Option<&Option<HostValue>>) -> Result<Paint, String> {
     })
 }
 
-fn text_options(v: Option<&Option<HostValue>>) -> Result<TextOptions, String> {
+/// A text's style: left off, `undefined` or `null` is `{}`; its fields in their order, as a paint's.
+fn text_options(v: &HostValue) -> Result<TextOptions, String> {
     let m = match v {
-        Some(Some(m @ HostValue::Object(_))) => m,
-        _ => &HostValue::Null,
+        HostValue::Undefined | HostValue::Null => &HostValue::Null,
+        m @ HostValue::Object(_) => m,
+        _ => return Err("a text style is an object".into()),
     };
-    let g = |k: &str| present(m, k);
+    let g = |k: &str| field(m, k);
     Ok(TextOptions {
         size: match g("size") {
-            Some(HostValue::Number(n)) => (*n as f32).clamp(1.0, 512.0),
-            Some(_) => return Err("a text size must be a finite number".into()),
             None => 13.0,
+            Some(n) => num(n, "a text size")?.clamp(1.0, 512.0),
         },
-        // As JSON reads it: an integer JSON writes as one (below 9e15), else 400.
-        weight: g("weight")
-            .and_then(HostValue::as_f64)
-            .filter(|w| *w >= 0.0 && w.fract() == 0.0 && *w < 9.0e15)
-            .map_or(400, |w| ((w as u64).clamp(100, 900) / 100 * 100) as u16),
-        align: match g("align").and_then(HostValue::as_str) {
-            Some("center") => TextAlign::Center,
-            Some("right") => TextAlign::Right,
-            _ => TextAlign::Left,
+        weight: match g("weight") {
+            None => 400,
+            Some(HostValue::Number(w)) if [400.0, 500.0, 600.0, 700.0].contains(w) => *w as u16,
+            Some(_) => return Err("a text weight must be 400, 500, 600 or 700".into()),
+        },
+        align: match g("align") {
+            None => TextAlign::Left,
+            Some(a) => one_of(
+                a,
+                &[
+                    ("left", TextAlign::Left),
+                    ("center", TextAlign::Center),
+                    ("right", TextAlign::Right),
+                ],
+                "a text align must be \"left\", \"center\" or \"right\"",
+            )?,
         },
         color: g("color").map(color).transpose()?,
-        mono: matches!(g("mono"), Some(HostValue::Bool(true))),
+        mono: match g("mono") {
+            None => false,
+            Some(HostValue::Bool(b)) => *b,
+            Some(_) => return Err("a text mono must be true or false".into()),
+        },
     })
 }
 
@@ -1098,95 +1145,111 @@ fn put_paint(d: &mut DrawStreams, p: &Paint) {
     d.f(p.width);
 }
 
+/// One command, checked in the spec's order (`widgets.md`, Draw command checks): its name, its length, then its
+/// arguments first to last.
 fn command(d: &mut DrawStreams, v: &Option<HostValue>) -> Result<(), String> {
-    let Some(HostValue::Array(a)) = v else {
+    let HostValue::Array(a) = item(v) else {
         return Err("a command is an array".into());
     };
-    let op = a
-        .first()
-        .and_then(|v| v.as_ref())
-        .and_then(HostValue::as_str)
-        .ok_or("a command starts with its name")?;
-    let n = |i: usize| num(a.get(i), &format!("\"{op}\" argument {i}"));
-    match op {
-        "save" => d.i(1),
-        "restore" => d.i(2),
-        "translate" | "scale" => {
-            let (x, y) = (n(1)?, n(2)?);
-            d.i(if op == "translate" { 3 } else { 5 });
-            d.f(x);
-            d.f(y);
+    let op = match a.first().map(item) {
+        Some(HostValue::String(s)) => lossy(s),
+        _ => return Err("a command starts with its name".into()),
+    };
+    let op = &*op;
+    // Its code, its number of arguments, and how many of them may be left off.
+    let (code, count, optional) = match op {
+        "save" => (1, 0, 0),
+        "restore" => (2, 0, 0),
+        "translate" => (3, 2, 0),
+        "rotate" => (4, 1, 0),
+        "scale" => (5, 2, 0),
+        "alpha" => (6, 1, 0),
+        "rect" => (7, 5, 0),
+        "rrect" => (8, 6, 0),
+        "circle" => (9, 4, 0),
+        "line" => (10, 5, 0),
+        "path" => (11, 2, 0),
+        "text" => (12, 4, 1),
+        "image" => (13, 5, 0),
+        _ => return Err(format!("unknown draw command \"{op}\"")),
+    };
+    if a.len() > count + 1 {
+        return Err(format!("\"{op}\" has more than {count} arguments"));
+    }
+    if a.len() < count + 1 - optional {
+        return Err(format!("\"{op}\" is missing argument {}", a.len()));
+    }
+    let arg = |i: usize| a.get(i).map_or(&HostValue::Undefined, item);
+    // The message only when it fails: this runs for every number of every command.
+    let n = |i: usize| match arg(i) {
+        HostValue::Number(v) if v.is_finite() => Ok(*v as f32),
+        _ => Err(format!("\"{op}\" argument {i} must be a finite number")),
+    };
+    match code {
+        1 | 2 => d.i(code),
+        3..=6 => {
+            let first = n(1)?;
+            let second = if count == 2 { Some(n(2)?) } else { None };
+            d.i(code);
+            d.f(if code == 6 {
+                first.clamp(0.0, 1.0)
+            } else {
+                first
+            });
+            second.into_iter().for_each(|v| d.f(v));
         }
-        "rotate" => {
-            let r = n(1)?;
-            d.i(4);
-            d.f(r);
-        }
-        "alpha" => {
-            let a = n(1)?.clamp(0.0, 1.0);
-            d.i(6);
-            d.f(a);
-        }
-        "rect" | "rrect" | "circle" | "line" => {
-            let (code, count) = match op {
-                "rect" => (7, 4),
-                "rrect" => (8, 5),
-                "circle" => (9, 3),
-                _ => (10, 4),
-            };
-            let coords = (1..=count).map(n).collect::<Result<Vec<_>, _>>()?;
-            let paint = paint(a.get(count + 1))?;
+        7..=10 => {
+            let coords = (1..count).map(n).collect::<Result<Vec<_>, _>>()?;
+            let paint = paint(arg(count))?;
             d.i(code);
             coords.into_iter().for_each(|c| d.f(c));
             put_paint(d, &paint);
         }
-        "path" => {
-            let Some(Some(HostValue::Array(segments))) = a.get(1) else {
+        11 => {
+            let HostValue::Array(segments) = arg(1) else {
                 return Err("\"path\" takes a list of segments".into());
             };
             let mut verbs = Vec::with_capacity(segments.len());
             let mut coords = Vec::with_capacity(segments.len() * 2);
             for s in segments {
-                let Some(HostValue::Array(s)) = s else {
+                let HostValue::Array(s) = item(s) else {
                     return Err("a path segment is an array".into());
                 };
-                let (verb, count) = match s
-                    .first()
-                    .and_then(|v| v.as_ref())
-                    .and_then(HostValue::as_str)
-                {
-                    Some("M") => (1, 2),
-                    Some("L") => (2, 2),
-                    Some("Q") => (3, 4),
-                    Some("C") => (4, 6),
-                    Some("Z") => (5, 0),
+                let (verb, name, count) = match s.first().map(item).and_then(HostValue::as_str) {
+                    Some("M") => (1, "M", 2),
+                    Some("L") => (2, "L", 2),
+                    Some("Q") => (3, "Q", 4),
+                    Some("C") => (4, "C", 6),
+                    Some("Z") => (5, "Z", 0),
                     _ => return Err("unknown path segment".into()),
                 };
+                if s.len() != count + 1 {
+                    return Err(format!(
+                        "a \"{name}\" path segment takes {count} coordinates"
+                    ));
+                }
                 verbs.push(verb);
-                for i in 1..=count {
-                    coords.push(num(s.get(i), "a path coordinate")?);
+                for c in &s[1..] {
+                    coords.push(num(item(c), "a path coordinate")?);
                 }
             }
-            let paint = paint(a.get(2))?;
-            d.i(11);
+            let paint = paint(arg(2))?;
+            d.i(code);
             d.i(verbs.len() as u32);
             verbs.into_iter().for_each(|v| d.i(v));
             coords.into_iter().for_each(|c| d.f(c));
             put_paint(d, &paint);
         }
-        "text" => {
+        12 => {
             let (x, y) = (n(1)?, n(2)?);
-            let text = match a.get(3) {
-                Some(Some(HostValue::String(t))) => lossy(t),
-                Some(Some(other)) => Cow::Owned(json::write(other)),
-                Some(None) => Cow::Borrowed("null"),
-                None => return Err("\"text\" is missing argument 3".into()),
+            let HostValue::String(text) = arg(3) else {
+                return Err("\"text\" argument 3 must be a string".into());
             };
-            let style = text_options(a.get(4))?;
-            d.i(12);
+            let style = text_options(arg(4))?;
+            d.i(code);
             d.f(x);
             d.f(y);
-            d.s(&text);
+            d.s(&lossy(text));
             d.i(style.weight as u32);
             d.i(match style.align {
                 TextAlign::Left => 0,
@@ -1203,17 +1266,15 @@ fn command(d: &mut DrawStreams, v: &Option<HostValue>) -> Result<(), String> {
             d.i(style.mono as u32);
             d.f(style.size);
         }
-        "image" => {
-            let src = match a.get(1) {
-                Some(Some(HostValue::String(s))) => lossy(s),
-                _ => return Err("\"image\" takes a src".into()),
+        _ => {
+            let HostValue::String(src) = arg(1) else {
+                return Err("\"image\" takes a src".into());
             };
             let coords = (2..=5).map(n).collect::<Result<Vec<_>, _>>()?;
-            d.i(13);
-            d.s(&src);
+            d.i(code);
+            d.s(&lossy(src));
             coords.into_iter().for_each(|c| d.f(c));
         }
-        _ => return Err(format!("unknown draw command \"{op}\"")),
     }
     d.commands += 1;
     Ok(())

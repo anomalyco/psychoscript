@@ -366,7 +366,11 @@ fn an_invalid_post_ends_the_live_run_as_a_program_error() {
     };
     // The kind names the spec's phase (`draw`).
     assert_eq!((kind.as_str(), line), ("InvalidDraw", Some(3)));
-    assert!(reason.contains("invalid post: draw command 0"), "{reason}");
+    // The check's message as it is (`widgets.md`, Draw command checks).
+    assert!(
+        reason.starts_with("Error: draw command 0: \"rect\" argument 4 must be a finite number"),
+        "{reason}"
+    );
 
     let (h, rx) = handler();
     let _run = program("__host.post({ type: \"explode\" })".into())
@@ -461,14 +465,14 @@ fn draw_steps_emit_their_commands() {
     // Read as JSON reads them: functions left out of objects (a paint's) and `null` in arrays, `undefined` props left
     // out; the run's result is ignored.
     let bytes = draw_bytes(
-        "__widget_emit([[\"rect\", 0, 0, 1, 1, { fill: \"accent\", stroke: () => 1, width: undefined }], [\"text\", 0, 0, () => 1]])\nreturn 5",
+        "__widget_emit([[\"rect\", 0, 0, 1, 1, { fill: \"accent\", stroke: () => 1, width: undefined }], [\"text\", 0, 0, \"t\", () => 1]])\nreturn 5",
     )
     .unwrap();
     let Output::Draw(d) = decode_output(&bytes).unwrap() else {
         panic!()
     };
     let json = DrawOutput::from_value(&json!({ "commands": [
-        ["rect", 0, 0, 1, 1, { "fill": "accent" }], ["text", 0, 0, null]
+        ["rect", 0, 0, 1, 1, { "fill": "accent" }], ["text", 0, 0, "t", null]
     ] }))
     .unwrap();
     assert_eq!(d, json.commands);

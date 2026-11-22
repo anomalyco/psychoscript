@@ -1,5 +1,5 @@
 //! A canvas's 2D draw commands (`specs/v2/widgets.md`, Canvas), as the decoder yields them: Rune's `Command`, with its
-//! JSON reading ([`Command::from_value`], [`DrawOutput::from_value`]) for comparison.
+//! JSON reading under the Draw command checks ([`Command::from_value`], [`DrawOutput::from_value`]) for comparison.
 
 use serde_json::{Map, Value};
 
@@ -122,7 +122,7 @@ pub enum TextAlign {
 pub struct TextOptions {
     /// Logical pixels (13 when unset).
     pub size: f32,
-    /// 100 to 900, in hundreds.
+    /// 400, 500, 600 or 700 (400 when unset).
     pub weight: u16,
     pub align: TextAlign,
     /// The "text" token when unset.
@@ -189,14 +189,23 @@ pub enum Command {
 fn num(v: &Value, what: &str) -> Result<f32, String> {
     match v.as_f64() {
         Some(n) if n.is_finite() => Ok(n as f32),
-        _ => Err(format!("{what} must be a finite number, got {v}")),
+        _ => Err(format!("{what} must be a finite number")),
     }
 }
 
 fn color(v: &Value) -> Result<Color, String> {
     v.as_str()
         .and_then(Color::parse)
-        .ok_or_else(|| format!("not a color: {v}"))
+        .ok_or_else(|| "not a color".to_owned())
+}
+
+/// One of `table`'s strings, else `message`.
+fn one_of<T: Copy>(v: &Value, table: &[(&str, T)], message: &str) -> Result<T, String> {
+    table
+        .iter()
+        .find(|(name, _)| Some(*name) == v.as_str())
+        .map(|(_, t)| *t)
+        .ok_or_else(|| message.to_owned())
 }
 
 fn gradient(v: &Map<String, Value>) -> Result<Gradient, String> {
@@ -223,33 +232,31 @@ fn gradient(v: &Map<String, Value>) -> Result<Gradient, String> {
         .iter()
         .map(|s| match s.as_array().map(Vec::as_slice) {
             Some([o, c]) => Ok((num(o, "a stop's offset")?.clamp(0.0, 1.0), color(c)?)),
-            _ => Err(format!("a stop is [offset, color], got {s}")),
+            _ => Err("a stop is [offset, color]".to_owned()),
         })
         .collect::<Result<Vec<_>, String>>()?;
     Ok(Gradient { shape, stops })
 }
 
 fn paint(v: &Value) -> Result<Paint, String> {
-    let m = v
-        .as_object()
-        .ok_or_else(|| format!("a paint is an object, got {v}"))?;
+    let m = v.as_object().ok_or("a paint is an object")?;
     let fill = match m.get("fill") {
-        None | Some(Value::Null) => None,
+        None => None,
         Some(Value::Object(g)) => Some(Fill::Gradient(gradient(g)?)),
         Some(c) => Some(Fill::Color(color(c)?)),
     };
-    let stroke = match m.get("stroke") {
-        None | Some(Value::Null) => None,
-        Some(c) => Some(color(c)?),
-    };
+    let stroke = m.get("stroke").map(color).transpose()?;
     let width = match m.get("width") {
-        None | Some(Value::Null) => 1.0,
+        None => 1.0,
         Some(w) => num(w, "a stroke's width")?.max(0.0),
     };
-    let cap = if m.get("cap").and_then(Value::as_str) == Some("round") {
-        Cap::Round
-    } else {
-        Cap::Butt
+    let cap = match m.get("cap") {
+        None => Cap::Butt,
+        Some(c) => one_of(
+            c,
+            &[("butt", Cap::Butt), ("round", Cap::Round)],
+            "a stroke's cap must be \"butt\" or \"round\"",
+        )?,
     };
     Ok(Paint {
         fill,
@@ -260,62 +267,98 @@ fn paint(v: &Value) -> Result<Paint, String> {
 }
 
 fn segment(v: &Value) -> Result<Segment, String> {
-    let a = v
-        .as_array()
-        .ok_or_else(|| format!("a path segment is an array, got {v}"))?;
-    let n = |i: usize| {
-        a.get(i)
-            .ok_or_else(|| "a path segment is short".to_owned())
-            .and_then(|x| num(x, "a path coordinate"))
+    let a = v.as_array().ok_or("a path segment is an array")?;
+    let verb = a.first().and_then(Value::as_str);
+    let count = match verb {
+        Some("M" | "L") => 2,
+        Some("Q") => 4,
+        Some("C") => 6,
+        Some("Z") => 0,
+        _ => return Err("unknown path segment".into()),
     };
-    Ok(match a.first().and_then(Value::as_str) {
-        Some("M") => Segment::M(n(1)?, n(2)?),
-        Some("L") => Segment::L(n(1)?, n(2)?),
-        Some("Q") => Segment::Q(n(1)?, n(2)?, n(3)?, n(4)?),
-        Some("C") => Segment::C(n(1)?, n(2)?, n(3)?, n(4)?, n(5)?, n(6)?),
-        Some("Z") => Segment::Z,
-        _ => return Err(format!("unknown path segment {v}")),
+    let verb = verb.unwrap_or_default();
+    if a.len() != count + 1 {
+        return Err(format!(
+            "a \"{verb}\" path segment takes {count} coordinates"
+        ));
+    }
+    let c = a[1..]
+        .iter()
+        .map(|x| num(x, "a path coordinate"))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(match verb {
+        "M" => Segment::M(c[0], c[1]),
+        "L" => Segment::L(c[0], c[1]),
+        "Q" => Segment::Q(c[0], c[1], c[2], c[3]),
+        "C" => Segment::C(c[0], c[1], c[2], c[3], c[4], c[5]),
+        _ => Segment::Z,
     })
 }
 
 fn text_options(v: Option<&Value>) -> Result<TextOptions, String> {
-    let m = v.and_then(Value::as_object);
-    let get = |k: &str| m.and_then(|m| m.get(k)).filter(|v| !v.is_null());
+    let m = match v {
+        None | Some(Value::Null) => &Map::new(),
+        Some(Value::Object(m)) => m,
+        Some(_) => return Err("a text style is an object".into()),
+    };
     Ok(TextOptions {
-        size: get("size")
-            .map(|s| num(s, "a text size"))
-            .transpose()?
-            .unwrap_or(13.0)
-            .clamp(1.0, 512.0),
-        weight: get("weight")
-            .and_then(Value::as_u64)
-            .map_or(400, |w| (w.clamp(100, 900) / 100 * 100) as u16),
-        align: match get("align").and_then(Value::as_str) {
-            Some("center") => TextAlign::Center,
-            Some("right") => TextAlign::Right,
-            _ => TextAlign::Left,
+        size: match m.get("size") {
+            None => 13.0,
+            Some(s) => num(s, "a text size")?.clamp(1.0, 512.0),
         },
-        color: get("color").map(color).transpose()?,
-        mono: get("mono").and_then(Value::as_bool).unwrap_or(false),
+        weight: match m.get("weight").map(Value::as_f64) {
+            None => 400,
+            Some(Some(w)) if [400.0, 500.0, 600.0, 700.0].contains(&w) => w as u16,
+            Some(_) => return Err("a text weight must be 400, 500, 600 or 700".into()),
+        },
+        align: match m.get("align") {
+            None => TextAlign::Left,
+            Some(a) => one_of(
+                a,
+                &[
+                    ("left", TextAlign::Left),
+                    ("center", TextAlign::Center),
+                    ("right", TextAlign::Right),
+                ],
+                "a text align must be \"left\", \"center\" or \"right\"",
+            )?,
+        },
+        color: m.get("color").map(color).transpose()?,
+        mono: match m.get("mono") {
+            None => false,
+            Some(Value::Bool(b)) => *b,
+            Some(_) => return Err("a text mono must be true or false".into()),
+        },
     })
 }
 
 impl Command {
-    /// Reads one compact command from JSON.
+    /// Reads one compact command from JSON, with the checks of `widgets.md` (Draw command checks).
     pub fn from_value(v: &Value) -> Result<Command, String> {
-        let a = v
-            .as_array()
-            .ok_or_else(|| format!("a command is an array, got {v}"))?;
+        let a = v.as_array().ok_or("a command is an array")?;
         let op = a
             .first()
             .and_then(Value::as_str)
             .ok_or("a command starts with its name")?;
-        let at = |i: usize| {
-            a.get(i)
-                .ok_or_else(|| format!("\"{op}\" is missing argument {i}"))
+        // Its number of arguments, and how many of them may be left off.
+        let (count, optional) = match op {
+            "save" | "restore" => (0, 0),
+            "rotate" | "alpha" => (1, 0),
+            "translate" | "scale" | "path" => (2, 0),
+            "circle" => (4, 0),
+            "rect" | "line" | "image" => (5, 0),
+            "rrect" => (6, 0),
+            "text" => (4, 1),
+            _ => return Err(format!("unknown draw command \"{op}\"")),
         };
-        let n = |i: usize| at(i).and_then(|v| num(v, &format!("\"{op}\" argument {i}")));
-        let p = |i: usize| at(i).and_then(paint);
+        if a.len() > count + 1 {
+            return Err(format!("\"{op}\" has more than {count} arguments"));
+        }
+        if a.len() < count + 1 - optional {
+            return Err(format!("\"{op}\" is missing argument {}", a.len()));
+        }
+        let n = |i: usize| num(&a[i], &format!("\"{op}\" argument {i}"));
+        let p = |i: usize| paint(&a[i]);
         Ok(match op {
             "save" => Command::Save,
             "restore" => Command::Restore,
@@ -352,7 +395,7 @@ impl Command {
                 paint: p(5)?,
             },
             "path" => Command::Path {
-                segments: at(1)?
+                segments: a[1]
                     .as_array()
                     .ok_or("\"path\" takes a list of segments")?
                     .iter()
@@ -363,20 +406,19 @@ impl Command {
             "text" => Command::Text {
                 x: n(1)?,
                 y: n(2)?,
-                text: at(3)?
+                text: a[3]
                     .as_str()
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| a[3].to_string()),
+                    .ok_or("\"text\" argument 3 must be a string")?
+                    .to_owned(),
                 style: text_options(a.get(4))?,
             },
-            "image" => Command::Image {
-                src: at(1)?.as_str().ok_or("\"image\" takes a src")?.to_owned(),
+            _ => Command::Image {
+                src: a[1].as_str().ok_or("\"image\" takes a src")?.to_owned(),
                 x: n(2)?,
                 y: n(3)?,
                 w: n(4)?,
                 h: n(5)?,
             },
-            _ => return Err(format!("unknown draw command \"{op}\"")),
         })
     }
 }
@@ -393,7 +435,7 @@ impl DrawOutput {
         let list = v
             .get("commands")
             .and_then(Value::as_array)
-            .ok_or("a draw step must return { commands }")?;
+            .ok_or("draw commands must be a list")?;
         if list.len() > MAX_COMMANDS {
             return Err(format!(
                 "{} draw commands is over the budget of {MAX_COMMANDS} per frame",

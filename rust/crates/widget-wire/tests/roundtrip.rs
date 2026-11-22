@@ -249,8 +249,8 @@ const EVERY_COMMAND: &str = r##"[
   ["rect", 1, 2, 3, 4, { fill: "#a1b2c3", stroke: "#a1b2c380", width: 2.5, cap: "round" }],
   ["rect", 1, 2, 3, 4, { stroke: "text", width: -3 }],
   ["rrect", 0, 0, 10, 20, 4, { fill: "muted", stroke: "accent", cap: "butt" }],
-  ["circle", 5, 5, 3, { fill: "bg", stroke: "surface", width: null }],
-  ["line", 0, 0, 10, 10, { stroke: "border", width: 1, fill: null }],
+  ["circle", 5, 5, 3, { fill: "bg", stroke: "surface", width: undefined }],
+  ["line", 0, 0, 10, 10, { stroke: "border", width: 1, fill: undefined }],
   ["rect", 0, 0, 1, 1, { fill: "success" }], ["rect", 0, 0, 1, 1, { fill: "warning" }],
   ["rect", 0, 0, 1, 1, { fill: "error" }], ["rect", 0, 0, 1, 1, {}],
   ["rect", 0, 0, 1, 1, { fill: { linear: [0, 0, 10, 0], stops: [[0, "#000"], [0.5, "accent"], [2, "#ffffff80"]] } }],
@@ -258,22 +258,20 @@ const EVERY_COMMAND: &str = r##"[
   ["rect", 0, 0, 1, 1, { fill: { linear: [0, 0, 1, 1], radial: [0, 0, 1], stops: [] } }],
   ["path", [["M", 0, 0], ["L", 10, 0], ["Q", 1, 2, 3, 4], ["C", 1, 2, 3, 4, 5, 6], ["Z"]], { fill: "#f00", stroke: "text" }],
   ["path", [], { stroke: "text" }],
-  ["text", 10, 20, "hello é ✓", { size: 16, weight: 650, align: "center", color: "accent", mono: true }],
+  ["text", 10, 20, "hello é ✓", { size: 16, weight: 600, align: "center", color: "accent", mono: true }],
   ["text", 0, 0, "defaults", {}],
   ["text", 0, 0, "no options"],
-  ["text", 0, 0, "clamped", { size: 9999, weight: 50, align: "right" }],
-  ["text", 0, 0, "clamped", { size: 0.1, weight: 1000, align: "left", color: "#00ff00", mono: false }],
-  ["text", 0, 0, "odd weight", { weight: 650.5, size: null, color: null }],
-  ["text", 0, 0, 42],
-  ["text", 0, 0, { a: [1, "b"] }],
-  ["text", 0, 0, null],
+  ["text", 0, 0, "clamped", { size: 9999, weight: 700, align: "right" }],
+  ["text", 0, 0, "clamped", { size: 0.1, weight: 500, align: "left", color: "#00ff00", mono: false }],
+  ["text", 0, 0, "undefined fields", { weight: undefined, size: undefined, color: undefined }],
+  ["text", 0, 0, "null style", null],
   ["image", "https://example.com/i.png", 1, 2, 30, 40],
 ]"##;
 
 #[test]
 fn every_draw_op_decodes_as_its_json() {
     let (bin, json) = draw(EVERY_COMMAND);
-    assert_eq!(bin.len(), 33);
+    assert_eq!(bin.len(), 31);
     assert_eq!(bin, json);
 }
 
