@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Installs from git (`github:anomalyco/psychoscript#<commit>`): a `prepare` script installs the dev dependencies and
+  builds `dist/`, since package managers don't install a git dependency's dev dependencies. Bun runs it only for a
+  trusted dependency (`trustedDependencies`).
 - `ArrayBuffer`, `Uint16Array`, `Uint32Array`, `Int32Array`, `Float32Array` and `Float64Array`: views of one byte
   buffer with JS conversions, the methods 3D programs need, and fast indexed access. They (and `ArrayBuffer`s) are
   lent to synchronous host functions for the call, without a copy. `Uint8Array` gains `byteLength`, `byteOffset`,
