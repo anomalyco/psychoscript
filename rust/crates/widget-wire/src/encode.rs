@@ -12,26 +12,61 @@ use crate::draw::{
 use crate::json;
 use crate::schema::*;
 
+/// Why a value can't be written: a program error in the phase its kind names (`widgets-binary.md`, Errors).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EncodeError {
+    /// `InvalidView`, `InvalidDraw` or `InvalidGpu` (phase `view`, `draw` or `gpu`); `InvalidDataValue` for a value
+    /// that is none of those (an unknown post type, a step output that isn't an object).
+    pub kind: &'static str,
+    pub message: String,
+}
+
+impl std::fmt::Display for EncodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.kind, self.message)
+    }
+}
+
+impl std::error::Error for EncodeError {}
+
+pub const INVALID_VIEW: &str = "InvalidView";
+pub const INVALID_DRAW: &str = "InvalidDraw";
+pub const INVALID_GPU: &str = "InvalidGpu";
+pub const INVALID_DATA: &str = "InvalidDataValue";
+
 /// A run's output, as the program hands it to the emit global: a draw step's `{ commands }` as `01 D`, an init or
-/// event step's `{ state, view, submit?, dismiss?, send? }` as `01 S`. Fails for an invalid draw (a program error in
-/// phase `draw`) or a value that isn't a step output.
-pub fn encode_output(v: &HostValue) -> Result<Vec<u8>, String> {
+/// event step's `{ state, view, submit?, dismiss?, send? }` as `01 S`. Fails for an invalid draw (`InvalidDraw`) or
+/// a value that isn't a step output.
+pub fn encode_output(v: &HostValue) -> Result<Vec<u8>, EncodeError> {
     let v = &*as_json(v);
+    let fail = |kind| move |message| EncodeError { kind, message };
     if !matches!(v, HostValue::Object(_)) {
-        return Err("a step must return an object with state and view".into());
+        return Err(fail(INVALID_DATA)(
+            "a step must return an object with state and view".into(),
+        ));
     }
     let mut out = vec![VERSION];
     match field(v, "commands") {
-        Some(commands) => draw_section(commands, &mut out)?,
-        None => step(v, &mut out)?,
+        Some(commands) => draw_section(commands, &mut out).map_err(fail(INVALID_DRAW))?,
+        None => step(v, &mut out).map_err(fail(INVALID_VIEW))?,
     }
     Ok(out)
 }
 
-/// A live post (`__host.post(message)`). Fails for an invalid post: an unknown type, an invalid draw, an invalid or
-/// over-limit GPU batch.
-pub fn encode_post(m: &HostValue) -> Result<Vec<u8>, String> {
-    post(m).map_err(|e| format!("invalid post: {e}"))
+/// A live post (`__host.post(message)`). Fails for an invalid post: a render's view (`InvalidView`), a draw
+/// (`InvalidDraw`), a GPU batch, invalid or over a limit (`InvalidGpu`), or an unknown type.
+pub fn encode_post(m: &HostValue) -> Result<Vec<u8>, EncodeError> {
+    let kind = match field(m, "type").and_then(HostValue::as_str) {
+        Some("render") => INVALID_VIEW,
+        Some("draw") => INVALID_DRAW,
+        Some("gpu") => INVALID_GPU,
+        Some("frame") if !matches!(field(m, "gpu"), None | Some(HostValue::Null)) => INVALID_GPU,
+        _ => INVALID_DATA,
+    };
+    post(m).map_err(|e| EncodeError {
+        kind,
+        message: format!("invalid post: {e}"),
+    })
 }
 
 fn post(m: &HostValue) -> Result<Vec<u8>, String> {

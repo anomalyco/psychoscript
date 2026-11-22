@@ -64,12 +64,16 @@ format (opencode `specs/v2/widgets-binary.md`, crate `widget-wire`).
 - `program.runBytes(inputJson, encoder, options = RunOptions())`, also on `RunSession`, defines the host global
   `encoder.emitName()` (`__widget_emit`). The program passes its output to it, and the result is the bytes the encoder
   wrote for that value (the last call's) instead of the completion value. Functions in the value are left out, as JSON
-  leaves them out. `maxOutputBytes` limits the bytes. A value the encoder can't write fails the run with
-  `Runtime(kind: "InvalidDataValue")` at the call, as does a run that never calls the global.
+  leaves them out. `maxOutputBytes` limits the bytes. A value the encoder can't write fails the run with `Runtime`
+  of the encoder's kind, with the line and column of the call. A run that never calls the global fails with
+  `Runtime(kind: "InvalidDataValue")`.
 - With `startLive(..., encoder:)` (and `LiveRun.restore(..., encoder:)`, with the same encoder), every post reaches
   `handler.onPostsBytes(messages)` as the encoder's bytes, a wake-up's posts in one call, and `onPosts` is never
-  called. A post the encoder can't write throws `InvalidDataValue` at `__host.post`: uncaught, the run ends with
-  `Failed(Runtime)`.
+  called. A post the encoder can't write throws at `__host.post`: uncaught, the run ends with `Failed(Runtime)` of
+  the encoder's kind, located at the post.
+- The widget encoder's kinds name the spec's phase for the report: `InvalidView` (phase `view`), `InvalidDraw`
+  (`draw`), `InvalidGpu` (`gpu`, a batch in a frame request or on its own). Anything else it can't write (an unknown
+  post type, a step output that isn't an object) is `InvalidDataValue`, an invalid post as today.
 
 ## Live runs
 

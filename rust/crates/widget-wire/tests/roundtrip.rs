@@ -7,11 +7,12 @@ use std::sync::{Arc, Mutex};
 use psychoscript::{HostFunction, HostValue, Runtime, Translate, TranslateFunctions};
 use serde_json::{Value, json};
 use widget_wire::{
-    Arg, Batch, Command, DecodeError, DrawOutput, Node, Output, Post, StepOutput, decode_output,
-    decode_post, encode_output, encode_post,
+    Arg, Batch, Command, DecodeError, DrawOutput, EncodeError, INVALID_DATA, INVALID_DRAW,
+    INVALID_GPU, Node, Output, Post, StepOutput, decode_output, decode_post, encode_output,
+    encode_post,
 };
 
-type Encoded = Result<Vec<u8>, String>;
+type Encoded = Result<Vec<u8>, EncodeError>;
 
 /// Runs `src` with `__emit(value)` handing `value` to `encode` as a host function receives it (functions left out,
 /// as psychoscript-mobile's `run_bytes` has it); returns what each call encoded and the program's result as JSON
@@ -334,7 +335,7 @@ fn every_post_kind_decodes_as_its_json() {
     assert_eq!(b.bytes.len(), 28);
 }
 
-fn error_of(src: &str, encode: fn(&HostValue) -> Encoded) -> String {
+fn error_of(src: &str, encode: fn(&HostValue) -> Encoded) -> EncodeError {
     let (enc, _) = run(&format!("__emit({src})\nreturn null"), encode);
     enc.into_iter()
         .next()
@@ -379,7 +380,12 @@ fn invalid_outputs_and_posts_fail_to_encode() {
         ),
     ] {
         let e = error_of(src, encode_output);
-        assert!(e.contains(why), "{src}: {e}");
+        let kind = if src == "1" {
+            INVALID_DATA
+        } else {
+            INVALID_DRAW
+        };
+        assert!(e.message.contains(why) && e.kind == kind, "{src}: {e}");
     }
     for (src, why) in [
         ("1", "invalid post: a post is an object with a type"),
@@ -407,7 +413,12 @@ fn invalid_outputs_and_posts_fail_to_encode() {
         ),
     ] {
         let e = error_of(src, encode_post);
-        assert!(e.contains(why), "{src}: {e}");
+        let kind = match () {
+            _ if src.contains("\"draw\"") => INVALID_DRAW,
+            _ if src.contains("gpu") => INVALID_GPU,
+            _ => INVALID_DATA,
+        };
+        assert!(e.message.contains(why) && e.kind == kind, "{src}: {e}");
     }
     // At the limits it encodes.
     let (enc, _) = run(

@@ -1,11 +1,11 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use psychoscript::{
-    Compiled, Data, Failure, HostFunction, HostResult, HostString, HostValue, Limits, Runtime,
-    Translate, TranslateFunctions,
+    Compiled, Data, HostFunction, HostResult, HostString, HostValue, Limits, Runtime, Translate,
+    TranslateFunctions,
 };
 
-use crate::encoder::ValueEncoder;
+use crate::encoder::{Thrown, ValueEncoder};
 use crate::error::PsychoScriptError;
 use crate::fetch::FetchTransport;
 use crate::json::Input;
@@ -173,8 +173,12 @@ fn object(text: &str, what: &str) -> Result<Vec<(HostString, HostValue)>, Psycho
     }
 }
 
-/// The bytes a run's emit global wrote.
-type Emitted = Arc<Mutex<Option<Vec<u8>>>>;
+/// What a run's emit global wrote, and the encoder's failure it threw.
+#[derive(Default)]
+struct Emitted {
+    bytes: Mutex<Option<Vec<u8>>>,
+    thrown: Thrown,
+}
 
 impl Program {
     fn json(&self, slot: Slot, options: RunOptions) -> Result<String, PsychoScriptError> {
@@ -189,9 +193,16 @@ impl Program {
         options: RunOptions,
         encoder: &ValueEncoder,
     ) -> Result<Vec<u8>, PsychoScriptError> {
-        let out = Emitted::default();
-        self.execute(slot, &options, Some((encoder, out.clone())))?;
-        let bytes = out.lock().unwrap_or_else(PoisonError::into_inner).take();
+        let out = Arc::new(Emitted::default());
+        if let Err(mut e) = self.execute(slot, &options, Some((encoder, out.clone()))) {
+            out.thrown.name(&mut e);
+            return Err(e);
+        }
+        let bytes = out
+            .bytes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
         let bytes = bytes.ok_or_else(|| PsychoScriptError::Runtime {
             kind: "InvalidDataValue".into(),
             reason: format!("the program didn't call {}", encoder.0.emit_name()),
@@ -207,7 +218,7 @@ impl Program {
         &self,
         slot: Slot,
         options: &RunOptions,
-        emit: Option<(&ValueEncoder, Emitted)>,
+        emit: Option<(&ValueEncoder, Arc<Emitted>)>,
     ) -> Result<Data, PsychoScriptError> {
         let slot = Arc::new(Mutex::new(slot));
         let name = self.input_name.clone();
@@ -230,10 +241,8 @@ impl Program {
                     let name = encoder.emit_name().to_owned();
                     let f = HostFunction::new(move |args: Vec<HostValue>, _call| -> HostResult {
                         let v = args.first().unwrap_or(&HostValue::Undefined);
-                        let bytes = encoder
-                            .encode_output(v)
-                            .map_err(|e| HostValue::Failure(Failure::new("InvalidDataValue", e)))?;
-                        *out.lock().unwrap_or_else(PoisonError::into_inner) = Some(bytes);
+                        let bytes = encoder.encode_output(v).map_err(|f| out.thrown.throw(f))?;
+                        *out.bytes.lock().unwrap_or_else(PoisonError::into_inner) = Some(bytes);
                         Ok(HostValue::Undefined)
                     });
                     (name, f)
