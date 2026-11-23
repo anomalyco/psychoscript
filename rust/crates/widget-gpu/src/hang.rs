@@ -1,5 +1,6 @@
-//! GPU hangs (`widgets-gpu.md`, GPU hang): GPU work still unfinished 1 s after its submit. Submits are tracked per
-//! queue, process-wide, since runs share a device: on a queue only the oldest unfinished submit can be hung, its second
+//! GPU hangs (`widgets-gpu.md`, GPU hang): GPU work still unfinished 250 ms after its submit, below the ~0.5 s of a
+//! GPU watchdog (macOS's may blame another queue and leave the killed work looking finished). Submits are tracked per
+//! queue, process-wide, since runs share a device: on a queue only the oldest unfinished submit can be hung, its time
 //! counted from when the one before it finished, so what waits behind a hung submit (another canvas's, another run's)
 //! isn't blamed. Nothing here waits for the GPU.
 
@@ -10,12 +11,12 @@ use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 /// GPU work unfinished this long after its submit hung.
-pub const HANG: Duration = Duration::from_secs(1);
+pub const HANG: Duration = Duration::from_millis(250);
 /// At a device loss, the oldest unfinished submit that had run this long hung (the device's watchdog may have killed
-/// it before [`HANG`]).
+/// it before a poll saw it past [`HANG`]).
 pub const HANG_AT_LOSS: Duration = Duration::from_millis(250);
 /// The client error a hang stops canvases with.
-pub const HANG_MESSAGE: &str = "the GPU work took over 1 s; the canvas is stopped";
+pub const HANG_MESSAGE: &str = "the GPU work took over 250 ms; the canvas is stopped";
 
 /// A submit: when it was made, whether its work finished, whether it was found hung.
 pub(crate) struct Submit {
@@ -122,10 +123,23 @@ mod tests {
         })
     }
 
-    const H: Duration = HANG;
+    /// The rule's logic at a threshold of 1 s (any works: `judge` takes it).
+    const H: Duration = Duration::from_secs(1);
+
+    #[test]
+    fn the_thresholds() {
+        assert_eq!(
+            (HANG, HANG_AT_LOSS),
+            (Duration::from_millis(250), Duration::from_millis(250))
+        );
+        assert_eq!(
+            HANG_MESSAGE,
+            "the GPU work took over 250 ms; the canvas is stopped"
+        );
+    }
 
     /// Only the oldest unfinished submit on a queue can hang: what waits behind it isn't blamed, and the next one's
-    /// second counts from when the hung one finished.
+    /// time counts from when the hung one finished.
     #[test]
     fn what_waits_behind_a_hung_submit_isnt_blamed() {
         let t0 = Instant::now();

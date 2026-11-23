@@ -5,8 +5,9 @@
 //! A shader that takes over 50 ms a frame three frames in a row stops and shows its last frame (`widgets.md`, GPU
 //! canvases), a client error. A frame counts as slow when its GPU work is seen unfinished more than 50 ms after its
 //! submit; a frame isn't drawn while the last one is still drawing, so a slow shader never queues work behind it.
-//! Before that rule, a frame still unfinished 1 s after its submit stops the canvas with its placeholder
-//! (`widgets-gpu.md`, GPU hang; [`Gpu::poll`]). Nothing here waits for the GPU.
+//! Before that rule, whatever it has counted, a frame still unfinished 250 ms after its submit stops the canvas with
+//! its placeholder (`widgets-gpu.md`, GPU hang; [`Gpu::poll`]): one frame that hangs is stopped by it, where the 50 ms
+//! rule needs three. Nothing here waits for the GPU.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
