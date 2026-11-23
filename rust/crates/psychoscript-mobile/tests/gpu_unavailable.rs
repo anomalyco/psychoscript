@@ -44,7 +44,11 @@ fn a_device_that_cant_be_made() {
         json!({ "available": true, "format": format })
     );
     // It can't be: its canvases go unavailable, and the program loses its GPU as on a device loss.
-    r.wait(|e| matches!(e, Event::Gpu(None, GpuCanvasState::Unavailable)).then_some(()));
+    let reason = r.wait(|e| match e {
+        Event::Gpu(None, GpuCanvasState::Unavailable { reason }) => Some(reason.clone()),
+        _ => None,
+    });
+    assert_eq!(reason, "no GPU device (as the test asked)");
     let lost = sends(&mut r);
     assert_eq!(lost["type"], "gpu");
     assert_eq!(lost["lost"], "unknown");
@@ -57,7 +61,11 @@ fn a_device_that_cant_be_made() {
         sends(&mut r),
         json!({ "available": false, "format": format })
     );
-    r.wait(|e| matches!(e, Event::Gpu(None, GpuCanvasState::Unavailable)).then_some(()));
+    let reason = r.wait(|e| match e {
+        Event::Gpu(None, GpuCanvasState::Unavailable { reason }) => Some(reason.clone()),
+        _ => None,
+    });
+    assert_eq!(reason, "no GPU device (as the test asked)");
     r.run.stop();
 
     // A shader canvas: made at once, `render` returns the client error once.

@@ -263,8 +263,17 @@ fn make() -> Result<Dev, String> {
     }))
     .map_err(|e| format!("no GPU adapter: {e}"))?;
     let info = adapter.get_info();
-    if info.backend == wgpu::Backend::Vulkan && !vulkan_1_1(&adapter) {
-        return Err("the GPU's Vulkan is older than 1.1".into());
+    if info.backend == wgpu::Backend::Vulkan {
+        match vulkan_version(&adapter) {
+            Some(version) if version >= (1, 1) => {}
+            Some((major, minor)) => {
+                return Err(format!(
+                    "the GPU ({}) has Vulkan {major}.{minor}; GPU canvases need 1.1 or newer",
+                    describe(&info)
+                ));
+            }
+            None => return Err(format!("the GPU ({}) has no Vulkan version", describe(&info))),
+        }
     }
     // The program's limits (`widget_gpu::device_limits`), but the adapter's texture size: the host checks hold
     // programs to 4096, and a surface (a 5K screen) may be larger.
@@ -274,12 +283,18 @@ fn make() -> Result<Dev, String> {
         ..widget_gpu::device_limits()
     };
     let required_limits = simulator_limits(required_limits, &adapter);
+    if let Some(low) = under(&required_limits, &adapter.limits()) {
+        return Err(format!(
+            "the GPU ({}) is under the spec's limits: {low}",
+            describe(&info)
+        ));
+    }
     let (device, queue) = block(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("widgets"),
         required_limits,
         ..Default::default()
     }))
-    .map_err(|e| format!("no GPU device: {e}"))?;
+    .map_err(|e| format!("no GPU device on {}: {e}", describe(&info)))?;
     // An error outside the replay's and the presenter's error scopes is never the app's crash.
     device.on_uncaptured_error(std::sync::Arc::new(|_: wgpu::Error| {}));
     let generation = {
@@ -328,21 +343,63 @@ fn simulator_limits(spec: wgpu::Limits, _adapter: &wgpu::Adapter) -> wgpu::Limit
     spec
 }
 
-#[cfg(any(target_os = "android", target_os = "linux"))]
-fn vulkan_1_1(adapter: &wgpu::Adapter) -> bool {
-    // SAFETY: only reads the physical device's properties.
-    match unsafe { adapter.as_hal::<wgpu::hal::api::Vulkan>() } {
-        Some(hal) => {
-            let version = hal.physical_device_capabilities().properties().api_version;
-            (version >> 22, (version >> 12) & 0x3ff) >= (1, 1)
-        }
-        None => false,
+/// The adapter's name and driver, for a reason there is no device.
+fn describe(info: &wgpu::AdapterInfo) -> String {
+    let driver = [info.driver.trim(), info.driver_info.trim()]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    match driver.is_empty() {
+        true => format!("{}, {:?}", info.name, info.backend),
+        false => format!("{}, {:?}, driver {driver}", info.name, info.backend),
     }
 }
 
+/// Each limit of `has` under `required`, by WebGPU's name, with both values: `maxStorageBuffersPerShaderStage 4
+/// (needs 8)`; `None` when none is.
+fn under(required: &wgpu::Limits, has: &wgpu::Limits) -> Option<String> {
+    let mut low = Vec::new();
+    required.check_limits_with_fail_fn(has, false, |name, wanted, allowed| {
+        let bound = match name.starts_with("min_") {
+            true => " or less",
+            false => "",
+        };
+        low.push(format!("{} {allowed} (needs {wanted}{bound})", webgpu_name(name)));
+    });
+    (!low.is_empty()).then(|| low.join(", "))
+}
+
+/// `max_texture_dimension_2d` as WebGPU writes it: `maxTextureDimension2D`.
+fn webgpu_name(name: &str) -> String {
+    let mut out = String::new();
+    for (i, part) in name.split('_').enumerate() {
+        let mut chars = part.chars();
+        match (i, chars.next()) {
+            (0, Some(c)) => out.push(c),
+            (_, Some(c)) => out.extend(c.to_uppercase()),
+            (_, None) => {}
+        }
+        out.push_str(&match part.starts_with(|c: char| c.is_ascii_digit()) {
+            true => chars.as_str().to_uppercase(),
+            false => chars.as_str().to_owned(),
+        });
+    }
+    out
+}
+
+/// The adapter's Vulkan version, `(major, minor)`.
+#[cfg(any(target_os = "android", target_os = "linux"))]
+fn vulkan_version(adapter: &wgpu::Adapter) -> Option<(u32, u32)> {
+    // SAFETY: only reads the physical device's properties.
+    let hal = unsafe { adapter.as_hal::<wgpu::hal::api::Vulkan>() }?;
+    let version = hal.physical_device_capabilities().properties().api_version;
+    Some((version >> 22, (version >> 12) & 0x3ff))
+}
+
 #[cfg(not(any(target_os = "android", target_os = "linux")))]
-fn vulkan_1_1(_adapter: &wgpu::Adapter) -> bool {
-    false
+fn vulkan_version(_adapter: &wgpu::Adapter) -> Option<(u32, u32)> {
+    None
 }
 
 /// The device of `generation` was lost: tell the runs, make a new one, then tell them it is ready.
@@ -426,5 +483,30 @@ pub(crate) fn watch(dev: &Dev) -> Arc<Watch> {
 pub(crate) fn settle(dev: &Dev, watch: &Watch, stop: impl Fn() -> bool) {
     while !watch.done(dev) && current().is_some_and(|d| d.generation == dev.generation) && !stop() {
         std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_reason_names_each_limit_under_the_spec_with_both_values() {
+        let spec = widget_gpu::device_limits();
+        assert_eq!(under(&spec, &spec), None);
+        let has = wgpu::Limits {
+            max_storage_buffers_per_shader_stage: 4,
+            max_texture_dimension_2d: 2048,
+            min_uniform_buffer_offset_alignment: 512,
+            max_compute_workgroup_storage_size: 32768,
+            ..spec.clone()
+        };
+        assert_eq!(
+            under(&spec, &has).as_deref(),
+            Some(
+                "maxTextureDimension2D 2048 (needs 4096), maxStorageBuffersPerShaderStage 4 (needs 8), \
+                 minUniformBufferOffsetAlignment 512 (needs 256 or less)"
+            )
+        );
     }
 }

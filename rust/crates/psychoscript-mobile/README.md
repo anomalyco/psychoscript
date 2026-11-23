@@ -387,10 +387,16 @@ WebGPU, shader translation and presenting are this crate's.
   On the run's thread, like the other callbacks. Show the surface for `live`, the canvas's placeholder (`poster`, else
   `alt`, else "GPU canvas not supported") for anything else:
   - `live`: it has an image;
-  - `unavailable`: no GPU here (a client error, nothing to report);
+  - `unavailable(reason)`: no GPU here (a client error, nothing to report). `reason` says why, worked out once when
+    the canvases go unavailable: the Android version (`GPU canvases need Android 15 or 16 (API 35 or 36), not API
+    37`), no Vulkan adapter (wgpu's text), the GPU's Vulkan version, each limit under the spec's with the GPU's value
+    and the one needed (`the GPU (Mali-G715, Vulkan, driver ...) is under the spec's limits:
+    maxStorageBuffersPerShaderStage 4 (needs 8)`), or wgpu's error making the device. Show it (in a development
+    build, say) or ignore it; the crate logs nothing;
   - `stopped(kind, message, report)`: an error stopped it for the rest of the run, with `message`. `report` once per
     error (`kind` `program`: report it, phase `gpu`); `kind` `client` (a driver failure, out of GPU memory, a GPU hang
-    or timeout, below, a surface that failed or was lost: attach a new one): log it;
+    or timeout, below, a surface that failed or was lost: attach a new one; one that can't be configured says what was
+    asked, its size, format, alpha and present mode, and wgpu's error): log it;
   - `lost`: the device was lost; `live` again when the program draws on the new one. A canvas an error stopped isn't
     told `lost`: it stays stopped.
 - **Threading:** batches replay on the run's thread, with the program's bytes in place (no copy, nothing crosses to

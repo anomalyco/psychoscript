@@ -121,7 +121,14 @@ impl Attached {
                     self.surface = None;
                     return self.try_present(frame, blit);
                 }
-                return Err(format!("the surface can't be configured: {e}"));
+                return Err(format!(
+                    "the surface can't be configured ({}×{} {:?}, {:?}, {:?}): {e}",
+                    config.width,
+                    config.height,
+                    config.format,
+                    config.alpha_mode,
+                    config.present_mode
+                ));
             }
             if let Some(layer) = self.native.layer() {
                 drawable_timeout(layer);

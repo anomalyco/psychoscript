@@ -120,19 +120,21 @@ impl RunGpu {
     /// program posts waits for it. Without a device, every GPU canvas shows its placeholder.
     pub(crate) fn input(&self) -> HostValue {
         let mut st = lock(&self.state);
+        // Why there is no GPU, when there is none.
+        let mut unavailable = None;
         if st.gpu.is_none() && !st.waiting {
-            match device::ready() {
-                Some(Ok(_)) => {
-                    let _ = self.start(&mut st);
-                }
-                Some(Err(_)) => {}
-                None => {
-                    if device::format().is_ok() {
+            unavailable = match device::ready() {
+                Some(Ok(_)) => self.start(&mut st).err(),
+                Some(Err(why)) => Some(why),
+                None => match device::format() {
+                    Ok(_) => {
                         st.waiting = true;
                         st.held = Some(Vec::new());
+                        None
                     }
-                }
-            }
+                    Err(why) => Some(why),
+                },
+            };
         }
         let available = st.gpu.is_some() || st.waiting;
         let format = match &st.gpu {
@@ -143,8 +145,8 @@ impl RunGpu {
         #[cfg(feature = "test-hooks")]
         let format = lock(&super::FORMAT).clone().unwrap_or(format);
         drop(st);
-        if !available {
-            self.tell(None, GpuCanvasState::Unavailable);
+        if let Some(reason) = unavailable {
+            self.tell(None, GpuCanvasState::Unavailable { reason });
         }
         HostValue::Object(vec![
             ("available".into(), HostValue::Bool(available)),
@@ -173,13 +175,13 @@ impl RunGpu {
         }
         st.keys = keys;
         st.restore = Some((last, stops));
-        let started = match device::ready() {
-            Some(Ok(_)) => self.start(&mut st).is_ok(),
-            Some(Err(_)) => false,
+        let unavailable = match device::ready() {
+            Some(Ok(_)) => self.start(&mut st).err(),
+            Some(Err(why)) => Some(why),
             None => {
                 st.waiting = true;
                 st.held = Some(Vec::new());
-                true
+                None
             }
         };
         let told = match st.gpu.is_some() {
@@ -188,8 +190,8 @@ impl RunGpu {
         };
         drop(st);
         self.ctx.deliver(lost_message("unknown", ""));
-        if !started {
-            return self.tell(None, GpuCanvasState::Unavailable);
+        if let Some(reason) = unavailable {
+            return self.tell(None, GpuCanvasState::Unavailable { reason });
         }
         self.tell_restored(told);
     }
@@ -318,7 +320,7 @@ impl RunGpu {
                 if first && st.restore.take().is_none() {
                     self.ctx.deliver(lost_message("unknown", &e.message));
                 }
-                return self.tell(None, GpuCanvasState::Unavailable);
+                return self.tell(None, GpuCanvasState::Unavailable { reason: e.message });
             }
         }
         // A restored run's handles and stops, before what it posted replays.

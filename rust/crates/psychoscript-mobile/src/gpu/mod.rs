@@ -179,8 +179,10 @@ pub enum GpuCanvasState {
     /// It has an image: show its surface, without the placeholder.
     Live,
     /// There is no GPU here: every GPU canvas of the run shows its placeholder (`poster`, else `alt`, else "GPU
-    /// canvas not supported"). A client error; the widget keeps working.
-    Unavailable,
+    /// canvas not supported"). A client error; the widget keeps working. `reason` says why (the Android version, no
+    /// Vulkan adapter, the GPU's Vulkan version or limits under the spec's, each with its value, or wgpu's error
+    /// making the device), for the app to show or ignore.
+    Unavailable { reason: String },
     /// An error stopped it for the rest of the run: its placeholder with `message`. With `report`, report it once
     /// (a program error, phase `gpu`); a client error is logged.
     Stopped {
