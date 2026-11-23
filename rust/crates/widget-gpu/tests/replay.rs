@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::{Value, json};
 use widget_gpu::{
-    Arg, ErrorKind, Gpu, GpuError, SLOW_MESSAGE, SavedStop, SavedStops, Shorthand, Stops, Uniforms,
-    clamp_size,
+    Arg, ErrorKind, Gpu, GpuError, HANG_MESSAGE, SLOW_MESSAGE, SavedStop, SavedStops, Shorthand,
+    Stops, Uniforms, clamp_size,
 };
 
 const W: u32 = 64;
@@ -1339,6 +1339,159 @@ fn a_shader_too_slow_stops_on_its_last_frame() {
     let (calls, _) = run_for(&mut s, 1.0);
     assert!(!s.too_slow() && s.error().is_none());
     assert!(s.canvas().unwrap().version > 10, "{calls} calls");
+}
+
+/// A fragment shader of `widget.values[0].x` steps a pixel: about 150 ms a 256 × 256 frame on lavapipe at 6,000, over 1 s
+/// at 100,000.
+const COSTLY: &str = "fn shade(frag: vec2f) -> vec4f {
+    var v = frag.x * 0.001 + frag.y;
+    for (var i = 0; i < i32(widget.values[0].x); i++) { v = fract(sin(v + f32(i)) * 43758.5453); }
+    return vec4f(v, 0.0, 0.0, 1.0);
+}";
+
+/// Polls `f` every 10 ms until it gives something, for at most `seconds`.
+fn until<T>(seconds: f64, mut f: impl FnMut() -> Option<T>) -> Option<T> {
+    let start = std::time::Instant::now();
+    while start.elapsed().as_secs_f64() < seconds {
+        if let Some(t) = f() {
+            return Some(t);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    None
+}
+
+/// A frame still drawing 1 s after its submit stops the shader with its placeholder, before and whatever the 50 ms
+/// rule counted: here two slow frames, then one that hangs (stopped on its last frame at 50 ms, then by the hang).
+#[test]
+fn a_shader_frame_that_hangs_stops_the_canvas() {
+    let (device, queue) = common::device();
+    let mut s = Shorthand::new(device.clone(), queue.clone(), RGBA, COSTLY).unwrap();
+    let start = std::time::Instant::now();
+    let mut longest = std::time::Duration::ZERO;
+    let mut was_slow = false;
+    let hung = until(20.0, || {
+        let drawn = s.canvas().map_or(0, |c| c.version);
+        let mut u = Uniforms {
+            scale: 1.0,
+            ..Default::default()
+        };
+        u.values[0] = if drawn < 2 { 6000.0 } else { 100_000.0 };
+        let at = std::time::Instant::now();
+        s.render(256, 256, &u).unwrap();
+        longest = longest.max(at.elapsed());
+        was_slow |= s.too_slow();
+        s.error().filter(|e| e.message == HANG_MESSAGE).cloned()
+    });
+    let e = hung.expect("no hang");
+    assert_eq!(e.kind, ErrorKind::Client);
+    assert!(
+        was_slow,
+        "the third slow frame should have stopped it on its last frame first"
+    );
+    assert!(!s.too_slow(), "a hang shows the placeholder");
+    assert!(start.elapsed() > std::time::Duration::from_secs(1));
+    assert!(
+        longest < std::time::Duration::from_millis(40),
+        "a render took {longest:?}"
+    );
+    // Stopped for good, a device loss included.
+    s.reset(device.clone(), queue.clone()).unwrap();
+    s.poll();
+    assert_eq!(s.error().map(|e| e.message.as_str()), Some(HANG_MESSAGE));
+}
+
+/// A live batch whose work hangs stops the canvases it draws into, and not the others; a device loss doesn't restart
+/// the hung canvas. One drawing into no canvas stops them all. (What waits behind a hung submit on a queue isn't
+/// blamed: `hang`'s unit test. On lavapipe a submit waits for the work before it, so it can't be shown here.)
+#[test]
+fn a_batch_that_hangs_stops_its_canvases() {
+    let (device, queue) = common::device();
+    let mut gpu = Gpu::new(device.clone(), queue.clone(), RGBA).unwrap();
+    gpu.resize("a", 256, 256);
+    gpu.resize("b", 256, 256);
+    let costly = COSTLY.replace("i32(widget.values[0].x)", "100000");
+    let module = |body: &str| {
+        format!(
+            "@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {{
+    return vec4f(f32((i << 1u) & 2u) * 2.0 - 1.0, f32(i & 2u) * 2.0 - 1.0, 0.0, 1.0);
+}}
+{body}
+@fragment fn fs(@builtin(position) p: vec4f) -> @location(0) vec4f {{ return shade(p.xy); }}"
+        )
+    };
+    let mut b = Batch::default();
+    b.op(json!(["context", 1, "a", "rgba8unorm", "opaque"]))
+        .op(json!(["view", 2, 1, {}]));
+    b.op(json!(["context", 3, "b", "rgba8unorm", "opaque"]))
+        .op(json!(["view", 4, 3, {}]));
+    for (h, body) in [
+        (5, costly.as_str()),
+        (
+            7,
+            "fn shade(p: vec2f) -> vec4f { return vec4f(0.0, 1.0, 0.0, 1.0); }",
+        ),
+    ] {
+        b.op(json!(["shader", h, module(body)]));
+        b.op(
+            json!(["renderPipeline", h + 1, { "layout": "auto", "vertex": { "module": h },
+            "fragment": { "module": h, "targets": [{ "format": "rgba8unorm" }] } }]),
+        );
+    }
+    b.op(json!(["texture", 9, 256, 256, 1, "rgba8unorm", 16, 1, 1]))
+        .op(json!(["view", 10, 9, {}]));
+    gpu.apply(&b.ops, &[]).unwrap();
+    let draw = |view: u32, pipeline: u32| {
+        let mut b = Batch::default();
+        pass_into(&mut b, view, [0.0; 4]);
+        b.op(json!(["setPipeline", pipeline]))
+            .op(json!(["draw", 3, 1, 0, 0]))
+            .op(json!(["end"]))
+            .op(json!(["submit"]));
+        b
+    };
+    // Both draw; then a batch into `a` hangs. (lavapipe makes a submit wait for its work when other work runs, and
+    // when it first draws into a texture: the queue is idle, and each target drawn once, first.)
+    gpu.apply(&draw(2, 8).ops, &[]).unwrap();
+    gpu.apply(&draw(4, 8).ops, &[]).unwrap();
+    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    let at = std::time::Instant::now();
+    gpu.apply(&draw(2, 6).ops, &[]).unwrap();
+    let e = until(20.0, || gpu.poll().err()).expect("no hang");
+    assert!(at.elapsed() > std::time::Duration::from_secs(1));
+    assert_eq!(
+        (e.kind, e.message.as_str()),
+        (ErrorKind::Client, HANG_MESSAGE)
+    );
+    assert_eq!(e.canvases, Stops::Canvases(vec!["a".into()]));
+    assert_eq!(gpu.error("b"), None);
+    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    assert_eq!(gpu.poll(), Ok(()));
+    gpu.apply(&draw(4, 8).ops, &[]).unwrap();
+    assert_eq!(gpu.canvas("b").unwrap().version, 2);
+    assert_eq!(gpu.canvas("a").unwrap().version, 2);
+    // After a device loss `a` stays stopped; `b` draws on.
+    gpu.reset(device.clone(), queue.clone()).unwrap();
+    assert_eq!(gpu.poll(), Ok(()));
+    assert_eq!(
+        gpu.error("a").map(|e| e.message.as_str()),
+        Some(HANG_MESSAGE)
+    );
+
+    // Into an offscreen texture alone: every canvas.
+    let mut gpu = Gpu::new(device.clone(), queue.clone(), RGBA).unwrap();
+    gpu.resize("a", 256, 256);
+    gpu.resize("b", 256, 256);
+    gpu.apply(&b.ops, &[]).unwrap();
+    gpu.apply(&draw(10, 8).ops, &[]).unwrap();
+    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    gpu.apply(&draw(10, 6).ops, &[]).unwrap();
+    let e = until(20.0, || gpu.poll().err()).expect("no hang");
+    assert_eq!(
+        (e.message.as_str(), &e.canvases),
+        (HANG_MESSAGE, &Stops::All)
+    );
+    assert!(gpu.error("b").is_some());
 }
 
 /// Replay cost of a typical frame: 48 ops, 64 KB of writes (`cargo test --release -p widget-gpu -- --ignored`).

@@ -5,7 +5,8 @@
 //! A shader that takes over 50 ms a frame three frames in a row stops and shows its last frame (`widgets.md`, GPU
 //! canvases), a client error. A frame counts as slow when its GPU work is seen unfinished more than 50 ms after its
 //! submit; a frame isn't drawn while the last one is still drawing, so a slow shader never queues work behind it.
-//! Nothing here waits for the GPU.
+//! Before that rule, a frame still unfinished 1 s after its submit stops the canvas with its placeholder
+//! (`widgets-gpu.md`, GPU hang; [`Gpu::poll`]). Nothing here waits for the GPU.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -159,7 +160,8 @@ impl Shorthand {
     /// Draws a frame at `width` × `height` physical pixels, unless the last one is still drawing (it is skipped) or
     /// the shader stopped. Never waits for the GPU.
     pub fn render(&mut self, width: u32, height: u32, u: &Uniforms) -> Result<(), GpuError> {
-        if self.stopped.is_some() || self.drawing() {
+        let _ = self.gpu.poll();
+        if self.stopped.is_some() || self.gpu.error(KEY).is_some() || self.drawing() {
             return Ok(());
         }
         self.gpu.resize(KEY, width, height);
@@ -215,10 +217,20 @@ impl Shorthand {
         true
     }
 
+    /// Watches the frame the GPU is drawing for the slow-frame and hang rules, as [`Shorthand::render`] does: call it
+    /// each display frame while not rendering (an `fps: 0` shader), so a frame that hangs stops the canvas. Never
+    /// waits.
+    pub fn poll(&mut self) {
+        let _ = self.gpu.poll();
+        if self.stopped.is_none() && self.gpu.error(KEY).is_none() {
+            self.drawing();
+        }
+    }
+
     /// Whether it stopped for being too slow ([`Shorthand::error`] is then a client error): show its last frame
-    /// ([`Shorthand::canvas`]), not the placeholder.
+    /// ([`Shorthand::canvas`]), not the placeholder. Not once a GPU hang stopped it.
     pub fn too_slow(&self) -> bool {
-        self.stopped.is_some()
+        self.stopped.is_some() && self.gpu.error(KEY).is_none()
     }
 
     /// The canvas's texture, once rendered: premultiplied, sRGB-encoded colors.
@@ -226,13 +238,14 @@ impl Shorthand {
         self.gpu.canvas(KEY)
     }
 
-    /// The error that stopped it: the program's or the client's, or a client error for a shader too slow
-    /// ([`Shorthand::too_slow`]).
+    /// The error that stopped it: the program's, the client's (a GPU hang among them, [`crate::HANG_MESSAGE`]), or a
+    /// client error for a shader too slow ([`Shorthand::too_slow`]).
     pub fn error(&self) -> Option<&GpuError> {
-        self.stopped.as_ref().or_else(|| self.gpu.error(KEY))
+        self.gpu.error(KEY).or(self.stopped.as_ref())
     }
 
-    /// After a device loss: the same shader on `device`. One that stopped for being too slow stays stopped.
+    /// After a device loss: the same shader on `device`. One that stopped for being too slow or a GPU hang stays
+    /// stopped.
     pub fn reset(&mut self, device: wgpu::Device, queue: wgpu::Queue) -> Result<(), GpuError> {
         self.drawing = None;
         self.slow = 0;

@@ -13,6 +13,7 @@
 //! - on an `Err`, shows the placeholder with the error on the canvases it stops ([`GpuError::canvases`]) and
 //!   reports it (phase [`PHASE`]) when it is the program's ([`ErrorKind::Program`]), else logs it. [`Gpu::error`]
 //!   gives a canvas's;
+//! - calls [`Gpu::poll`] each display frame, to stop the canvases of GPU work that hangs (`widgets-gpu.md`, GPU hang);
 //! - on a device loss, gets a new device, calls [`Gpu::reset`] and sends the program `{ type: "gpu", lost }`.
 //!
 //! A batch first gets the host checks (exact messages, as `packages/widget/src/gpu.ts`); one that passes is
@@ -24,15 +25,18 @@
 
 mod check;
 mod desc;
+mod hang;
 mod replay;
 mod shorthand;
 
 use std::collections::HashMap;
 use std::future::Future;
 use std::hash::{BuildHasherDefault, Hasher};
+use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
 use check::{Checks, Failed};
+pub use hang::{HANG, HANG_MESSAGE};
 pub use shorthand::{HEADER, SLOW_FRAME, SLOW_FRAMES, SLOW_MESSAGE, Shorthand, Uniforms};
 pub use widget_wire::Arg;
 
@@ -154,6 +158,10 @@ pub struct Gpu {
     /// Canvases an error stopped, by key, and the error that stopped them all.
     stopped: HashMap<String, GpuError>,
     all: Option<GpuError>,
+    /// The batches' GPU work not known finished, with the canvases each draws into, and whether it was found hung.
+    submits: Vec<(Arc<hang::Submit>, Vec<String>, bool)>,
+    /// A hang found as the device was lost, for the next [`Gpu::poll`].
+    hung: Option<GpuError>,
 }
 
 enum Res {
@@ -307,6 +315,14 @@ fn client(message: String) -> GpuError {
     }
 }
 
+/// Whether a batch submits GPU work.
+fn submits(ops: &[Arg]) -> bool {
+    ops.iter().any(|o| match o {
+        Arg::List(l) => matches!(l.first(), Some(Arg::Str(n)) if n == "submit"),
+        _ => false,
+    })
+}
+
 fn check_device(device: &wgpu::Device, format: wgpu::TextureFormat) -> Result<(), GpuError> {
     if !matches!(
         format,
@@ -343,6 +359,8 @@ impl Gpu {
             canvases: Vec::new(),
             stopped: HashMap::new(),
             all: None,
+            submits: Vec::new(),
+            hung: None,
         })
     }
 
@@ -404,11 +422,19 @@ impl Gpu {
 
     /// After a device loss: every handle is gone, replay goes on with `device`; new handles keep counting up. The
     /// canvases the loss stopped (every canvas's texture is dropped) draw again once the program renders into them;
-    /// a canvas an error stopped stays stopped. A batch the program posted before it learned of the loss is dropped
-    /// quietly: one whose first failure is `no handle <h>`, `h` from 1 to the greatest handle made before the loss.
-    /// Canvas sizes are kept.
+    /// a canvas an error or a GPU hang stopped stays stopped, work the lost device was hung on included (the next
+    /// [`Gpu::poll`] returns it). A batch the program posted before it learned of the loss is dropped quietly: one
+    /// whose first failure is `no handle <h>`, `h` from 1 to the greatest handle made before the loss. Canvas sizes
+    /// are kept.
     pub fn reset(&mut self, device: wgpu::Device, queue: wgpu::Queue) -> Result<(), GpuError> {
         check_device(&device, self.format)?;
+        // Work the lost device hung on stops its canvases as the loss doesn't (a watchdog may lose the device).
+        if let Err(e) = self.hangs() {
+            self.hung = Some(e);
+        }
+        for (s, _, _) in self.submits.drain(..) {
+            s.forget();
+        }
         self.device = device;
         self.queue = queue;
         self.res.clear();
@@ -497,12 +523,61 @@ impl Gpu {
         let failed = match checked {
             Err(Failed::Stale) => return Ok(()),
             Err(Failed::Message(m)) => Some((ErrorKind::Program, m)),
-            Ok(()) => self.replay(ops, bytes).err(),
+            Ok(()) => {
+                let replayed = self.replay(ops, bytes).err();
+                if replayed.is_none() && submits(ops) {
+                    self.submits
+                        .push((hang::submitted(&self.queue), keys.clone(), false));
+                }
+                replayed
+            }
         };
         match failed {
             None => Ok(()),
             Some((kind, message)) => self.stop(keys, kind, message),
         }
+    }
+
+    /// Watches the batches' GPU work for a hang (`widgets-gpu.md`, GPU hang): work still unfinished 1 s after its
+    /// submit stops the canvases its batch draws into, or every canvas when it draws into none, for the rest of the
+    /// run, with a client error ([`HANG_MESSAGE`]). Call it often, as each display frame: it never waits. A hang is
+    /// returned once; one that would only stop canvases already stopped isn't returned.
+    pub fn poll(&mut self) -> Result<(), GpuError> {
+        if let Some(e) = self.hung.take() {
+            return Err(e);
+        }
+        if self.submits.is_empty() {
+            return Ok(());
+        }
+        let _ = self.device.poll(wgpu::PollType::Poll);
+        self.hangs()
+    }
+
+    fn hangs(&mut self) -> Result<(), GpuError> {
+        if self.submits.is_empty() {
+            return Ok(());
+        }
+        hang::judge(&self.queue);
+        self.submits.retain(|(s, _, _)| !s.done());
+        let mut keys: Vec<String> = Vec::new();
+        let (mut found, mut none) = (false, false);
+        for (s, k, reported) in &mut self.submits {
+            if s.hung() && !*reported {
+                *reported = true;
+                found = true;
+                none |= k.is_empty();
+                keys.extend(k.iter().cloned());
+            }
+        }
+        if !found || self.all.is_some() {
+            return Ok(());
+        }
+        if none {
+            keys.clear();
+        }
+        keys.sort();
+        keys.dedup();
+        self.stop(keys, ErrorKind::Client, HANG_MESSAGE.into())
     }
 
     /// A posted batch whose shape the host's conversion rejected, with the spec's message (`a batch must be an
