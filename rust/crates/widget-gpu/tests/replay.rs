@@ -1306,13 +1306,11 @@ fn run_for(s: &mut Shorthand, seconds: f64) -> (u32, std::time::Duration) {
 /// waits for the GPU.
 #[test]
 fn a_shader_too_slow_stops_on_its_last_frame() {
+    let _timed = timed();
     let (device, queue) = common::device();
-    let heavy = "fn shade(frag: vec2f) -> vec4f {
-    var v = frag.x * 0.001 + frag.y;
-    for (var i = 0; i < 6000; i++) { v = fract(sin(v + f32(i)) * 43758.5453); }
-    return vec4f(v, 0.0, 0.0, 1.0);
-}";
-    let mut s = Shorthand::new(device.clone(), queue.clone(), RGBA, heavy).unwrap();
+    // Frames of about 120 ms: past 50, well under the 250 ms of a hang.
+    let steps = steps_for(&device, &queue, 120);
+    let mut s = Shorthand::new(device.clone(), queue.clone(), RGBA, &costly(steps)).unwrap();
     let (calls, longest) = run_for(&mut s, 30.0);
     assert!(s.too_slow(), "not stopped after {calls} calls");
     let e = s.error().unwrap();
@@ -1341,13 +1339,45 @@ fn a_shader_too_slow_stops_on_its_last_frame() {
     assert!(s.canvas().unwrap().version > 10, "{calls} calls");
 }
 
-/// A fragment shader of `widget.values[0].x` steps a pixel: about 150 ms a 256 × 256 frame on lavapipe at 6,000, over 1 s
-/// at 100,000.
+/// The tests that time GPU work run one at a time: lavapipe's threads are shared.
+static TIMED: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn timed() -> std::sync::MutexGuard<'static, ()> {
+    TIMED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// A fragment shader of `widget.values[0].x` steps a pixel.
 const COSTLY: &str = "fn shade(frag: vec2f) -> vec4f {
     var v = frag.x * 0.001 + frag.y;
     for (var i = 0; i < i32(widget.values[0].x); i++) { v = fract(sin(v + f32(i)) * 43758.5453); }
     return vec4f(v, 0.0, 0.0, 1.0);
 }";
+
+/// [`COSTLY`] with a fixed number of steps.
+fn costly(steps: u32) -> String {
+    COSTLY.replace("i32(widget.values[0].x)", &steps.to_string())
+}
+
+/// The steps a pixel for a 256 × 256 [`COSTLY`] frame of about `ms` on this machine now (lavapipe's speed varies
+/// with load): measured on a frame of 2,000.
+fn steps_for(device: &wgpu::Device, queue: &wgpu::Queue, ms: u32) -> u32 {
+    let mut s = Shorthand::new(device.clone(), queue.clone(), RGBA, COSTLY).unwrap();
+    let mut u = Uniforms {
+        scale: 1.0,
+        ..Default::default()
+    };
+    u.values[0] = 2000.0;
+    let mut took = std::time::Duration::ZERO;
+    for _ in 0..2 {
+        let at = std::time::Instant::now();
+        s.render(256, 256, &u).unwrap();
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        took = at.elapsed();
+    }
+    (2000.0 * ms as f64 / took.as_secs_f64().max(1e-3) / 1000.0) as u32
+}
 
 /// Polls `f` every 10 ms until it gives something, for at most `seconds`.
 fn until<T>(seconds: f64, mut f: impl FnMut() -> Option<T>) -> Option<T> {
@@ -1361,44 +1391,60 @@ fn until<T>(seconds: f64, mut f: impl FnMut() -> Option<T>) -> Option<T> {
     None
 }
 
-/// A frame still drawing 1 s after its submit stops the shader with its placeholder, before and whatever the 50 ms
-/// rule counted: here two slow frames, then one that hangs (stopped on its last frame at 50 ms, then by the hang).
+/// A frame still drawing 250 ms after its submit stops the shader with its placeholder: one frame that hangs is
+/// stopped by it, where the 50 ms rule needs three; and after two slow frames, it overrides the 50 ms rule's stop.
 #[test]
 fn a_shader_frame_that_hangs_stops_the_canvas() {
+    let _timed = timed();
     let (device, queue) = common::device();
-    let mut s = Shorthand::new(device.clone(), queue.clone(), RGBA, COSTLY).unwrap();
-    let start = std::time::Instant::now();
-    let mut longest = std::time::Duration::ZERO;
-    let mut was_slow = false;
-    let hung = until(20.0, || {
-        let drawn = s.canvas().map_or(0, |c| c.version);
-        let mut u = Uniforms {
-            scale: 1.0,
-            ..Default::default()
-        };
-        u.values[0] = if drawn < 2 { 6000.0 } else { 100_000.0 };
-        let at = std::time::Instant::now();
-        s.render(256, 256, &u).unwrap();
-        longest = longest.max(at.elapsed());
-        was_slow |= s.too_slow();
-        s.error().filter(|e| e.message == HANG_MESSAGE).cloned()
-    });
-    let e = hung.expect("no hang");
-    assert_eq!(e.kind, ErrorKind::Client);
-    assert!(
-        was_slow,
-        "the third slow frame should have stopped it on its last frame first"
+    let (slow, hangs) = (
+        steps_for(&device, &queue, 120),
+        steps_for(&device, &queue, 800),
     );
-    assert!(!s.too_slow(), "a hang shows the placeholder");
-    assert!(start.elapsed() > std::time::Duration::from_secs(1));
+    // `frames` slow frames, then one that hangs: whether the 50 ms rule stopped it first, and how long it took.
+    let run = |frames: u64| {
+        let mut s = Shorthand::new(device.clone(), queue.clone(), RGBA, COSTLY).unwrap();
+        let start = std::time::Instant::now();
+        let (mut longest, mut was_slow) = (std::time::Duration::ZERO, false);
+        let hung = until(20.0, || {
+            let drawn = s.canvas().map_or(0, |c| c.version);
+            let mut u = Uniforms {
+                scale: 1.0,
+                ..Default::default()
+            };
+            u.values[0] = if drawn < frames { slow } else { hangs } as f32;
+            let at = std::time::Instant::now();
+            s.render(256, 256, &u).unwrap();
+            longest = longest.max(at.elapsed());
+            was_slow |= s.too_slow();
+            s.error().filter(|e| e.message == HANG_MESSAGE).cloned()
+        });
+        let e = hung.expect("no hang");
+        assert_eq!(e.kind, ErrorKind::Client);
+        assert!(!s.too_slow(), "a hang shows the placeholder");
+        assert!(
+            longest < std::time::Duration::from_millis(40),
+            "a render took {longest:?}"
+        );
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        (s, was_slow, start.elapsed())
+    };
+    let (mut s, was_slow, took) = run(0);
     assert!(
-        longest < std::time::Duration::from_millis(40),
-        "a render took {longest:?}"
+        !was_slow,
+        "one frame: the hang stops it, not the 50 ms rule"
     );
+    assert!(took >= widget_gpu::HANG);
     // Stopped for good, a device loss included.
     s.reset(device.clone(), queue.clone()).unwrap();
     s.poll();
     assert_eq!(s.error().map(|e| e.message.as_str()), Some(HANG_MESSAGE));
+    // Two slow frames, then one that hangs: the 50 ms rule stops it on its last frame, then the hang.
+    let (_, was_slow, _) = run(2);
+    assert!(
+        was_slow,
+        "the third slow frame stops it on its last frame first"
+    );
 }
 
 /// A live batch whose work hangs stops the canvases it draws into, and not the others; a device loss doesn't restart
@@ -1406,11 +1452,12 @@ fn a_shader_frame_that_hangs_stops_the_canvas() {
 /// blamed: `hang`'s unit test. On lavapipe a submit waits for the work before it, so it can't be shown here.)
 #[test]
 fn a_batch_that_hangs_stops_its_canvases() {
+    let _timed = timed();
     let (device, queue) = common::device();
     let mut gpu = Gpu::new(device.clone(), queue.clone(), RGBA).unwrap();
     gpu.resize("a", 256, 256);
     gpu.resize("b", 256, 256);
-    let costly = COSTLY.replace("i32(widget.values[0].x)", "100000");
+    let costly = costly(steps_for(&device, &queue, 800));
     let module = |body: &str| {
         format!(
             "@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {{
@@ -1458,7 +1505,7 @@ fn a_batch_that_hangs_stops_its_canvases() {
     let at = std::time::Instant::now();
     gpu.apply(&draw(2, 6).ops, &[]).unwrap();
     let e = until(20.0, || gpu.poll().err()).expect("no hang");
-    assert!(at.elapsed() > std::time::Duration::from_secs(1));
+    assert!(at.elapsed() >= widget_gpu::HANG);
     assert_eq!(
         (e.kind, e.message.as_str()),
         (ErrorKind::Client, HANG_MESSAGE)

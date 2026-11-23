@@ -558,7 +558,7 @@ impl Gpu {
         }
     }
 
-    /// Watches the batches' GPU work for a hang (`widgets-gpu.md`, GPU hang): work still unfinished 1 s after its
+    /// Watches the batches' GPU work for a hang (`widgets-gpu.md`, GPU hang): work still unfinished 250 ms after its
     /// submit stops the canvases its batch draws into, or every canvas when it draws into none, for the rest of the
     /// run, with a client error ([`HANG_MESSAGE`]). Call it often, as each display frame: it never waits. A hang is
     /// returned once; one that would only stop canvases already stopped isn't returned.
