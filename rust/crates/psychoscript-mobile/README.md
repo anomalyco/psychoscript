@@ -361,8 +361,12 @@ WebGPU, shader translation and presenting are this crate's.
   `ValueEncoder.widget()`, or the first `ShaderCanvas`), never for steps, on a thread of its own: a live run's
   `__input()` doesn't wait for it, and what the program posts meanwhile replays once it is there. Metal on iOS; Vulkan
   1.1 or newer on Android 15 and 16 (API 35, 36), else none. The program's input gets `gpu: { available, format }`
-  (`format` `bgra8unorm` on iOS, `rgba8unorm` on Android). After a device loss the crate makes a new device, tells the
-  program (`{ type: "gpu", lost }`) and replays on it; a run restored from a snapshot is told the same.
+  (`format` `bgra8unorm` on iOS, `rgba8unorm` on Android). While the device is still being made, that is
+  `available: true` (where the platform has a GPU); if it then can't be made, the canvases go `unavailable` and the
+  program gets `{ type: "gpu", lost: "unknown", message }`, as on a device loss (its device and handles are gone, and
+  what it posts is dropped). Once it is known there is none, runs get `available: false`. After a device loss the
+  crate makes a new device, tells the program (`{ type: "gpu", lost }`) and replays on it; a run restored from a
+  snapshot is told the same.
 - **Surfaces:** `GpuSurface.metal(layer)` (Swift, a `CAMetalLayer`, retained while the surface lives; Rust/FFI
   `GpuSurface.metalLayer(pointer:)`), `PsychoScriptGpu.surface(surface)` (Kotlin, an `android.view.Surface`, e.g.
   `SurfaceHolder.surface` in `surfaceCreated`; it holds the `ANativeWindow` until the `GpuSurface` is dropped).
@@ -384,11 +388,16 @@ WebGPU, shader translation and presenting are this crate's.
 - **Threading:** batches replay on the run's thread, with the program's bytes in place (no copy, nothing crosses to
   Swift or Kotlin); a thread of the run's own presents (one copy of the canvas into the surface's next texture, or a
   scaled draw), so a slow, hidden or detached surface never holds up the run. Presents beyond the surface's rate are
-  skipped. `attachSurface` doesn't block; `detachSurface` waits only for a present in progress.
+  skipped. `attachSurface` never blocks (a new size or surface applies at the next present); `detachSurface` waits
+  only for a present in progress.
 - **`ShaderCanvas(wgsl:, surface:, width:, height:)`:** the `wgsl` shorthand, in steps and live widgets (`widgets.md`,
-  GPU canvases): `render(time:, scale:, pointer:, values:)` on the display link at the canvas's `fps` (it presents on
-  the calling thread), `resize(width:, height:)`. Fails with `GpuFailure.program` for a WGSL error (its line the
-  template's: report it, phase `gpu`) or `.client` without a GPU; `render` returns an error once, then does nothing.
+  GPU canvases). It returns at once (create it on the UI thread). `render(time:, scale:, pointer:, values:)` on the
+  display link at the canvas's `fps` only records the frame (a few µs); a thread of the canvas's own waits for the
+  device, compiles the shader, and draws and presents the newest frame (frames faster than the surface are skipped).
+  Nothing is drawn or reported before the device is ready. `render` returns, once, what stopped the canvas for good:
+  `GpuFailure.program` for a WGSL error (its line the template's: report it, phase `gpu`), `.client` without a GPU
+  (log it); show the placeholder then. `resize(width:, height:)` takes effect at the next frame. Drop it before its
+  surface goes: once dropped, it never touches the surface again (a present in progress finishes first).
 
 ```swift
 let surface = try GpuSurface.metal(metalView.layer as! CAMetalLayer)

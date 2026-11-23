@@ -145,156 +145,6 @@ fn frames_replay_on_the_device() {
     r.run.stop();
 }
 
-/// A real surface for `w` × `h`: a `CAMetalLayer` on macOS, an `AImageReader`'s window on Android.
-#[cfg(any(target_os = "macos", target_os = "android"))]
-mod real {
-    use std::ffi::c_void;
-    use std::sync::Arc;
-
-    use psychoscript_mobile::GpuSurface;
-
-    #[cfg(target_os = "macos")]
-    pub struct Surface {
-        pub surface: Arc<GpuSurface>,
-    }
-
-    #[cfg(target_os = "macos")]
-    pub fn surface(_w: u32, _h: u32) -> Surface {
-        use std::ffi::c_char;
-        #[link(name = "QuartzCore", kind = "framework")]
-        unsafe extern "C" {}
-        #[link(name = "objc")]
-        unsafe extern "C" {
-            fn objc_getClass(name: *const c_char) -> *mut c_void;
-            fn sel_registerName(name: *const c_char) -> *const c_void;
-            fn objc_msgSend();
-        }
-        #[link(name = "CoreFoundation", kind = "framework")]
-        unsafe extern "C" {
-            fn CFRelease(cf: *const c_void);
-        }
-        // SAFETY: `[CAMetalLayer new]`, a +1 reference the surface retains again.
-        unsafe {
-            let send: unsafe extern "C" fn(*mut c_void, *const c_void) -> *mut c_void =
-                std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
-            let layer = send(
-                objc_getClass(c"CAMetalLayer".as_ptr()),
-                sel_registerName(c"new".as_ptr()),
-            );
-            let surface = GpuSurface::metal_layer(layer as u64).unwrap();
-            CFRelease(layer);
-            Surface { surface }
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    impl Surface {
-        /// A presented image can't be read back from a `CAMetalLayer`.
-        pub fn pixels(&self) -> Option<(u32, u32, Vec<u8>)> {
-            None
-        }
-    }
-
-    #[cfg(target_os = "android")]
-    pub struct Surface {
-        pub surface: Arc<GpuSurface>,
-        reader: *mut c_void,
-    }
-
-    #[cfg(target_os = "android")]
-    #[link(name = "mediandk")]
-    unsafe extern "C" {
-        fn AImageReader_newWithUsage(
-            width: i32,
-            height: i32,
-            format: i32,
-            usage: u64,
-            max_images: i32,
-            reader: *mut *mut c_void,
-        ) -> i32;
-        fn AImageReader_getWindow(reader: *mut c_void, window: *mut *mut c_void) -> i32;
-        fn AImageReader_acquireLatestImage(reader: *mut c_void, image: *mut *mut c_void) -> i32;
-        fn AImageReader_delete(reader: *mut c_void);
-        fn AImage_getPlaneData(
-            image: *mut c_void,
-            plane: i32,
-            data: *mut *mut u8,
-            len: *mut i32,
-        ) -> i32;
-        fn AImage_getPlaneRowStride(image: *mut c_void, plane: i32, stride: *mut i32) -> i32;
-        fn AImage_getWidth(image: *mut c_void, width: *mut i32) -> i32;
-        fn AImage_getHeight(image: *mut c_void, height: *mut i32) -> i32;
-        fn AImage_delete(image: *mut c_void);
-    }
-
-    #[cfg(target_os = "android")]
-    #[link(name = "android")]
-    unsafe extern "C" {
-        fn ANativeWindow_acquire(window: *mut c_void);
-    }
-
-    #[cfg(target_os = "android")]
-    pub fn surface(w: u32, h: u32) -> Surface {
-        // RGBA_8888, read by the CPU.
-        const RGBA: i32 = 1;
-        const CPU_READ_OFTEN: u64 = 3;
-        // SAFETY: the NDK's calls with valid out pointers; the window gets a reference of the surface's own.
-        unsafe {
-            let mut reader = std::ptr::null_mut();
-            assert_eq!(
-                AImageReader_newWithUsage(w as i32, h as i32, RGBA, CPU_READ_OFTEN, 4, &mut reader),
-                0
-            );
-            let mut window = std::ptr::null_mut();
-            assert_eq!(AImageReader_getWindow(reader, &mut window), 0);
-            ANativeWindow_acquire(window);
-            let surface = GpuSurface::android_window(window as u64).unwrap();
-            Surface { surface, reader }
-        }
-    }
-
-    #[cfg(target_os = "android")]
-    impl Surface {
-        /// The image last presented into the window, as RGBA8.
-        pub fn pixels(&self) -> Option<(u32, u32, Vec<u8>)> {
-            // SAFETY: as above.
-            unsafe {
-                let mut image = std::ptr::null_mut();
-                for _ in 0..200 {
-                    if AImageReader_acquireLatestImage(self.reader, &mut image) == 0 {
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-                if image.is_null() {
-                    return None;
-                }
-                let (mut w, mut h, mut stride, mut len) = (0, 0, 0, 0);
-                let mut data = std::ptr::null_mut();
-                AImage_getWidth(image, &mut w);
-                AImage_getHeight(image, &mut h);
-                AImage_getPlaneRowStride(image, 0, &mut stride);
-                AImage_getPlaneData(image, 0, &mut data, &mut len);
-                let bytes = std::slice::from_raw_parts(data, len as usize);
-                let mut out = Vec::with_capacity((w * h * 4) as usize);
-                for y in 0..h as usize {
-                    out.extend_from_slice(&bytes[y * stride as usize..][..w as usize * 4]);
-                }
-                AImage_delete(image);
-                Some((w as u32, h as u32, out))
-            }
-        }
-    }
-
-    #[cfg(target_os = "android")]
-    impl Drop for Surface {
-        fn drop(&mut self) {
-            // SAFETY: made in `surface`; the window it gave has a reference of its own until the surface drops.
-            unsafe { AImageReader_delete(self.reader) };
-        }
-    }
-}
-
 /// Waits until the run has presented at least `n` images and then nothing more for 200 ms (the newest one is shown:
 /// presents beyond the surface's rate are skipped).
 #[cfg(any(target_os = "macos", target_os = "android"))]
@@ -383,24 +233,32 @@ fn a_shader_canvas_draws_into_a_real_surface() {
     let surface = real::surface(128, 64);
     let wgsl = "fn shade(frag: vec2f) -> vec4f { return vec4f(0.0, frag.x / widget.resolution.x, widget.values[0].x, 1.0); }";
     let started = Instant::now();
-    let canvas = ShaderCanvas::new(wgsl.into(), surface.surface.clone(), 128, 64).unwrap();
+    let canvas = ShaderCanvas::new(wgsl.into(), surface.surface.clone(), 128, 64);
     let made = started.elapsed();
     let mut values = vec![0.0; 16];
     values[0] = 1.0;
-    let mut frames = Vec::new();
-    for i in 0..10 {
+    // As a display link would, a frame each 1/120 s; `render` only records it.
+    let mut calls = Vec::new();
+    for i in 0..120 {
         let started = Instant::now();
         canvas
-            .render(i as f32 / 60.0, 2.0, vec![0.0; 4], values.clone())
+            .render(i as f32 / 120.0, 2.0, vec![0.0; 4], values.clone())
             .unwrap();
-        frames.push(started.elapsed().as_secs_f64() * 1e6);
+        calls.push(started.elapsed().as_secs_f64() * 1e6);
+        std::thread::sleep(Duration::from_millis(8));
     }
-    let first = frames.remove(0);
-    frames.sort_by(f64::total_cmp);
+    let until = Instant::now() + Duration::from_secs(10);
+    while canvas.presents() == 0 {
+        assert!(Instant::now() < until, "nothing presented");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    calls.sort_by(f64::total_cmp);
     eprintln!(
-        "shader canvas: made in {:.1} ms, first frame {first:.0} µs, then {:.0} µs a frame (median; a present waits for the surface's next texture)",
-        made.as_secs_f64() * 1e3,
-        frames[frames.len() / 2]
+        "shader canvas: made in {:.0} µs; render() on the calling thread {:.1} µs (median), {:.1} µs (max); {} of 120 frames presented",
+        made.as_secs_f64() * 1e6,
+        calls[calls.len() / 2],
+        calls[calls.len() - 1],
+        canvas.presents()
     );
     if let Some((w, h, p)) = surface.pixels() {
         assert_eq!((w, h), (128, 64));
@@ -413,15 +271,23 @@ fn a_shader_canvas_draws_into_a_real_surface() {
             at(127)
         );
     }
-    // A WGSL error is the program's, its line the template's.
+    // A WGSL error is the program's, its line the template's: `render` returns it once it is known, then nothing.
     let bad = ShaderCanvas::new(
         "fn shade(frag: vec2f) -> vec4f {\n  return nope;\n}".into(),
         surface.surface.clone(),
         8,
         8,
     );
-    let Err(GpuFailure::Program { message }) = bad else {
-        panic!("{bad:?}")
+    let message = loop {
+        match bad.render(0.0, 1.0, vec![], vec![]) {
+            Ok(()) => {
+                assert!(Instant::now() < until + Duration::from_secs(10));
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            Err(GpuFailure::Program { message }) => break message,
+            Err(e) => panic!("{e:?}"),
+        }
     };
+    assert_eq!(bad.render(0.0, 1.0, vec![], vec![]), Ok(()));
     assert!(message.contains("line 2"), "{message}");
 }

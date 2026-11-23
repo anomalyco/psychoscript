@@ -1,17 +1,55 @@
 //! The `wgsl` shorthand (`widgets.md`, GPU canvases; `widgets-gpu.md`): a canvas's fragment shader, drawn on the
-//! app's device by `widget_gpu::Shorthand` and presented into the app's surface, in step and live widgets alike.
+//! app's device by `widget_gpu::Shorthand` and presented into the app's surface, in step and live widgets alike. The
+//! app's calls only record what to draw: a thread of the canvas's own waits for the device, compiles the shader and
+//! renders and presents the newest frame, so the UI thread never waits on the GPU.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 use super::{GpuFailure, GpuSurface};
 
-/// A `canvas({ wgsl, values })`: make one per canvas and call [`ShaderCanvas::render`] on the app's display link at
-/// the canvas's `fps` (pausing as the widget does when it isn't visible). Rendering and presenting happen on the
-/// calling thread.
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// A frame's `widget` uniforms, as `render` gives them.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Uniforms {
+    time: f32,
+    scale: f32,
+    pointer: [f32; 4],
+    values: [f32; 16],
+}
+
+#[derive(Default)]
+struct State {
+    size: (u32, u32),
+    /// The newest frame not drawn yet.
+    frame: Option<Uniforms>,
+    /// What stopped the canvas, and whether `render` returned it.
+    error: Option<GpuFailure>,
+    told: bool,
+    stop: bool,
+}
+
+struct Shared {
+    state: Mutex<State>,
+    wake: Condvar,
+    /// The surface, held by the canvas's thread while it presents (dropping the canvas waits for that alone).
+    #[cfg_attr(not(feature = "widget-gpu"), allow(dead_code))]
+    attached: Mutex<Option<imp::Attached>>,
+    #[cfg_attr(not(feature = "widget-gpu"), allow(dead_code))]
+    presents: AtomicU64,
+}
+
+/// A `canvas({ wgsl, values })`: make one per canvas (it returns at once) and call [`ShaderCanvas::render`] on the
+/// app's display link at the canvas's `fps`, pausing as the widget does when it isn't visible. Both are cheap on the
+/// calling thread: a thread of the canvas's own compiles the shader once the device is ready (nothing is drawn
+/// before), then draws and presents the newest frame. Drop it before its surface goes (Android `surfaceDestroyed`):
+/// once dropped it never touches the surface again (a present in progress finishes first).
 #[derive(uniffi::Object)]
 pub struct ShaderCanvas {
-    #[cfg_attr(not(feature = "widget-gpu"), allow(dead_code))]
-    inner: Mutex<imp::Inner>,
+    shared: Arc<Shared>,
 }
 
 impl std::fmt::Debug for ShaderCanvas {
@@ -22,32 +60,38 @@ impl std::fmt::Debug for ShaderCanvas {
 
 #[uniffi::export]
 impl ShaderCanvas {
-    /// Compiles the widget template's `wgsl` for `surface`, `width` × `height` physical pixels. Fails with
-    /// `Program` for a WGSL error (its line and column the template's; report it, phase `gpu`) and `Client` without
-    /// a GPU; either way the canvas shows its placeholder (`poster`, else `alt`, else the error).
+    /// The widget template's `wgsl` for `surface`, `width` × `height` physical pixels. Doesn't wait: a WGSL error or
+    /// the lack of a GPU comes from `render` once it is known.
     #[uniffi::constructor]
     pub fn new(
         wgsl: String,
         surface: Arc<GpuSurface>,
         width: u32,
         height: u32,
-    ) -> Result<Arc<ShaderCanvas>, GpuFailure> {
-        Ok(Arc::new(ShaderCanvas {
-            inner: Mutex::new(imp::Inner::new(&wgsl, surface, width, height)?),
-        }))
+    ) -> Arc<ShaderCanvas> {
+        let shared = Arc::new(Shared {
+            state: Mutex::new(State {
+                size: (width.max(1), height.max(1)),
+                ..State::default()
+            }),
+            wake: Condvar::new(),
+            attached: Mutex::new(None),
+            presents: AtomicU64::new(0),
+        });
+        imp::start(&shared, wgsl, surface, width, height);
+        Arc::new(ShaderCanvas { shared })
     }
 
-    /// The canvas's new size in physical pixels.
+    /// The canvas's new size in physical pixels, from its next frame.
     pub fn resize(&self, width: u32, height: u32) {
-        self.inner
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .resize(width, height);
+        lock(&self.shared.state).size = (width.max(1), height.max(1));
     }
 
-    /// Draws and presents a frame: `time` in seconds since the canvas appeared, `scale` the display scale,
-    /// `pointer` `[x, y, down, 0]` in physical pixels, `values` the node's (up to 16). An error stops the canvas for
-    /// good: it is returned once (show the placeholder with it; report a `Program` one), later calls do nothing.
+    /// A frame to draw: `time` in seconds since the canvas appeared, `scale` the display scale, `pointer`
+    /// `[x, y, down, 0]` in physical pixels, `values` the node's (up to 16). It is drawn and presented off the calling
+    /// thread; frames that come faster than the surface takes them are skipped for the newest. Returns, once, what
+    /// stopped the canvas for good: `Program` for a WGSL error (its line and column the template's: report it, phase
+    /// `gpu`), `Client` without a GPU (log it); either way show the placeholder (`poster`, else `alt`, else the error).
     pub fn render(
         &self,
         time: f32,
@@ -55,116 +99,186 @@ impl ShaderCanvas {
         pointer: Vec<f32>,
         values: Vec<f32>,
     ) -> Result<(), GpuFailure> {
-        self.inner
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .render(time, scale, &pointer, &values)
+        let mut u = Uniforms {
+            time,
+            scale,
+            ..Uniforms::default()
+        };
+        for (to, from) in u.pointer.iter_mut().zip(&pointer) {
+            *to = *from;
+        }
+        for (to, from) in u.values.iter_mut().zip(&values) {
+            *to = *from;
+        }
+        let mut st = lock(&self.shared.state);
+        if let Some(e) = st.error.clone() {
+            if st.told {
+                return Ok(());
+            }
+            st.told = true;
+            return Err(e);
+        }
+        st.frame = Some(u);
+        drop(st);
+        self.shared.wake.notify_one();
+        Ok(())
+    }
+}
+
+/// Rust only, for tests and benchmarks.
+impl ShaderCanvas {
+    /// Frames presented so far.
+    #[doc(hidden)]
+    pub fn presents(&self) -> u64 {
+        self.shared.presents.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for ShaderCanvas {
+    fn drop(&mut self) {
+        lock(&self.shared.state).stop = true;
+        self.shared.wake.notify_one();
+        // Waits for a present in progress, then the surface is released.
+        let _released = lock(&self.shared.attached).take();
     }
 }
 
 #[cfg(feature = "widget-gpu")]
 mod imp {
     use std::sync::Arc;
+    use std::time::Duration;
 
     use widget_gpu::{Shorthand, Uniforms, clamp_size};
 
     use super::super::device::{self, Dev};
-    use super::super::present::{Attached, Blit, Frame};
+    pub(super) use super::super::present::Attached;
+    use super::super::present::Blit;
+    use super::super::present::Frame;
     use super::super::{GpuFailure, GpuSurface};
+    use super::{PoisonError, Shared, lock};
 
-    pub(super) struct Inner {
-        dev: Arc<Dev>,
-        shorthand: Shorthand,
-        attached: Attached,
-        blit: Blit,
-        size: (u32, u32),
-        /// An error stopped it.
-        stopped: bool,
+    /// Starts the canvas's thread.
+    pub(super) fn start(
+        shared: &Arc<Shared>,
+        wgsl: String,
+        surface: Arc<GpuSurface>,
+        width: u32,
+        height: u32,
+    ) {
+        *lock(&shared.attached) = Some(Attached::new(surface, width, height));
+        let s = shared.clone();
+        let spawned = std::thread::Builder::new()
+            .name("psychoscript-gpu-shader".into())
+            .spawn(move || run(&s, &wgsl));
+        if spawned.is_err() {
+            fail(shared, GpuFailure::client("no thread for the canvas"));
+        }
     }
 
-    impl Inner {
-        pub(super) fn new(
-            wgsl: &str,
-            surface: Arc<GpuSurface>,
-            width: u32,
-            height: u32,
-        ) -> Result<Inner, GpuFailure> {
-            let dev = device::get().map_err(GpuFailure::client)?;
-            let submits = device::submits();
-            let shorthand = Shorthand::new(dev.device.clone(), dev.queue.clone(), dev.format, wgsl);
-            drop(submits);
-            let shorthand = shorthand?;
-            Ok(Inner {
-                dev,
-                shorthand,
-                attached: Attached::new(surface, width, height),
-                blit: Blit::default(),
-                size: (width.max(1), height.max(1)),
-                stopped: false,
-            })
-        }
+    fn fail(s: &Shared, e: GpuFailure) {
+        lock(&s.state).error = Some(e);
+    }
 
-        pub(super) fn resize(&mut self, width: u32, height: u32) {
-            self.size = (width.max(1), height.max(1));
-            self.attached.resize(width, height);
-        }
-
-        pub(super) fn render(
-            &mut self,
-            time: f32,
-            scale: f32,
-            pointer: &[f32],
-            values: &[f32],
-        ) -> Result<(), GpuFailure> {
-            if self.stopped {
-                return Ok(());
+    /// The device once it is made (polled, so dropping the canvas meanwhile ends the thread at once), or why none.
+    fn device(s: &Shared) -> Option<Result<Arc<Dev>, String>> {
+        device::prepare();
+        loop {
+            if let Some(ready) = device::ready() {
+                return Some(ready);
             }
+            let st = lock(&s.state);
+            if st.stop {
+                return None;
+            }
+            let (st, _) = s
+                .wake
+                .wait_timeout(st, Duration::from_millis(5))
+                .unwrap_or_else(PoisonError::into_inner);
+            if st.stop {
+                return None;
+            }
+        }
+    }
+
+    fn compile(dev: &Dev, wgsl: &str) -> Result<Shorthand, GpuFailure> {
+        let submits = device::submits();
+        let made = Shorthand::new(dev.device.clone(), dev.queue.clone(), dev.format, wgsl);
+        drop(submits);
+        Ok(made?)
+    }
+
+    fn run(s: &Shared, wgsl: &str) {
+        let mut dev = match device(s) {
+            None => return,
+            Some(Err(why)) => return fail(s, GpuFailure::client(why)),
+            Some(Ok(dev)) => dev,
+        };
+        let mut shorthand = match compile(&dev, wgsl) {
+            Ok(shorthand) => shorthand,
+            Err(e) => return fail(s, e),
+        };
+        let mut blit = Blit::default();
+        loop {
+            // The newest frame, at the newest size.
+            let (u, size) = {
+                let mut st = lock(&s.state);
+                loop {
+                    if st.stop {
+                        return;
+                    }
+                    if let Some(u) = st.frame.take() {
+                        break (u, st.size);
+                    }
+                    st = s.wake.wait(st).unwrap_or_else(PoisonError::into_inner);
+                }
+            };
             // After a device loss, the same shader on the new device; no frames until there is one.
-            let Some(dev) = device::current() else {
-                return Ok(());
+            let Some(now) = device::current() else {
+                continue;
             };
-            if dev.generation != self.dev.generation {
-                self.dev = dev.clone();
+            if now.generation != dev.generation {
+                dev = now;
                 let submits = device::submits();
-                let reset = self.shorthand.reset(dev.device.clone(), dev.queue.clone());
+                let reset = shorthand.reset(dev.device.clone(), dev.queue.clone());
                 drop(submits);
-                self.stop_on(reset)?;
+                if let Err(e) = reset {
+                    return fail(s, e.into());
+                }
             }
-            let mut u = Uniforms {
-                time,
-                scale,
-                ..Default::default()
+            let uniforms = Uniforms {
+                time: u.time,
+                scale: u.scale,
+                pointer: u.pointer,
+                values: u.values,
             };
-            for (to, from) in u.pointer.iter_mut().zip(pointer) {
-                *to = *from;
-            }
-            for (to, from) in u.values.iter_mut().zip(values) {
-                *to = *from;
-            }
-            let (w, h) = clamp_size(self.size.0, self.size.1);
+            let (w, h) = clamp_size(size.0, size.1);
             let submits = device::submits();
-            let drawn = self.shorthand.render(w, h, &u);
+            let drawn = shorthand.render(w, h, &uniforms);
             drop(submits);
-            self.stop_on(drawn)?;
-            let Some(c) = self.shorthand.canvas() else {
-                return Ok(());
+            if let Err(e) = drawn {
+                return fail(s, e.into());
+            }
+            let Some(c) = shorthand.canvas() else {
+                continue;
             };
             let frame = Frame {
                 texture: c.texture.clone(),
                 alpha: c.alpha,
-                dev: self.dev.clone(),
+                dev: dev.clone(),
             };
-            self.attached
-                .present(&frame, &mut self.blit)
-                .map(|_| ())
-                .map_err(GpuFailure::client)
-        }
-
-        fn stop_on(&mut self, r: Result<(), widget_gpu::GpuError>) -> Result<(), GpuFailure> {
-            r.map_err(|e| {
-                self.stopped = true;
-                e.into()
-            })
+            let mut attached = lock(&s.attached);
+            let Some(a) = attached.as_mut() else { return };
+            a.resize(size.0, size.1);
+            match a.present(&frame, &mut blit) {
+                Ok(super::super::present::Shown::Yes) => {
+                    s.presents.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+                Ok(_) => {}
+                Err(why) => {
+                    *attached = None;
+                    return fail(s, GpuFailure::client(why));
+                }
+            }
         }
     }
 }
@@ -174,29 +288,11 @@ mod imp {
     use std::sync::Arc;
 
     use super::super::{GpuFailure, GpuSurface};
+    use super::{Shared, lock};
 
-    pub(super) struct Inner;
+    pub(super) struct Attached;
 
-    const OFF: &str = "this build has no GPU canvases";
-
-    impl Inner {
-        pub(super) fn new(
-            _: &str,
-            _: Arc<GpuSurface>,
-            _: u32,
-            _: u32,
-        ) -> Result<Inner, GpuFailure> {
-            Err(GpuFailure::client(OFF))
-        }
-        pub(super) fn resize(&mut self, _: u32, _: u32) {}
-        pub(super) fn render(
-            &mut self,
-            _: f32,
-            _: f32,
-            _: &[f32],
-            _: &[f32],
-        ) -> Result<(), GpuFailure> {
-            Err(GpuFailure::client(OFF))
-        }
+    pub(super) fn start(s: &Arc<Shared>, _: String, _: Arc<GpuSurface>, _: u32, _: u32) {
+        lock(&s.state).error = Some(GpuFailure::client("this build has no GPU canvases"));
     }
 }

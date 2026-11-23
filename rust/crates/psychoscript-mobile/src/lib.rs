@@ -32,7 +32,7 @@ pub use fetch::{
 };
 pub use gpu::{
     GpuCanvasState, GpuDeviceInfo, GpuErrorKind, GpuFailure, GpuStats, GpuSurface, ShaderCanvas,
-    gpu_device, gpu_lose_device,
+    gpu_device, gpu_fail_devices, gpu_lose_device,
 };
 pub use live::{LiveContext, LiveExit, LiveHandler, LiveOptions, LiveRun, LiveSurfaces};
 pub use program::{Program, RunOptions, RunSession};

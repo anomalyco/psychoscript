@@ -214,7 +214,10 @@ impl RunGpu {
             }
             (None, _) => Err(widget_gpu::GpuError {
                 kind: ErrorKind::Client,
-                message: "no GPU device could be made".into(),
+                message: match device::ready() {
+                    Some(Err(why)) => why,
+                    _ => "no GPU device could be made".into(),
+                },
                 canvases: Stops::All,
             }),
         };
@@ -223,11 +226,12 @@ impl RunGpu {
             Ok(dev) => st.dev = Some(dev),
             Err(e) => {
                 st.gpu = None;
-                // The first device never came: as without a GPU.
-                return match first {
-                    true => self.tell(None, GpuCanvasState::Unavailable),
-                    false => self.stopped(&e),
-                };
+                // No device after all: as without a GPU from now on. A program told it had one (the first device
+                // was still being made) loses it, as on a device loss; after a loss it was told already.
+                if first {
+                    self.ctx.deliver(lost_message("unknown", &e.message));
+                }
+                return self.tell(None, GpuCanvasState::Unavailable);
             }
         }
         for h in held {

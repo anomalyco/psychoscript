@@ -62,6 +62,21 @@ pub fn gpu_lose_device() {
     }
 }
 
+/// Has every device made from now on fail, `after_ms` into making it (Rust only, for tests of a GPU that turns out
+/// to be missing).
+#[doc(hidden)]
+pub fn gpu_fail_devices(after_ms: u64) {
+    #[cfg(feature = "widget-gpu")]
+    {
+        *device::FAIL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(std::time::Duration::from_millis(after_ms));
+    }
+    #[cfg(not(feature = "widget-gpu"))]
+    let _ = after_ms;
+}
+
 /// The device if one is made (see [`GpuDeviceInfo`]); `None` before, or without one.
 pub fn gpu_device() -> Option<GpuDeviceInfo> {
     #[cfg(feature = "widget-gpu")]

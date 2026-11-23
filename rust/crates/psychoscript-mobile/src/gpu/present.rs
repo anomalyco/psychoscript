@@ -404,6 +404,9 @@ struct Queue {
     latest: HashMap<String, Frame>,
     /// Canvases with an image their surface hasn't shown.
     dirty: HashSet<String>,
+    /// A new surface or size for a canvas's slot, which the presenter applies before it next presents into it (so
+    /// attaching never waits for a present in progress).
+    attaching: HashMap<String, (Arc<GpuSurface>, u32, u32)>,
     started: bool,
     stop: bool,
 }
@@ -428,19 +431,11 @@ impl Surfaces {
         height: u32,
     ) {
         let mut q = lock(&self.queue);
-        let slot = q.slots.get(&key).cloned();
-        match slot {
-            Some(slot) => {
-                drop(q);
-                let mut s = lock(&slot);
-                match s.as_mut() {
-                    Some(a) if Arc::ptr_eq(&a.native, &surface) => a.resize(width, height),
-                    _ => *s = Some(Attached::new(surface, width, height)),
-                }
-                drop(s);
-                q = lock(&self.queue);
+        match q.slots.contains_key(&key) {
+            true => {
+                q.attaching.insert(key.clone(), (surface, width, height));
             }
-            None => {
+            false => {
                 let slot = Arc::new(Mutex::new(Some(Attached::new(surface, width, height))));
                 q.slots.insert(key.clone(), slot);
             }
@@ -463,7 +458,10 @@ impl Surfaces {
     /// The canvas `key` is no longer shown: once this returns, its surface is never presented to again (a present in
     /// progress finishes first) and is released.
     pub(crate) fn detach(&self, key: &str) {
-        let slot = lock(&self.queue).slots.remove(key);
+        let mut q = lock(&self.queue);
+        q.attaching.remove(key);
+        let slot = q.slots.remove(key);
+        drop(q);
         if let Some(slot) = slot {
             let attached = lock(&slot).take();
             drop(attached);
@@ -549,6 +547,7 @@ impl Surfaces {
         let mut q = lock(&self.queue);
         q.stop = true;
         q.latest.clear();
+        q.attaching.clear();
         let slots: Vec<Slot> = q.slots.drain().map(|(_, s)| s).collect();
         drop(q);
         self.wake.notify_all();
@@ -562,7 +561,8 @@ fn present_loop(surfaces: std::sync::Weak<Surfaces>) {
     let mut blit = Blit::default();
     loop {
         let Some(s) = surfaces.upgrade() else { return };
-        let work: Vec<(String, Slot, Frame)> = {
+        type Work = (String, Slot, Frame, Option<(Arc<GpuSurface>, u32, u32)>);
+        let work: Vec<Work> = {
             let mut q = lock(&s.queue);
             loop {
                 if q.stop {
@@ -581,19 +581,26 @@ fn present_loop(surfaces: std::sync::Weak<Surfaces>) {
                             q.dirty.remove(&k);
                             let slot = q.slots[&k].clone();
                             let frame = q.latest[&k].clone();
-                            (k, slot, frame)
+                            let attaching = q.attaching.remove(&k);
+                            (k, slot, frame, attaching)
                         })
                         .collect();
                 }
                 q = s.wake.wait(q).unwrap_or_else(PoisonError::into_inner);
             }
         };
-        for (key, slot, frame) in work {
+        for (key, slot, frame, attaching) in work {
+            let mut attached = lock(&slot);
+            if let Some((surface, w, h)) = attaching {
+                match attached.as_mut() {
+                    Some(a) if Arc::ptr_eq(&a.native, &surface) => a.resize(w, h),
+                    _ => *attached = Some(Attached::new(surface, w, h)),
+                }
+            }
             // Only a frame of the device in use: a lost one's textures are gone.
             if device::current().is_none_or(|d| d.generation != frame.dev.generation) {
                 continue;
             }
-            let mut attached = lock(&slot);
             let Some(a) = attached.as_mut() else { continue };
             let started = std::time::Instant::now();
             let shown = a.present(&frame, &mut blit);

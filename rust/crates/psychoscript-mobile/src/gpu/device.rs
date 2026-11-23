@@ -219,7 +219,14 @@ pub(crate) fn instance() -> Result<wgpu::Instance, String> {
         .ok_or_else(|| "no GPU instance".to_owned())
 }
 
+/// For tests: devices fail to be made, after this long (`gpu_fail_devices`).
+pub(crate) static FAIL: Mutex<Option<std::time::Duration>> = Mutex::new(None);
+
 fn make() -> Result<Dev, String> {
+    if let Some(after) = *lock(&FAIL) {
+        std::thread::sleep(after);
+        return Err("no GPU device (as the test asked)".into());
+    }
     let started = Instant::now();
     let instance = instance()?;
     let adapter = block(instance.request_adapter(&wgpu::RequestAdapterOptions {
