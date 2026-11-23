@@ -641,7 +641,8 @@ method works on it, and its text conversions default to UTF-8.
 - [x] The inherited `Uint8Array` methods that make new bytes (`map`, `filter`, `slice`, `subarray`, also called
       through `Uint8Array.prototype`) make a Buffer from a Buffer, as JS's species does.
 - [x] A host Buffer crosses into the program as a Buffer, and a program Buffer crosses out as one; snapshots keep it.
-- [ ] The 64-bit `readBigInt64*`/`writeBigInt64*` methods.
+- [x] The 64-bit `readBigInt64*`/`readBigUInt64*` and `writeBigInt64*`/`writeBigUInt64*` methods, which take and return
+      BigInts.
 
 ## Web platform helpers
 

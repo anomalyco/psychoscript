@@ -148,6 +148,23 @@ describe("BigInt", () => {
     expect(result.ok ? undefined : result.error.message).toContain("cannot be passed to the host")
   })
 
+  test("Buffer reads and writes 64-bit integers as BigInts", async () => {
+    expect(
+      await value(`const b = Buffer.alloc(16)
+        b.writeBigInt64LE(-2n, 0)
+        b.writeBigUInt64BE(2n ** 64n - 1n, 8)
+        return [String(b.readBigInt64LE(0)), String(b.readBigUInt64LE(0)), String(b.readBigUint64BE(8)),
+          typeof b.readBigInt64BE(8), b.toString("hex")]`),
+    ).toEqual(["-2", "18446744073709551614", "18446744073709551615", "bigint", "feffffffffffffffffffffffffffffff"])
+  })
+
+  test("join refuses a too-long result before converting", async () => {
+    const started = performance.now()
+    const error = await failure("const x = 2n ** 1048575n; return new Array(100).fill(x).join('').length")
+    expect(error.message).toContain("Invalid string length")
+    expect(performance.now() - started).toBeLessThan(500)
+  })
+
   test("shows a BigInt with its suffix in the console", async () => {
     const result = await Runtime.make().execute("console.log(1n, [2n], { a: 3n }, new Map([[4n, 5n]])); return 0")
     expect(result.logs).toEqual(['1n [2n] {"a":3n} Map(1) [[4n,5n]]'])
