@@ -151,12 +151,11 @@ impl Run {
 
     /// Waits until the canvas `key` has an image (the device may still be being made as the run starts).
     pub fn live(&mut self, key: &str) {
-        self.wait(|e| match e {
-            Event::Gpu(Some(k), GpuCanvasState::Live) if k == key => Some(()),
+        let state = self.wait(|e| match e {
+            Event::Gpu(Some(k), s @ GpuCanvasState::Live { .. }) if k == key => Some(s.clone()),
             _ => None,
         });
-        self.seen
-            .push(Event::Gpu(Some(key.into()), GpuCanvasState::Live));
+        self.seen.push(Event::Gpu(Some(key.into()), state));
     }
 
     pub fn gpu_events(&self) -> Vec<(Option<String>, GpuCanvasState)> {

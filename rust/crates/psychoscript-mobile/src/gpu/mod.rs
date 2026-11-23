@@ -176,8 +176,10 @@ pub enum GpuErrorKind {
 /// What a GPU canvas shows, from [`crate::LiveHandler::on_gpu_canvas`].
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum GpuCanvasState {
-    /// It has an image: show its surface, without the placeholder.
-    Live,
+    /// It has an image: show its surface, without the placeholder. `opaque`: the program configured its context
+    /// with `alphaMode: "opaque"` (the default), so its pixels have no transparency (Android: `TextureView.setOpaque`);
+    /// else `"premultiplied"`. Told when the canvas goes live, and again only if a reconfigure changes it.
+    Live { opaque: bool },
     /// There is no GPU here: every GPU canvas of the run shows its placeholder (`poster`, else `alt`, else "GPU
     /// canvas not supported"). A client error; the widget keeps working. `reason` says why (the Android version, no
     /// Vulkan adapter, the GPU's Vulkan version or limits under the spec's, each with its value, or wgpu's error

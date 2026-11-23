@@ -36,7 +36,7 @@ fn a_lost_device_is_told_to_the_program_and_replaced() {
     let lives = |r: &Run| {
         r.gpu_events()
             .iter()
-            .filter(|(k, s)| k.as_deref() == Some("c") && *s == GpuCanvasState::Live)
+            .filter(|(k, s)| k.as_deref() == Some("c") && matches!(s, GpuCanvasState::Live { .. }))
             .count()
     };
     for i in 3.. {
@@ -56,7 +56,7 @@ fn a_lost_device_is_told_to_the_program_and_replaced() {
     assert_eq!(
         events
             .iter()
-            .filter(|(k, s)| k.as_deref() == Some("c") && *s == GpuCanvasState::Live)
+            .filter(|(k, s)| k.as_deref() == Some("c") && matches!(s, GpuCanvasState::Live { .. }))
             .count(),
         2,
         "{events:?}"

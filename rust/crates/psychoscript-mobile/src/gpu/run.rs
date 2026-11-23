@@ -37,8 +37,8 @@ struct State {
     keys: Vec<String>,
     /// The canvas sizes the program received.
     sizes: HashMap<String, (u32, u32)>,
-    /// Each canvas's version last presented.
-    versions: HashMap<String, u64>,
+    /// Each canvas's version last presented, and whether it was opaque.
+    versions: HashMap<String, (u64, bool)>,
     /// After a loss, until the new device (or until the first device is made): what the program posts meanwhile.
     held: Option<Vec<Held>>,
     /// The program was told it has a GPU while the device was still being made.
@@ -402,8 +402,9 @@ impl RunGpu {
                 continue;
             }
             let Some(c) = gpu.canvas(key) else { continue };
-            let seen = st.versions.insert(key.clone(), c.version);
-            if seen == Some(c.version) {
+            let opaque = c.alpha == widget_gpu::AlphaMode::Opaque;
+            let seen = st.versions.insert(key.clone(), (c.version, opaque));
+            if seen.is_some_and(|(v, _)| v == c.version) {
                 continue;
             }
             self.surfaces.frame(
@@ -414,8 +415,8 @@ impl RunGpu {
                     dev: dev.clone(),
                 },
             );
-            if seen.is_none() {
-                self.tell(Some(key), GpuCanvasState::Live);
+            if seen.is_none_or(|(_, o)| o != opaque) {
+                self.tell(Some(key), GpuCanvasState::Live { opaque });
             }
         }
     }

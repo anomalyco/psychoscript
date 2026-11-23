@@ -388,7 +388,10 @@ WebGPU, shader translation and presenting are this crate's.
 - **`handler.onGpuCanvas(key, state)`:** `key` the canvas, or `nil` for every GPU canvas of the run (now and later).
   On the run's thread, like the other callbacks. Show the surface for `live`, the canvas's placeholder (`poster`, else
   `alt`, else "GPU canvas not supported") for anything else:
-  - `live`: it has an image;
+  - `live(opaque)`: it has an image. `opaque` is whether the program configured its context `alphaMode: "opaque"`
+    (the default) rather than `"premultiplied"`: no transparency (Android: `TextureView.setOpaque(opaque)`). Told as
+    the canvas goes live, and again only if a reconfigure changes it. A `ShaderCanvas` (`wgsl`) is always
+    premultiplied: not opaque;
   - `unavailable(reason)`: no GPU here (a client error, nothing to report). `reason` says why, worked out once when
     the canvases go unavailable: the Android version (`GPU canvases need Android 15 or newer (API 35), not API
     34`), no Vulkan adapter (wgpu's text), the GPU's Vulkan version, each limit under the spec's with the GPU's value

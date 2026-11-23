@@ -72,7 +72,7 @@ fn the_cube_draws_headless() {
     assert_cube(w, h, &p);
     assert_eq!(
         r.gpu_events(),
-        [(Some("cube".into()), GpuCanvasState::Live)]
+        [(Some("cube".into()), GpuCanvasState::Live { opaque: true })]
     );
     // No batch reached the app.
     let posts: Vec<&Post> = r
@@ -129,6 +129,62 @@ async function main() {
         Event::Posts(p) if p.iter().any(|p| matches!(p, Post::Submit(v) if v == "on")) => Some(()),
         _ => None,
     });
+}
+
+/// `live` says whether the canvas is opaque, from its context's `alphaMode`: once as it goes live, again only when a
+/// reconfigure changes it, never per frame.
+#[test]
+fn live_says_whether_the_canvas_is_opaque() {
+    let source = r#"
+async function main() {
+  widget.render(ui.canvas({ key: "c", gpu: true, height: 10 }))
+  const device = await widget.gpu.requestDevice()
+  const context = widget.gpu.getContext("c")
+  const draw = async (frames) => {
+    for (let i = 0; i < frames; i++) {
+      await widget.frame()
+      const encoder = device.createCommandEncoder()
+      encoder.beginRenderPass({ colorAttachments: [{ view: context.getCurrentTexture().createView(),
+        loadOp: "clear", storeOp: "store", clearValue: [0, 0, 0.5, 0.5] }] }).end()
+      device.queue.submit([encoder.finish()])
+    }
+  }
+  const format = widget.gpu.getPreferredCanvasFormat()
+  context.configure({ device, format, alphaMode: "premultiplied" })
+  await draw(3)
+  context.configure({ device, format, alphaMode: "premultiplied" })
+  await draw(3)
+  context.configure({ device, format, alphaMode: "opaque" })
+  await draw(3)
+  await widget.frame()
+}"#;
+    let mut r = start(&live_program(source), json!({}));
+    r.run
+        .deliver(json!({ "type": "canvas", "key": "c", "width": 8, "height": 8 }).to_string())
+        .unwrap();
+    // Nine frames drawn (what the program posts while the device is made replays once it is there).
+    r.frames(9);
+    r.frame_request();
+    r.wait(|e| matches!(e, Event::Gpu(_, GpuCanvasState::Live { opaque: true })).then_some(()));
+    r.seen.push(Event::Gpu(
+        Some("c".into()),
+        GpuCanvasState::Live { opaque: true },
+    ));
+    std::thread::sleep(Duration::from_millis(100));
+    while let Ok(e) = r.rx.try_recv() {
+        r.seen.push(e);
+    }
+    let lives: Vec<_> = (r.gpu_events().into_iter())
+        .filter(|(_, s)| matches!(s, GpuCanvasState::Live { .. }))
+        .collect();
+    assert_eq!(
+        lives,
+        [
+            (Some("c".into()), GpuCanvasState::Live { opaque: false }),
+            (Some("c".into()), GpuCanvasState::Live { opaque: true })
+        ]
+    );
+    r.run.stop();
 }
 
 #[test]
@@ -342,7 +398,7 @@ fn a_snapshot_keeps_the_stops_and_drops_handles_from_before() {
     let events = r.gpu_events();
     assert!(
         events.iter().all(|(k, s)| match s {
-            GpuCanvasState::Live => k.as_deref() == Some("a"),
+            GpuCanvasState::Live { .. } => k.as_deref() == Some("a"),
             GpuCanvasState::Stopped { report, .. } => !report,
             _ => false,
         }),
