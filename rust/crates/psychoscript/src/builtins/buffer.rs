@@ -56,14 +56,16 @@ fn received(vm: &mut Vm, v: &Value) -> String {
         Value::Undef | Value::Uninit => "undefined".into(),
         Value::Null => "null".into(),
         Value::Str(s) => {
-            // Node cuts the value at 25 code units.
+            // The host cuts a value past 28 code units to its first 25.
             let r = vm.atoms.sref(*s);
-            let short = r.slice16(0, 25);
-            let more = if r.len16() > 25 { "..." } else { "" };
-            format!("type string ('{short}'{more})")
+            if r.len16() > 28 {
+                return format!("type string ('{}...')", r.slice16(0, 25));
+            }
+            format!("type string ('{}')", r.slice16(0, 28))
         }
         Value::Num(n) => format!("type number ({})", num_to_string(*n)),
         Value::Bool(b) => format!("type boolean ({b})"),
+        Value::Big(id) => format!("type bigint ({}n)", vm.big_text(*id)),
         Value::Obj(_) if vm.is_callable(v) => "function ".into(),
         Value::Obj(id) => {
             let ctor = vm.names.constructor;
@@ -853,10 +855,13 @@ enum Num {
     U,
     I,
     F,
+    /// A 64-bit integer as a BigInt, unsigned or signed.
+    BigU,
+    BigI,
 }
 
 /// Name, write?, kind, byte width (0: from the byteLength argument), little-endian.
-const NUMERIC: [(&str, bool, Num, usize, bool); 46] = [
+const NUMERIC: [(&str, bool, Num, usize, bool); 58] = [
     ("readUInt8", false, Num::U, 1, true),
     ("readUint8", false, Num::U, 1, true),
     ("readInt8", false, Num::I, 1, true),
@@ -880,6 +885,12 @@ const NUMERIC: [(&str, bool, Num, usize, bool); 46] = [
     ("readUIntBE", false, Num::U, 0, false),
     ("readIntLE", false, Num::I, 0, true),
     ("readIntBE", false, Num::I, 0, false),
+    ("readBigInt64LE", false, Num::BigI, 8, true),
+    ("readBigInt64BE", false, Num::BigI, 8, false),
+    ("readBigUInt64LE", false, Num::BigU, 8, true),
+    ("readBigUint64LE", false, Num::BigU, 8, true),
+    ("readBigUInt64BE", false, Num::BigU, 8, false),
+    ("readBigUint64BE", false, Num::BigU, 8, false),
     ("writeUInt8", true, Num::U, 1, true),
     ("writeUint8", true, Num::U, 1, true),
     ("writeInt8", true, Num::I, 1, true),
@@ -903,7 +914,70 @@ const NUMERIC: [(&str, bool, Num, usize, bool); 46] = [
     ("writeUIntBE", true, Num::U, 0, false),
     ("writeIntLE", true, Num::I, 0, true),
     ("writeIntBE", true, Num::I, 0, false),
+    ("writeBigInt64LE", true, Num::BigI, 8, true),
+    ("writeBigInt64BE", true, Num::BigI, 8, false),
+    ("writeBigUInt64LE", true, Num::BigU, 8, true),
+    ("writeBigUint64LE", true, Num::BigU, 8, true),
+    ("writeBigUInt64BE", true, Num::BigU, 8, false),
+    ("writeBigUint64BE", true, Num::BigU, 8, false),
 ];
+
+/// A 64-bit write's BigInt, checked as the host's Buffer checks it, before the offset.
+fn big_value(vm: &mut Vm, v: &Value, signed: bool) -> Result<u64, Value> {
+    use num_traits::ToPrimitive;
+    let Value::Big(id) = v else {
+        // The reference hands an object to the host as its number, read without calling the program.
+        let v = match v {
+            Value::Obj(_) => Value::Num(super::builtin_number(vm, v)?),
+            v => *v,
+        };
+        let d = received(vm, &v);
+        return Err(node_error(
+            vm,
+            "TypeError",
+            &format!("The \"value\" argument must be of type bigint. Received {d}"),
+            "ERR_INVALID_ARG_TYPE",
+        ));
+    };
+    let n = vm.big(*id);
+    let bits = if signed {
+        n.to_i64().map(|x| x as u64)
+    } else {
+        n.to_u64()
+    };
+    if let Some(bits) = bits {
+        return Ok(bits);
+    }
+    let range = if signed {
+        ">= -(2n ** 63n) and < 2n ** 63n"
+    } else {
+        ">= 0n and < 2n ** 64n"
+    };
+    // Past 2^32 either way the host groups the digits in threes.
+    let text = n.to_str_radix(10);
+    let digits = text.strip_prefix('-').unwrap_or(&text);
+    let group = *n.magnitude() > num_bigint::BigUint::from(1u64 << 32);
+    let mut grouped = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if group && i > 0 && (digits.len() - i).is_multiple_of(3) {
+            grouped.push('_');
+        }
+        grouped.push(c);
+    }
+    let sign = if n.sign() == num_bigint::Sign::Minus {
+        "-"
+    } else {
+        ""
+    };
+    Err(node_error(
+        vm,
+        "RangeError",
+        &format!(
+            "The value of \"value\" is out of range. It must be {range}. Received {sign}{grouped}n"
+        ),
+        "ERR_OUT_OF_RANGE",
+    ))
+}
 
 fn offset_arg(vm: &mut Vm, v: &Value, len: usize, width: usize) -> Result<usize, Value> {
     let n = match v {
@@ -987,6 +1061,10 @@ fn b_numeric(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
             }
         }
     };
+    let big = match kind {
+        Num::BigU | Num::BigI if write => Some(big_value(vm, &value, matches!(kind, Num::BigI))?),
+        _ => None,
+    };
     let offset = offset_arg(vm, &offset_v, len, width)?;
     let b = bytes_ref(vm, id);
     if !write {
@@ -1014,11 +1092,28 @@ fn b_numeric(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
                     u as f64
                 }
             }
+            Num::BigU | Num::BigI => {
+                let mut a = [0u8; 8];
+                a.copy_from_slice(&raw);
+                let u = u64::from_le_bytes(a);
+                return Ok(match kind {
+                    Num::BigI => vm.big_val((u as i64).into()),
+                    _ => vm.big_val(u.into()),
+                });
+            }
         };
         return Ok(Value::Num(v));
     }
-    let x = vm.number_of(&value)?;
+    let x = match (big, value) {
+        (Some(_), _) => 0.0,
+        // The host's number conversion refuses a BigInt in its own words.
+        (None, Value::Big(_)) => {
+            return Err(vm.type_error("Conversion from 'BigInt' to 'number' is not allowed."));
+        }
+        (None, v) => vm.number_of(&v)?,
+    };
     let raw: Vec<u8> = match kind {
+        Num::BigU | Num::BigI => big.unwrap_or(0).to_le_bytes().to_vec(),
         Num::F if width == 4 => (x as f32).to_le_bytes().to_vec(),
         Num::F => x.to_le_bytes().to_vec(),
         Num::U | Num::I => {

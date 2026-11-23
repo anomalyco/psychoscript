@@ -381,8 +381,12 @@ impl Vm {
         Ok(match code {
             SUB..=USHR => {
                 self.data_operands(&a, &b)?;
-                let x = self.op_number(&a, &b)?;
-                let y = self.op_number(&b, &a)?;
+                let pa = self.op_primitive(&a, &b, Hint::Number)?;
+                let pb = self.op_primitive(&b, &a, Hint::Number)?;
+                if matches!(pa, Value::Big(_)) || matches!(pb, Value::Big(_)) {
+                    return self.big_binary(code, &pa, &pb);
+                }
+                let (x, y) = (self.number_of(&pa)?, self.number_of(&pb)?);
                 Value::Num(match code {
                     SUB => x - y,
                     MUL => x * y,
@@ -419,7 +423,11 @@ impl Vm {
             }
             NEG => {
                 self.data_operand(&a, "Unary operators require data values.")?;
-                Value::Num(-self.number_of(&a)?)
+                let p = self.primitive_of(&a, Hint::Number)?;
+                if let Value::Big(id) = p {
+                    return self.big_unary(NEG, id);
+                }
+                Value::Num(-self.number_of(&p)?)
             }
             TO_NUMBER => {
                 if self.is_opaque_operand(&a) {
@@ -430,11 +438,20 @@ impl Vm {
                     };
                     return Err(self.invalid_data(msg));
                 }
-                Value::Num(self.number_of(&a)?)
+                // ToNumeric keeps a BigInt; unary plus is ToNumber, which refuses one.
+                let p = self.primitive_of(&a, Hint::Number)?;
+                if let (Value::Big(_), 0 | 1) = (p, extra) {
+                    return Ok(p);
+                }
+                Value::Num(self.number_of(&p)?)
             }
             BIT_NOT => {
                 self.data_operand(&a, "Unary operators require data values.")?;
-                Value::Num(!to_i32(self.number_of(&a)?) as f64)
+                let p = self.primitive_of(&a, Hint::Number)?;
+                if let Value::Big(id) = p {
+                    return self.big_unary(BIT_NOT, id);
+                }
+                Value::Num(!to_i32(self.number_of(&p)?) as f64)
             }
             INC | DEC => {
                 let msg = if code == INC {
@@ -443,7 +460,11 @@ impl Vm {
                     "'--' requires a data value."
                 };
                 self.data_operand(&a, msg)?;
-                let x = self.number_of(&a)?;
+                let p = self.primitive_of(&a, Hint::Number)?;
+                if let Value::Big(id) = p {
+                    return self.big_unary(code, id);
+                }
+                let x = self.number_of(&p)?;
                 Value::Num(if code == INC { x + 1.0 } else { x - 1.0 })
             }
             INC_LOCAL => {
@@ -455,7 +476,11 @@ impl Vm {
                         "'--' requires a data value."
                     },
                 )?;
-                let x = self.number_of(&a)?;
+                let p = self.primitive_of(&a, Hint::Number)?;
+                if let Value::Big(id) = p {
+                    return self.big_unary(if extra2 == 0 { INC } else { DEC }, id);
+                }
+                let x = self.number_of(&p)?;
                 Value::Num(if extra2 == 0 { x + 1.0 } else { x - 1.0 })
             }
             TO_STR => Value::Str(self.string_of(&a)?),

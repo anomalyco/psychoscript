@@ -545,7 +545,7 @@ impl Marker<'_> {
                 {
                     *k = BLACK;
                     match self.vm.cells[c as usize].get() {
-                        Value::Obj(id) => self.mark(Ref::Obj(id)),
+                        Value::Obj(id) | Value::Big(id) => self.mark(Ref::Obj(id)),
                         Value::Str(s) => self.mark_str(s),
                         _ => {}
                     }
@@ -646,6 +646,21 @@ impl Vm {
         id
     }
 
+    /// The BigInt interner's barrier, as `shade_atom` is the strings': a BigInt it gives out again while a cycle runs
+    /// survives the cycle. It holds no references, so it is black at once.
+    #[inline]
+    pub(crate) fn gc_shade_big(&mut self, id: Id) {
+        let i = id as usize;
+        let unswept = match self.gc.phase {
+            Phase::Idle => false,
+            Phase::Mark => true,
+            Phase::Sweep => i >= self.gc.obj_sweep.0 && i < self.gc.obj_sweep.1,
+        };
+        if unswept && self.heap.marks.color.get(i) == Some(&WHITE) {
+            self.heap.marks.color[i] = BLACK;
+        }
+    }
+
     /// A new closure cell at its limit, as `gc_alloc` does for objects.
     #[cold]
     #[inline(never)]
@@ -675,7 +690,7 @@ impl Vm {
             return;
         };
         match v.get() {
-            Value::Obj(id) => {
+            Value::Obj(id) | Value::Big(id) => {
                 if self.heap.marks.color.get(id as usize) == Some(&WHITE) {
                     self.heap.marks.color[id as usize] = GREY;
                     self.heap.marks.grey.push(id);
@@ -863,6 +878,9 @@ impl Vm {
             match self.heap.marks.color[at] {
                 WHITE => {
                     self.heap.marks.color[at] = FREE;
+                    if let Kind::BigInt(n) = &self.heap.objs[at].kind {
+                        self.bigints.forget(at as Id, n);
+                    }
                     self.heap.objs[at] = Obj::new(None, Kind::Ordinary);
                     self.gc.free.push(at as Id);
                     work += FREE_WORK;

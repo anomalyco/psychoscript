@@ -153,7 +153,7 @@ type ControlEntry =
 const idx = (node: AstNode | undefined | null): number => (node ? (nodeId(node)?.index ?? -1) : -1)
 
 /** Bump when the compiler emits different bytecode for the same source; it is part of the snapshot build id. */
-export const COMPILER_VERSION = 4
+export const COMPILER_VERSION = 5
 
 const compileCache = new Map<string, ReadonlyArray<Code>>()
 const MAX_CACHE_SIZE = 64

@@ -241,7 +241,8 @@ fn object_bytes(vm: &Vm, o: &Obj) -> u64 {
     let own = OBJECT_BYTES + PROPERTY_BYTES * props as u64;
     match &o.kind {
         // An accessor's own object is part of its property; a buffer's storage counts as its bytes.
-        Kind::Accessor(_) | Kind::Storage(_) => 0,
+        // A BigInt counts nothing, as the reference counts its primitives.
+        Kind::Accessor(_) | Kind::Storage(_) | Kind::BigInt(_) => 0,
         // The program's body, which the reference runs with no function object.
         Kind::Closure(c) if vm.protos.first().is_some_and(|p| Arc::ptr_eq(p, &c.proto)) => 0,
         Kind::Array(items) | Kind::Arguments(items) => own + ELEMENT_BYTES * items.len() as u64,

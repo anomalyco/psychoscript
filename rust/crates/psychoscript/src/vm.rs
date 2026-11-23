@@ -337,6 +337,8 @@ pub struct Vm {
     /// The new target of a built-in constructor `super(...)` calls: its instance's prototype is the target's.
     pub(crate) new_target: Option<Id>,
     pub(crate) gc: crate::collector::Gc,
+    /// Each live BigInt's object, by value (see `builtins/bigint.rs`).
+    pub(crate) bigints: crate::builtins::bigint::Interned,
     /// `limits.max_heap_bytes` and its pacing, once the run is set up (see `heap.rs`).
     pub(crate) heap_meter: Option<Box<crate::heap::HeapMeter>>,
     /// With a heap limit, the built-ins a lazy group made after the run started, which count as the runtime's own.
@@ -446,13 +448,23 @@ impl Vm {
             restricted_hit: false,
             new_target: None,
             gc: crate::collector::Gc::new(),
+            bigints: Default::default(),
             heap_meter: None,
             lazy_builtins: Vec::new(),
             lends: Vec::new(),
         }
     }
 
+    /// Makes a program's BigInt constants. A run makes them before its snapshot base, so they are part of the fresh
+    /// run; `load` makes any left.
+    pub fn load_bigints(&mut self, program: &mut Program) {
+        for (i, n) in std::mem::take(&mut program.bigints) {
+            program.consts[i as usize] = self.big_val(n);
+        }
+    }
+
     pub fn load(&mut self, mut program: Program) {
+        self.load_bigints(&mut program);
         // Where programs have typed arrays, their globals are constants.
         if program.typed_consts && self.realm.std.typed_arrays {
             for proto in &mut program.protos {
@@ -608,6 +620,8 @@ impl Vm {
             (Value::Num(x), Value::Num(y)) => x == y,
             (Value::Str(x), Value::Str(y)) => x == y || self.atoms.get(*x) == self.atoms.get(*y),
             (Value::Obj(x), Value::Obj(y)) => x == y,
+            // The interner gives each BigInt value one object.
+            (Value::Big(x), Value::Big(y)) => x == y,
             (Value::Bool(x), Value::Bool(y)) => x == y,
             (Value::Undef, Value::Undef) | (Value::Null, Value::Null) => true,
             (Value::Sym(x), Value::Sym(y)) => x == y,
@@ -3161,6 +3175,13 @@ impl Vm {
                         };
                         throw!(self.unsupported_syntax(&kind));
                     }
+                    Op::ThrowRange(msg) => {
+                        let m = match self.consts[msg as usize] {
+                            Value::Str(s) => self.text(s).to_owned(),
+                            _ => String::new(),
+                        };
+                        throw!(self.range_error(&m));
+                    }
                     Op::ThrowSyntax(msg) => {
                         let m = match self.consts[msg as usize] {
                             Value::Str(s) => self.text(s).to_owned(),
@@ -3682,6 +3703,11 @@ impl Vm {
                         tri!(self.data_operand(&a, "Unary operators require data values."));
                         let x = match a {
                             Value::Num(x) => x,
+                            Value::Big(id) => {
+                                let r = tri!(self.big_unary(code::NEG, id));
+                                self.push(r);
+                                continue;
+                            }
                             _ => tri!(self.number_of(&a)),
                         };
                         self.push(Value::Num(-x));
@@ -3708,6 +3734,12 @@ impl Vm {
                         }
                         let x = match a {
                             Value::Num(x) => x,
+                            // ToNumeric keeps a BigInt. `matches!`, not `==`: `PartialEq` takes `op` by
+                            // reference, which keeps every decoded instruction in memory.
+                            Value::Big(_) if matches!(op, Op::ToNumeric) => {
+                                self.push(a);
+                                continue;
+                            }
                             _ => tri!(self.number_of(&a)),
                         };
                         self.push(Value::Num(x));
@@ -3722,6 +3754,11 @@ impl Vm {
                             conv_op!(code::BIT_NOT, a, Value::Undef, Value::Undef, 0, 0);
                         }
                         tri!(self.data_operand(&a, "Unary operators require data values."));
+                        if let Value::Big(id) = a {
+                            let r = tri!(self.big_unary(code::BIT_NOT, id));
+                            self.push(r);
+                            continue;
+                        }
                         let x = tri!(self.number_of(&a));
                         self.push(Value::Num(!to_i32(x) as f64));
                     }
@@ -3759,6 +3796,16 @@ impl Vm {
                         tri!(self.data_operand(&a, msg));
                         let x = match a {
                             Value::Num(x) => x,
+                            Value::Big(id) => {
+                                let c = if matches!(op, Op::Inc) {
+                                    code::INC
+                                } else {
+                                    code::DEC
+                                };
+                                let r = tri!(self.big_unary(c, id));
+                                self.push(r);
+                                continue;
+                            }
                             _ => tri!(self.number_of(&a)),
                         };
                         self.push(Value::Num(if matches!(op, Op::Inc) {
@@ -4652,5 +4699,12 @@ mod layout {
             at + std::mem::size_of::<Vec<crate::value::Slot>>() <= 512,
             "Vm::stack is at offset {at}; keep it within 488"
         );
+    }
+
+    /// Every heap object holds a `Kind`, so a variant with a payload over 24 bytes makes each object larger: box it
+    /// instead.
+    #[test]
+    fn kind_is_small() {
+        assert_eq!(std::mem::size_of::<crate::object::Kind>(), 32);
     }
 }

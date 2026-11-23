@@ -1505,6 +1505,13 @@ fn visit(vm: &mut Vm, v: &Value, depth: usize, cx: &mut ToHost) -> Result<Visit,
                 format_args!("contains a symbol, which cannot be passed to the host."),
             ));
         }
+        Value::Big(_) => {
+            return Err(cannot_cross(
+                vm,
+                cx,
+                format_args!("contains a bigint, which cannot be passed to the host."),
+            ));
+        }
         Value::Obj(id) => *id,
     };
     if let Some(back) = cx.back.as_deref_mut()

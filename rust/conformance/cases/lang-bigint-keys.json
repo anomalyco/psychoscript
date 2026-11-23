@@ -1,0 +1,33 @@
+{
+  "bindings": {},
+  "ok": true,
+  "value": [
+    [
+      "1",
+      "2",
+      "16",
+      "999999999999999999"
+    ],
+    "m",
+    "g",
+    "baz",
+    "s",
+    "field",
+    "static field",
+    "getter",
+    "foo",
+    "default",
+    "1",
+    [
+      "4"
+    ],
+    [
+      "1",
+      "6",
+      "constructor"
+    ],
+    "3"
+  ],
+  "logs": [],
+  "metadata": null
+}

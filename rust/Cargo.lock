@@ -838,6 +838,8 @@ dependencies = [
  "icu_locale_core",
  "icu_time",
  "idna_adapter",
+ "num-bigint",
+ "num-traits",
  "oxc_allocator",
  "oxc_ast",
  "oxc_ast_visit",

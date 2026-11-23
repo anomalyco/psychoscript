@@ -51,6 +51,8 @@ pub enum Op {
     ThrowUnsupported(u32),
     /// Throws a `SyntaxError` with a constant message, for syntax that is only rejected when it runs.
     ThrowSyntax(u32),
+    /// Throws a `RangeError` with a constant message: a BigInt literal past the size cap.
+    ThrowRange(u32),
     This,
     Callee,
     Arguments,
@@ -355,6 +357,8 @@ pub enum Site {
 pub struct Program {
     pub protos: Vec<Arc<FuncProto>>,
     pub consts: Vec<crate::value::Value>,
+    /// The BigInt constants, by their index in `consts`, which holds them once the program loads (`Vm::load_bigints`).
+    pub bigints: Vec<(u32, num_bigint::BigInt)>,
     /// Global names referenced by `GetGlobal`, by slot.
     pub globals: Vec<Atom>,
     /// The strings of each tagged template site, for `Template`.

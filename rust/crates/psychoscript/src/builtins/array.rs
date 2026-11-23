@@ -649,6 +649,8 @@ fn joined(vm: &mut Vm, id: Id, sep: Option<Value>) -> Res {
             }
             None => ",".to_owned(),
         };
+        let list = items(vm, id).to_vec();
+        check_join_length(vm, &list, &sep)?;
         let s = join(vm, id, &sep, &mut Vec::new())?;
         return Ok(vm.string_val(s));
     }
@@ -668,6 +670,7 @@ fn joined(vm: &mut Vm, id: Id, sep: Option<Value>) -> Res {
             vm.text(t).to_owned()
         }
     };
+    check_join_length(vm, &list[parts..], &sep)?;
     let mut out = String::new();
     for (i, v) in list[parts..].iter().enumerate() {
         if i > 0 {
@@ -681,6 +684,32 @@ fn joined(vm: &mut Vm, id: Id, sep: Option<Value>) -> Res {
     }
     let r = Ok(vm.string_val(out));
     c.finish(vm, r)
+}
+
+/// The reference's `joinText` bound: with a BigInt among the elements, whose decimal text takes long to make near the
+/// size cap, a join refuses a result too long before it converts any, its length estimated from the BigInts' bits.
+fn check_join_length(vm: &mut Vm, list: &[Value], sep: &str) -> Result<(), Value> {
+    if !list.iter().any(|v| matches!(v, Value::Big(_))) {
+        return Ok(());
+    }
+    let sep = sep.encode_utf16().count() as f64;
+    let mut total = -sep;
+    for v in list {
+        total += sep
+            + match v {
+                // At most this many characters, sign included.
+                Value::Big(b) => {
+                    let hex = vm.big(*b).bits().div_ceil(4).max(1) as f64;
+                    (hex * 4.0 * std::f64::consts::LOG10_E * std::f64::consts::LN_2).floor() + 2.0
+                }
+                Value::Str(s) => vm.atoms.sref(*s).len16() as f64,
+                _ => 0.0,
+            };
+    }
+    if total > crate::ops::MAX_STRING_LEN as f64 {
+        return Err(vm.range_error("Invalid string length"));
+    }
+    Ok(())
 }
 
 /// The reference's `integers`: the arguments at `positions`, `undefined` where missing, are one list of conversions
@@ -1356,8 +1385,20 @@ fn sort_default(vm: &mut Vm, list: Vec<Value>) -> Result<Vec<Value>, Value> {
     let mut c = fuel::Conversions::default();
     let primitives = c.converted(vm, &[Hint::String], &defined, false)?;
     let mut keys = Vec::with_capacity(primitives.len());
+    // Equal BigInts, whose decimal text is slow to make, share one key.
+    let mut texts = rustc_hash::FxHashMap::default();
     for p in primitives.iter() {
-        keys.push(vm.string_of(p)?);
+        keys.push(match p {
+            Value::Big(b) => match texts.get(b) {
+                Some(s) => *s,
+                None => {
+                    let s = vm.string_of(p)?;
+                    texts.insert(*b, s);
+                    s
+                }
+            },
+            p => vm.string_of(p)?,
+        });
     }
     drop(primitives);
     let keyed: Vec<(StrId, Value)> = keys.into_iter().zip(defined).collect();
