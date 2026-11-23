@@ -16,7 +16,19 @@ pub const HANG: Duration = Duration::from_millis(250);
 /// it before a poll saw it past [`HANG`]).
 pub const HANG_AT_LOSS: Duration = Duration::from_millis(250);
 /// The client error a hang stops canvases with.
-pub const HANG_MESSAGE: &str = "the GPU work took over 250 ms; the canvas is stopped";
+pub const HANG_MESSAGE: &str = "the GPU work hung; the canvas is stopped";
+/// Work the GPU aborted after executing at least this long hung.
+pub const HANG_ABORTED: Duration = Duration::from_millis(30);
+
+/// What a host can tell of its GPU's submissions beyond wgpu: whether the GPU aborted one (a
+/// recovery from a hang, its own or another's) and how long it had executed by then.
+pub trait Aborts: Send + Sync {
+    fn aborted(
+        &self,
+        queue: &wgpu::Queue,
+        submission: &wgpu::SubmissionIndex,
+    ) -> Option<std::time::Duration>;
+}
 
 /// A submit: when it was made, whether its work finished, whether it was found hung.
 pub(crate) struct Submit {
@@ -132,10 +144,8 @@ mod tests {
             (HANG, HANG_AT_LOSS),
             (Duration::from_millis(250), Duration::from_millis(250))
         );
-        assert_eq!(
-            HANG_MESSAGE,
-            "the GPU work took over 250 ms; the canvas is stopped"
-        );
+        assert_eq!(HANG_MESSAGE, "the GPU work hung; the canvas is stopped");
+        assert_eq!(HANG_ABORTED, Duration::from_millis(30));
     }
 
     /// Only the oldest unfinished submit on a queue can hang: what waits behind it isn't blamed, and the next one's
