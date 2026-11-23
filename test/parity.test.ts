@@ -996,7 +996,7 @@ describe("coercion parity: unknown static members read as undefined", () => {
     expect(await value(`return Number.range === undefined`)).toBe(true)
     expect(await value(`return String.dedent === undefined`)).toBe(true)
     expect(await value(`return isFinite.something === undefined`)).toBe(true)
-    expect(await value(`return console.group === undefined`)).toBe(true)
+    expect(await value(`return console.profile === undefined`)).toBe(true)
     expect(await value(`return Date.moment === undefined`)).toBe(true)
     expect(await value(`return JSON.rawJSON === undefined`)).toBe(true)
     expect(await value(`return URL.createObjectURL === undefined`)).toBe(true)

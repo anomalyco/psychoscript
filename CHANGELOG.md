@@ -27,6 +27,9 @@
   crypto, TextEncoder/TextDecoder, symbols and async/generator functions, and `Object.getOwnPropertySymbols` exists.
 - A `StreamingResponse` now has `type`, `clone()` and `reader.closed`; `blob()`, `formData()` and the body's `tee`,
   `pipeTo` and `pipeThrough` throw a TypeError instead of being undefined.
+- Console: nested `undefined` prints as `undefined` (not `null`), `console.table` shows a table holding a function
+  instead of `[opaque reference]`, and `console.assert`/`count`/`countReset`/`group`/`groupCollapsed`/`groupEnd`/
+  `trace`/`time`/`timeLog`/`timeEnd` exist.
 
 ## 0.2.1
 
