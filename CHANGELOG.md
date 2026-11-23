@@ -28,6 +28,10 @@
 - `translate: { functions: "mark" }`: a program function inside a host call's argument, or in the run's result,
   crosses as `Host.functionMarker` (Rust: `HostValue::FunctionMarker`, `Data::FunctionMarker`) instead of failing
   the call or being left out.
+- BigInt: literals, arithmetic, `BigInt()`, `BigInt.asIntN`/`asUintN`, the prototype methods, and Buffer's 64-bit
+  `readBigInt64*`/`writeBigInt64*` methods. A BigInt is capped at
+  2^20 bits and cannot cross to the host; `JSON.stringify` throws on one unless the program defines
+  `BigInt.prototype.toJSON`. Snapshots keep BigInts.
 
 ## 0.2.1
 

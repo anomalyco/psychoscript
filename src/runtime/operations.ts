@@ -1,7 +1,8 @@
 import type { Expression, MemberExpression, NewExpression, Super } from "acorn"
-import { type AstNode, invalidData, typeError } from "./model.js"
+import { type AstNode, invalidData, rangeError, typeError } from "./model.js"
+import { UnaryOp } from "../opcodes.js"
 import { chargeConcat } from "./heap.js"
-import { checkStringLength } from "./limits.js"
+import { checkBigIntSize, checkStringLength, MAX_BIGINT_BITS } from "./limits.js"
 import { locate } from "./errors.js"
 import { type Builtins, primitivePrototype } from "./intrinsics.js"
 import {
@@ -28,12 +29,14 @@ import {
   Position,
   PromiseObj,
   set,
+  coerceToNumber,
   coerceToString,
   type Value,
 } from "./objects.js"
 import { circularValue, describeValue, hasCircularReference, isOpaque, typeofValue } from "./references.js"
 import type { Interpreter } from "./interpreter.js"
 import { enumerableSource } from "../stdlib/object.js"
+import { bigintSyntax } from "../stdlib/number.js"
 
 // The synchronous semantics the VM's ops share: operators, property references, and the checks around them. Nothing
 // here runs program code.
@@ -127,6 +130,10 @@ export const hasInstance = (lhs: Value, prototype: Value, node: AstNode | undefi
 export const applyBinaryOperator = (operator: string, lhs: Value, rhs: Value, node: AstNode): Value => {
   if (operator === "===") return lhs === rhs
   if (operator === "!==") return lhs !== rhs
+  if (typeof lhs === "bigint" && typeof rhs === "string" && rhs.length > 1024 && comparisons.has(operator))
+    return applyBinaryOperator(operator, lhs, longTextAsNumeric(rhs), node)
+  if (typeof lhs === "string" && typeof rhs === "bigint" && lhs.length > 1024 && comparisons.has(operator))
+    return applyBinaryOperator(operator, longTextAsNumeric(lhs), rhs, node)
   if (operator === "==") return looselyEqual(lhs, rhs, node)
   if (operator === "!=") return !looselyEqual(lhs, rhs, node)
   if (operator === "in" && rhs instanceof Obj && !(lhs instanceof HostNamespace)) return has(rhs, propertyKey(lhs))
@@ -134,6 +141,12 @@ export const applyBinaryOperator = (operator: string, lhs: Value, rhs: Value, no
     throw invalidData("Binary operators require data values.", node)
   }
   // Object operands were already converted through ToPrimitive; only primitives reach the arithmetic below.
+  if (
+    (typeof lhs === "bigint" || typeof rhs === "bigint") &&
+    numericOperators.has(operator) &&
+    !(operator === "+" && (typeof lhs === "string" || typeof rhs === "string"))
+  )
+    return applyBigIntOperator(operator, lhs, rhs, node)
   switch (operator) {
     case "+": {
       const sum = (lhs as string) + (rhs as string)
@@ -178,6 +191,95 @@ export const applyBinaryOperator = (operator: string, lhs: Value, rhs: Value, no
     default:
       throw typeError(`Unsupported binary operator '${operator}'.`, node)
   }
+}
+
+const comparisons = new Set(["==", "!=", "<", "<=", ">", ">="])
+
+// Comparing a BigInt with a string parses the string, which takes seconds for millions of digits. A long string is
+// read here instead, giving the same answers: NaN when it is not an integer (every comparison is false), an infinity
+// of its sign when it has more digits than any BigInt under the size limit, and otherwise the BigInt it spells.
+const longTextAsNumeric = (text: string): number | bigint => {
+  const trimmed = text.trim()
+  if (!bigintSyntax.test(trimmed)) return Number.NaN
+  const radix = /^0[xob]/i.test(trimmed) ? trimmed.slice(0, 2) : ""
+  const negative = radix === "" && trimmed.startsWith("-")
+  const digits = trimmed.slice(radix === "" ? (/^[+-]/.test(trimmed) ? 1 : 0) : 2).replace(/^0+/, "")
+  const bitsPerDigit = radix === "" ? Math.log2(10) : { x: 4, o: 3, b: 1 }[radix[1]!.toLowerCase()]!
+  if ((digits.length - 1) * bitsPerDigit >= MAX_BIGINT_BITS) return negative ? -Infinity : Infinity
+  return BigInt(`${negative ? "-" : ""}${radix}${digits || "0"}`)
+}
+
+const numericOperators = new Set(["+", "-", "*", "/", "%", "**", "&", "|", "^", "<<", ">>", ">>>"])
+
+// BigInt arithmetic. Both operands must be BigInts, and results stay under MAX_BIGINT_BITS so no single operator can
+// run for long; `**` and `<<` are checked before they compute, the rest after.
+const applyBigIntOperator = (operator: string, lhs: Value, rhs: Value, node: AstNode): bigint => {
+  if (typeof lhs !== "bigint" || typeof rhs !== "bigint") {
+    throw typeError("Cannot mix BigInt and other types, use explicit conversions.", node)
+  }
+  switch (operator) {
+    case "+":
+      return checkBigIntSize(lhs + rhs)
+    case "-":
+      return checkBigIntSize(lhs - rhs)
+    case "*":
+      return checkBigIntSize(lhs * rhs)
+    case "/":
+      if (rhs === 0n) throw rangeError("Division by zero", node)
+      return lhs / rhs
+    case "%":
+      if (rhs === 0n) throw rangeError("Division by zero", node)
+      return lhs % rhs
+    case "**":
+      if (rhs < 0n) throw rangeError("Exponent must be non-negative", node)
+      if (lhs === 0n || lhs === 1n || lhs === -1n || rhs <= 1n) return lhs ** rhs
+      // The result has more than (bits - 1) * rhs bits.
+      if (rhs >= BigInt(MAX_BIGINT_BITS) || (bitLength(lhs) - 1) * Number(rhs) >= MAX_BIGINT_BITS) {
+        throw rangeError("Maximum BigInt size exceeded", node)
+      }
+      return checkBigIntSize(lhs ** rhs)
+    case "&":
+      return lhs & rhs
+    case "|":
+      return lhs | rhs
+    case "^":
+      return lhs ^ rhs
+    case "<<":
+      return shiftLeft(lhs, rhs)
+    case ">>":
+      return shiftLeft(lhs, -rhs)
+    default:
+      throw typeError("BigInts have no unsigned right shift, use >> instead.", node)
+  }
+}
+
+const shiftLeft = (value: bigint, shift: bigint): bigint => {
+  if (value === 0n || shift <= 0n) return value >> -shift
+  if (shift >= BigInt(MAX_BIGINT_BITS)) throw rangeError("Maximum BigInt size exceeded")
+  return checkBigIntSize(value << shift)
+}
+
+/** The number of bits in a BigInt's magnitude. */
+const bitLength = (value: bigint): number => {
+  const hex = (value < 0n ? -value : value).toString(16)
+  return (hex.length - 1) * 4 + 32 - Math.clz32(parseInt(hex[0]!, 16))
+}
+
+/** ToNumeric on a primitive: BigInts stay BigInts, everything else becomes a number. */
+export const toNumeric = (value: Value): number | bigint => (typeof value === "bigint" ? value : coerceToNumber(value))
+
+/** `-`, `+` and `~` on a primitive. Unary plus is ToNumber, which a BigInt refuses. */
+export const applyUnaryOperator = (sub: number, value: Value): number | bigint => {
+  const n = sub === UnaryOp.PLUS ? coerceToNumber(value) : toNumeric(value)
+  // `~` and `-` of a BigInt at the limit can land one past it.
+  if (typeof n === "bigint") return checkBigIntSize(sub === UnaryOp.NEG ? -n : ~n)
+  return sub === UnaryOp.NEG ? -n : sub === UnaryOp.PLUS ? n : ~n
+}
+
+/** `++` (flag 0) or `--` on a value already converted by ToNumeric. */
+export const increment = (flag: number, value: number | bigint): number | bigint => {
+  if (typeof value === "bigint") return checkBigIntSize(flag === 0 ? value + 1n : value - 1n)
+  return flag === 0 ? value + 1 : value - 1
 }
 
 // IsLooselyEqual: objects (including functions and namespace paths) compare by identity, and a nullish

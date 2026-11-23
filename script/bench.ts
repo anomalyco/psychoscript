@@ -82,6 +82,12 @@ for (let i = 0; i < 5000; i++) { map.delete("k" + i); set.delete(i) }
 return sum + map.size + set.size`,
   ],
   [
+    "BigInt arithmetic (64-bit hash)",
+    `let h = 0xcbf29ce484222325n
+for (let i = 0; i < 100000; i++) h = BigInt.asUintN(64, (h ^ BigInt(i & 255)) * 0x100000001b3n)
+return String(h)`,
+  ],
+  [
     "property-heavy (plain data)",
     `const rows = Array.from({ length: 20000 }, (_, i) => ({ id: i, name: "n" + i, score: i % 97, tags: ["a", "b"] }))
 let sum = 0

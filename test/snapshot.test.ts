@@ -25,6 +25,11 @@ const programs: Record<string, string> = {
     let total = 0
     for (const byte of buffer) total += byte
     return [Buffer.isBuffer(buffer), buffer.toString(), buffer.toString("base64"), total]`,
+  "BigInts on the stack, in locals and in collections": `
+    let factorial = 1n
+    const steps = new Map()
+    for (let i = 1n; i <= 30n; i++) { factorial *= i; steps.set(i, factorial) }
+    return [String(factorial), String(steps.get(20n)), typeof [...steps.keys()][0]]`,
   "closures over per-iteration bindings": `
     const fns = []
     for (let i = 0; i < 5; i++) fns.push(() => i * 2)

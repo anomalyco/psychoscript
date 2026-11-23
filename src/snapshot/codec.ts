@@ -54,6 +54,7 @@ import {
   WeakSetObj,
   Protector,
 } from "../runtime/objects.js"
+import { MAX_BIGINT_BITS } from "../runtime/limits.js"
 import { Convert, Interruption, Invoke, Prefetch } from "../runtime/signals.js"
 import { deleted, OrderedTable } from "../runtime/table.js"
 import { AsyncFromSyncIterator } from "../generators.js"
@@ -72,7 +73,7 @@ export type Json = null | boolean | number | string | ReadonlyArray<Json> | { re
 /**
  * A value inside a record: a JSON primitive, or a tag (an array whose first item says what it is):
  * - `["u"]` undefined, `["n", "NaN" | "Infinity" | "-Infinity" | "-0"]` a number JSON cannot spell, `["-"]` an absent
- *   field, `["h"]` an array hole;
+ *   field, `["h"]` an array hole, `["b", digits]` a BigInt in hexadecimal with an optional `-`;
  * - `["s", name]` an interpreter symbol;
  * - `["i", name]` a built-in or host global, unchanged since the runtime was made;
  * - `["a", source, index]` an AST node (a call site, an error's location);
@@ -468,7 +469,8 @@ class Encoder {
         return ["s", name]
       }
       case "bigint":
-        throw new SnapshotError("Codec gap: a bigint has no data form.")
+        // Hexadecimal converts in linear time either way; decimal is quadratic for large values.
+        return ["b", value < 0n ? `-${(-value).toString(16)}` : value.toString(16)]
     }
     if (value === null) return null
     const object = value as object
@@ -1249,6 +1251,15 @@ class Decoder {
             return -0
         }
         return invalid(`unknown number ${String(value[1])}.`)
+      case "b": {
+        const digits = text(value[1], "a BigInt")
+        const magnitude = digits.startsWith("-") ? digits.slice(1) : digits
+        if (!/^[\da-f]+$/.test(magnitude) || magnitude.length > MAX_BIGINT_BITS / 4) {
+          return invalid(`malformed BigInt ${digits.slice(0, 64)}.`)
+        }
+        const n = BigInt(`0x${magnitude}`)
+        return magnitude === digits ? n : -n
+      }
       case "s":
         return symbols.get(text(value[1], "a symbol")) ?? invalid(`unknown symbol ${String(value[1])}.`)
       case "x":

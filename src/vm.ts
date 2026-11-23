@@ -40,7 +40,6 @@ import {
   peek,
   GetterCall,
   lookup,
-  coerceToNumber,
   coerceToString,
   define,
   Fn,
@@ -68,10 +67,12 @@ import {
 import {
   accessProperty,
   applyBinaryOperator,
+  applyUnaryOperator,
   assignToReference,
   builtinCursor,
   failedAssignment,
   forInKeys,
+  increment,
   instanceofValue,
   isThenable,
   notAFunction,
@@ -83,6 +84,7 @@ import {
   requireMemberBase,
   requirePromiseProperty,
   resolveProperty,
+  toNumeric,
   writableReference,
 } from "./runtime/operations.js"
 import { capability } from "./runtime/promises.js"
@@ -150,7 +152,6 @@ import {
   PutKind,
   type RegExpSite,
   type TemplateSite,
-  UnaryOp,
 } from "./opcodes.js"
 import { ClassInfo, hidden } from "./runtime/objects.js"
 
@@ -2073,14 +2074,13 @@ export class Vm {
     if (isOpaque(v)) {
       throw invalidData(`'${flag === 0 ? "++" : "--"}' requires a data value.`, fcode.siteAt(pc))
     }
-    frame.regs[sp - 1] = coerceToNumber(v)
+    frame.regs[sp - 1] = toNumeric(v)
     return false
   }
 
   private execIncSlow(frame: Frame, flag: number, v: Value, pc: number, sp: number): boolean {
     if (this.execToNumericSlow(frame, flag, v, pc, sp, "$vmInc")) return true
-    const n = frame.regs[sp - 1] as number
-    frame.regs[sp - 1] = flag === 0 ? n + 1 : n - 1
+    frame.regs[sp - 1] = increment(flag, frame.regs[sp - 1] as number | bigint)
     return false
   }
 
@@ -2819,8 +2819,7 @@ export class Vm {
       return true
     }
     if (isOpaque(v)) throw invalidData("Unary operators require data values.", site)
-    const n = coerceToNumber(v)
-    frame.regs[sp - 1] = sub === UnaryOp.NEG ? -n : sub === UnaryOp.PLUS ? +n : ~n
+    frame.regs[sp - 1] = applyUnaryOperator(sub, v)
     return false
   }
 

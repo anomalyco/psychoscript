@@ -1642,6 +1642,7 @@ built-ins/JSON/parse/reviver-get-name-err.js  # Expected a Test262Error but got 
 built-ins/JSON/parse/reviver-object-non-configurable-prop-create.js  # Expected SameValue(«22», «2») to be true
 built-ins/JSON/parse/reviver-object-non-configurable-prop-delete.js  # TypeError: Cannot delete property '…'.
 built-ins/JSON/rawJSON/basic.js  # TypeError: JSON.rawJSON is not a function.
+built-ins/JSON/rawJSON/bigint-raw-json-can-be-stringified.js  # TypeError: Cannot destructure undefined as it is undefined.
 built-ins/JSON/rawJSON/illegal-empty-and-start-end-chars.js  # Expected a SyntaxError but got a TypeError
 built-ins/JSON/rawJSON/returns-expected-object.js  # TypeError: JSON.rawJSON is not a function.
 built-ins/JSON/stringify/value-array-circular.js  # TypeError: Array.push result contains a circular value.
@@ -1748,6 +1749,7 @@ built-ins/Object/create/15.2.3.5-4-57.js  # TypeError: ConstructFun is not a con
 built-ins/Object/create/15.2.3.5-4-58.js  # TypeError: ConstructFun is not a constructor: only classes can be constructed with new. Use a class,
 built-ins/Object/create/15.2.3.5-4-71.js  # TypeError: Cannot read properties of undefined (reading '…').
 built-ins/Object/create/15.2.3.5-4-96.js  # accessed !== true
+built-ins/Object/create/properties-arg-to-object-bigint.js  # TypeError: Object.getOwnPropertySymbols is not a function.
 built-ins/Object/defineProperties/15.2.3.7-2-16.js  # TypeError: Fun is not a constructor: only classes can be constructed with new. Use a class, or call 
 built-ins/Object/defineProperties/15.2.3.7-2-18.js  # TypeError: Cannot read properties of undefined (reading '…').
 built-ins/Object/defineProperties/15.2.3.7-3-3.js  # TypeError: Con is not a constructor: only classes can be constructed with new. Use a class, or call 
@@ -2226,22 +2228,15 @@ built-ins/RegExp/prototype/test/y-fail-lastindex-no-write.js  # Expected a TypeE
 built-ins/RegExp/prototype/toString/called-as-function.js  # TypeError: Object.defineProperty called on non-object
 built-ins/RegExp/prototype/unicode/this-val-regexp-prototype.js  # TypeError: RegExp.prototype.unicode called on incompatible receiver a data object.
 built-ins/RegExp/prototype/unicodeSets/this-val-regexp-prototype.js  # TypeError: RegExp.prototype.unicodeSets called on incompatible receiver a data object.
-built-ins/Set/prototype/difference/size-is-a-number.js  # TypeError: BigInt literals are not supported.
 built-ins/Set/prototype/difference/subclass-receiver-methods.js  # TypeError: Extending the built-in Set is not supported. Only classes and Error types can be extended
 built-ins/Set/prototype/difference/subclass.js  # TypeError: Extending the built-in Set is not supported. Only classes and Error types can be extended
-built-ins/Set/prototype/intersection/size-is-a-number.js  # TypeError: BigInt literals are not supported.
 built-ins/Set/prototype/intersection/subclass-receiver-methods.js  # TypeError: Extending the built-in Set is not supported. Only classes and Error types can be extended
 built-ins/Set/prototype/intersection/subclass.js  # TypeError: Extending the built-in Set is not supported. Only classes and Error types can be extended
-built-ins/Set/prototype/isDisjointFrom/size-is-a-number.js  # TypeError: BigInt literals are not supported.
 built-ins/Set/prototype/isDisjointFrom/subclass-receiver-methods.js  # TypeError: Extending the built-in Set is not supported. Only classes and Error types can be extended
-built-ins/Set/prototype/isSubsetOf/size-is-a-number.js  # TypeError: BigInt literals are not supported.
 built-ins/Set/prototype/isSubsetOf/subclass-receiver-methods.js  # TypeError: Extending the built-in Set is not supported. Only classes and Error types can be extended
-built-ins/Set/prototype/isSupersetOf/size-is-a-number.js  # TypeError: BigInt literals are not supported.
 built-ins/Set/prototype/isSupersetOf/subclass-receiver-methods.js  # TypeError: Extending the built-in Set is not supported. Only classes and Error types can be extended
-built-ins/Set/prototype/symmetricDifference/size-is-a-number.js  # TypeError: BigInt literals are not supported.
 built-ins/Set/prototype/symmetricDifference/subclass-receiver-methods.js  # TypeError: Extending the built-in Set is not supported. Only classes and Error types can be extended
 built-ins/Set/prototype/symmetricDifference/subclass.js  # TypeError: Extending the built-in Set is not supported. Only classes and Error types can be extended
-built-ins/Set/prototype/union/size-is-a-number.js  # TypeError: BigInt literals are not supported.
 built-ins/Set/prototype/union/subclass-receiver-methods.js  # TypeError: Extending the built-in Set is not supported. Only classes and Error types can be extended
 built-ins/Set/prototype/union/subclass.js  # TypeError: Extending the built-in Set is not supported. Only classes and Error types can be extended
 built-ins/Set/set-get-add-method-failure.js  # Expected a MyError to be thrown but no exception was thrown at all
@@ -2419,6 +2414,7 @@ language/expressions/object/__proto__-duplicate-computed.js  # prototype is defi
 language/expressions/object/__proto__-poisoned-object-prototype.js  # Expected true but got false
 language/expressions/object/__proto__-value-null.js  # Expected SameValue(«object», «null») to be true
 language/expressions/object/__proto__-value-obj.js  # Expected SameValue(«object», «object») to be true
+language/expressions/object/literal-property-name-bigint.js  # unsupported syntax GeneratorMethod
 language/expressions/optional-chaining/optional-call-preserves-this.js  # TypeError: Cannot read properties of undefined (reading '…').
 language/expressions/postfix-decrement/S11.3.2_A2.1_T1.js  # TypeError: Cannot read properties of undefined (reading '…').
 language/expressions/postfix-decrement/S11.3.2_A6_T1.js  # Expected a DummyError but got a TypeError
