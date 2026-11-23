@@ -409,9 +409,9 @@ WebGPU, shader translation and presenting are this crate's.
   scaled draw), so a slow, hidden or detached surface never holds up the run. Presents beyond the surface's rate are
   skipped. `attachSurface` never blocks (a new size or surface applies at the next present); `detachSurface` waits
   only for a present in progress.
-- **Heavy GPU work** (`widgets-gpu.md`, GPU hang): a run's batch replays once the GPU is done with its last one, so a
-  program whose frames take the GPU longer than the display's waits for it on its own thread, and never queues up GPU
-  work. Work still unfinished 250 ms after its submit stops the canvases it draws into: `stopped(client, "the GPU work
+- **Heavy GPU work** (`widgets-gpu.md`, GPU hang): a run's batch replays once the GPU is done with the one before its
+  last, so the GPU draws a frame while the next replays, and a program whose frames take the GPU longer than the
+  display's waits for it on its own thread, with at most one batch queued behind the GPU. Work still unfinished 250 ms after its submit stops the canvases it draws into: `stopped(client, "the GPU work
   hung; the canvas is stopped")`. Apple's GPUs stop work themselves sooner (after 0.05 to 0.6 s on an M5 Max) and fail
   what follows it on the queue: with the vendored wgpu-hal (`rust/vendor/`, gfx-rs/wgpu#10875; stock wgpu-hal counts
   such work finished and tells nothing) that loses the device: every run gets `lost` and draws again on a new one. A loss

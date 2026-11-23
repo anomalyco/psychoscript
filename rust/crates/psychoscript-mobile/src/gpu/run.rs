@@ -381,13 +381,15 @@ impl RunGpu {
         self.present(st);
     }
 
-    /// The run's last batch, when the GPU is still on it.
+    /// The batch before the run's last, when the GPU is still on it: a new batch waits for it, so that at most one of
+    /// the run's batches is in flight as the next replays.
     fn in_flight(st: &mut State) -> Option<(Arc<Dev>, Arc<device::Watch>)> {
         let dev = st.dev.clone()?;
         while st.flights.front().is_some_and(|w| w.done(&dev)) {
             st.flights.pop_front();
         }
-        Some((dev, st.flights.back()?.clone()))
+        let n = st.flights.len();
+        Some((dev, st.flights.get(n.checked_sub(2)?)?.clone()))
     }
 
     /// Hands each canvas whose texture a pass wrote to its surface.
@@ -486,10 +488,13 @@ struct Host(Arc<RunGpu>);
 
 impl widget_wire::GpuHost for Host {
     fn batch(&mut self, ops: &[Arg], bytes: &[u8]) {
-        // A batch replays once the GPU is done with the run's last one: a program whose frames take the GPU longer
-        // than the display's waits for it, on the run's thread, never building up GPU work (which holds up every
-        // canvas; a Metal queue then gives up) nor inside a submit (some drivers wait there; `Gpu::poll` looks for a
-        // hang meanwhile; one stops its canvases, and the run waits on behind it, adding nothing).
+        // A batch replays once the GPU is done with the run's batch before the last: the GPU draws one while the next
+        // replays (on a Pixel the CPU and GPU took turns, the GPU idle a third of the time at a third of its clock),
+        // and a program whose frames take the GPU longer than the display's waits for it, on the run's thread, with
+        // at most one batch queued behind the GPU, never building up GPU work (which holds up every canvas; a Metal
+        // queue then gives up) nor inside a submit (some drivers wait there; `Gpu::poll` looks for a hang meanwhile,
+        // counting a submit's time from when the one before it finished, so the batch queued behind a hung one isn't
+        // blamed; a hang stops its canvases, and the run waits on behind it, adding nothing).
         let wait = RunGpu::in_flight(&mut lock(&self.0.state));
         if let Some((dev, watch)) = wait {
             device::settle(&dev, &watch, || self.0.ctx.interrupted());
