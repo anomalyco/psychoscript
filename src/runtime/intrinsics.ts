@@ -21,6 +21,7 @@ const builtins = [
   "Array",
   "String",
   "Number",
+  "BigInt",
   "Boolean",
   "Date",
   "RegExp",
@@ -63,6 +64,7 @@ export const createErrorValue = (prototype: Obj, message: string | undefined, tr
 export const primitivePrototype = (builtins: Builtins, value: Value): Obj | undefined => {
   if (typeof value === "string") return builtins.String
   if (typeof value === "number") return builtins.Number
+  if (typeof value === "bigint") return builtins.BigInt
   if (typeof value === "boolean") return builtins.Boolean
   return undefined
 }
@@ -90,6 +92,7 @@ export const createBuiltins = (): Builtins => {
     Array: new Arr(object),
     String: plain(),
     Number: plain(),
+    BigInt: plain(),
     Boolean: plain(),
     Date: plain(),
     RegExp: plain(),

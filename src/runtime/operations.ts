@@ -1,6 +1,7 @@
 import type { Expression, MemberExpression, NewExpression, Super } from "acorn"
-import { type AstNode, invalidData, typeError } from "./model.js"
-import { checkStringLength } from "./limits.js"
+import { type AstNode, invalidData, rangeError, typeError } from "./model.js"
+import { UnaryOp } from "../opcodes.js"
+import { checkBigIntSize, checkStringLength, MAX_BIGINT_BITS } from "./limits.js"
 import { locate } from "./errors.js"
 import { type Builtins, primitivePrototype } from "./intrinsics.js"
 import {
@@ -27,6 +28,7 @@ import {
   Position,
   PromiseObj,
   set,
+  coerceToNumber,
   coerceToString,
   type Value,
 } from "./objects.js"
@@ -133,6 +135,12 @@ export const applyBinaryOperator = (operator: string, lhs: Value, rhs: Value, no
     throw invalidData("Binary operators require data values.", node)
   }
   // Object operands were already converted through ToPrimitive; only primitives reach the arithmetic below.
+  if (
+    (typeof lhs === "bigint" || typeof rhs === "bigint") &&
+    numericOperators.has(operator) &&
+    !(operator === "+" && (typeof lhs === "string" || typeof rhs === "string"))
+  )
+    return applyBigIntOperator(operator, lhs, rhs, node)
   switch (operator) {
     case "+": {
       const sum = (lhs as string) + (rhs as string)
@@ -174,6 +182,77 @@ export const applyBinaryOperator = (operator: string, lhs: Value, rhs: Value, no
     default:
       throw typeError(`Unsupported binary operator '${operator}'.`, node)
   }
+}
+
+const numericOperators = new Set(["+", "-", "*", "/", "%", "**", "&", "|", "^", "<<", ">>", ">>>"])
+
+// BigInt arithmetic. Both operands must be BigInts, and results stay under MAX_BIGINT_BITS so no single operator can
+// run for long; `**` and `<<` are checked before they compute, the rest after.
+const applyBigIntOperator = (operator: string, lhs: Value, rhs: Value, node: AstNode): bigint => {
+  if (typeof lhs !== "bigint" || typeof rhs !== "bigint") {
+    throw typeError("Cannot mix BigInt and other types, use explicit conversions.", node)
+  }
+  switch (operator) {
+    case "+":
+      return checkBigIntSize(lhs + rhs)
+    case "-":
+      return checkBigIntSize(lhs - rhs)
+    case "*":
+      return checkBigIntSize(lhs * rhs)
+    case "/":
+      if (rhs === 0n) throw rangeError("Division by zero", node)
+      return lhs / rhs
+    case "%":
+      if (rhs === 0n) throw rangeError("Division by zero", node)
+      return lhs % rhs
+    case "**":
+      if (rhs < 0n) throw rangeError("Exponent must be non-negative", node)
+      if (lhs === 0n || lhs === 1n || lhs === -1n || rhs <= 1n) return lhs ** rhs
+      // The result has more than (bits - 1) * rhs bits.
+      if (rhs >= BigInt(MAX_BIGINT_BITS) || (bitLength(lhs) - 1) * Number(rhs) >= MAX_BIGINT_BITS) {
+        throw rangeError("Maximum BigInt size exceeded", node)
+      }
+      return checkBigIntSize(lhs ** rhs)
+    case "&":
+      return lhs & rhs
+    case "|":
+      return lhs | rhs
+    case "^":
+      return lhs ^ rhs
+    case "<<":
+      return shiftLeft(lhs, rhs)
+    case ">>":
+      return shiftLeft(lhs, -rhs)
+    default:
+      throw typeError("BigInts have no unsigned right shift, use >> instead.", node)
+  }
+}
+
+const shiftLeft = (value: bigint, shift: bigint): bigint => {
+  if (value === 0n || shift <= 0n) return value >> -shift
+  if (shift >= BigInt(MAX_BIGINT_BITS)) throw rangeError("Maximum BigInt size exceeded")
+  return checkBigIntSize(value << shift)
+}
+
+/** The number of bits in a BigInt's magnitude. */
+const bitLength = (value: bigint): number => {
+  const hex = (value < 0n ? -value : value).toString(16)
+  return (hex.length - 1) * 4 + 32 - Math.clz32(parseInt(hex[0]!, 16))
+}
+
+/** ToNumeric on a primitive: BigInts stay BigInts, everything else becomes a number. */
+export const toNumeric = (value: Value): number | bigint => (typeof value === "bigint" ? value : coerceToNumber(value))
+
+/** `-`, `+` and `~` on a primitive. Unary plus is ToNumber, which a BigInt refuses. */
+export const applyUnaryOperator = (sub: number, value: Value): number | bigint => {
+  const n = sub === UnaryOp.PLUS ? coerceToNumber(value) : toNumeric(value)
+  return sub === UnaryOp.NEG ? -n : sub === UnaryOp.PLUS ? n : ~n
+}
+
+/** `++` (flag 0) or `--` on a value already converted by ToNumeric. */
+export const increment = (flag: number, value: number | bigint): number | bigint => {
+  if (typeof value === "bigint") return checkBigIntSize(flag === 0 ? value + 1n : value - 1n)
+  return flag === 0 ? value + 1 : value - 1
 }
 
 // IsLooselyEqual: objects (including functions and namespace paths) compare by identity, and a nullish

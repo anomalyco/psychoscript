@@ -63,7 +63,8 @@ the ultimate source of truth. Upstream test262 files run verbatim from `test/tes
       site, as in JS, but it is not frozen: `strings[0] = "x"` succeeds here where JS throws.
 - [x] Regular-expression literals.
 - [x] `NaN` and `Infinity` globals.
-- [ ] BigInt literals and in-interpreter BigInt arithmetic; BigInt remains invalid at JSON-like host boundaries.
+- [x] BigInt literals (`1n`, `0xffn`, `1_000n`, and as object keys), with arithmetic inside the program; see
+      [BigInt](#bigint). A BigInt cannot cross to the host.
 - [ ] Arbitrary Symbol primitive values and symbol-keyed properties. The confined `Symbol.iterator` and
       `Symbol.asyncIterator` keys are available only for the iterator protocols.
 - [x] Getter and setter definitions in object literals (`get x() {}`, `set x(v) {}`, computed and symbol keys), named
@@ -477,6 +478,23 @@ reject }` object.
       elements without coercion.
 - [x] Global coercing `isFinite` and `isNaN`; opaque runtime references reject as data errors, like `Number(...)`.
 
+## BigInt
+
+- [x] BigInt arithmetic (`+`, `-`, `*`, `/`, `%`, `**`), bitwise operators and shifts, unary `-` and `~`, `++`/`--`
+      and compound assignment, with JS's errors: mixing a BigInt and a number is a `TypeError`, as are `+n`, `>>>`,
+      and passing a BigInt where a number is needed (`Math.abs(1n)`); dividing by `0n` or a negative exponent is a
+      `RangeError`. Comparisons and `==` work across BigInts, numbers and strings, and Maps and Sets key BigInts by
+      value.
+- [x] `BigInt(value)` from integers, booleans, and decimal, hex, octal and binary strings; `BigInt.asIntN`,
+      `BigInt.asUintN`, and `toString(radix)`, `toLocaleString` (`en-US`) and `valueOf` on the prototype. `new
+      BigInt()` is a `TypeError`.
+- [x] A BigInt has at most 2^20 bits (about 315,000 decimal digits), so no single operator runs for long; a larger
+      result is a `RangeError` (`Maximum BigInt size exceeded`), and `**` and `<<` refuse before computing it.
+- [x] `JSON.stringify` throws a `TypeError` on a BigInt unless the program defines `BigInt.prototype.toJSON`. A BigInt
+      in a result or a host call's arguments fails the same way at the boundary (the `toJSON` applies there too);
+      `console.log` shows `1n`; snapshots keep BigInts.
+- [ ] Boxed BigInts (`Object(1n)`) and `BigInt64Array`/`BigUint64Array`.
+
 ## JSON and console
 
 - [x] `JSON.parse` and `JSON.stringify` for supported data objects.
@@ -623,7 +641,7 @@ method works on it, and its text conversions default to UTF-8.
 - [x] The inherited `Uint8Array` methods that make new bytes (`map`, `filter`, `slice`, `subarray`, also called
       through `Uint8Array.prototype`) make a Buffer from a Buffer, as JS's species does.
 - [x] A host Buffer crosses into the program as a Buffer, and a program Buffer crosses out as one; snapshots keep it.
-- [ ] The 64-bit `readBigInt64*`/`writeBigInt64*` methods, since programs have no BigInt.
+- [ ] The 64-bit `readBigInt64*`/`writeBigInt64*` methods.
 
 ## Web platform helpers
 

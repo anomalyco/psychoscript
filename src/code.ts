@@ -154,8 +154,8 @@ export class CodeBuilder {
   private readonly sitePairs: Array<number> = []
   private lastNodeIndex = -2
   private readonly constList: Array<ConstValue> = []
-  // Strings and numbers (but -0) are pooled; other constants are each their own.
-  private readonly pooled = new Map<string | number, number>()
+  // Strings, BigInts and numbers (but -0) are pooled; other constants are each their own.
+  private readonly pooled = new Map<string | number | bigint, number>()
   private readonly handlerWords: Array<number> = []
   private readonly finallyWords: Array<number> = []
   private readonly finallyLevelOffsets: Array<number> = []
@@ -199,7 +199,8 @@ export class CodeBuilder {
   }
 
   constant(value: ConstValue): number {
-    const poolable = typeof value === "string" || (typeof value === "number" && !Object.is(value, -0))
+    const poolable =
+      typeof value === "string" || typeof value === "bigint" || (typeof value === "number" && !Object.is(value, -0))
     const existing = poolable ? this.pooled.get(value) : undefined
     if (existing !== undefined) return existing
     const k = this.constList.length
@@ -412,6 +413,9 @@ export const hashOf = (codes: ReadonlyArray<Code>): string => {
       } else if (typeof k === "number") {
         mix(2)
         mixStr(Object.is(k, -0) ? "-0" : String(k))
+      } else if (typeof k === "bigint") {
+        mix(7)
+        mixStr(String(k))
       } else if ("pattern" in k) {
         mix(3)
         mixStr(k.pattern)
