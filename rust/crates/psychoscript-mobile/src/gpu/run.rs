@@ -259,8 +259,13 @@ impl RunGpu {
                 if let Some(e) = hung {
                     self.stopped(&e);
                 }
+                let why = match message.is_empty() {
+                    true => format!("the GPU device was lost ({reason})"),
+                    false => format!("the GPU device was lost ({reason}): {message}"),
+                };
                 for k in lost {
-                    self.tell(Some(&k), GpuCanvasState::Lost);
+                    let reason = why.clone();
+                    self.tell(Some(&k), GpuCanvasState::Lost { reason });
                 }
             }
         }

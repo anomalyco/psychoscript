@@ -55,7 +55,7 @@ fn input(r: &mut Run, i: &Value) {
                 gpu_lose_device();
             }
             let (key, state) = r.wait(|e| match e {
-                Event::Gpu(k, s @ (GpuCanvasState::Lost | GpuCanvasState::Stopped { .. })) => {
+                Event::Gpu(k, s @ (GpuCanvasState::Lost { .. } | GpuCanvasState::Stopped { .. })) => {
                     Some((k.clone(), s.clone()))
                 }
                 _ => None,

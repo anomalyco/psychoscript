@@ -190,8 +190,9 @@ pub enum GpuCanvasState {
         message: String,
         report: bool,
     },
-    /// The device was lost: the placeholder until the program draws it again (`Live`).
-    Lost,
+    /// The device was lost: the placeholder until the program draws it again (`Live`). `reason` is wgpu's, worked
+    /// out once at the loss (`the GPU device was lost (unknown): ...`), for the app to show or ignore.
+    Lost { reason: String },
 }
 
 /// A GPU failure of [`GpuSurface`] or [`ShaderCanvas`].

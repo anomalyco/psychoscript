@@ -391,14 +391,17 @@ WebGPU, shader translation and presenting are this crate's.
     the canvases go unavailable: the Android version (`GPU canvases need Android 15 or newer (API 35), not API
     34`), no Vulkan adapter (wgpu's text), the GPU's Vulkan version, each limit under the spec's with the GPU's value
     and the one needed (`the GPU (Mali-G715, Vulkan, driver ...) is under the spec's limits:
-    maxStorageBuffersPerShaderStage 4 (needs 8)`), or wgpu's error making the device. Show it (in a development
-    build, say) or ignore it; the crate logs nothing;
+    maxStorageBuffersPerShaderStage 4 (needs 8)`), or wgpu's error making the device;
   - `stopped(kind, message, report)`: an error stopped it for the rest of the run, with `message`. `report` once per
     error (`kind` `program`: report it, phase `gpu`); `kind` `client` (a driver failure, out of GPU memory, a GPU hang
     or timeout, below, a surface that failed or was lost: attach a new one; one that can't be configured says what was
-    asked, its size, format, alpha and present mode, and wgpu's error): log it;
-  - `lost`: the device was lost; `live` again when the program draws on the new one. A canvas an error stopped isn't
-    told `lost`: it stays stopped.
+    asked, its size, format, alpha and present mode, and wgpu's error);
+  - `lost(reason)`: the device was lost (`reason` wgpu's: `the GPU device was lost (unknown): ...`); `live` again when
+    the program draws on the new one. A canvas an error stopped isn't told `lost`: it stays stopped.
+
+  Each `reason` and a client error's `message` are worked out once, when the state changes, never per frame, batch or
+  call; the crate logs nothing. In dev mode (`widgets.md`, Failures) log them and show them under the placeholder;
+  otherwise ignore them.
 - **Threading:** batches replay on the run's thread, with the program's bytes in place (no copy, nothing crosses to
   Swift or Kotlin); a thread of the run's own presents (one copy of the canvas into the surface's next texture, or a
   scaled draw), so a slow, hidden or detached surface never holds up the run. Presents beyond the surface's rate are

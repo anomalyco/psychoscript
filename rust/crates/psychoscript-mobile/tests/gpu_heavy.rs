@@ -382,11 +382,11 @@ fn a_heavy_live_canvas() {
     let count = |f: fn(&GpuCanvasState) -> bool| events.iter().filter(|(_, s)| f(s)).count();
     eprintln!(
         "the app was told: lost {} times, live {} times; others {:?}",
-        count(|s| matches!(s, GpuCanvasState::Lost)),
+        count(|s| matches!(s, GpuCanvasState::Lost { .. })),
         count(|s| matches!(s, GpuCanvasState::Live)),
         events
             .iter()
-            .filter(|(_, s)| !matches!(s, GpuCanvasState::Lost | GpuCanvasState::Live))
+            .filter(|(_, s)| !matches!(s, GpuCanvasState::Lost { .. } | GpuCanvasState::Live))
             .collect::<Vec<_>>()
     );
     let lost: Vec<_> = (r.seen.iter())
@@ -426,7 +426,7 @@ fn a_heavy_live_canvas() {
         "{events:?}"
     );
     assert_eq!(
-        count(|s| matches!(s, GpuCanvasState::Lost)),
+        count(|s| matches!(s, GpuCanvasState::Lost { .. })),
         0,
         "{events:?}"
     );
