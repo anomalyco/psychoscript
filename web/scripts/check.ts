@@ -273,6 +273,52 @@ for (const [query, backend] of [["?only=backdrop", "webgpu"]] as const) {
   await page.close()
 }
 
+// ---------- a slow shader: one frame drawing at a time, stopped after three slow frames, its last frame kept ----------
+{
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
+  const errors: string[] = []
+  page.on("pageerror", (e) => errors.push(e.message))
+  // Every frame takes 80 ms on the GPU (its onSubmittedWorkDone waits); a submit while one waits stacks.
+  await page.addInitScript(() => {
+    const w = window as unknown as { __gpuSlow: { submits: number; stacked: number; waiting: number } }
+    const slow = (w.__gpuSlow = { submits: 0, stacked: 0, waiting: 0 })
+    const done = GPUQueue.prototype.onSubmittedWorkDone
+    GPUQueue.prototype.onSubmittedWorkDone = function (this: GPUQueue) {
+      slow.waiting++
+      return done.call(this).then(() => new Promise<undefined>((r) => setTimeout(() => (slow.waiting--, r(undefined)), 80)))
+    }
+    const submit = GPUQueue.prototype.submit
+    GPUQueue.prototype.submit = function (this: GPUQueue, buffers: Iterable<GPUCommandBuffer>) {
+      slow.submits++
+      if (slow.waiting > 0) slow.stacked++
+      return submit.call(this, buffers)
+    }
+  })
+  await page.goto(base + "?only=shader-demo")
+  const w = widget(page, "shader-demo")
+  const message = "the shader took over 50 ms a frame, three frames in a row"
+  // Built first (SwiftShader compiles for seconds), then three slow frames.
+  await w.locator('.pw-surface[data-backend="webgpu"]').waitFor({ timeout: 20000 }).catch(() => {})
+  const line = await waitLog(page, (l) => l.startsWith("shader-demo client-error"), 8000)
+  const at = await page.evaluate(() => (window as unknown as { __gpuSlow: { submits: number } }).__gpuSlow.submits)
+  await page.waitForTimeout(600)
+  const slow = await page.evaluate(() => (window as unknown as { __gpuSlow: { submits: number; stacked: number } }).__gpuSlow)
+  const png = await w.locator(".pw-surface canvas").screenshot()
+  const colors = await page.evaluate(async (bytes) => {
+    const bmp = await createImageBitmap(new Blob([new Uint8Array(bytes)], { type: "image/png" }))
+    const g = new OffscreenCanvas(bmp.width, bmp.height).getContext("2d")!
+    g.drawImage(bmp, 0, 0)
+    const seen = new Set<string>()
+    for (let y = 0.1; y < 1; y += 0.2) for (let x = 0.1; x < 1; x += 0.2) seen.add(g.getImageData(Math.floor(x * bmp.width), Math.floor(y * bmp.height), 1, 1).data.join())
+    return seen.size
+  }, [...png])
+  check(line === `shader-demo client-error ${message}`, "shader: three frames unfinished 50 ms after their submit stop it, the native message", line)
+  check(slow.stacked === 0 && slow.submits >= 3, `shader: never a frame while the last is drawing (${slow.submits} submits, ${slow.stacked} stacked)`, slow)
+  check(slow.submits === at && colors > 1, "shader: stopped, no frame after; its last frame stays on the canvas", { at, submits: slow.submits, colors })
+  check(errors.length === 0, "shader (slow): no page errors", errors)
+  await page.close()
+}
+
 // ---------- shader pointer events, values-only updates ----------
 for (const [query, backend] of [["?only=shader-demo", "webgpu"]] as const) {
   const { page, errors } = await open(query)

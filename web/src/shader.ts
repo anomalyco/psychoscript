@@ -28,6 +28,8 @@ export interface ShaderError {
 /** One shader on one canvas. */
 export interface Surface {
   readonly backend: "webgpu"
+  /** Whether the last frame is still drawing: no frame is submitted until it is done. */
+  readonly drawing: boolean
   /** Draws a frame with `uniforms`; resolves with how long the GPU took when the backend can tell, else undefined. */
   render(uniforms: Float32Array): Promise<number | undefined> | undefined
   destroy(): void
@@ -117,9 +119,12 @@ async function gpuSurface(g: Gpu, canvas: HTMLCanvasElement, wgsl: string): Prom
   const bind = g.device.createBindGroup({ layout: g.layout, entries: [{ binding: 0, resource: { buffer } }] })
   let destroyed = false
   let timing = true
-  let measuring = false
+  let drawing = false
   return {
     backend: "webgpu",
+    get drawing() {
+      return drawing
+    },
     render(uniforms) {
       if (destroyed || canvas.width === 0 || canvas.height === 0) return undefined
       g.device.queue.writeBuffer(buffer, 0, uniforms.buffer, uniforms.byteOffset, uniforms.byteLength)
@@ -135,16 +140,16 @@ async function gpuSurface(g: Gpu, canvas: HTMLCanvasElement, wgsl: string): Prom
       pass.end()
       const started = performance.now()
       g.device.queue.submit([encoder.finish()])
-      // One frame measured at a time, so the time is this frame's rather than a queue of them.
-      if (!timing || measuring) return undefined
-      measuring = true
+      // One frame drawing at a time: the time is this frame's rather than a queue of them.
+      drawing = true
       return g.device.queue.onSubmittedWorkDone().then(
         () => {
-          measuring = false
-          return performance.now() - started
+          drawing = false
+          return timing ? performance.now() - started : undefined
         },
         () => {
           // Some implementations (SwiftShader in headless Chromium) can't tell: no GPU-time budget there.
+          drawing = false
           timing = false
           return undefined
         },

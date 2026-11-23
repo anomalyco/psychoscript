@@ -16,6 +16,8 @@ export interface ShaderError {
 /** One shader on one canvas. */
 export interface Surface {
     readonly backend: "webgpu";
+    /** Whether the last frame is still drawing: no frame is submitted until it is done. */
+    readonly drawing: boolean;
     /** Draws a frame with `uniforms`; resolves with how long the GPU took when the backend can tell, else undefined. */
     render(uniforms: Float32Array): Promise<number | undefined> | undefined;
     destroy(): void;

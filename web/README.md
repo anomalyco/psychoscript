@@ -129,7 +129,9 @@ Behavior, per the contract:
   pipeline on WebGPU; without WebGPU it shows `poster`, else `alt`, else "GPU canvas not supported" (a client error,
   not reported; no WebGL fallback).
   New `values` (a live program re-rendering every frame) update the uniforms only: same element, same pipeline.
-  Over 50 ms of GPU time a frame three frames in a row stops it (measured on WebGPU only). A failing shader shows
+  A frame is submitted only once the last is done (`onSubmittedWorkDone`); a frame unfinished 50 ms after its submit
+  three frames in a row stops it, its last frame kept (client error `the shader took over 50 ms a frame, three frames
+  in a row`). A failing shader shows
   `poster` or `alt` with the error.
 - Canvases are never drawn or rendered while they have a zero width or height; `Frame.width`/`height` are > 0.
 - `stack` layers its children in one cell (first at the bottom): a child's area is the stack minus its `inset`;

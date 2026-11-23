@@ -1180,7 +1180,8 @@ export class GpuCanvasView extends SurfaceBase {
     this.flushMove()
     if (this.failed || this.stopped || !this.ctx.visible() || this.zero) return this.stop()
     const s = this.surface
-    if (!s) return
+    // Never a frame while the last is drawing: this one waits for it (what it would draw is kept).
+    if (!s || s.drawing) return
     // `fps` defaults to 60 for a GPU canvas; with `duration` it animates until then, and after only on new values.
     const duration = finite(this.node.duration, -1)
     const running = duration < 0 || (performance.now() - this.appeared) / 1000 < duration
@@ -1205,7 +1206,8 @@ export class GpuCanvasView extends SurfaceBase {
       this.slow = ms > SHADER_FRAME_BUDGET_MS ? this.slow + 1 : 0
       if (this.slow >= OVERRUNS_TO_FREEZE && !this.stopped) {
         this.stopped = true
-        this.ctx.clientError(`shader stopped: over ${SHADER_FRAME_BUDGET_MS} ms a frame ${OVERRUNS_TO_FREEZE} frames in a row`)
+        // Its last frame stays.
+        this.ctx.clientError(`the shader took over ${SHADER_FRAME_BUDGET_MS} ms a frame, three frames in a row`)
       }
     })
   }
