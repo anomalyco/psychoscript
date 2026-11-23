@@ -27,12 +27,14 @@ export interface GpuHost {
     unavailable(): void;
     /** How long a batch's replay took on this thread, in ms (the GPU's work runs after). */
     metric(ms: number): void;
+    /** Runs `f` once in the next display frame, before the canvases present. */
+    nextFrame(f: () => void): void;
 }
 export declare class GpuReplay {
     private readonly host;
     private device;
     private starting;
-    /** Checked batches waiting for the device, in order. */
+    /** Checked batches waiting for the device, in order, and the frame ends between them (`null`). */
     private waiting;
     private unavailable;
     private objects;
@@ -45,9 +47,16 @@ export declare class GpuReplay {
     private all;
     /** The canvases the device's loss stopped, by key, until the program configures them on a new device. */
     private readonly lostKeys;
+    /** The canvases drawn mid-frame, by key, and those whose context has COPY_DST for it (once one is, it stays). */
+    private readonly kept;
+    private readonly copyDst;
+    /** Whether the batch replaying is a frame request's (it ends the frame), and a present is waiting for a frame. */
+    private boundary;
+    private presenting;
     constructor(host: GpuHost);
-    /** Checks `batch` now, in order, and replays what passes after the batches before it. */
-    batch(batch: unknown): void;
+    /** Checks `batch` now, in order, and replays what passes after the batches before it. `boundary`: the batch of a
+     * frame request (not one repeated while a frame is pending), which `frame()` follows. */
+    batch(batch: unknown, boundary: boolean): void;
     /** A program error: reported once; its canvases (or every one) stop and show their placeholder with it. */
     private fail;
     private start;
@@ -56,9 +65,19 @@ export declare class GpuReplay {
     private get;
     /** The context's canvas, configured: it may have been rendered anew since. Throws SKIP for a stopped canvas. */
     private context;
-    /** A texture by handle: a context's stands for its canvas's current texture. */
+    /** A texture by handle, for a copy or a write: a canvas's texture (usage RENDER_ATTACHMENT) can be neither. */
     private texture;
+    /** A view by handle: a canvas's stands for its current texture, or its kept one while it has one. */
     private view;
+    /** The context a view handle is of, if it is a canvas's. */
+    private canvasOf;
+    /** A canvas drawn mid-frame: its texture is kept for the rest of the frame, the frame's first pass clearing it. */
+    private keep;
+    /** The kept textures drawn since their last copy, copied to their canvases' current textures. */
+    private present;
+    private schedulePresent;
+    /** The frame's end: the canvases drawn into kept textures are presented, and the next frame starts direct. */
+    private endFrame;
     private encode;
     private op;
     /** A frame request, with a batch (checked first) or without: the per-frame counts start again. */

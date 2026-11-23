@@ -5,6 +5,14 @@
 // a program error in phase `gpu` that stops the canvases the batch renders into, else every one, once. A canvas an
 // error stopped stays stopped for the run; one a device loss stopped starts again when the program configures it on a
 // new device.
+//
+// A canvas is cleared once per frame, at the frame request, not once per batch (widgets-gpu.md, A canvas's contents in
+// a frame). WebGPU's current texture is cleared once per presented display frame, which is the same when a canvas's
+// passes in a frame all come in the frame request's batch: those render into it directly. A batch posted mid-frame
+// (before a sleep or a fetch, which may outlast a display frame) that renders into a canvas makes the canvas draw into
+// a texture kept for the rest of that frame instead: the frame's first pass into it clears it, later ones load it, and
+// it is copied to the current texture to present (at most once a display frame, and at the frame request). Only such a
+// canvas's context has COPY_DST; the rest are configured as the program's canvas texture is, RENDER_ATTACHMENT alone.
 
 import { type Checked, gpuChecks, type GpuError } from "./gpu-checks.js"
 
@@ -25,6 +33,10 @@ export interface GpuCanvas {
   shown(): void
 }
 
+/** A canvas's texture kept for a frame (above): `active` this frame, `cleared` by this frame's first pass, `dirty`
+ * since its last copy to the current texture. */
+type Kept = { context: Context; texture: GPUTexture; active: boolean; cleared: boolean; dirty: boolean }
+
 export interface GpuHost {
   /** The GPU canvas with this key in the last rendered view. */
   canvas(key: string): GpuCanvas | undefined
@@ -39,6 +51,8 @@ export interface GpuHost {
   unavailable(): void
   /** How long a batch's replay took on this thread, in ms (the GPU's work runs after). */
   metric(ms: number): void
+  /** Runs `f` once in the next display frame, before the canvases present. */
+  nextFrame(f: () => void): void
 }
 
 type Context = {
@@ -87,8 +101,8 @@ function clean(v: unknown): unknown {
 export class GpuReplay {
   private device: GPUDevice | undefined
   private starting = false
-  /** Checked batches waiting for the device, in order. */
-  private waiting: Array<{ batch: Batch; checked: Checked }> = []
+  /** Checked batches waiting for the device, in order, and the frame ends between them (`null`). */
+  private waiting: Array<{ batch: Batch; checked: Checked; boundary: boolean } | null> = []
   private unavailable = false
   private objects: Array<Obj | undefined> = []
   private closed = false
@@ -100,21 +114,28 @@ export class GpuReplay {
   private all: string | undefined
   /** The canvases the device's loss stopped, by key, until the program configures them on a new device. */
   private readonly lostKeys = new Set<string>()
+  /** The canvases drawn mid-frame, by key, and those whose context has COPY_DST for it (once one is, it stays). */
+  private readonly kept = new Map<string, Kept>()
+  private readonly copyDst = new Set<string>()
+  /** Whether the batch replaying is a frame request's (it ends the frame), and a present is waiting for a frame. */
+  private boundary = false
+  private presenting = false
 
   constructor(private readonly host: GpuHost) {
     this.checks = gpuChecks(() => host.keys())
   }
 
-  /** Checks `batch` now, in order, and replays what passes after the batches before it. */
-  batch(batch: unknown) {
+  /** Checks `batch` now, in order, and replays what passes after the batches before it. `boundary`: the batch of a
+   * frame request (not one repeated while a frame is pending), which `frame()` follows. */
+  batch(batch: unknown, boundary: boolean) {
     if (this.closed || this.unavailable) return
     const checked = this.checks.batch(batch)
     if (checked.error) this.fail(checked.error)
     // Ignored: every canvas it renders into stopped, it is from before a device loss, or it failed before its first op.
     if (checked.skip || (checked.error && checked.at === undefined)) return
     const b = batch as Batch
-    if (this.device && this.waiting.length === 0) return this.replay(this.device, b, checked)
-    this.waiting.push({ batch: b, checked })
+    if (this.device && this.waiting.length === 0) return this.replay(this.device, b, checked, boundary)
+    this.waiting.push({ batch: b, checked, boundary })
     void this.start()
   }
 
@@ -125,6 +146,8 @@ export class GpuReplay {
     const keys = error.canvases === "all" ? [...this.host.keys()] : error.canvases
     for (const key of keys) if (!this.stopped.has(key)) this.stopped.set(key, error.message)
     for (const key of keys) {
+      this.kept.get(key)?.texture.destroy()
+      this.kept.delete(key)
       for (const o of this.objects) {
         if (o?.kind !== "context" || o.key !== key) continue
         o.ctx?.unconfigure()
@@ -156,7 +179,7 @@ export class GpuReplay {
       return this.host.unavailable()
     }
     this.adopt(device)
-    for (const { batch, checked } of this.waiting.splice(0)) this.replay(device, batch, checked)
+    for (const entry of this.waiting.splice(0)) entry ? this.replay(device, entry.batch, entry.checked, entry.boundary) : this.endFrame()
   }
 
   private adopt(device: GPUDevice) {
@@ -177,6 +200,7 @@ export class GpuReplay {
       }
       this.device = undefined
       this.objects = []
+      this.kept.clear()
       this.encoder = undefined
       this.pass = undefined
       this.checks.lost()
@@ -184,8 +208,9 @@ export class GpuReplay {
     })
   }
 
-  private replay(device: GPUDevice, batch: Batch, checked: Checked) {
+  private replay(device: GPUDevice, batch: Batch, checked: Checked, boundary: boolean) {
     const started = performance.now()
+    this.boundary = boundary
     // The ops that passed the checks: all of them, or those before the one that failed.
     const count = checked.at ?? batch.ops.length
     device.pushErrorScope("out-of-memory")
@@ -216,6 +241,8 @@ export class GpuReplay {
       this.encoder = undefined
       this.pass = undefined
     }
+    // Drawn mid-frame: shown at the next display frame (the frame request's batch is shown by the frame's end).
+    if (!boundary && !this.presenting && [...this.kept.values()].some((k) => k.dirty)) this.schedulePresent()
     this.host.metric(performance.now() - started)
     const keys = checked.keys
     void device.popErrorScope().then((e) => {
@@ -248,7 +275,8 @@ export class GpuReplay {
         device,
         format: o.format,
         alphaMode: o.alphaMode,
-        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
+        // The program's canvas texture's usage; COPY_DST too once the canvas was drawn mid-frame (a kept texture's copy).
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | (this.copyDst.has(o.key) ? GPUTextureUsage.COPY_DST : 0),
       })
       view.shown()
       this.lostKeys.delete(o.key)
@@ -258,16 +286,84 @@ export class GpuReplay {
     return o.ctx
   }
 
-  /** A texture by handle: a context's stands for its canvas's current texture. */
+  /** A texture by handle, for a copy or a write: a canvas's texture (usage RENDER_ATTACHMENT) can be neither. */
   private texture(h: unknown, device: GPUDevice): GPUTexture {
     const o = this.get<"texture" | "context">(h)
-    return o.kind === "texture" ? o.gpu : this.context(o, device).getCurrentTexture()
+    if (o.kind === "texture") return o.gpu
+    this.context(o, device)
+    throw new Error(`the texture of GPU canvas "${o.key}" has usage RENDER_ATTACHMENT only: it can't be copied to or from`)
   }
 
+  /** A view by handle: a canvas's stands for its current texture, or its kept one while it has one. */
   private view(h: unknown, device: GPUDevice): GPUTextureView {
     const o = this.get<"view">(h)
     if (o.gpu) return o.gpu
-    return this.context(this.get<"context">(o.context), device).getCurrentTexture().createView(o.descriptor)
+    const c = this.get<"context">(o.context)
+    const current = this.context(c, device)
+    const k = this.kept.get(c.key)
+    return (k?.active ? k.texture : current.getCurrentTexture()).createView(o.descriptor)
+  }
+
+  /** The context a view handle is of, if it is a canvas's. */
+  private canvasOf(h: unknown): Context | undefined {
+    const o = this.get<"view">(h)
+    return o?.kind === "view" && o.context !== undefined ? this.get<"context">(o.context) : undefined
+  }
+
+  /** A canvas drawn mid-frame: its texture is kept for the rest of the frame, the frame's first pass clearing it. */
+  private keep(o: Context, device: GPUDevice) {
+    let k = this.kept.get(o.key)
+    if (k?.active) return
+    this.context(o, device)
+    if (!this.copyDst.has(o.key)) {
+      this.copyDst.add(o.key)
+      o.ctx = undefined
+      this.context(o, device)
+    }
+    const { width, height } = o.view!.canvas
+    if (!k || k.texture.width !== width || k.texture.height !== height || k.texture.format !== o.format) {
+      k?.texture.destroy()
+      const usage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC
+      k = { context: o, texture: device.createTexture({ size: [width, height], format: o.format, usage }), active: false, cleared: false, dirty: false }
+      this.kept.set(o.key, k)
+    }
+    k.context = o
+    k.active = true
+    k.cleared = false
+  }
+
+  /** The kept textures drawn since their last copy, copied to their canvases' current textures. */
+  private present() {
+    const device = this.device
+    if (!device) return
+    let encoder: GPUCommandEncoder | undefined
+    for (const [key, k] of this.kept) {
+      if (!k.dirty || this.stoppedBy(key) !== undefined || !k.context.ctx) continue
+      k.dirty = false
+      const current = k.context.ctx.getCurrentTexture()
+      encoder ??= device.createCommandEncoder()
+      const size = [Math.min(current.width, k.texture.width), Math.min(current.height, k.texture.height)]
+      encoder.copyTextureToTexture({ texture: k.texture }, { texture: current }, size)
+    }
+    if (!encoder) return
+    // The host's own work: an error in it is the client's, never the program's.
+    device.pushErrorScope("validation")
+    device.queue.submit([encoder.finish()])
+    void device.popErrorScope().then((e) => e && !this.closed && this.host.clientError(`GPU canvas: presenting a canvas drawn mid-frame: ${e.message}`))
+  }
+
+  private schedulePresent() {
+    this.presenting = true
+    this.host.nextFrame(() => {
+      this.presenting = false
+      if (!this.closed) this.present()
+    })
+  }
+
+  /** The frame's end: the canvases drawn into kept textures are presented, and the next frame starts direct. */
+  private endFrame() {
+    this.present()
+    for (const k of this.kept.values()) k.active = false
   }
 
   private encode(device: GPUDevice): GPUCommandEncoder {
@@ -387,11 +483,23 @@ export class GpuReplay {
         return
       case "pass": {
         const d = clean(a) as { colorAttachments: Array<Record<string, unknown> | null>; depthStencilAttachment?: Record<string, unknown> }
-        const colorAttachments = d.colorAttachments.map((at) =>
-          at
-            ? { ...at, view: this.view(at.view, device), ...(at.resolveTarget !== undefined ? { resolveTarget: this.view(at.resolveTarget, device) } : {}) }
-            : null,
-        ) as GPURenderPassColorAttachment[]
+        // The canvases it renders into: kept, when drawn mid-frame; a kept one's first pass this frame clears it.
+        const kept = (h: unknown, resolve: boolean, at: Record<string, unknown>) => {
+          const c = h === undefined ? undefined : this.canvasOf(h)
+          if (!c) return at
+          if (!this.boundary) this.keep(c, device)
+          const k = this.kept.get(c.key)
+          if (!k?.active) return at
+          k.dirty = true
+          if (k.cleared) return at
+          k.cleared = true
+          return !resolve && at.loadOp === "load" ? { ...at, loadOp: "clear", clearValue: [0, 0, 0, 0] } : at
+        }
+        const colorAttachments = d.colorAttachments.map((given) => {
+          if (!given) return null
+          const at = kept(given.resolveTarget, true, kept(given.view, false, given))
+          return { ...at, view: this.view(at.view, device), ...(at.resolveTarget !== undefined ? { resolveTarget: this.view(at.resolveTarget, device) } : {}) }
+        }) as GPURenderPassColorAttachment[]
         const depth = d.depthStencilAttachment
         this.pass = this.encode(device).beginRenderPass({
           colorAttachments,
@@ -439,6 +547,8 @@ export class GpuReplay {
   /** A frame request, with a batch (checked first) or without: the per-frame counts start again. */
   frame() {
     this.checks.frame()
+    if (this.waiting.length > 0) this.waiting.push(null)
+    else this.endFrame()
   }
 
   /** The error a stopped canvas shows, or undefined while it draws. */
@@ -455,6 +565,8 @@ export class GpuReplay {
   destroy() {
     this.closed = true
     this.waiting = []
+    for (const k of this.kept.values()) k.texture.destroy()
+    this.kept.clear()
     for (const o of this.objects) if (o?.kind === "context") o.ctx?.unconfigure()
     this.objects = []
     this.device?.destroy()

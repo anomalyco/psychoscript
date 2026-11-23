@@ -239,3 +239,55 @@ export const clamped = `async function main() {
   }
   await widget.sleep(100000)
 }`
+
+const FULL = `@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+  var p = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
+  return vec4f(p[i], 0.0, 1.0);
+}
+@fragment fn fs() -> @location(0) vec4f { return vec4f(0.0, 1.0, 0.0, 1.0); }`
+
+/**
+ * Batches posted mid-frame (widgets-gpu.md, A canvas's contents in a frame). Each frame, a is cleared red, the program
+ * sleeps longer than a display frame, then draws green over a's right half (loadOp "load"): a shows both. b is red in
+ * frame 0; from frame 1 its first pass of the frame loads and draws green on the right: the frame's first pass sees
+ * transparent, so its left half is black (alphaMode "opaque"), not frame 0's red. Then frames with no GPU work.
+ */
+export const midFrame = `async function main() {
+  widget.render(ui.row([ui.canvas({ key: "a", gpu: true, width: 64, height: 64, alt: "A" }), ui.canvas({ key: "b", gpu: true, width: 64, height: 64, alt: "B" })]))
+  const device = await widget.gpu.requestDevice()
+  const format = widget.gpu.getPreferredCanvasFormat()
+  const ctx = {}
+  for (const k of ["a", "b"]) {
+    ctx[k] = widget.gpu.getContext(k)
+    ctx[k].configure({ device, format, alphaMode: "opaque" })
+  }
+  const module = device.createShaderModule({ code: ${JSON.stringify(FULL)} })
+  const pipeline = device.createRenderPipeline({ layout: "auto", vertex: { module, entryPoint: "vs" }, fragment: { module, entryPoint: "fs", targets: [{ format }] } })
+  const submit = (f) => {
+    const encoder = device.createCommandEncoder()
+    f(encoder)
+    device.queue.submit([encoder.finish()])
+  }
+  const target = (k, loadOp) => ({ colorAttachments: [{ view: ctx[k].getCurrentTexture().createView(), clearValue: [1, 0, 0, 1], loadOp, storeOp: "store" }] })
+  const red = (k) => submit((e) => e.beginRenderPass(target(k, "clear")).end())
+  const greenRight = (k) =>
+    submit((e) => {
+      const p = e.beginRenderPass(target(k, "load"))
+      const w = ctx[k].width
+      p.setPipeline(pipeline)
+      p.setScissorRect(Math.floor(w / 2), 0, w - Math.floor(w / 2), ctx[k].height)
+      p.draw(3)
+      p.end()
+    })
+  await widget.frame()
+  for (let n = 0; n < 4; n++) {
+    red("a")
+    if (n === 0) red("b")
+    else greenRight("b")
+    await widget.sleep(50)
+    greenRight("a")
+    await widget.frame()
+  }
+  for (let n = 0; n < 60; n++) await widget.frame()
+  await widget.sleep(100000)
+}`

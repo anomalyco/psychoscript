@@ -737,14 +737,14 @@ class Widget implements MountedWidget {
       }
       case "frame":
         // A frame request may carry the GPU batch recorded before it (widgets-gpu.md, Transport): replayed first; then
-        // the frame's counts start again. One while a frame is pending changes nothing but its batch.
-        if (p.gpu !== undefined) this.gpuBatch(p.gpu)
+        // the frame ends. One while a frame is pending changes nothing but its batch, a plain one.
+        if (p.gpu !== undefined) this.gpuBatch(p.gpu, !this.live.frameWanted)
         if (!this.live.frameWanted) this.gpu?.frame()
         this.live.frameWanted = true
         this.host.ticker.add(this.liveTick)
         return
       case "gpu":
-        if (p.batch !== undefined) this.gpuBatch(p.batch)
+        if (p.batch !== undefined) this.gpuBatch(p.batch, false)
         return
       case "submit":
         this.finish("submitted", p.value ?? null)
@@ -1120,13 +1120,20 @@ class Widget implements MountedWidget {
     return id === undefined ? undefined : surfaces(this.viewEl).find((s): s is WebGpuCanvasView => s instanceof WebGpuCanvasView && s.id === id)
   }
 
-  /** A batch as posted, for the checks and the replay. */
-  private gpuBatch(batch: unknown) {
+  /** A batch as posted, for the checks and the replay; `boundary`: a frame request's, ending the frame. */
+  private gpuBatch(batch: unknown, boundary: boolean) {
     this.gpu ??= new GpuReplay({
       canvas: (key) => this.gpuCanvas(key),
       keys: () => new Set(Object.keys(this.gpuKeys)),
       programError: (message) => this.report("gpu", { message }),
       metric: (ms) => this.metric("gpu", ms),
+      nextFrame: (f) => {
+        const once = () => {
+          this.host.ticker.delete(once)
+          f()
+        }
+        this.host.ticker.add(once)
+      },
       clientError: (message, cause) => this.clientError(message, cause),
       lost: (reason, message) => this.worker?.send({ t: "deliver", wid: this.wid, message: { type: "gpu", lost: reason, message } }),
       unavailable: () => {
@@ -1134,7 +1141,7 @@ class Widget implements MountedWidget {
         for (const s of surfaces(this.viewEl)) if (s instanceof WebGpuCanvasView) s.placeholder()
       },
     })
-    this.gpu.batch(batch)
+    this.gpu.batch(batch, boundary)
   }
 
   /**

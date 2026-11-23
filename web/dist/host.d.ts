@@ -296,7 +296,7 @@ declare class Widget implements MountedWidget {
     private gpuKeys;
     /** The GPU canvas with this key in the last rendered view. */
     private gpuCanvas;
-    /** A batch as posted, for the checks and the replay. */
+    /** A batch as posted, for the checks and the replay; `boundary`: a frame request's, ending the frame. */
     private gpuBatch;
     /**
      * Before a frame, the first one too: `{ type: "canvas", key, width, height }` (physical pixels clamped to the texture

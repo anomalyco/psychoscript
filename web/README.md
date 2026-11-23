@@ -110,8 +110,14 @@ Behavior, per the contract:
   the program gets `{ type: "canvas", key, width, height }` for each GPU canvas whose size changed: its physical size
   clamped to 4096 with its aspect kept, the canvas's backing size, which its box scales. A lost device sends
   `{ type: "gpu", lost, message }` and its canvases show the placeholder; a new device restarts those, never one an
-  error stopped; a batch from before the program learned of the loss is dropped quietly. A frame with no pass into a
-  canvas keeps its last image (WebGPU's `getCurrentTexture` gives a cleared one per presented frame). Without WebGPU the canvas shows `poster`, else `alt`, else "GPU canvas not
+  error stopped; a batch from before the program learned of the loss is dropped quietly. A canvas is cleared once per
+  frame, at the frame request: when its passes all come in the frame request's batch (the common case) they render
+  straight into WebGPU's current texture, which is cleared once per presented display frame. A batch posted mid-frame
+  (before a sleep or a fetch) that renders into a canvas makes it draw into a texture kept for the rest of that frame
+  (the frame's first pass clears it, later batches load it), copied to the current texture to present: at most once a
+  display frame, and at the frame request. Only such a canvas's context gets `COPY_DST`; the others are configured
+  with `RENDER_ATTACHMENT` alone, the usage the program's canvas texture has. A frame with no pass into a canvas keeps
+  its last image. Without WebGPU the canvas shows `poster`, else `alt`, else "GPU canvas not
   supported" (a client error, not reported). Why the page's thread: the canvases, their sizes, placeholders, full
   screen and pointer are there already; batches cross from the worker as transferred bytes, and WebGPU calls only
   record commands, so the GPU's work stays asynchronous.

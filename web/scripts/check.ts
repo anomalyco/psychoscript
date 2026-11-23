@@ -1188,6 +1188,31 @@ for (const query of ["?only=shader-broken"]) {
   // The small canvases' corners are rounded off: their outside is sampled at the left edge's middle.
   const EDGE: [number, number][] = [[0.5, 0.5], [0.04, 0.5], [0.5, 0.1]]
   const { page, errors } = await open("?only=confirm", { width: 800, height: 600 })
+  // The host's copies to a canvas (a kept texture presented) and the usages contexts are configured with.
+  await page.addInitScript(() => {
+    const w = window as unknown as { __copies: number; __usages: number[] }
+    w.__copies = 0
+    w.__usages = []
+    const copy = GPUCommandEncoder.prototype.copyTextureToTexture
+    GPUCommandEncoder.prototype.copyTextureToTexture = function (this: GPUCommandEncoder, ...args: Parameters<typeof copy>) {
+      w.__copies++
+      return copy.apply(this, args)
+    }
+    const configure = GPUCanvasContext.prototype.configure
+    GPUCanvasContext.prototype.configure = function (this: GPUCanvasContext, c: GPUCanvasConfiguration) {
+      w.__usages.push(c.usage ?? GPUTextureUsage.RENDER_ATTACHMENT)
+      return configure.call(this, c)
+    }
+  })
+  await page.reload()
+  const copies = () =>
+    page.evaluate(() => {
+      const w = window as unknown as { __copies: number; __usages: number[] }
+      const got = { copies: w.__copies, usages: w.__usages }
+      w.__copies = 0
+      w.__usages = []
+      return got
+    })
 
   await mount(page, gpu.clear)
   const clear = await state(page)
@@ -1219,8 +1244,15 @@ for (const query of ["?only=shader-broken"]) {
   await done(page)
 
   // opencode's example widget templates (test/fixtures/gpu/templates), running on.
+  await copies()
   await mount(page, gpu.templates.cube, 2500)
   const tcube = await state(page)
+  const common = await copies()
+  check(
+    common.copies === 0 && common.usages.length > 0 && common.usages.every((u) => u === 16),
+    "gpu: the common case (every pass in the frame request's batch) renders straight into the current texture: 0 copies, contexts RENDER_ATTACHMENT only",
+    common,
+  )
   const tcubePx = (await pixels(page, tcube.rect!, CORNERS)).px
   const sorted = [...tcube.gpuMs].sort((a, b) => a - b)
   const median = sorted[Math.floor(sorted.length / 2)] ?? NaN
@@ -1338,6 +1370,29 @@ for (const query of ["?only=shader-broken"]) {
   two = await canvases(page)
   a = await centre(page, two.canvases[0]!.rect)
   check(two.reports.length === 0 && near(a, [255, 0, 0]), "gpu: frames with no pass into a canvas keep its last image", { ...two, a })
+  await done(page)
+  await copies()
+  await mount(page, gpu.midFrame, 2500)
+  two = await canvases(page)
+  const mid = await copies()
+  const half = async (rect: { x: number; y: number; width: number; height: number }) => (await pixels(page, rect, [[0.25, 0.5], [0.75, 0.5]])).px
+  const [aLeft, aRight] = await half(two.canvases[0]!.rect)
+  const [bLeft, bRight] = await half(two.canvases[1]!.rect)
+  check(
+    two.reports.length === 0 && near(aLeft, [255, 0, 0]) && near(aRight, [0, 255, 0]),
+    "gpu: a frame that draws, sleeps longer than a display frame and draws again shows both (a kept texture for the frame)",
+    { ...two, aLeft, aRight },
+  )
+  check(
+    near(bLeft, [0, 0, 0]) && near(bRight, [0, 255, 0]),
+    "gpu: a canvas drawn mid-frame is cleared at the frame boundary: the frame's first pass (loadOp load) sees transparent",
+    { bLeft, bRight },
+  )
+  check(
+    mid.copies >= 4 && mid.copies <= 20 && mid.usages.some((u) => u === (16 | 2)),
+    `gpu: only a canvas drawn mid-frame gets COPY_DST and copies (${mid.copies} copies over 4 frames and their sleeps)`,
+    mid,
+  )
   await done(page)
 
   check(errors.length === 0, "gpu: no page errors", errors)
