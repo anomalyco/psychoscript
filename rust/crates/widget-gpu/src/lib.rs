@@ -539,6 +539,8 @@ impl Gpu {
 
     /// Checks and replays a batch: its creation ops, writes and submitted commands, in order. An error ends the
     /// batch and stops canvases ([`Stops`]); one that would only stop canvases already stopped isn't returned again.
+    /// What stopped canvases draw isn't replayed: a pass into one (up to its `end`; the batch's other canvases draw),
+    /// or the whole batch when every canvas it renders into is stopped, as the web host does.
     pub fn apply(&mut self, ops: &[Arg], bytes: &[u8]) -> Result<(), GpuError> {
         if self.all.is_some() {
             return Ok(());
@@ -556,6 +558,9 @@ impl Gpu {
         let failed = match checked {
             Err(Failed::Stale) => return Ok(()),
             Err(Failed::Message(m)) => Some((ErrorKind::Program, m)),
+            // Every canvas it renders into is stopped: none of it replays, its passes into other textures included
+            // (a hung canvas's heavy work never runs again).
+            Ok(()) if !keys.is_empty() && keys.iter().all(|k| self.stopped.contains_key(k)) => None,
             Ok(()) => {
                 self.submissions.clear();
                 let replayed = self.replay(ops, bytes).err();

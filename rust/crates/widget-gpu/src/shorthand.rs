@@ -56,14 +56,20 @@ pub struct Uniforms {
 pub struct Shorthand {
     gpu: Gpu,
     source: String,
+    /// Its handles are `base + 1` to `base + 8`: after a device loss, new ones.
+    base: u32,
     frame: Vec<Arg>,
     lines: usize,
-    /// The frame the GPU is drawing.
-    drawing: Option<Drawing>,
-    /// Slow frames in a row.
-    slow: u32,
+    frames: Frames,
     /// It was too slow: stopped on its last frame.
     stopped: Option<GpuError>,
+}
+
+/// The 50 ms rule's count: the frame the GPU is drawing, and slow frames in a row.
+#[derive(Default)]
+struct Frames {
+    drawing: Option<Drawing>,
+    slow: u32,
 }
 
 /// A frame submitted to the GPU.
@@ -72,6 +78,44 @@ struct Drawing {
     done: Arc<AtomicBool>,
     /// Seen unfinished past [`SLOW_FRAME`], and counted.
     slow: bool,
+}
+
+impl Frames {
+    /// A look at `now`: whether the frame is still drawing, counting it slow once it is past [`SLOW_FRAME`]; and
+    /// whether that made [`SLOW_FRAMES`] in a row.
+    fn look(&mut self, now: Instant) -> (bool, bool) {
+        let Some(d) = &mut self.drawing else {
+            return (false, false);
+        };
+        if d.done.load(Ordering::Acquire) {
+            // Done between two looks, unseen past the limit: as fast as can be told.
+            if !d.slow {
+                self.slow = 0;
+            }
+            self.drawing = None;
+            return (false, false);
+        }
+        if !d.slow && now.duration_since(d.at) > SLOW_FRAME {
+            d.slow = true;
+            self.slow += 1;
+            return (true, self.slow >= SLOW_FRAMES);
+        }
+        (true, false)
+    }
+}
+
+/// The frame's ops on handles from `base + 1`.
+fn frame(base: u32) -> Vec<Arg> {
+    let h = |n: u32| base + n;
+    ops(json!([
+        ["writeBuffer", h(4), 0, 0, 96],
+        ["pass", { "colorAttachments": [{ "view": h(2), "resolveTarget": null, "clearValue": [0, 0, 0, 0], "loadOp": "clear", "storeOp": "store" }], "depthStencilAttachment": null }],
+        ["setPipeline", h(7)],
+        ["setBindGroup", 0, h(8), []],
+        ["draw", 3, 1, 0, 0],
+        ["end"],
+        ["submit"],
+    ]))
 }
 
 fn ops(v: serde_json::Value) -> Vec<Arg> {
@@ -92,18 +136,10 @@ impl Shorthand {
         let mut s = Shorthand {
             gpu: Gpu::new(device, queue, format)?,
             source: format!("{HEADER}{wgsl}{ENTRY}"),
-            frame: ops(json!([
-                ["writeBuffer", 4, 0, 0, 96],
-                ["pass", { "colorAttachments": [{ "view": 2, "resolveTarget": null, "clearValue": [0, 0, 0, 0], "loadOp": "clear", "storeOp": "store" }], "depthStencilAttachment": null }],
-                ["setPipeline", 7],
-                ["setBindGroup", 0, 8, []],
-                ["draw", 3, 1, 0, 0],
-                ["end"],
-                ["submit"],
-            ])),
+            base: 0,
+            frame: frame(0),
             lines: wgsl.lines().count(),
-            drawing: None,
-            slow: 0,
+            frames: Frames::default(),
             stopped: None,
         };
         s.gpu.resize(KEY, 0, 0);
@@ -113,24 +149,25 @@ impl Shorthand {
 
     fn setup(&mut self) -> Result<(), GpuError> {
         let format = self.gpu.preferred_format();
+        let h = |n: u32| self.base + n;
         let setup = ops(json!([
-            ["context", 1, KEY, format, "premultiplied"],
-            ["view", 2, 1, { "dimension": "2d", "baseMipLevel": 0, "mipLevelCount": 1, "baseArrayLayer": 0, "arrayLayerCount": 1 }],
-            ["shader", 3, self.source],
-            ["buffer", 4, 96, 64 | 8],
-            ["bindGroupLayout", 5, { "entries": [{ "binding": 0, "visibility": 3, "sampler": null, "texture": null,
+            ["context", h(1), KEY, format, "premultiplied"],
+            ["view", h(2), h(1), { "dimension": "2d", "baseMipLevel": 0, "mipLevelCount": 1, "baseArrayLayer": 0, "arrayLayerCount": 1 }],
+            ["shader", h(3), self.source],
+            ["buffer", h(4), 96, 64 | 8],
+            ["bindGroupLayout", h(5), { "entries": [{ "binding": 0, "visibility": 3, "sampler": null, "texture": null,
                 "buffer": { "type": "uniform", "hasDynamicOffset": false, "minBindingSize": 0 } }] }],
-            ["pipelineLayout", 6, [5]],
-            ["renderPipeline", 7, {
-                "layout": 6,
-                "vertex": { "module": 3, "entryPoint": "widget_vertex", "buffers": [] },
-                "fragment": { "module": 3, "entryPoint": "widget_main",
+            ["pipelineLayout", h(6), [h(5)]],
+            ["renderPipeline", h(7), {
+                "layout": h(6),
+                "vertex": { "module": h(3), "entryPoint": "widget_vertex", "buffers": [] },
+                "fragment": { "module": h(3), "entryPoint": "widget_main",
                     "targets": [{ "format": format, "blend": null, "writeMask": 15 }] },
                 "primitive": { "topology": "triangle-list", "stripIndexFormat": null, "frontFace": "ccw", "cullMode": "none" },
                 "depthStencil": null,
                 "multisample": { "count": 1, "mask": 4294967295u32, "alphaToCoverageEnabled": false },
             }],
-            ["bindGroup", 8, { "layout": 5, "entries": [{ "binding": 0, "resource": { "buffer": 4, "offset": 0, "size": -1 } }] }],
+            ["bindGroup", h(8), { "layout": h(5), "entries": [{ "binding": 0, "resource": { "buffer": h(4), "offset": 0, "size": -1 } }] }],
         ]));
         self.gpu.apply(&setup, &[]).map_err(|e| self.relocate(e))
     }
@@ -181,7 +218,7 @@ impl Shorthand {
         self.gpu
             .queue()
             .on_submitted_work_done(move || flag.store(true, Ordering::Release));
-        self.drawing = Some(Drawing {
+        self.frames.drawing = Some(Drawing {
             at: Instant::now(),
             done,
             slow: false,
@@ -192,35 +229,24 @@ impl Shorthand {
     /// Whether the last frame is still drawing, counting it slow once it is past [`SLOW_FRAME`]; the third slow
     /// frame in a row stops the shader.
     fn drawing(&mut self) -> bool {
-        let Some(d) = &mut self.drawing else {
+        if self.frames.drawing.is_none() {
             return false;
-        };
+        }
         if !crate::poll(self.gpu.device()) {
             // The device is lost: the frame won't finish, and doesn't count.
             self.gpu.lost();
-            self.drawing = None;
+            self.frames.drawing = None;
             return false;
         }
-        if d.done.load(Ordering::Acquire) {
-            // Done between two looks, unseen past the limit: as fast as can be told.
-            if !d.slow {
-                self.slow = 0;
-            }
-            self.drawing = None;
-            return false;
+        let (drawing, stop) = self.frames.look(Instant::now());
+        if stop {
+            self.stopped = Some(GpuError {
+                kind: ErrorKind::Client,
+                message: SLOW_MESSAGE.into(),
+                canvases: Stops::All,
+            });
         }
-        if !d.slow && d.at.elapsed() > SLOW_FRAME {
-            d.slow = true;
-            self.slow += 1;
-            if self.slow >= SLOW_FRAMES {
-                self.stopped = Some(GpuError {
-                    kind: ErrorKind::Client,
-                    message: SLOW_MESSAGE.into(),
-                    canvases: Stops::All,
-                });
-            }
-        }
-        true
+        drawing
     }
 
     /// Watches the frame the GPU is drawing for the slow-frame and hang rules, as [`Shorthand::render`] does: call it
@@ -259,15 +285,64 @@ impl Shorthand {
     /// The device is lost ([`Gpu::lost`]): call it as soon as the host knows, before [`Shorthand::reset`].
     pub fn lost(&mut self) {
         self.gpu.lost();
-        self.drawing = None;
+        self.frames.drawing = None;
     }
 
     /// After a device loss: the same shader on `device`. One that stopped for being too slow or a GPU hang stays
     /// stopped.
     pub fn reset(&mut self, device: wgpu::Device, queue: wgpu::Queue) -> Result<(), GpuError> {
-        self.drawing = None;
-        self.slow = 0;
+        self.frames = Frames::default();
         self.gpu.reset(device, queue)?;
+        // Handles keep counting up: the shader's are new ones on the new device.
+        self.base = self.gpu.last_handle() as u32;
+        self.frame = frame(self.base);
         self.setup()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The 50 ms rule at controlled times: a frame counts slow once seen unfinished past 50 ms; three in a row stop
+    /// the shader; a frame seen finished first resets the count.
+    #[test]
+    fn the_50_ms_rule() {
+        let t0 = Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let mut f = Frames::default();
+        let submit = |f: &mut Frames, at: u64| {
+            let done = Arc::new(AtomicBool::new(false));
+            f.drawing = Some(Drawing {
+                at: ms(at),
+                done: done.clone(),
+                slow: false,
+            });
+            done
+        };
+        // Two slow frames, then a fast one: the count starts again.
+        for at in [0, 100] {
+            let done = submit(&mut f, at);
+            assert_eq!(f.look(ms(at + 30)), (true, false));
+            assert_eq!(f.look(ms(at + 51)), (true, false));
+            assert_eq!(f.look(ms(at + 70)), (true, false));
+            done.store(true, Ordering::Release);
+            assert_eq!(f.look(ms(at + 80)), (false, false));
+        }
+        assert_eq!(f.slow, 2);
+        let done = submit(&mut f, 200);
+        done.store(true, Ordering::Release);
+        assert_eq!(f.look(ms(260)), (false, false));
+        assert_eq!(f.slow, 0);
+        // Three slow frames in a row: the third look past 50 ms stops it, once.
+        for (i, at) in [300u64, 400, 500].into_iter().enumerate() {
+            let done = submit(&mut f, at);
+            assert_eq!(f.look(ms(at + 51)), (true, i == 2));
+            assert_eq!(f.look(ms(at + 90)), (true, false));
+            done.store(true, Ordering::Release);
+            assert_eq!(f.look(ms(at + 95)), (false, false));
+        }
+        // Nothing drawing: nothing to look at.
+        assert_eq!(f.look(ms(1000)), (false, false));
     }
 }

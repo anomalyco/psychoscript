@@ -21,13 +21,20 @@ struct Fixture {
     device: wgpu::Device,
     queue: wgpu::Queue,
     gpu: Gpu,
+    _gpu: std::sync::RwLockReadGuard<'static, ()>,
 }
 
 fn fixture() -> Fixture {
+    let shared = shared();
     let (device, queue) = common::device();
     let mut gpu = Gpu::new(device.clone(), queue.clone(), RGBA).unwrap();
     gpu.resize("scene", W, H);
-    Fixture { device, queue, gpu }
+    Fixture {
+        device,
+        queue,
+        gpu,
+        _gpu: shared,
+    }
 }
 
 /// Fills `defaults`' members `v` lacks.
@@ -682,6 +689,7 @@ fn cube_and_array_views() {
 /// into, or all.
 #[test]
 fn wgpu_validation_errors_are_program_errors() {
+    let _gpu = shared();
     let render = |extra: Vec<Value>| {
         let mut ops = vec![
             json!(["context", 1, "scene", "rgba8unorm", "opaque"]),
@@ -856,6 +864,7 @@ const PLASMA: &str = "fn shade(frag: vec2f) -> vec4f {
 
 #[test]
 fn the_wgsl_shorthand() {
+    let _gpu = shared();
     let (device, queue) = common::device();
     let mut s = Shorthand::new(device.clone(), queue.clone(), RGBA, PLASMA).unwrap();
     let mut values = [0.0; 16];
@@ -996,6 +1005,7 @@ fn clamping_a_canvas_size() {
 /// loss, which restarts only the canvases it stopped.
 #[test]
 fn a_canvas_an_error_stopped_stays_stopped() {
+    let _gpu = shared();
     let (device, queue) = common::device();
     let mut gpu = Gpu::new(device.clone(), queue.clone(), RGBA).unwrap();
     gpu.resize("a", 8, 8);
@@ -1050,6 +1060,7 @@ fn a_canvas_an_error_stopped_stays_stopped() {
 /// before any loss, stay program errors.
 #[test]
 fn only_handles_from_before_a_loss_drop_a_batch() {
+    let _gpu = shared();
     let (device, queue) = common::device();
     let destroy = |h: u32| Batch {
         ops: vec![Arg::from_json(&json!(["destroy", h]))],
@@ -1085,6 +1096,7 @@ fn only_handles_from_before_a_loss_drop_a_batch() {
 /// views made in it or before), or every canvas when its ops aren't a list or render into none.
 #[test]
 fn shape_errors_stop_the_canvases_the_batch_renders_into() {
+    let _gpu = shared();
     let (device, queue) = common::device();
     let gpu = || {
         let mut gpu = Gpu::new(device.clone(), queue.clone(), RGBA).unwrap();
@@ -1189,6 +1201,7 @@ fn a_restored_run_drops_batches_naming_handles_from_before() {
 /// A restored run keeps its stopped canvases and their errors, and never reports them again; the others draw on.
 #[test]
 fn a_restored_run_keeps_its_stopped_canvases() {
+    let _gpu = shared();
     let (device, queue) = common::device();
     let run = || {
         let mut gpu = Gpu::new(device.clone(), queue.clone(), RGBA).unwrap();
@@ -1339,12 +1352,16 @@ fn a_shader_too_slow_stops_on_its_last_frame() {
     assert!(s.canvas().unwrap().version > 10, "{calls} calls");
 }
 
-/// The tests that time GPU work run one at a time: lavapipe's threads are shared.
-static TIMED: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// The tests that time GPU work run alone: lavapipe's threads are shared, so the others wait for them.
+static GPU: std::sync::RwLock<()> = std::sync::RwLock::new(());
 
-fn timed() -> std::sync::MutexGuard<'static, ()> {
-    TIMED
-        .lock()
+fn timed() -> std::sync::RwLockWriteGuard<'static, ()> {
+    GPU.write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn shared() -> std::sync::RwLockReadGuard<'static, ()> {
+    GPU.read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
@@ -1594,6 +1611,7 @@ impl widget_gpu::Aborts for FakeAborts {
 /// work alongside (20 ms) don't. Without it, only the time rules tell.
 #[test]
 fn aborted_work_is_a_hang() {
+    let _gpu = shared();
     let (device, queue) = common::device();
     let module = "@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
     return vec4f(f32((i << 1u) & 2u) * 2.0 - 1.0, f32(i & 2u) * 2.0 - 1.0, 0.0, 1.0);
@@ -1691,6 +1709,109 @@ fn aborted_work_is_a_hang() {
         (e.kind, e.message.as_str(), s.too_slow()),
         (ErrorKind::Client, HANG_MESSAGE, false)
     );
+}
+
+/// What a stopped canvas draws isn't replayed: after a hang stops `a` (told by `Aborts`), a batch's pass into `a`
+/// isn't drawn while its pass into `b` is, and a batch rendering only into `a` (an offscreen pass with it) isn't
+/// submitted at all; likewise for a canvas an error stopped.
+#[test]
+fn a_stopped_canvas_draws_no_more() {
+    let _gpu = shared();
+    let (device, queue) = common::device();
+    let aborts = FakeAborts::new(&[Some(50)]);
+    let mut gpu = Gpu::new(device.clone(), queue.clone(), RGBA).unwrap();
+    gpu.set_aborts(Some(aborts.clone()));
+    gpu.resize("a", 8, 8);
+    gpu.resize("b", 8, 8);
+    let module = "@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+    return vec4f(f32((i << 1u) & 2u) * 2.0 - 1.0, f32(i & 2u) * 2.0 - 1.0, 0.0, 1.0);
+}
+@fragment fn fs() -> @location(0) vec4f { return vec4f(0.0, 1.0, 0.0, 1.0); }";
+    let mut b = Batch::default();
+    b.op(json!(["context", 1, "a", "rgba8unorm", "opaque"]))
+        .op(json!(["view", 2, 1, {}]));
+    b.op(json!(["context", 3, "b", "rgba8unorm", "opaque"]))
+        .op(json!(["view", 4, 3, {}]));
+    b.op(json!(["shader", 5, module]));
+    b.op(
+        json!(["renderPipeline", 6, { "layout": "auto", "vertex": { "module": 5 },
+        "fragment": { "module": 5, "targets": [{ "format": "rgba8unorm" }] } }]),
+    );
+    b.op(json!(["texture", 7, 8, 8, 1, "rgba8unorm", 16, 1, 1]))
+        .op(json!(["view", 8, 7, {}]));
+    gpu.apply(&b.ops, &[]).unwrap();
+    let passes = |views: &[u32], draw: bool| {
+        let mut b = Batch::default();
+        for &view in views {
+            pass_into(&mut b, view, [0.0; 4]);
+            if draw {
+                b.op(json!(["setPipeline", 6]));
+            }
+            b.op(json!(["draw", 3, 1, 0, 0])).op(json!(["end"]));
+        }
+        b.op(json!(["submit"]));
+        b
+    };
+    let idle = || device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    let version = |gpu: &Gpu, k: &str| gpu.canvas(k).map_or(0, |c| c.version);
+    let asked = || aborts.asked.lock().unwrap().len();
+
+    // A hang stops `a`.
+    gpu.apply(&passes(&[2], true).ops, &[]).unwrap();
+    idle();
+    assert_eq!(
+        gpu.poll().unwrap_err().canvases,
+        Stops::Canvases(vec!["a".into()])
+    );
+    let (a, b) = (version(&gpu, "a"), version(&gpu, "b"));
+    // A batch into both: `b` draws, `a` doesn't.
+    gpu.apply(&passes(&[2, 4], true).ops, &[]).unwrap();
+    idle();
+    assert_eq!(gpu.poll(), Ok(()));
+    assert_eq!((version(&gpu, "a"), version(&gpu, "b")), (a, b + 1));
+    let submitted = asked();
+    assert_eq!(submitted, 2);
+    // A batch into `a` alone, through an offscreen pass first: not submitted at all.
+    gpu.apply(&passes(&[8, 2], true).ops, &[]).unwrap();
+    idle();
+    assert_eq!(gpu.poll(), Ok(()));
+    assert_eq!((asked(), version(&gpu, "a")), (submitted, a));
+    // An error stops `b` (a draw without a pipeline); then a batch into `b` alone isn't submitted either.
+    assert_eq!(
+        gpu.apply(&passes(&[4], false).ops, &[])
+            .unwrap_err()
+            .canvases,
+        Stops::Canvases(vec!["b".into()])
+    );
+    idle();
+    let _ = gpu.poll();
+    let submitted = asked();
+    gpu.apply(&passes(&[8, 4], true).ops, &[]).unwrap();
+    idle();
+    assert_eq!(gpu.poll(), Ok(()));
+    assert_eq!(asked(), submitted);
+}
+
+/// A shader drawn again after a device loss: its handles are new ones on the new device.
+#[test]
+fn a_shader_draws_again_after_a_loss() {
+    let _gpu = shared();
+    let (device, queue) = common::device();
+    let mut s = Shorthand::new(device.clone(), queue.clone(), RGBA, PLASMA).unwrap();
+    let u = Uniforms {
+        scale: 1.0,
+        ..Default::default()
+    };
+    for i in 1..=3 {
+        s.render(W, H, &u).unwrap();
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        s.poll();
+        assert_eq!(s.error(), None, "after {} losses", i - 1);
+        assert_eq!(s.canvas().unwrap().version, i);
+        s.lost();
+        s.reset(device.clone(), queue.clone()).unwrap();
+        assert!(s.canvas().is_none());
+    }
 }
 
 /// Replay cost of a typical frame: 48 ops, 64 KB of writes (`cargo test --release -p widget-gpu -- --ignored`).
