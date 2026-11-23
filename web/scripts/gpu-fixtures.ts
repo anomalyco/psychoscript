@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// The GPU conformance fixtures (opencode `packages/widget/test/fixtures/gpu/*.json`, widgets ddac5fcaa; copies in
+// The GPU conformance fixtures (opencode `packages/widget/test/fixtures/gpu/*.json`, widgets 6fefac75b; copies in
 // rust/crates/psychoscript-web/tests/fixtures/gpu): each program runs on this host's WebAssembly (the worker's
 // `LiveRun`, from wasm/) under the fixtures' driver, and must post the same batches (ops, and bytes byte for byte),
 // give the same program errors from the host checks (src/gpu-checks.ts, which the page runs before replaying), and
@@ -25,7 +25,7 @@ interface Fixture {
   canvases: Array<{ key: string; width: number; height: number }>
   inputs?: Array<{ frame: number; after?: boolean; input: { type: string; key?: string; width?: number; height?: number; lost?: string } }>
   gpu: { available: boolean; format: string }
-  batches?: Array<{ frame: boolean; ops: unknown; bytes: string }>
+  batches?: Array<{ frame: boolean; ops: unknown; bytes: string | null }>
   errors: Array<{ message: string; canvases: string[] | "all" }>
   end: string
 }
@@ -37,7 +37,8 @@ const FRAMES = 10
 async function run(f: Fixture) {
   const program = new Program(prelude + "\n" + f.source + "\nreturn await __widget_live(__input(), true)")
   const live = program.startLive(JSON.stringify({ data: f.data ?? null, gpu: f.gpu }), { native: true, sliceBudgetMs: 600_000 })
-  const batches: Array<{ frame: boolean; ops: unknown; bytes: string }> = []
+  // `bytes`: base64, or null for a posted value other than an `ArrayBuffer`; `ops` as posted.
+  const batches: Array<{ frame: boolean; ops: unknown; bytes: string | null }> = []
   const errors: Array<{ message: string; canvases: readonly string[] | "all" }> = []
   let keys = new Set<string>()
   const checks = gpuChecks(() => keys)
@@ -69,8 +70,8 @@ async function run(f: Fixture) {
         const [offset, length] = batch.bytes as [number, number]
         batch.bytes = bytes.subarray(offset, offset + length)
       }
-      if (batch && typeof batch === "object" && batch.bytes instanceof Uint8Array)
-        batches.push({ frame, ops: batch.ops, bytes: Buffer.from(batch.bytes).toString("base64") })
+      if (batch && typeof batch === "object")
+        batches.push({ frame, ops: batch.ops, bytes: batch.bytes instanceof Uint8Array ? Buffer.from(batch.bytes).toString("base64") : null })
       const checked = checks.batch(value)
       if (checked.error) errors.push({ message: checked.error.message, canvases: checked.error.canvases })
       if (frame) checks.frame()
@@ -146,7 +147,7 @@ for (const file of files) {
       if (!have) return
       if (have.frame !== want.frame) problems.push(`batch ${i}: frame ${have.frame}, want ${want.frame}`)
       if (JSON.stringify(have.ops) !== JSON.stringify(want.ops)) problems.push(`batch ${i}: ops differ`)
-      if (have.bytes !== want.bytes) problems.push(`batch ${i}: bytes differ (${have.bytes.length} vs ${want.bytes.length} base64 chars)`)
+      if (have.bytes !== want.bytes) problems.push(`batch ${i}: bytes differ (${have.bytes?.length ?? null} vs ${want.bytes?.length ?? null} base64 chars)`)
     })
   }
   if (JSON.stringify(got.errors) !== JSON.stringify(f.errors)) problems.push(`errors ${JSON.stringify(got.errors)}, want ${JSON.stringify(f.errors)}`)
