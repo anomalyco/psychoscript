@@ -250,6 +250,12 @@ impl Shorthand {
         self.gpu.error(KEY).or(self.stopped.as_ref())
     }
 
+    /// Tells which submissions the GPU aborted ([`Gpu::set_aborts`]): a frame aborted after [`crate::HANG_ABORTED`]
+    /// hung.
+    pub fn set_aborts(&mut self, aborts: Option<Arc<dyn crate::Aborts>>) {
+        self.gpu.set_aborts(aborts);
+    }
+
     /// The device is lost ([`Gpu::lost`]): call it as soon as the host knows, before [`Shorthand::reset`].
     pub fn lost(&mut self) {
         self.gpu.lost();

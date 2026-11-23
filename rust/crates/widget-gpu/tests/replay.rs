@@ -1541,6 +1541,158 @@ fn a_batch_that_hangs_stops_its_canvases() {
     assert!(gpu.error("b").is_some());
 }
 
+/// A fake of the host's [`widget_gpu::Aborts`]: the n-th submission asked about (in submit order, which it checks)
+/// was aborted after `times[n]`, or not at all.
+struct FakeAborts {
+    times: Vec<Option<std::time::Duration>>,
+    asked: std::sync::Mutex<Vec<u64>>,
+}
+
+impl FakeAborts {
+    fn new(ms: &[Option<u64>]) -> std::sync::Arc<FakeAborts> {
+        let times = ms
+            .iter()
+            .map(|t| t.map(std::time::Duration::from_millis))
+            .collect();
+        std::sync::Arc::new(FakeAborts {
+            times,
+            asked: Default::default(),
+        })
+    }
+}
+
+impl widget_gpu::Aborts for FakeAborts {
+    fn aborted(
+        &self,
+        _queue: &wgpu::Queue,
+        submission: &wgpu::SubmissionIndex,
+    ) -> Option<std::time::Duration> {
+        let index: u64 = format!("{submission:?}")
+            .chars()
+            .filter(char::is_ascii_digit)
+            .collect::<String>()
+            .parse()
+            .unwrap();
+        let mut asked = self.asked.lock().unwrap();
+        let at = match asked.iter().position(|i| *i == index) {
+            Some(at) => at,
+            None => {
+                assert!(
+                    asked.last().is_none_or(|l| *l < index),
+                    "asked out of submit order"
+                );
+                asked.push(index);
+                asked.len() - 1
+            }
+        };
+        self.times.get(at).copied().flatten()
+    }
+}
+
+/// With the host's [`widget_gpu::Aborts`], work the GPU aborted after executing [`widget_gpu::HANG_ABORTED`] hung, as
+/// Metal tells of a hang's recovery: the culprit (50 ms) stops its canvases; work queued behind it (0 ms) and innocent
+/// work alongside (20 ms) don't. Without it, only the time rules tell.
+#[test]
+fn aborted_work_is_a_hang() {
+    let (device, queue) = common::device();
+    let module = "@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+    return vec4f(f32((i << 1u) & 2u) * 2.0 - 1.0, f32(i & 2u) * 2.0 - 1.0, 0.0, 1.0);
+}
+@fragment fn fs() -> @location(0) vec4f { return vec4f(0.0, 1.0, 0.0, 1.0); }";
+    let gpu = |aborts: Option<std::sync::Arc<FakeAborts>>| {
+        let mut gpu = Gpu::new(device.clone(), queue.clone(), RGBA).unwrap();
+        for k in ["a", "b", "c"] {
+            gpu.resize(k, 8, 8);
+        }
+        gpu.set_aborts(aborts.map(|a| a as std::sync::Arc<dyn widget_gpu::Aborts>));
+        let mut b = Batch::default();
+        for (h, k) in [(1, "a"), (3, "b"), (5, "c")] {
+            b.op(json!(["context", h, k, "rgba8unorm", "opaque"]))
+                .op(json!(["view", h + 1, h, {}]));
+        }
+        b.op(json!(["shader", 7, module]));
+        b.op(
+            json!(["renderPipeline", 8, { "layout": "auto", "vertex": { "module": 7 },
+            "fragment": { "module": 7, "targets": [{ "format": "rgba8unorm" }] } }]),
+        );
+        b.op(json!(["texture", 9, 8, 8, 1, "rgba8unorm", 16, 1, 1]))
+            .op(json!(["view", 10, 9, {}]));
+        gpu.apply(&b.ops, &[]).unwrap();
+        gpu
+    };
+    let draw = |gpu: &mut Gpu, view: u32| {
+        let mut b = Batch::default();
+        pass_into(&mut b, view, [0.0; 4]);
+        b.op(json!(["setPipeline", 8]))
+            .op(json!(["draw", 3, 1, 0, 0]))
+            .op(json!(["end"]))
+            .op(json!(["submit"]));
+        gpu.apply(&b.ops, &[]).unwrap();
+    };
+    let idle = || device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+
+    // The culprit into `a`, queued work into `b`, innocent work into `c`.
+    let aborts = FakeAborts::new(&[Some(50), Some(0), Some(20)]);
+    let mut g = gpu(Some(aborts.clone()));
+    for view in [2, 4, 6] {
+        draw(&mut g, view);
+    }
+    idle();
+    let e = g.poll().unwrap_err();
+    assert_eq!(
+        (e.kind, e.message.as_str()),
+        (ErrorKind::Client, HANG_MESSAGE)
+    );
+    assert_eq!(e.canvases, Stops::Canvases(vec!["a".into()]));
+    assert_eq!((g.error("b"), g.error("c")), (None, None));
+    assert_eq!(aborts.asked.lock().unwrap().len(), 3);
+    assert_eq!(g.poll(), Ok(()));
+    // Kept across a device loss.
+    g.reset(device.clone(), queue.clone()).unwrap();
+    assert_eq!(g.poll(), Ok(()));
+    assert_eq!(g.error("a").map(|e| e.message.as_str()), Some(HANG_MESSAGE));
+
+    // Without `Aborts`, the same work isn't a hang.
+    let mut g = gpu(None);
+    for view in [2, 4, 6] {
+        draw(&mut g, view);
+    }
+    idle();
+    assert_eq!(g.poll(), Ok(()));
+
+    // Aborted work drawing into no canvas: every canvas.
+    let mut g = gpu(Some(FakeAborts::new(&[Some(53)])));
+    draw(&mut g, 10);
+    idle();
+    assert_eq!(g.poll().unwrap_err().canvases, Stops::All);
+
+    // At a loss, every submit is asked, finished or not.
+    let mut g = gpu(Some(FakeAborts::new(&[Some(50)])));
+    draw(&mut g, 2);
+    g.lost();
+    assert_eq!(
+        g.poll().unwrap_err().canvases,
+        Stops::Canvases(vec!["a".into()])
+    );
+    idle();
+
+    // A shader frame the GPU aborted: the hang's placeholder, not the 50 ms rule's last frame.
+    let mut s = Shorthand::new(device.clone(), queue.clone(), RGBA, PLASMA).unwrap();
+    s.set_aborts(Some(FakeAborts::new(&[Some(50)])));
+    let u = Uniforms {
+        scale: 1.0,
+        ..Default::default()
+    };
+    s.render(W, H, &u).unwrap();
+    idle();
+    s.poll();
+    let e = s.error().expect("a hang");
+    assert_eq!(
+        (e.kind, e.message.as_str(), s.too_slow()),
+        (ErrorKind::Client, HANG_MESSAGE, false)
+    );
+}
+
 /// Replay cost of a typical frame: 48 ops, 64 KB of writes (`cargo test --release -p widget-gpu -- --ignored`).
 #[test]
 #[ignore]
