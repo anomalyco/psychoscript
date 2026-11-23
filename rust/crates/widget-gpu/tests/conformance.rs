@@ -236,6 +236,12 @@ fn every_fixture() {
     let (device, queue) = common::device();
     let mut failures = Vec::new();
     for (name, f) in fixtures() {
+        // Its batches come from running `source` through a live host (psychoscript-mobile's `gpu_fixtures` does);
+        // a replaying driver can't make them. `the_draw_limit_counts_a_frame_s_batches` builds the one there is.
+        if f["batches"] == "from-source" {
+            eprintln!("{name}: skipped (batches from its source)");
+            continue;
+        }
         let (gpu, errors) = replay(&device, &queue, &f);
         let expected = f["errors"].as_array().unwrap();
         if &errors != expected {
@@ -384,4 +390,66 @@ fn the_ops_before_a_failing_op_take_effect() {
     assert_eq!(gpu.error("b"), None);
     assert_eq!(gpu.canvas("b").map(|c| c.version), Some(1));
     assert!(gpu.canvas("a").is_none_or(|c| c.version == 0));
+}
+
+/// `error-too-many-draws`'s batches, which its fixture gets from its source (`"batches": "from-source"`): 10,000 draws
+/// in the first frame's batch, then a frame of 6,000 before a sleep and 4,001 with its frame request. The 10,001st
+/// draw of the frame is op 4002 of the last batch.
+#[test]
+fn the_draw_limit_counts_a_frame_s_batches() {
+    let (device, queue) = common::device();
+    let mut gpu = Gpu::new(
+        device.clone(),
+        queue.clone(),
+        wgpu::TextureFormat::Rgba8Unorm,
+    )
+    .unwrap();
+    gpu.resize("scene", 200, 200);
+    let pass = |draws: usize| {
+        let mut ops = vec![
+            json!(["pass", { "colorAttachments": [{ "view": 4, "resolveTarget": null, "clearValue": [0, 0, 0, 0],
+                "loadOp": "clear", "storeOp": "store" }], "depthStencilAttachment": null }]),
+            json!(["setPipeline", 3]),
+        ];
+        ops.extend(std::iter::repeat_n(json!(["draw", 3, 1, 0, 0]), draws));
+        ops.extend([json!(["end"]), json!(["submit"])]);
+        ops
+    };
+    let mut first = vec![
+        json!(["context", 1, "scene", "rgba8unorm", "opaque"]),
+        json!([
+            "shader",
+            2,
+            "@vertex fn vs() -> @builtin(position) vec4f { return vec4f(0); } @fragment fn fs() -> @location(0) vec4f { return vec4f(1); }"
+        ]),
+        json!(["renderPipeline", 3, { "layout": "auto",
+            "vertex": { "module": 2, "entryPoint": null, "buffers": [] },
+            "fragment": { "module": 2, "entryPoint": null, "targets": [{ "format": "rgba8unorm", "blend": null, "writeMask": 15 }] },
+            "primitive": { "topology": "triangle-list", "stripIndexFormat": null, "frontFace": "ccw", "cullMode": "none" },
+            "depthStencil": null,
+            "multisample": { "count": 1, "mask": 4294967295u32, "alphaToCoverageEnabled": false } }]),
+        json!(["view", 4, 1, { "dimension": "2d", "baseMipLevel": 0, "mipLevelCount": 1, "baseArrayLayer": 0, "arrayLayerCount": 1 }]),
+    ];
+    first.extend(pass(10_000));
+    let ops = |v: Vec<Value>| -> Vec<Arg> { v.iter().map(Arg::from_json).collect() };
+    let batches = [(first, true), (pass(6000), false), (pass(4001), true)];
+    assert_eq!(
+        batches.each_ref().map(|(b, _)| b.len()),
+        [10_008, 6004, 4005]
+    );
+    let mut errors = Vec::new();
+    for (batch, frame) in batches {
+        if let Err(e) = gpu.apply(&ops(batch), &[]) {
+            errors.push(error_json(&e));
+        }
+        if frame {
+            gpu.end_frame();
+        }
+    }
+    assert_eq!(
+        errors,
+        [
+            json!({ "message": "gpu op 4002: the number of draws in a frame is over the limit of 10000", "canvases": ["scene"] })
+        ]
+    );
 }
