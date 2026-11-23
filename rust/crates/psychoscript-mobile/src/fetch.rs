@@ -211,6 +211,11 @@ impl Rejection {
         Rejection::new("CapabilityDenied", message)
     }
 
+    /// What the app's `on_warning` is told of a denial, `CapabilityDenied: <message>`; `None` for other rejections.
+    pub(crate) fn denial(&self) -> Option<String> {
+        (self.kind == "CapabilityDenied").then(|| format!("{}: {}", self.kind, self.message))
+    }
+
     pub(crate) fn rate_limited(message: impl Into<String>) -> Rejection {
         Rejection::new("RateLimited", message)
     }
@@ -401,6 +406,8 @@ fn check_url(url: &Url, allowed: &[String], local_network: bool) -> Result<Vec<I
 pub(crate) struct Slot {
     pub(crate) result: Option<HostResult>,
     pub(crate) waker: Option<Waker>,
+    /// A denial ([`Rejection::denial`]), told to the app with the result.
+    pub(crate) denied: Option<String>,
 }
 
 /// A run's fetch budget: in flight, and started in the last second.

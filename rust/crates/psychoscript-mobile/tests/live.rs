@@ -323,10 +323,29 @@ fn start_fetching(hosts: Option<&[&str]>, fake: Arc<Fake>) -> (Arc<LiveRun>, Rec
     (run, rx)
 }
 
+/// The program's post of its fetch's outcome; a denial is told to the app too, once, just before (`on_warning`).
 fn fetch(run: &LiveRun, rx: &Receiver<Event>, request: serde_json::Value) -> serde_json::Value {
     run.deliver(serde_json::json!({ "type": "fetch", "request": request }).to_string())
         .unwrap();
-    post(rx)
+    let mut warnings = Vec::new();
+    let got = loop {
+        match next(rx) {
+            Event::Warning(w) => warnings.push(w),
+            Event::Post(v) => break v,
+            other => panic!("expected a post, got {other:?}"),
+        }
+    };
+    match got["kind"] == "CapabilityDenied" {
+        true => assert_eq!(
+            warnings,
+            [format!(
+                "CapabilityDenied: {}",
+                got["message"].as_str().unwrap()
+            )]
+        ),
+        false => assert!(warnings.is_empty(), "{warnings:?}"),
+    }
+    got
 }
 
 #[test]

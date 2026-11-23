@@ -273,7 +273,12 @@ fn make() -> Result<Dev, String> {
                     describe(&info)
                 ));
             }
-            None => return Err(format!("the GPU ({}) has no Vulkan version", describe(&info))),
+            None => {
+                return Err(format!(
+                    "the GPU ({}) has no Vulkan version",
+                    describe(&info)
+                ));
+            }
         }
     }
     // The program's limits (`widget_gpu::device_limits`), but the adapter's texture size: the host checks hold
@@ -366,7 +371,10 @@ fn under(required: &wgpu::Limits, has: &wgpu::Limits) -> Option<String> {
             true => " or less",
             false => "",
         };
-        low.push(format!("{} {allowed} (needs {wanted}{bound})", webgpu_name(name)));
+        low.push(format!(
+            "{} {allowed} (needs {wanted}{bound})",
+            webgpu_name(name)
+        ));
     });
     (!low.is_empty()).then(|| low.join(", "))
 }

@@ -1346,7 +1346,10 @@ impl Control {
     fn start_fetch(self: &Arc<Self>, request: Option<&HostValue>) -> Arc<Mutex<fetch::Slot>> {
         let slot = Arc::new(Mutex::new(fetch::Slot::default()));
         let reject = |r: Rejection| {
-            lock(&slot).result = Some(Err(r.value()));
+            let mut s = lock(&slot);
+            s.denied = r.denial();
+            s.result = Some(Err(r.value()));
+            drop(s);
             slot.clone()
         };
         let (Some(hosts), Some(transport)) =
@@ -1379,11 +1382,13 @@ impl Control {
                     local_network,
                     request,
                     &stopping,
-                )
-                .map_err(Rejection::value);
+                );
+                let denied = result.as_ref().err().and_then(Rejection::denial);
+                let result = result.map_err(Rejection::value);
                 lock(&control.fetch_budget).in_flight -= 1;
                 let waker = {
                     let mut slot = lock(&worker_slot);
+                    slot.denied = denied;
                     slot.result = Some(result);
                     slot.waker.take()
                 };
@@ -1411,8 +1416,13 @@ impl Control {
         let mut slot = lock(slot);
         match slot.result.take() {
             Some(result) if !paused => {
+                let denied = slot.denied.take();
                 drop(slot);
                 self.resolved(at);
+                // A denied fetch reaches the program, and the app too, once (for dev mode); the crate logs nothing.
+                if let Some(message) = denied {
+                    self.handler.on_warning(message);
+                }
                 Poll::Ready(result)
             }
             held => {

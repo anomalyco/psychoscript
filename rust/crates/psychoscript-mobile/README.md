@@ -128,7 +128,9 @@ its own until it returns or is stopped. Beside its input function it gets `__hos
 - `LiveHandler` (callback interface): `onPosts(messagesJson)` gets every post of one wake-up of the program, in
   order, in one call, as soon as the program waits again (or ends). A live frame that draws and then asks for the next
   frame costs one callback, not two. `onPostsBytes(messages)` replaces `onPosts` for a run with an encoder (above);
-  implement it as a no-op otherwise. `onWarning(message)` comes in its own call (the crate sends none at present). Both run on the run's thread: hand
+  implement it as a no-op otherwise. `onWarning(message)` comes in its own call: a `fetch` the crate denies, once per denial as the program gets it,
+  `CapabilityDenied: <reason>` (no https capability, a host not declared, a local address outside `allowLocalNetwork`,
+  credentials in the URL, ...), for the app to log in dev mode (the crate logs nothing). Both run on the run's thread: hand
   them to the UI thread and return. `onExit(LiveExit)` runs once on the run's thread:
   `Finished(resultJson)`, `Failed(error)` (`SliceBudget`, `Runtime`, ...), or `Stopped`. `onGpuCanvas(key, state)`
   tells a widget run's GPU canvas states ([GPU canvases](#gpu-canvases)); implement it as a no-op otherwise.

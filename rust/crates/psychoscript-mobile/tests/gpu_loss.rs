@@ -20,7 +20,9 @@ fn a_lost_device_is_told_to_the_program_and_replaced() {
     r.frames(3);
     r.live("c");
     gpu_lose_device();
-    r.wait(|e| matches!(e, Event::Gpu(Some(k), GpuCanvasState::Lost { .. }) if k == "c").then_some(()));
+    r.wait(|e| {
+        matches!(e, Event::Gpu(Some(k), GpuCanvasState::Lost { .. }) if k == "c").then_some(())
+    });
     // The prelude resolves `device.lost`; the program says so and asks for a new device.
     let lost = r.wait(|e| match e {
         Event::Posts(p) => p.iter().find_map(|p| match p {
@@ -82,7 +84,9 @@ fn a_lost_device_is_told_to_the_program_and_replaced() {
     });
     r.live("a");
     gpu_lose_device();
-    r.wait(|e| matches!(e, Event::Gpu(Some(k), GpuCanvasState::Lost { .. }) if k == "a").then_some(()));
+    r.wait(|e| {
+        matches!(e, Event::Gpu(Some(k), GpuCanvasState::Lost { .. }) if k == "a").then_some(())
+    });
     // The program's `send` of the loss comes after every state the host told for it.
     r.wait(|e| match e {
         Event::Posts(p) => p
