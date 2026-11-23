@@ -1,0 +1,18 @@
+[package]
+name = "widget-gpu"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "OpenCode widgets' GPU canvases (opencode `specs/v2/widgets-gpu.md`): replays a live program's WebGPU batches with wgpu"
+
+[dependencies]
+widget-wire = { path = "../widget-wire" }
+serde_json = "1"
+# Backends are the host's: it enables the ones it runs on (Rune its own, psychoscript-mobile `metal` or `vulkan`).
+wgpu = { version = "~30.0.1", default-features = false, features = ["std", "wgsl"] }
+
+[dev-dependencies]
+# Tests run on Vulkan: this VM's lavapipe, or a real GPU.
+wgpu = { version = "~30.0.1", default-features = false, features = ["std", "wgsl", "vulkan"] }
+psychoscript = { path = "../psychoscript" }
