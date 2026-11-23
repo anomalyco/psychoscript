@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 240" width="520" height="240" >
+<path d="M61 35.3L63.5 46.7L74.8 49.6L64.8 55.6L65.5 67.3L56.7 59.5L45.8 63.8L50.4 53.1L43 44L54.6 45.1Z" fill="#6cc7b6"/><path d="M337.7 49.2L342.6 56.7L351.5 55.9L345.8 62.8L349.4 71L341 67.8L334.3 73.7L334.8 64.7L327.1 60.2L335.8 57.9Z" fill="#6cc7b6"/><path d="M416 19L419.3 28.8L429.6 30.4L421.3 36.5L422.9 46.7L414.5 40.7L405.4 45.5L408.5 35.6L401.1 28.4L411.4 28.3Z" fill="#f6e3bd"/><path d="M485 11L488.5 17.8L496.1 17.7L490.8 23.1L493.2 30.3L486.4 26.9L480.3 31.4L481.4 23.9L475.3 19.5L482.8 18.3Z" fill="#6cc7b6"/><path d="M79.5 185L80 196L90 200.6L79.7 204.4L78.4 215.4L71.5 206.8L60.7 208.9L66.8 199.7L61.4 190.1L72 193.1Z" fill="#6cc7b6"/>
+<path d="M275 34L271.4 35.4L270 39L268.6 35.4L265 34L268.6 32.6L270 29L271.4 32.6Z" fill="#f9bb2d"/><path d="M34 118L31.1 119.1L30 122L28.9 119.1L26 118L28.9 116.9L30 114L31.1 116.9Z" fill="#f9bb2d"/><path d="M305 150L301.4 151.4L300 155L298.6 151.4L295 150L298.6 148.6L300 145L301.4 148.6Z" fill="#f9bb2d"/><path d="M234 205L231.1 206.1L230 209L228.9 206.1L226 205L228.9 203.9L230 201L231.1 203.9Z" fill="#f6e3bd"/><path d="M122 28L119.1 29.1L118 32L116.9 29.1L114 28L116.9 26.9L118 24L119.1 26.9Z" fill="#f6e3bd"/>
+<g transform="translate(172 104) rotate(-20)">
+<clipPath id="pfront"><rect x="-144" y="0" width="288" height="60"/></clipPath>
+<clipPath id="pball"><circle r="60"/></clipPath>
+<g  fill="none"><ellipse rx="117" ry="27.6" stroke="#1d1614" stroke-width="18"/><ellipse rx="117" ry="27.6" stroke="#f9bb2d" stroke-width="12"/><ellipse rx="117" ry="27.6" stroke="#f26a21" stroke-width="2.6999999999999997"/></g>
+<circle r="60" fill="#d2378c"/>
+<g clip-path="url(#pball)" fill="none">
+<path d="M-60 -25.2Q0 -12 60 -30" stroke="#ee5a8f" stroke-width="15.600000000000001"/>
+<path d="M-60 20.400000000000002Q0 37.2 60 18" stroke="#8a3d9e" stroke-width="18"/>
+<path d="M-60 48Q0 63 60 45.6" stroke="#ee5a8f" stroke-width="9.6"/>
+</g>
+<circle r="60" fill="none" stroke="#1d1614" stroke-width="3.5"/>
+<g clip-path="url(#pfront)" fill="none"><ellipse rx="117" ry="27.6" stroke="#1d1614" stroke-width="18"/><ellipse rx="117" ry="27.6" stroke="#f9bb2d" stroke-width="12"/><ellipse rx="117" ry="27.6" stroke="#f26a21" stroke-width="2.6999999999999997"/></g>
+</g>
+</svg>

@@ -1,0 +1,26 @@
+{
+  "wide": {
+    "src": "art/title-wide.png",
+    "width": 1536,
+    "height": 711,
+    "range": 10,
+    "deep": 40,
+    "line": 7,
+    "shadow": [
+      9,
+      14
+    ]
+  },
+  "narrow": {
+    "src": "art/title-narrow.png",
+    "width": 1024,
+    "height": 1068,
+    "range": 10,
+    "deep": 40,
+    "line": 7,
+    "shadow": [
+      9,
+      14
+    ]
+  }
+}
