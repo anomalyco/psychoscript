@@ -1,11 +1,27 @@
 //! The `wgsl` shorthand (`widgets.md`, GPU canvases): a full-screen triangle whose fragment stage is the widget
 //! template's `shade`, fed the `widget` uniforms. It is a fixed batch replayed by its own [`Gpu`], so its errors,
 //! limits and placeholder are a GPU canvas's.
+//!
+//! A shader that takes over 50 ms a frame three frames in a row stops and shows its last frame (`widgets.md`, GPU
+//! canvases), a client error. A frame counts as slow when its GPU work is seen unfinished more than 50 ms after its
+//! submit; a frame isn't drawn while the last one is still drawing, so a slow shader never queues work behind it.
+//! Nothing here waits for the GPU.
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use serde_json::json;
 use widget_wire::Arg;
 
-use crate::{Canvas, Gpu, GpuError};
+use crate::{Canvas, ErrorKind, Gpu, GpuError, Stops};
+
+/// A frame slower than this counts against a shader.
+pub const SLOW_FRAME: Duration = Duration::from_millis(50);
+/// Slow frames in a row that stop it.
+pub const SLOW_FRAMES: u32 = 3;
+/// Why a shader stopped on its last frame.
+pub const SLOW_MESSAGE: &str = "the shader took over 50 ms a frame, three frames in a row";
 
 /// What clients prepend to the widget template's `wgsl`.
 pub const HEADER: &str = "struct Widget { resolution: vec2f, time: f32, scale: f32, pointer: vec4f, values: array<vec4f, 4> }
@@ -40,6 +56,20 @@ pub struct Shorthand {
     source: String,
     frame: Vec<Arg>,
     lines: usize,
+    /// The frame the GPU is drawing.
+    drawing: Option<Drawing>,
+    /// Slow frames in a row.
+    slow: u32,
+    /// It was too slow: stopped on its last frame.
+    stopped: Option<GpuError>,
+}
+
+/// A frame submitted to the GPU.
+struct Drawing {
+    at: Instant,
+    done: Arc<AtomicBool>,
+    /// Seen unfinished past [`SLOW_FRAME`], and counted.
+    slow: bool,
 }
 
 fn ops(v: serde_json::Value) -> Vec<Arg> {
@@ -70,6 +100,9 @@ impl Shorthand {
                 ["submit"],
             ])),
             lines: wgsl.lines().count(),
+            drawing: None,
+            slow: 0,
+            stopped: None,
         };
         s.gpu.resize(KEY, 0, 0);
         s.setup()?;
@@ -123,8 +156,12 @@ impl Shorthand {
         e
     }
 
-    /// Draws a frame at `width` × `height` physical pixels.
+    /// Draws a frame at `width` × `height` physical pixels, unless the last one is still drawing (it is skipped) or
+    /// the shader stopped. Never waits for the GPU.
     pub fn render(&mut self, width: u32, height: u32, u: &Uniforms) -> Result<(), GpuError> {
+        if self.stopped.is_some() || self.drawing() {
+            return Ok(());
+        }
         self.gpu.resize(KEY, width, height);
         let mut f = [0f32; 24];
         f[..4].copy_from_slice(&[width as f32, height as f32, u.time, u.scale]);
@@ -136,7 +173,52 @@ impl Shorthand {
         }
         let r = self.gpu.apply(&self.frame, &bytes);
         self.gpu.end_frame();
+        let done = Arc::new(AtomicBool::new(false));
+        let flag = done.clone();
+        self.gpu
+            .queue()
+            .on_submitted_work_done(move || flag.store(true, Ordering::Release));
+        self.drawing = Some(Drawing {
+            at: Instant::now(),
+            done,
+            slow: false,
+        });
         r
+    }
+
+    /// Whether the last frame is still drawing, counting it slow once it is past [`SLOW_FRAME`]; the third slow
+    /// frame in a row stops the shader.
+    fn drawing(&mut self) -> bool {
+        let Some(d) = &mut self.drawing else {
+            return false;
+        };
+        let _ = self.gpu.device().poll(wgpu::PollType::Poll);
+        if d.done.load(Ordering::Acquire) {
+            // Done between two looks, unseen past the limit: as fast as can be told.
+            if !d.slow {
+                self.slow = 0;
+            }
+            self.drawing = None;
+            return false;
+        }
+        if !d.slow && d.at.elapsed() > SLOW_FRAME {
+            d.slow = true;
+            self.slow += 1;
+            if self.slow >= SLOW_FRAMES {
+                self.stopped = Some(GpuError {
+                    kind: ErrorKind::Client,
+                    message: SLOW_MESSAGE.into(),
+                    canvases: Stops::All,
+                });
+            }
+        }
+        true
+    }
+
+    /// Whether it stopped for being too slow ([`Shorthand::error`] is then a client error): show its last frame
+    /// ([`Shorthand::canvas`]), not the placeholder.
+    pub fn too_slow(&self) -> bool {
+        self.stopped.is_some()
     }
 
     /// The canvas's texture, once rendered: premultiplied, sRGB-encoded colors.
@@ -144,13 +226,16 @@ impl Shorthand {
         self.gpu.canvas(KEY)
     }
 
-    /// The error that stopped it.
+    /// The error that stopped it: the program's or the client's, or a client error for a shader too slow
+    /// ([`Shorthand::too_slow`]).
     pub fn error(&self) -> Option<&GpuError> {
-        self.gpu.error(KEY)
+        self.stopped.as_ref().or_else(|| self.gpu.error(KEY))
     }
 
-    /// After a device loss: the same shader on `device`.
+    /// After a device loss: the same shader on `device`. One that stopped for being too slow stays stopped.
     pub fn reset(&mut self, device: wgpu::Device, queue: wgpu::Queue) -> Result<(), GpuError> {
+        self.drawing = None;
+        self.slow = 0;
         self.gpu.reset(device, queue)?;
         self.setup()
     }
