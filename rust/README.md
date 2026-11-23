@@ -18,7 +18,8 @@ let outcome = runtime.execute("return double(21)");
 The API is the Rust form of `src/index.ts`; host work is a `Future` instead of an Effect, and values cross the
 boundary as copies (`HostValue`, with strings as lossless `HostString`s), except typed arrays.
 
-An `ArrayBuffer` or a typed array other than Uint8Array crosses as `HostValue::TypedArray(TypedArray)`. A synchronous
+With `Runtime::typed_arrays(true)` (off by default), an `ArrayBuffer` or a typed array other than Uint8Array crosses
+as `HostValue::TypedArray(TypedArray)`. A synchronous
 host function borrows the program's own bytes for the duration of the call, with no copy: read them in place with
 `with_bytes(|bytes: &[u8]| ..)` (for instance to upload them to a GPU) or write them with `with_bytes_mut`; `kind()`,
 `len()` and `byte_len()` describe the view. Once the call returns the handle is empty. An async or durable host
@@ -49,6 +50,7 @@ let mesh = HostFunction::new(|_, _| HostValue::TypedArray(TypedArray::from_f32(&
 | `toBytes`, `fromBytes` | `to_bytes`, `from_bytes` |
 | a host typed array or `ArrayBuffer` (a view of the program's bytes) | `HostValue::TypedArray(TypedArray)` |
 | `limits.maxValueDepth` (at most 256) | `Limits::max_value_depth` (at most `MAX_VALUE_DEPTH_LIMIT`) |
+| `typedArrays: true` | `Runtime::typed_arrays(true)` |
 | `Host.functionMarker` (under `translate: { functions: "mark" }`) | `HostValue::FunctionMarker`, `Data::FunctionMarker` |
 
 ## Commands

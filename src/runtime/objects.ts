@@ -1167,11 +1167,20 @@ export const hasPrototype = (value: Value, proto: Obj): boolean => {
   return false
 }
 
+/** Whether the running program has typed arrays besides `Uint8Array` (see `Runtime.Options`); `Vm.run` sets it. */
+export let typedKeys = true
+
+export const setTypedKeys = (on: boolean): void => {
+  typedKeys = on
+}
+
 const writeElement = (target: Indexed, name: string | number | symbol, value: Value): boolean | undefined => {
   const at = index(target, name)
-  // A typed array has no element at another numeric key (-1, 1.5, 2 ** 32): writing one does nothing.
+  // A typed array has no element at another numeric key (-1, 1.5, 2 ** 32): writing one does nothing. Without typed
+  // arrays, a Uint8Array keeps it as a property, as it did before them.
   if (
     at === undefined &&
+    typedKeys &&
     target instanceof Bytes &&
     (typeof name === "number" || (typeof name === "string" && isCanonicalNumeric(name)))
   ) {

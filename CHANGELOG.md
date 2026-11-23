@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Typed arrays are opt-in: `Runtime.make({ typedArrays: true })` (Rust: `Runtime::typed_arrays(true)`). Without it, the
+  default, programs and host functions behave as before they were added (0.2.1): no `ArrayBuffer`, `Uint16Array`,
+  `Uint32Array`, `Int32Array`, `Float32Array` or `Float64Array`, a host function returning one fails at the call, and
+  `Uint8Array` is unchanged; `globalNames` leaves them out.
 - `Host.error(name, message)` (Rust: `HostError::located(name, message)`, a new `HostValue::Located`): a host call
   that fails with it, sync or async, thrown, rejected or as an Effect's failure, throws a real error of that standard
   class in the program, located at the call: its `stack` names the call, and uncaught the run fails with

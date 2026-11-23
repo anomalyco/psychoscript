@@ -1,3 +1,4 @@
+// @typed_arrays true
 // Constructors from a length, an array, an iterable, a typed array and an ArrayBuffer with offset and length; from, of,
 // and BYTES_PER_ELEMENT.
 const kinds = [Uint8Array, Uint16Array, Uint32Array, Int32Array, Float32Array, Float64Array]

@@ -60,6 +60,14 @@ export type Options<G extends Globals = Globals> = {
   readonly limits?: Limits | undefined
   /** How host calls receive program functions and promises inside arguments; both fail the call by default. */
   readonly translate?: Translate | undefined
+  /**
+   * Whether programs have the typed arrays besides `Uint8Array` (`ArrayBuffer`, `Uint16Array`, `Uint32Array`,
+   * `Int32Array`, `Float32Array`, `Float64Array`), and host functions may return them; off by default. Off, as before
+   * they were added, a host function that returns one fails at the call, and a `Uint8Array` has no `byteLength`,
+   * `byteOffset` or `buffer`, keeps other numeric keys as properties, and reads one out of range from its prototypes.
+   * A run resumes only in a runtime with the same setting.
+   */
+  readonly typedArrays?: boolean | undefined
 }
 
 /** Options for `Runtime.program`. */
@@ -86,6 +94,7 @@ export const makeSetup = <R>(options: Options<Globals>): Setup<R> => ({
   },
   globals: options.globals,
   modules: options.modules,
+  typedArrays: options.typedArrays === true,
   translate: {
     functions: options.translate?.functions ?? "error",
     promises: options.translate?.promises ?? "error",

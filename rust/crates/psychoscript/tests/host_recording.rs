@@ -364,6 +364,7 @@ fn runtime(entry: &Json, state: &State) -> Runtime {
     Runtime::make()
         .translate(translate)
         .limits(limits)
+        .typed_arrays(entry["typedArrays"] == true)
         .globals(move |run| globals(&state, run))
 }
 

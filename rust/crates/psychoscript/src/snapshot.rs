@@ -177,7 +177,8 @@ fn hex(h: u64) -> String {
 
 /// The shape of a run's host globals: their names, the functions among them by label (with whether they have
 /// `snapshot` hooks or are durable), and their namespaces, the reference's `hosts` shape.
-pub(crate) fn hosts_id(globals: &[(String, HostValue)]) -> String {
+/// A runtime with typed arrays resumes only its own runs, and one without only its own.
+pub(crate) fn hosts_id(globals: &[(String, HostValue)], typed_arrays: bool) -> String {
     fn shape(v: &HostValue, label: &str, text: &mut String) {
         match v {
             HostValue::Function(f) => {
@@ -206,6 +207,9 @@ pub(crate) fn hosts_id(globals: &[(String, HostValue)]) -> String {
         text.push(',');
         shape(value, name, &mut text);
         text.push('\n');
+    }
+    if typed_arrays {
+        text.push_str("typedArrays\n");
     }
     hex(hash(text.as_bytes()))
 }
@@ -369,7 +373,7 @@ pub fn capture(vm: &Vm, c: &Capture) -> Result<Snapshot, Refusal> {
     let metadata = vm.host.run.metadata();
     let mut header = json!({
         "build": build_id(),
-        "hosts": hosts_id(&vm.host.globals),
+        "hosts": hosts_id(&vm.host.globals, vm.realm.std.typed_arrays),
         "runId": vm.host.run.id.get().cloned(),
         "metadata": metadata.to_json(),
         "metadataData": (!well_formed(&metadata)).then(|| host_value(&metadata.to_host())),
@@ -912,6 +916,7 @@ fn baseline(vm: &Vm, code: &str) -> R<Vec<J>> {
         h.run.clone(),
     );
     let mut fresh = Vm::new(host, *vm.limits, atoms);
+    fresh.realm.std.typed_arrays = vm.realm.std.typed_arrays;
     fresh.setup();
     crate::builtins::ensure_globals(&mut fresh, &program.globals);
     host::install(&mut fresh, &program.globals);

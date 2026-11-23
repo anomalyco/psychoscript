@@ -44,6 +44,8 @@ pub struct StdProtos {
     pub typed: [Id; 5],
     /// The lazily installed groups already set up (see `LAZY`).
     pub loaded: u8,
+    /// Whether the program has the typed arrays besides Uint8Array: see `Runtime::typed_arrays`.
+    pub typed_arrays: bool,
 }
 
 impl StdProtos {
@@ -111,7 +113,24 @@ fn setup_bytes(vm: &mut Vm) {
     bytes::setup(vm);
     typed::setup(vm);
     buffer::setup(vm);
+    // Without typed arrays, they are made all the same, but not bound.
+    if !vm.realm.std.typed_arrays {
+        for name in TYPED_GLOBALS {
+            let a = vm.atoms.intern_static(name);
+            vm.global_map.remove(&a);
+        }
+    }
 }
+
+/// The globals only a runtime with typed arrays binds (see `Runtime::typed_arrays`).
+pub const TYPED_GLOBALS: [&str; 6] = [
+    "ArrayBuffer",
+    "Uint16Array",
+    "Uint32Array",
+    "Int32Array",
+    "Float32Array",
+    "Float64Array",
+];
 
 /// Installs the lazy group with `bit`, once.
 pub fn ensure(vm: &mut Vm, bit: u8) {

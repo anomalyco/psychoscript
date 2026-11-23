@@ -1,3 +1,4 @@
+// @typed_arrays true
 // The own keys of the typed arrays, their prototypes and ArrayBuffer, in order.
 const names = (o) => Object.getOwnPropertyNames(o).join(",")
 const out = {}

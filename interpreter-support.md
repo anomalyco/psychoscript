@@ -653,7 +653,10 @@ encode as text first (`TextDecoder`, `toBase64`, `toHex`). The other typed array
 
 `ArrayBuffer`, `Uint16Array`, `Uint32Array`, `Int32Array`, `Float32Array` and `Float64Array`, for 3D programs that
 fill vertex, index and uniform data in script and hand it to the host. A typed array is a view of elements on one
-contiguous byte buffer, little-endian.
+contiguous byte buffer, little-endian. They are opt-in, with the runtime option `typedArrays: true`: without it,
+programs don't have them, a host function that returns one fails at the call, and a `Uint8Array` is as it was before
+them (no `byteLength`, `byteOffset` or `buffer`; other numeric keys are properties; a read past its end looks at its
+prototypes). A run resumes only in a runtime with the same setting.
 
 - [x] `new X(length | array | iterable | typed array)`, `new X(buffer, byteOffset, length)` (offsets that are not a
       multiple of the element size, and views past the buffer, are `RangeError`s), `X.from` (with a mapper and

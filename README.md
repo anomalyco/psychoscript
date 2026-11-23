@@ -147,12 +147,12 @@ except typed arrays (below).
   uncaught the run fails with `TypeError: message (line L, col C)`.
 - **`StreamingResponse`**: return `new StreamingResponse(response)` to give the program a `Response`-like object whose
   body streams (`text()`, `json()`, `bytes()`, `body` readers, `for await`).
-- **Typed arrays** cross without a copy, so a host can upload vertex or uniform data to a GPU as it is: a
-  `Float32Array`, `Uint16Array`, `Uint32Array`, `Int32Array` or `Float64Array` argument arrives as a host typed array
-  over the program's own bytes (an `ArrayBuffer` as the host `ArrayBuffer`). They are lent for the duration of the
-  call: read or write them before it returns, and don't keep them. A typed array a host function returns becomes the
-  program's: bytes the host made, or a typed array the same call got, which is the program's buffer again. A
-  `Uint8Array` still crosses as a copy.
+- **Typed arrays** (runtime option `typedArrays: true`; off by default, as before they were added) cross without a copy,
+  so a host can upload vertex or uniform data to a GPU as it is: a `Float32Array`, `Uint16Array`, `Uint32Array`,
+  `Int32Array` or `Float64Array` argument arrives as a host typed array over the program's own bytes (an `ArrayBuffer`
+  as the host `ArrayBuffer`). They are lent for the duration of the call: read or write them before it returns, and
+  don't keep them. A typed array a host function returns becomes the program's: bytes the host made, or a typed array
+  the same call got, which is the program's buffer again. A `Uint8Array` still crosses as a copy.
 - **`translate`** (runtime option): what happens to a program function or promise inside an argument. By default both
   fail the call; `{ functions: "drop", promises: "await" }` drops functions (as `JSON.stringify` does) and awaits
   promises. `functions: "mark"` puts `Host.functionMarker` (a symbol; `HostValue::FunctionMarker` and
@@ -297,8 +297,9 @@ async generators and `for await`), classes (fields, static members, getters and 
 literal getters and setters, labels, `try`/`finally`, top-level `await` and `return`, and `import`/`require` of host
 globals by module name. Built-ins: `Object`, `Array`, `String`, `Number`, `Math`, `JSON`, `Date`, `RegExp`, `Map`,
 `Set`, `Promise`, `Iterator` helpers, errors, `URL`, `URLSearchParams`, `Headers`, `TextEncoder`/`TextDecoder`,
-`atob`/`btoa`, `structuredClone`, `crypto.randomUUID`/`getRandomValues`, `ArrayBuffer`, `Uint8Array`, `Uint16Array`,
-`Uint32Array`, `Int32Array`, `Float32Array`, `Float64Array`, Node's `Buffer`, and `console`.
+`atob`/`btoa`, `structuredClone`, `crypto.randomUUID`/`getRandomValues`, `Uint8Array`, Node's `Buffer`, `console`,
+and with `typedArrays: true`, `ArrayBuffer`, `Uint16Array`, `Uint32Array`, `Int32Array`, `Float32Array` and
+`Float64Array`.
 
 Not supported: private members (`#x`), static blocks, `new` on plain functions, `Proxy`/`Reflect`, `Symbol()` (only
 `Symbol.iterator` and `Symbol.asyncIterator` exist), BigInt, `Int8Array`, `Int16Array`, `Uint8ClampedArray`, the

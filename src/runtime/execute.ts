@@ -129,6 +129,8 @@ export type Setup<R> = {
   readonly modules?: Readonly<Record<string, string>> | undefined
   /** Globals made as program values (a test harness), made again the same way for a restored run. */
   readonly programGlobals?: Globals<R> | undefined
+  /** Whether programs have typed arrays besides `Uint8Array`; see `Runtime.Options`. */
+  readonly typedArrays?: boolean | undefined
 }
 
 /** Turns a suspended outcome into a failure, for callers that only run programs to their end. */
@@ -255,6 +257,7 @@ const instantiate = <R>(
     builtins: createBuiltins(),
     logs: [],
     modules: setup.modules,
+    typedArrays: setup.typedArrays,
     globals: (ctx) => [
       ...(setup.programGlobals?.(ctx) ?? []),
       ...(setup.globals === undefined

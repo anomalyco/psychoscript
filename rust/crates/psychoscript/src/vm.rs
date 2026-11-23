@@ -452,7 +452,19 @@ impl Vm {
         }
     }
 
-    pub fn load(&mut self, program: Program) {
+    pub fn load(&mut self, mut program: Program) {
+        // Where programs have typed arrays, their globals are constants.
+        if program.typed_consts && self.realm.std.typed_arrays {
+            for proto in &mut program.protos {
+                for op in &mut std::sync::Arc::make_mut(proto).code {
+                    if let Op::ThrowRef(a) = *op
+                        && crate::builtins::TYPED_GLOBALS.contains(&self.atoms.text(a))
+                    {
+                        *op = Op::ThrowConst(a);
+                    }
+                }
+            }
+        }
         crate::builtins::ensure_globals(self, &program.globals);
         self.template_objs = vec![None; program.templates.len()];
         self.templates = program.templates;

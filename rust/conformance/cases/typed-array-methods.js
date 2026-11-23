@@ -1,3 +1,4 @@
+// @typed_arrays true
 // The methods a 3D program needs: indexing, set, fill, reverse, search, join, at, iteration, Array.from, spread and
 // destructuring, and how typed arrays print and serialize.
 const fa = new Float32Array([0, 1.5, 2, 3])

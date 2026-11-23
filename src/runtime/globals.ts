@@ -163,8 +163,20 @@ const table: Record<string, Factory> = {
   ...Object.fromEntries(errorTypes.map((type) => [type, <R>(ctx: Interpreter<R>) => errorGlobal(type, ctx)])),
 }
 
+/** The globals only a runtime with `typedArrays` binds; the others are bound in every program. */
+export const typedArrayGlobals: ReadonlySet<string> = new Set([
+  "ArrayBuffer",
+  "Uint16Array",
+  "Uint32Array",
+  "Int32Array",
+  "Float32Array",
+  "Float64Array",
+])
+
 /** Names bound in every program before extensions apply. */
-export const globalNames: ReadonlySet<string> = new Set(Object.keys(table))
+export const globalNames: ReadonlySet<string> = new Set(
+  Object.keys(table).filter((name) => !typedArrayGlobals.has(name)),
+)
 
 /** The immutable global bindings of every program, in declaration order. */
 export const globals = <R>(ctx: Interpreter<R>): ReadonlyArray<readonly [string, Value]> => {

@@ -16,12 +16,14 @@ mod reference;
 
 use reference::same;
 
-/// The reference generator's runtime: only the `tools` namespace, with the case's limits and translation.
-fn runtime(limits: Limits, translate: Translate) -> Runtime {
+/// The reference generator's runtime: only the `tools` namespace, with the case's limits, translation and typed
+/// arrays.
+fn runtime(limits: Limits, translate: Translate, typed_arrays: bool) -> Runtime {
     Runtime::make()
         .globals(|_| [("tools", HostValue::from(reference::tools()))])
         .limits(limits)
         .translate(translate)
+        .typed_arrays(typed_arrays)
 }
 
 fn check(name: &str, code: &str, expected: &Json, future: bool) -> Result<(), String> {
@@ -50,7 +52,7 @@ fn check(name: &str, code: &str, expected: &Json, future: bool) -> Result<(), St
             _ => TranslatePromises::Error,
         },
     };
-    let rt = runtime(limits, translate);
+    let rt = runtime(limits, translate, expected["typed_arrays"] == true);
     let options = ProgramOptions::new().bindings(bindings);
     let run = || match future {
         true => drive(rt.execute_async(code, &options)).unwrap_or_else(|i| psychoscript::Outcome {

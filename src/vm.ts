@@ -61,6 +61,8 @@ import {
   PromiseObj,
   readonly,
   remove,
+  setTypedKeys,
+  typedKeys,
   type Value,
 } from "./runtime/objects.js"
 import {
@@ -360,14 +362,16 @@ export class Vm {
    * other; the outcome; the next job; one inbox completion; wait for running calls; stuck.
    */
   run(): Stop {
+    const keys = typedKeys
+    setTypedKeys(this.ctx.typedArrays)
     const heap = this.heap
-    if (heap === undefined) return this.runUntilStop()
     const outer = charging
-    setCharging(heap)
+    if (heap !== undefined) setCharging(heap)
     try {
       return this.runUntilStop()
     } finally {
-      setCharging(outer)
+      if (heap !== undefined) setCharging(outer)
+      setTypedKeys(keys)
     }
   }
 
@@ -625,6 +629,7 @@ export class Vm {
     const CellCtor = Cell
     const ArrCtor = Arr
     const BytesCtor = Bytes
+    const typedOn = this.ctx.typedArrays
     const ObjCtor = Obj
     const FnCtor = Fn
     const PositionCtor = Position
@@ -858,8 +863,16 @@ export class Vm {
               pc++
               continue
             }
-            // A typed array's element, read from its host array; out of range is undefined.
-            if (mode === 0 && typeof keyVal === "number" && keyVal >= 0 && (keyVal | 0) === keyVal && o instanceof BytesCtor) {
+            // A typed array's element, read from its host array; out of range is undefined, or, without typed arrays,
+            // read from its prototypes, as it was before them.
+            if (
+              mode === 0 &&
+              typeof keyVal === "number" &&
+              keyVal >= 0 &&
+              (keyVal | 0) === keyVal &&
+              o instanceof BytesCtor &&
+              (typedOn || keyVal < o.bytes.length)
+            ) {
               sp--
               regs[sp - 1] = o.bytes[keyVal]
               pc++

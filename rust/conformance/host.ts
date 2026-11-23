@@ -9,11 +9,12 @@
 // Usage: bun conformance/host.ts [reference] — the reference package directory, from the argument,
 // PSYCHOSCRIPT_REF, or by default the repository root.
 //
-// Every entry runs in its own runtime: `Runtime.make({ globals, translate?, limits? })` with the entry's `translate`
-// and `limits` (absent: the reference's defaults, both translations "error" and no limits), no `modules`, and the
-// program made with `{ runId }` (the entry's, "run" by default). `globals(run)` is called when a run starts and again
-// when it resumes; each call counts toward the entry's `made`. It gives (every `run` takes one parameter, `length` 1,
-// except `note`, `post` and the durable function's hooks, which also take the call; each is named by its global):
+// Every entry runs in its own runtime: `Runtime.make({ globals, translate?, limits?, typedArrays? })` with the entry's
+// `translate`, `limits` and `typedArrays` (absent: the reference's defaults, both translations "error" and no limits),
+// no `modules`, and the program made with `{ runId }` (the entry's, "run" by default). `globals(run)` is called when a
+// run starts and again when it resumes; each call counts toward the entry's `made`. It gives (every `run` takes one
+// parameter, `length` 1, except `note`, `post` and the durable function's hooks, which also take the call; each is
+// named by its global):
 // - `double(n)`: sync; gives `n * 2`.
 // - `inc(n)`: sync; gives `Effect.succeed(n + 1)`, which the program waits for.
 // - `promised(n)`: sync; gives `Promise.resolve(n)`, which reaches the program as a promise.
@@ -43,8 +44,8 @@
 //   `call.key` as its data; `wait(data, call)` logs `["job.wait", data, call.key, call.args.map(describe)]`, never
 //   settles until the entry resumed, then gives 41; `cancel(data, call)` logs `["job.cancel", data, call.key]`.
 //
-// host.json: `{ executes: [{ code, runId, translate?, limits?, compiled?, compile?, outcome, again?, log }],
-// suspensions: [{ code, runId, translate?, limits?, compiled?, suspend, resume?, made, log }] }`.
+// host.json: `{ executes: [{ code, runId, translate?, limits?, typedArrays?, compiled?, compile?, outcome, again?,
+// log }], suspensions: [{ code, runId, translate?, limits?, typedArrays?, compiled?, suspend, resume?, made, log }] }`.
 // - An entry with `compiled: true` runs from `runtime.compile(code)` instead of its source. An execute records
 //   `compile` (`{ ok: true }`, or `{ ok: false, error }` with the diagnostic, when `outcome` is its source's run), and
 //   runs the compiled program twice in the same runtime: `outcome`, then `again`.
@@ -70,7 +71,14 @@ const Fiber = ref.Fiber
 const Host = ref.Language.Host
 const Runtime = ref.Language.Runtime
 
-type Entry = { code: string; runId?: string; translate?: unknown; limits?: unknown; compiled?: boolean }
+type Entry = {
+  code: string
+  runId?: string
+  translate?: unknown
+  limits?: unknown
+  typedArrays?: boolean
+  compiled?: boolean
+}
 
 const read = () => "called"
 
@@ -82,6 +90,7 @@ const make = (entry: Entry) => {
   const runtime = Runtime.make({
     ...(entry.translate === undefined ? {} : { translate: entry.translate }),
     ...(entry.limits === undefined ? {} : { limits: entry.limits }),
+    ...(entry.typedArrays === undefined ? {} : { typedArrays: entry.typedArrays }),
     globals: (run: { id: string; metadata: unknown }) => {
       state.made++
       return {
@@ -345,11 +354,23 @@ return [thrown instanceof RangeError, thrown.message, sent instanceof Promise, a
   { code: `note({ f() {}, p: load(1) }, () => 2)`, translate: { functions: "drop", promises: "await" } },
   // Typed arrays other than Uint8Array cross as views of the same bytes, which the host reads and writes in place; a
   // Uint8Array as a copy. What a host function returns stays a view of its bytes.
-  { code: `const v = new Float32Array([1, 2, 3]); const r = scale(v, 2); return [Array.from(v), r instanceof Float32Array, Array.from(r), r === v]` },
-  { code: `const b = new ArrayBuffer(8); const f = new Float32Array(b); scale(f.subarray(1), 3); f[1] = 4; scale(f, 1); note(b, new Int32Array(b, 4, 1)); return Array.from(f)` },
-  { code: `const u = new Uint8Array([1, 2]); scale(u, 2); return Array.from(u)` },
-  { code: `const m = mesh(); m[0] = 9; return [m.constructor.name, Array.from(m), m.byteLength, m.buffer.byteLength]` },
-  { code: `return mesh()` },
+  {
+    code: `const v = new Float32Array([1, 2, 3]); const r = scale(v, 2); return [Array.from(v), r instanceof Float32Array, Array.from(r), r === v]`,
+    typedArrays: true,
+  },
+  {
+    code: `const b = new ArrayBuffer(8); const f = new Float32Array(b); scale(f.subarray(1), 3); f[1] = 4; scale(f, 1); note(b, new Int32Array(b, 4, 1)); return Array.from(f)`,
+    typedArrays: true,
+  },
+  { code: `const u = new Uint8Array([1, 2]); scale(u, 2); return Array.from(u)`, typedArrays: true },
+  {
+    code: `const m = mesh(); m[0] = 9; return [m.constructor.name, Array.from(m), m.byteLength, m.buffer.byteLength]`,
+    typedArrays: true,
+  },
+  { code: `return mesh()`, typedArrays: true },
+  // Without typed arrays, a host function's Float32Array fails at the call, as before they were added.
+  { code: `const m = mesh(); return m` },
+  { code: `try { mesh() } catch (e) { return [e.name, e.message, e.stack] }` },
   // Limits.
   { code: `while (true) {}`, limits: { timeoutMs: 50 } },
   { code: `await never()`, limits: { timeoutMs: 50 } },

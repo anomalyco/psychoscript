@@ -1,3 +1,4 @@
+// @typed_arrays true
 // 10k 4x4 matrix multiplies, each matrix a Float32Array(16), column-major as WebGPU takes them.
 const count = 10000
 const out = new Float32Array(16)

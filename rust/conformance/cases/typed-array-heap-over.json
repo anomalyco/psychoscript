@@ -3,6 +3,7 @@
   "limits": {
     "max_heap_bytes": 4127
   },
+  "typed_arrays": true,
   "ok": false,
   "kind": "MemoryLimitExceeded",
   "logs": [],
