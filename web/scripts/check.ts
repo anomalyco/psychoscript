@@ -29,8 +29,22 @@ const shot = async (target: Page | Locator, name: string, fullPage = false) => {
   else await target.screenshot({ path })
 }
 
+/**
+ * WebGPU completion as the checks see it: done when the GPU is, or after 100 ms at most. SwiftShader's own times (about
+ * 200 ms a frame for the demo shader, up to about 300 ms for a fresh device's first submits) are this environment's, not
+ * what a check is about, and would trip the 250 ms GPU hang rule. The hang and slow-shader checks set their own times.
+ */
+const steady = () => {
+  if (typeof GPUQueue === "undefined") return
+  const done = GPUQueue.prototype.onSubmittedWorkDone
+  GPUQueue.prototype.onSubmittedWorkDone = function (this: GPUQueue) {
+    return Promise.race([done.call(this), new Promise<undefined>((r) => setTimeout(() => r(undefined), 100))])
+  }
+}
+
 async function open(query: string, viewport = { width: 1280, height: 900 }, deviceScaleFactor = 1): Promise<{ page: Page; errors: string[] }> {
   const page = await browser.newPage({ viewport, deviceScaleFactor })
+  await page.addInitScript(steady)
   const errors: string[] = []
   page.on("pageerror", (e) => errors.push(e.message))
   page.on("console", (m) => {
@@ -278,14 +292,14 @@ for (const [query, backend] of [["?only=backdrop", "webgpu"]] as const) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
   const errors: string[] = []
   page.on("pageerror", (e) => errors.push(e.message))
-  // Every frame takes 80 ms on the GPU (its onSubmittedWorkDone waits); a submit while one waits stacks.
+  // Every frame takes 80 ms on the GPU, whatever SwiftShader takes (its onSubmittedWorkDone resolves then); a submit
+  // while one waits stacks.
   await page.addInitScript(() => {
     const w = window as unknown as { __gpuSlow: { submits: number; stacked: number; waiting: number } }
     const slow = (w.__gpuSlow = { submits: 0, stacked: 0, waiting: 0 })
-    const done = GPUQueue.prototype.onSubmittedWorkDone
     GPUQueue.prototype.onSubmittedWorkDone = function (this: GPUQueue) {
       slow.waiting++
-      return done.call(this).then(() => new Promise<undefined>((r) => setTimeout(() => (slow.waiting--, r(undefined)), 80)))
+      return new Promise<undefined>((r) => setTimeout(() => (slow.waiting--, r(undefined)), 80))
     }
     const submit = GPUQueue.prototype.submit
     GPUQueue.prototype.submit = function (this: GPUQueue, buffers: Iterable<GPUCommandBuffer>) {
@@ -319,19 +333,19 @@ for (const [query, backend] of [["?only=backdrop", "webgpu"]] as const) {
   await page.close()
 }
 
-// ---------- a shader frame unfinished 1 s after its submit: a GPU hang, before the 50 ms rule ----------
+// ---------- a shader frame unfinished 250 ms after its submit: a GPU hang, before the 50 ms rule ----------
 {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
   const errors: string[] = []
   page.on("pageerror", (e) => errors.push(e.message))
-  // Two slow frames (80 ms), then one that takes 1.5 s: the 50 ms rule would stop it when that one finishes.
+  // Two slow frames (80 ms), then one that takes 1.5 s, whatever SwiftShader takes: the 50 ms rule would stop it when
+  // that one finishes.
   await page.addInitScript(() => {
     const w = window as unknown as { __gpuSlow: { submits: number; waits: number } }
     const slow = (w.__gpuSlow = { submits: 0, waits: 0 })
-    const done = GPUQueue.prototype.onSubmittedWorkDone
     GPUQueue.prototype.onSubmittedWorkDone = function (this: GPUQueue) {
       const ms = ++slow.waits >= 3 ? 1500 : 80
-      return done.call(this).then(() => new Promise<undefined>((r) => setTimeout(() => r(undefined), ms)))
+      return new Promise<undefined>((r) => setTimeout(() => r(undefined), ms))
     }
     const submit = GPUQueue.prototype.submit
     GPUQueue.prototype.submit = function (this: GPUQueue, buffers: Iterable<GPUCommandBuffer>) {
@@ -342,7 +356,7 @@ for (const [query, backend] of [["?only=backdrop", "webgpu"]] as const) {
   await page.goto(base + "?only=shader-demo")
   const w = widget(page, "shader-demo")
   await w.locator('.pw-surface[data-backend="webgpu"]').waitFor({ timeout: 20000 }).catch(() => {})
-  const message = "the GPU work took over 1 s; the canvas is stopped"
+  const message = "the GPU work took over 250 ms; the canvas is stopped"
   await waitLog(page, (l) => l.startsWith("shader-demo client-error"), 8000)
   // The 1.5 s frame finishes after the hang: nothing more.
   await page.waitForTimeout(1500)
@@ -351,7 +365,7 @@ for (const [query, backend] of [["?only=backdrop", "webgpu"]] as const) {
   const alt = await w.evaluate((el) => el.shadowRoot!.querySelector(".pw-surface .pw-alt")?.textContent ?? "")
   check(
     lines.length === 1 && lines[0] === `shader-demo client-error ${message}` && slow.submits === 3 && alt.endsWith(message),
-    "shader: a frame unfinished 1 s after its submit stops it (a GPU hang, its placeholder with the message), before the 50 ms rule",
+    "shader: a frame unfinished 250 ms after its submit stops it (a GPU hang, its placeholder with the message), before the 50 ms rule",
     { lines, slow, alt },
   )
   check(errors.length === 0, "shader (hang): no page errors", errors)
@@ -1522,6 +1536,7 @@ for (const query of ["?only=shader-broken"]) {
         return device
       }
     })
+    await page.addInitScript(steady)
     await page.goto(base + "?only=confirm")
     await mount(page, gpu.restarted, 1500)
     const before = await canvases(page)
@@ -1541,7 +1556,7 @@ for (const query of ["?only=shader-broken"]) {
     await page.close()
   }
 
-  // A GPU hang: the first batch drawing a finishes 1.5 s after its submit. At 1 s a stops (a client error, its
+  // A GPU hang: the first batch drawing a finishes 1.5 s after its submit. At 250 ms a stops (a client error, its
   // placeholder with the message); b draws on; a later device loss restarts b, never a.
   {
     const page = await browser.newPage({ viewport: { width: 800, height: 600 } })
@@ -1565,12 +1580,14 @@ for (const query of ["?only=shader-broken"]) {
         if (this.canvas === first && !hang) hang = true
         return current.call(this)
       }
+      // That one 1.5 s, whatever SwiftShader takes; the rest when the GPU is done, or after 100 ms at most.
       let hung = false
       const done = GPUQueue.prototype.onSubmittedWorkDone
       GPUQueue.prototype.onSubmittedWorkDone = function (this: GPUQueue) {
-        if (!hang || hung) return done.call(this)
+        const after = (ms: number) => new Promise<undefined>((r) => setTimeout(() => r(undefined), ms))
+        if (!hang || hung) return Promise.race([done.call(this), after(100)])
         hung = true
-        return done.call(this).then(() => new Promise<undefined>((r) => setTimeout(() => r(undefined), 1500)))
+        return after(1500)
       }
     })
     await page.goto(base + "?only=confirm")
@@ -1581,11 +1598,11 @@ for (const query of ["?only=shader-broken"]) {
     await page.waitForTimeout(1500)
     const after = await canvases(page)
     const b = await centre(page, after.canvases[1]!.rect)
-    const message = "the GPU work took over 1 s; the canvas is stopped"
+    const message = "the GPU work took over 250 ms; the canvas is stopped"
     check(
       before.clientErrors.length === 1 && before.clientErrors[0] === message && before.reports.length === 0 &&
         before.canvases[0]!.alt === "A\n" + message && before.canvases[1]!.alt === "" && near(bDrawn, [0, 255, 0]),
-      "gpu: a batch unfinished 1 s after its submit stops the canvas it draws into (a client error, its placeholder with the message); the other draws on",
+      "gpu: a batch unfinished 250 ms after its submit stops the canvas it draws into (a client error, its placeholder with the message); the other draws on",
       { ...before, bDrawn },
     )
     check(
@@ -1660,6 +1677,7 @@ for (const query of ["?only=shader-broken"]) {
 {
   // Device loss: the program gets `{ type: "gpu", lost }`; the canvas shows its placeholder until it starts again.
   const page = await browser.newPage({ viewport: { width: 800, height: 600 } })
+  await page.addInitScript(steady)
   await page.addInitScript(() => {
     const w = window as unknown as { __devices: GPUDevice[]; __delivered: unknown[] }
     w.__devices = []

@@ -1,3 +1,4 @@
+import { Watchdog } from "./watchdog.js";
 /** What clients prepend to a widget template's WGSL. */
 export declare const HEADER = "struct Widget { resolution: vec2f, time: f32, scale: f32, pointer: vec4f, values: array<vec4f, 4> }\n@group(0) @binding(0) var<uniform> widget: Widget;\n";
 /** The uniform block: resolution, time, scale, pointer, values (std140 and WGSL agree: 96 bytes). */
@@ -18,8 +19,11 @@ export interface Surface {
     readonly backend: "webgpu";
     /** Whether the last frame is still drawing: no frame is submitted until it is done. */
     readonly drawing: boolean;
-    /** Draws a frame with `uniforms`; resolves with how long the GPU took when the backend can tell, else undefined. */
-    render(uniforms: Float32Array): Promise<number | undefined> | undefined;
+    /**
+     * Draws a frame with `uniforms`; resolves with how long the GPU took when the backend can tell, else undefined.
+     * `hang`: the frame hung (widgets-gpu.md, GPU hang), on the queue the shaders share.
+     */
+    render(uniforms: Float32Array, hang: () => void): Promise<number | undefined> | undefined;
     destroy(): void;
 }
 interface Gpu {
@@ -31,6 +35,8 @@ interface Gpu {
     /** Error scopes are the device's, not a pipeline's: builds take turns so one's errors can't land in another's scope. */
     turn: Promise<unknown>;
     layout: GPUBindGroupLayout;
+    /** The shaders' queue's: only a hung frame's canvas stops, not the frames queued behind it. */
+    watchdog: Watchdog;
 }
 export declare function webgpu(): Promise<Gpu | undefined>;
 /** Makes a surface for `wgsl` on `canvas` on WebGPU; without it, unavailable. */

@@ -7,7 +7,7 @@ import { canvasSize } from "./gpu-checks.js"
 import { paint } from "./canvas.js"
 import { markdown } from "./markdown.js"
 import type { Frame, Rect, ViewNode, WidgetEvent } from "./protocol.js"
-import { DRAW_BUDGET_MS, GPU_HANG, GPU_HANG_MS, MAX_FPS, MAX_SHADER_BYTES, MAX_SHADER_VALUES, OVERRUNS_TO_FREEZE, SHADER_FRAME_BUDGET_MS } from "./protocol.js"
+import { DRAW_BUDGET_MS, GPU_HANG, MAX_FPS, MAX_SHADER_BYTES, MAX_SHADER_VALUES, OVERRUNS_TO_FREEZE, SHADER_FRAME_BUDGET_MS } from "./protocol.js"
 import type { ShaderError, Surface } from "./shader.js"
 import { UNIFORM_FLOATS, surface } from "./shader.js"
 import type { Resolved } from "./theme.js"
@@ -1207,17 +1207,14 @@ export class GpuCanvasView extends SurfaceBase {
     u[5] = p ? p.y * this.scale : 0
     u[6] = p?.down ? 1 : 0
     u[7] = 0
-    const took = s.render(u)
-    if (!took) return
-    // A GPU hang (widgets-gpu.md): unfinished a second after its submit, it stops for good, before the 50 ms rule.
-    const hang = setTimeout(() => {
+    // A GPU hang (widgets-gpu.md): a frame that hung stops it for good, whatever the 50 ms rule has counted.
+    const took = s.render(u, () => {
       if (this.destroyed || this.hung) return
       this.hung = this.stopped = true
       this.ctx.clientError(GPU_HANG)
       this.showError(GPU_HANG)
-    }, GPU_HANG_MS)
-    void took.then((ms) => {
-      clearTimeout(hang)
+    })
+    void took?.then((ms) => {
       if (ms === undefined || this.stopped) return
       this.slow = ms > SHADER_FRAME_BUDGET_MS ? this.slow + 1 : 0
       if (this.slow >= OVERRUNS_TO_FREEZE && !this.stopped) {

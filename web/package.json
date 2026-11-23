@@ -1,7 +1,7 @@
 {
   "name": "psychoscript-web",
   "version": "0.1.0",
-  "description": "PsychoScript widgets in the browser: the Rust PsychoScript in WebAssembly, run in Web Workers, rendered with plain DOM, Canvas2D and WebGPU/WebGL2",
+  "description": "PsychoScript widgets in the browser: the Rust PsychoScript in WebAssembly, run in Web Workers, rendered with plain DOM, Canvas2D and WebGPU",
   "type": "module",
   "license": "MIT",
   "private": true,
@@ -16,7 +16,6 @@
     },
     "./worker.js": "./dist/worker.js",
     "./psychoscript_web_bg.wasm": "./dist/psychoscript_web_bg.wasm",
-    "./psychoscript_web_shader_bg.wasm": "./dist/psychoscript_web_shader_bg.wasm",
     "./package.json": "./package.json"
   },
   "main": "./dist/index.js",

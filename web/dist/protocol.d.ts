@@ -188,8 +188,8 @@ export declare const SLICE_BUDGET_MS = 50;
 export declare const MAX_FPS = 60;
 export declare const SHADER_FRAME_BUDGET_MS = 50;
 /** GPU work still unfinished this long after its submit is a hang (widgets-gpu.md, GPU hang): its canvases stop. */
-export declare const GPU_HANG_MS = 1000;
-export declare const GPU_HANG = "the GPU work took over 1 s; the canvas is stopped";
+export declare const GPU_HANG_MS = 250;
+export declare const GPU_HANG = "the GPU work took over 250 ms; the canvas is stopped";
 export declare const MAX_SHADER_BYTES: number;
 export declare const MAX_SHADER_VALUES = 16;
 /**

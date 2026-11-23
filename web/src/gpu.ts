@@ -15,7 +15,8 @@
 // canvas's context has COPY_DST; the rest are configured as the program's canvas texture is, RENDER_ATTACHMENT alone.
 
 import { type Checked, gpuChecks, type GpuError } from "./gpu-checks.js"
-import { GPU_HANG, GPU_HANG_MS } from "./protocol.js"
+import { GPU_HANG } from "./protocol.js"
+import { Watchdog } from "./watchdog.js"
 
 /** A batch as the worker hands it over: the ops, and the bytes they name by `[byteOffset, byteLength]`. */
 export interface Batch {
@@ -121,8 +122,9 @@ export class GpuReplay {
   /** Whether the batch replaying is a frame request's (it ends the frame), and a present is waiting for a frame. */
   private boundary = false
   private presenting = false
-  /** Whether the batch replaying submitted work (a GPU hang is timed from it). */
+  /** Whether the batch replaying submitted work (a GPU hang is timed from it), and the device's queue's watchdog. */
   private submitted = false
+  private watchdog: Watchdog | undefined
 
   constructor(private readonly host: GpuHost) {
     this.checks = gpuChecks(() => host.keys())
@@ -149,20 +151,16 @@ export class GpuReplay {
   }
 
   /**
-   * A GPU hang (widgets-gpu.md): the batch's work still unfinished `GPU_HANG_MS` after its submit stops the canvases it
-   * renders into, else every one, as an error would (later batches for them ignored, never restarted by a new device),
-   * with a client error. Timed without waiting: the work's completion clears the timer.
+   * A GPU hang (widgets-gpu.md, the device's watchdog): a batch's submitted work hung stops the canvases it renders
+   * into, else every one, as an error would (later batches for them ignored, never restarted by a new device), with a
+   * client error.
    */
-  private watch(device: GPUDevice, keys: ReadonlyArray<string>) {
-    const timer = setTimeout(() => {
-      if (this.closed) return
-      const error = this.checks.scoped(GPU_HANG, keys)
-      if (!error) return
-      this.host.clientError(GPU_HANG)
-      this.stop(error)
-    }, GPU_HANG_MS)
-    const done = () => clearTimeout(timer)
-    device.queue.onSubmittedWorkDone().then(done, done)
+  private hang(keys: ReadonlyArray<string>) {
+    if (this.closed) return
+    const error = this.checks.scoped(GPU_HANG, keys)
+    if (!error) return
+    this.host.clientError(GPU_HANG)
+    this.stop(error)
   }
 
   /** Stops `error`'s canvases (or every one): each shows its placeholder with the message. */
@@ -209,12 +207,15 @@ export class GpuReplay {
 
   private adopt(device: GPUDevice) {
     this.device = device
+    const watchdog = (this.watchdog = new Watchdog(device.queue))
     device.onuncapturederror = (e) => {
       const error = this.checks.scoped(e.error.message, [])
       if (error) this.fail(error)
     }
     void device.lost.then((info) => {
       if (this.closed || this.device !== device) return
+      // The oldest unfinished submit, running long enough, hung: its canvases stop before the loss stops the rest.
+      watchdog.lost()
       // Every handle is gone; the program may ask for a device again and make its resources anew (new handles). Until
       // it configures a canvas again, the canvas shows its placeholder; one an error stopped stays stopped.
       for (const o of this.objects) if (o?.kind === "context") o.ctx?.unconfigure()
@@ -267,7 +268,10 @@ export class GpuReplay {
       this.encoder = undefined
       this.pass = undefined
     }
-    if (this.submitted) this.watch(device, checked.keys)
+    if (this.submitted) {
+      const keys = checked.keys
+      this.watchdog!.submitted(() => this.hang(keys))
+    }
     // Drawn mid-frame: shown at the next display frame (the frame request's batch is shown by the frame's end).
     if (!boundary && !this.presenting && [...this.kept.values()].some((k) => k.dirty)) this.schedulePresent()
     this.host.metric(performance.now() - started)
@@ -594,6 +598,7 @@ export class GpuReplay {
     this.kept.clear()
     for (const o of this.objects) if (o?.kind === "context") o.ctx?.unconfigure()
     this.objects = []
+    this.watchdog?.stop()
     this.device?.destroy()
     this.device = undefined
   }

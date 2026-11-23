@@ -1,6 +1,8 @@
 // Canvases with `wgsl` (widgets.md, GPU canvases): the widget template's WGSL in a fixed full-screen pipeline on the
 // browser's WebGPU, the GPU canvases' path (widgets-gpu.md); without WebGPU, the placeholder (no WebGL fallback).
 
+import { Watchdog } from "./watchdog.js"
+
 /** What clients prepend to a widget template's WGSL. */
 export const HEADER =
   "struct Widget { resolution: vec2f, time: f32, scale: f32, pointer: vec4f, values: array<vec4f, 4> }\n@group(0) @binding(0) var<uniform> widget: Widget;\n"
@@ -30,8 +32,11 @@ export interface Surface {
   readonly backend: "webgpu"
   /** Whether the last frame is still drawing: no frame is submitted until it is done. */
   readonly drawing: boolean
-  /** Draws a frame with `uniforms`; resolves with how long the GPU took when the backend can tell, else undefined. */
-  render(uniforms: Float32Array): Promise<number | undefined> | undefined
+  /**
+   * Draws a frame with `uniforms`; resolves with how long the GPU took when the backend can tell, else undefined.
+   * `hang`: the frame hung (widgets-gpu.md, GPU hang), on the queue the shaders share.
+   */
+  render(uniforms: Float32Array, hang: () => void): Promise<number | undefined> | undefined
   destroy(): void
 }
 
@@ -46,6 +51,8 @@ interface Gpu {
   /** Error scopes are the device's, not a pipeline's: builds take turns so one's errors can't land in another's scope. */
   turn: Promise<unknown>
   layout: GPUBindGroupLayout
+  /** The shaders' queue's: only a hung frame's canvas stops, not the frames queued behind it. */
+  watchdog: Watchdog
 }
 
 let gpu: Promise<Gpu | undefined> | undefined
@@ -58,13 +65,15 @@ export function webgpu(): Promise<Gpu | undefined> {
       const adapter = await nav.gpu.requestAdapter({ powerPreference: "low-power" })
       if (!adapter) return undefined
       const device = await adapter.requestDevice()
+      const watchdog = new Watchdog(device.queue)
       void device.lost.then(() => {
+        watchdog.lost()
         gpu = undefined
       })
       const layout = device.createBindGroupLayout({
         entries: [{ binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } }],
       })
-      return { adapter, device, format: nav.gpu.getPreferredCanvasFormat(), pipelines: new Map(), layout, turn: Promise.resolve() }
+      return { adapter, device, format: nav.gpu.getPreferredCanvasFormat(), pipelines: new Map(), layout, turn: Promise.resolve(), watchdog }
     } catch {
       return undefined
     }
@@ -125,7 +134,7 @@ async function gpuSurface(g: Gpu, canvas: HTMLCanvasElement, wgsl: string): Prom
     get drawing() {
       return drawing
     },
-    render(uniforms) {
+    render(uniforms, hang) {
       if (destroyed || canvas.width === 0 || canvas.height === 0) return undefined
       g.device.queue.writeBuffer(buffer, 0, uniforms.buffer, uniforms.byteOffset, uniforms.byteLength)
       const encoder = g.device.createCommandEncoder()
@@ -142,7 +151,7 @@ async function gpuSurface(g: Gpu, canvas: HTMLCanvasElement, wgsl: string): Prom
       g.device.queue.submit([encoder.finish()])
       // One frame drawing at a time: the time is this frame's rather than a queue of them.
       drawing = true
-      return g.device.queue.onSubmittedWorkDone().then(
+      return g.watchdog.submitted(hang).then(
         () => {
           drawing = false
           return timing ? performance.now() - started : undefined
