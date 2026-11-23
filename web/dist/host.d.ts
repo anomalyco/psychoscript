@@ -259,6 +259,8 @@ declare class Widget implements MountedWidget {
     private exited;
     private loading;
     private render;
+    /** The canvas or shader captured pointer events go to: the first that takes pointer input. */
+    private pointerSurface;
     /**
      * The focus hint: a keyboard icon plus "Esc" (a cursor icon while the pointer is captured). Touch devices show it only
      * once a hardware keyboard typed, and then the icon alone.

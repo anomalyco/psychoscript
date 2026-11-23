@@ -1,5 +1,5 @@
 //! The native host against the conformance fixtures (opencode `packages/widget/test/fixtures/wire`, at widgets
-//! 35f0712e3, with its `prelude.js`). Each fixture holds a widget template `source` and a step `input`, `built` (the
+//! e2a4c7a3c, with its `prelude.js`). Each fixture holds a widget template `source` and a step `input`, `built` (the
 //! view as emitted, each function as `"$function"`) when it crosses, and either `view`, `handlers`, `canvases` and
 //! `result`, or `error`. `<name>.wire` is `JSON.stringify(view)`, made from the fixture with
 //! `bun -e 'for (const f of fs.readdirSync(".")) if (f.endsWith(".json")) { const d = JSON.parse(fs.readFileSync(f)); if ("view" in d) fs.writeFileSync(f.replace(/json$/, "wire"), JSON.stringify(d.view)) }'`.
@@ -119,7 +119,7 @@ fn fixtures() -> Vec<Fixture> {
         });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
-    assert_eq!(out.len(), 56);
+    assert_eq!(out.len(), 58);
     out
 }
 
@@ -190,7 +190,7 @@ fn every_fixture_walks_from_its_built_view() {
         }
         walked += 1;
     }
-    assert_eq!(walked, 55);
+    assert_eq!(walked, 57);
 }
 
 /// Each fixture's program run natively on its input with real function markers: the view `__widget_emit` gets is
@@ -281,7 +281,7 @@ fn every_fixture_runs_natively_to_its_view_result_or_error() {
         }
         count += 1;
     }
-    assert_eq!(count, 56);
+    assert_eq!(count, 58);
 }
 
 /// The walk counts levels itself, for views the boundary lets through (its default depth stops them at 16 levels).

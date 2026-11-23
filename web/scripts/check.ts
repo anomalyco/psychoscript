@@ -810,6 +810,103 @@ function view(state, data) {
   await page.close()
 }
 
+// ---------- the wheel (widgets-input.md, Wheel): delivered only under pointer capture ----------
+{
+  const { page, errors } = await open("?only=confirm", { width: 800, height: 600 })
+  const live = `async function main() {
+  let wheels = 0, dx = 0, dy = 0, keys = ""
+  const show = () => widget.render(ui.column([
+    ui.canvas({ height: 120, onPointer: (p) => {
+      if (p.kind === "down") widget.capturePointer()
+      if (p.kind === "wheel") { wheels++; dx += p.dx; dy += p.dy; keys = Object.keys(p).join(); show() }
+    } }),
+    ui.text("wheels " + wheels + " dx " + dx + " dy " + dy + " keys " + keys),
+  ]))
+  show()
+  await widget.sleep(100000)
+}`
+  await page.evaluate((source) => {
+    const d = (window as unknown as { __demo: { host: { mount(el: HTMLElement, o: object): unknown }; program(s: string, m: string): string } }).__demo
+    document.body.style.minHeight = "4000px"
+    const slot = document.createElement("div")
+    slot.id = "wheel-slot"
+    slot.style.cssText = "position:absolute;left:0;top:0;width:400px;z-index:9999;background:#fff"
+    document.body.prepend(slot)
+    d.host.mount(slot, { program: d.program(source, "live"), data: null, mode: "live" })
+  }, live)
+  await page.waitForTimeout(1500)
+  const root = page.locator("#wheel-slot .psychoscript-widget")
+  const text = async () => (await root.locator(".pw-text").allTextContents()).join(" | ")
+  const scrollY = () => page.evaluate(() => window.scrollY)
+  const c = (await root.locator(".pw-surface canvas").boundingBox())!
+  // Wheel events dispatched in one task, at the canvas (none under capture: the document's listener takes them).
+  const wheel = (events: Array<{ deltaX: number; deltaY: number; deltaMode: number }>) =>
+    root.evaluate((el, events) => {
+      const canvas = el.shadowRoot!.querySelector(".pw-surface canvas")!
+      const r = canvas.getBoundingClientRect()
+      return events.map((e) => canvas.dispatchEvent(new WheelEvent("wheel", { ...e, clientX: r.x + 10, clientY: r.y + 10, bubbles: true, cancelable: true, composed: true })))
+    }, events)
+
+  // Without capture: never delivered, never prevented; the page scrolls over a canvas that takes pointer input too.
+  const free = await wheel([{ deltaX: 0, deltaY: 40, deltaMode: 0 }])
+  await page.mouse.move(c.x + c.width / 2, c.y + c.height / 2)
+  await page.mouse.wheel(0, 300)
+  await page.waitForTimeout(500)
+  const uncaptured = { prevented: free.some((k) => !k), scrollY: await scrollY(), text: await text() }
+  check(
+    !uncaptured.prevented && uncaptured.scrollY > 0 && /wheels 0 /.test(uncaptured.text),
+    "wheel: without pointer capture it is never delivered nor prevented: the page scrolls, over a canvas with pointer too",
+    uncaptured,
+  )
+  await page.evaluate(() => window.scrollTo(0, 0))
+  await page.waitForTimeout(300)
+
+  // Under capture: { kind: wheel, dx, dy } where captured moves go, summed into one delivery a frame, prevented.
+  const box = (await root.locator(".pw-surface canvas").boundingBox())!
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
+  await page.waitForTimeout(300)
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
+  await page.waitForTimeout(300)
+  const locked = await page.evaluate(() => document.pointerLockElement !== null)
+  const kept = await wheel([
+    { deltaX: 10, deltaY: 40, deltaMode: 0 },
+    { deltaX: 10, deltaY: 40, deltaMode: 0 },
+    { deltaX: 10, deltaY: 40, deltaMode: 0 },
+  ])
+  await page.waitForTimeout(500)
+  const summed = await text()
+  check(
+    locked && kept.every((k) => k === false) && /wheels 1 dx 30 dy 120 keys kind,dx,dy/.test(summed),
+    "wheel: under pointer capture it is { kind: wheel, dx, dy }, a frame's events summed into one delivery; prevented",
+    { locked, kept, summed },
+  )
+  await wheel([{ deltaX: 0, deltaY: 3, deltaMode: 1 }])
+  await page.waitForTimeout(400)
+  const lines = await text()
+  await wheel([{ deltaX: 1, deltaY: -1, deltaMode: 2 }])
+  await page.waitForTimeout(400)
+  const pages = await text()
+  check(
+    /wheels 2 dx 30 dy 240 /.test(lines) && new RegExp(`wheels 3 dx ${30 + Math.round(box.width)} dy ${240 - Math.round(box.height)} `).test(pages),
+    "wheel: lines are 40 px, pages the canvas's logical height (its width for dx)",
+    { lines, pages, width: box.width, height: box.height },
+  )
+  await page.mouse.wheel(0, 300)
+  await page.waitForTimeout(500)
+  const real = { scrollY: await scrollY(), text: await text() }
+  check(real.scrollY === 0 && /wheels 4 /.test(real.text), "wheel: under pointer capture a real wheel is delivered and the page doesn't scroll", real)
+  // Released: the listener goes; the page scrolls again and nothing is delivered.
+  await page.keyboard.press("Escape")
+  await page.waitForTimeout(400)
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  await page.mouse.wheel(0, 300)
+  await page.waitForTimeout(500)
+  const released = { locked: await page.evaluate(() => document.pointerLockElement !== null), scrollY: await scrollY(), text: await text() }
+  check(!released.locked && released.scrollY > 0 && /wheels 4 /.test(released.text), "wheel: once capture ends, the page scrolls again and nothing is delivered", released)
+  check(errors.length === 0, "wheel: no page errors", errors)
+  await page.close()
+}
+
 // ---------- keyboard focus and pointer capture ----------
 {
   const { page, errors } = await open("?only=keys-demo")

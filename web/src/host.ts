@@ -541,7 +541,11 @@ class Widget implements MountedWidget {
       escape: () => {
         if (this.isFullscreen) void this.closeFullscreen()
       },
-      pointerId: () => surfaces(this.viewEl).find((s) => s.id !== null && s.node.pointer === true)?.id ?? "",
+      pointerId: () => this.pointerSurface()?.id ?? "",
+      pointerSize: () => {
+        const s = this.pointerSurface()
+        return { width: s?.width ?? 0, height: s?.height ?? 0 }
+      },
       changed: (focused, captured, keys) => {
         if (focused) this.element.dataset.focused = ""
         else delete this.element.dataset.focused
@@ -810,6 +814,11 @@ class Widget implements MountedWidget {
       const at = performance.now()
       requestAnimationFrame(() => this.metric("init", at - this.mountedAt))
     }
+  }
+
+  /** The canvas or shader captured pointer events go to: the first that takes pointer input. */
+  private pointerSurface() {
+    return surfaces(this.viewEl).find((s) => s.id !== null && s.node.pointer === true)
   }
 
   /**

@@ -16,6 +16,11 @@ export interface InputHost {
     escape(): void;
     /** The `id` for captured pointer events: the first canvas or shader with one. */
     pointerId(): string;
+    /** That canvas's logical size: a wheel's page under capture (widgets-input.md, Wheel). */
+    pointerSize(): {
+        width: number;
+        height: number;
+    };
     /**
      * Focus or capture changed (or the first key from a hardware keyboard arrived): show or hide the ring and the hint.
      * `keys`: a physical keyboard is known to be there (on touch devices, the hint shows only then).
@@ -31,6 +36,9 @@ export declare class Input {
     private held;
     private dx;
     private dy;
+    /** The wheel under capture, summed until the frame's flush. */
+    private wheelX;
+    private wheelY;
     /** A release we asked for (the program let go): focus stays. */
     private letGo;
     private readonly doc;
@@ -49,6 +57,7 @@ export declare class Input {
     private onLockChange;
     private stopMoves;
     private onMove;
+    private onWheel;
     private flush;
     private onButton;
 }

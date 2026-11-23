@@ -20,6 +20,8 @@ export interface InputHost {
   escape(): void
   /** The `id` for captured pointer events: the first canvas or shader with one. */
   pointerId(): string
+  /** That canvas's logical size: a wheel's page under capture (widgets-input.md, Wheel). */
+  pointerSize(): { width: number; height: number }
   /**
    * Focus or capture changed (or the first key from a hardware keyboard arrived): show or hide the ring and the hint.
    * `keys`: a physical keyboard is known to be there (on touch devices, the hint shows only then).
@@ -40,6 +42,9 @@ export class Input {
   private held = new Map<string, string>()
   private dx = 0
   private dy = 0
+  /** The wheel under capture, summed until the frame's flush. */
+  private wheelX = 0
+  private wheelY = 0
   /** A release we asked for (the program let go): focus stays. */
   private letGo = false
   private readonly doc: Document
@@ -177,6 +182,7 @@ export class Input {
       this.doc.addEventListener("mousemove", this.onMove)
       this.doc.addEventListener("mousedown", this.onButton)
       this.doc.addEventListener("mouseup", this.onButton)
+      this.doc.addEventListener("wheel", this.onWheel, { passive: false })
       if (!this.focused) this.h.element.focus({ preventScroll: true })
       this.h.emit({ id: "", type: "capture", value: true })
     } else {
@@ -199,6 +205,7 @@ export class Input {
     this.doc.removeEventListener("mousemove", this.onMove)
     this.doc.removeEventListener("mousedown", this.onButton)
     this.doc.removeEventListener("mouseup", this.onButton)
+    this.doc.removeEventListener("wheel", this.onWheel)
     this.h.ticker.delete(this.flush)
   }
 
@@ -209,12 +216,31 @@ export class Input {
     this.h.ticker.add(this.flush)
   }
 
+  // The wheel is delivered only under pointer capture (widgets-input.md, Wheel), where captured moves go, as
+  // `{ kind: "wheel", dx, dy }`, and then the page doesn't scroll; otherwise there is no listener and the page scrolls
+  // as usual. Lines are 40 px, pages that canvas's logical height (its width for `dx`).
+  private onWheel = (e: WheelEvent) => {
+    e.preventDefault()
+    const page = e.deltaMode === WheelEvent.DOM_DELTA_PAGE ? this.h.pointerSize() : undefined
+    const [ux, uy] = e.deltaMode === WheelEvent.DOM_DELTA_LINE ? [40, 40] : page ? [page.width, page.height] : [1, 1]
+    this.wheelX += e.deltaX * ux
+    this.wheelY += e.deltaY * uy
+    this.h.ticker.add(this.flush)
+  }
+
+  // At most one relative move and one wheel a frame.
   private flush = () => {
     this.h.ticker.delete(this.flush)
-    if (this.dx === 0 && this.dy === 0) return
-    const value = { kind: "move", dx: this.dx, dy: this.dy }
-    this.dx = this.dy = 0
-    this.h.emit({ id: this.h.pointerId(), type: "pointer", value })
+    if (this.dx !== 0 || this.dy !== 0) {
+      const value = { kind: "move", dx: this.dx, dy: this.dy }
+      this.dx = this.dy = 0
+      this.h.emit({ id: this.h.pointerId(), type: "pointer", value })
+    }
+    if (this.wheelX !== 0 || this.wheelY !== 0) {
+      const value = { kind: "wheel", dx: this.wheelX, dy: this.wheelY }
+      this.wheelX = this.wheelY = 0
+      this.h.emit({ id: this.h.pointerId(), type: "pointer", value })
+    }
   }
 
   private onButton = (e: MouseEvent) => {
