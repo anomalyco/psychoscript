@@ -439,8 +439,8 @@ impl Checks {
         }
     }
 
-    /// The keys of the canvases a batch renders into, in order: a pass's color attachment that is a view of a
-    /// context, made in this batch or earlier.
+    /// The keys of the canvases a batch renders into, in order: a pass's color attachment or resolve target that is
+    /// a view of a context, made in this batch or earlier.
     pub(crate) fn rendered(&self, ops: &[Arg]) -> Vec<String> {
         let mut textures = HashMap::new();
         let mut contexts = HashMap::new();
@@ -483,39 +483,41 @@ impl Checks {
             };
             for a in attachments {
                 let Arg::Obj(a) = a else { continue };
-                let Some(Arg::Num(view)) = Rec(a).get("view") else {
-                    continue;
-                };
-                let texture = textures.get(&view.to_bits()).copied().or_else(|| {
-                    self.handles
-                        .get(&(*view as u64))
-                        .filter(|f| f.kind == Kind::View && view.fract() == 0.0 && *view >= 0.0)
-                        .map(|f| f.texture)
-                });
-                if let Some(key) = texture.and_then(context)
-                    && !keys.contains(&key)
-                {
-                    keys.push(key);
+                for member in ["view", "resolveTarget"] {
+                    let Some(Arg::Num(view)) = Rec(a).get(member) else {
+                        continue;
+                    };
+                    let texture = textures.get(&view.to_bits()).copied().or_else(|| {
+                        self.handles
+                            .get(&(*view as u64))
+                            .filter(|f| f.kind == Kind::View && view.fract() == 0.0 && *view >= 0.0)
+                            .map(|f| f.texture)
+                    });
+                    if let Some(key) = texture.and_then(context)
+                        && !keys.contains(&key)
+                    {
+                        keys.push(key);
+                    }
                 }
             }
         }
         keys
     }
 
-    /// Checks a batch. `frame`: it came with a frame request, which ends the frame its limits count.
+    /// A `widget.frame()`: the per-frame counts start again.
+    pub(crate) fn end_frame(&mut self) {
+        self.passes = 0;
+        self.draws = 0;
+    }
+
+    /// Checks a batch.
     pub(crate) fn batch(
         &mut self,
         ops: &[Arg],
         bytes: usize,
-        frame: bool,
         canvas: &dyn Fn(&str) -> bool,
     ) -> Result<(), Failed> {
-        let r = self.ops(ops, bytes, canvas);
-        if frame {
-            self.passes = 0;
-            self.draws = 0;
-        }
-        r
+        self.ops(ops, bytes, canvas)
     }
 
     fn ops(
@@ -1179,7 +1181,7 @@ mod tests {
                 "multisample": { "count": 1, "mask": 4294967295u32, "alphaToCoverageEnabled": false } }],
         ]));
         let canvas = |k: &str| k == "scene";
-        assert!(c.batch(&setup, 0, true, &canvas).is_ok());
+        assert!(c.batch(&setup, 0, &canvas).is_ok());
         let mut frame = Vec::new();
         for k in 0..10 {
             frame.push(json!(["writeBuffer", 3, k * 6400, k * 6400, 6400]));
@@ -1203,7 +1205,8 @@ mod tests {
         let n = 20_000;
         let start = std::time::Instant::now();
         for _ in 0..n {
-            assert!(c.batch(&frame, 65536, true, &canvas).is_ok());
+            assert!(c.batch(&frame, 65536, &canvas).is_ok());
+            c.end_frame();
             assert_eq!(c.rendered(&frame), ["scene"]);
         }
         eprintln!("host checks of a 48-op batch: {:?}", start.elapsed() / n);

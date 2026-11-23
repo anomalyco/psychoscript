@@ -144,10 +144,11 @@ fn replay(device: &wgpu::Device, queue: &wgpu::Queue, f: &Value) -> (Gpu, Vec<Va
     let mut errors = Vec::new();
     let mut frame = 0;
     for b in &batches {
-        if let Err(e) = gpu.apply(&b.ops, &b.bytes, b.frame) {
+        if let Err(e) = gpu.apply(&b.ops, &b.bytes) {
             errors.push(error_json(&e));
         }
         if b.frame {
+            gpu.end_frame();
             for i in inputs.iter().filter(|i| i["frame"] == frame) {
                 let i = &i["input"];
                 if i["type"] == "canvas" {

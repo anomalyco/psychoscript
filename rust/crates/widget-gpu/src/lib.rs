@@ -3,8 +3,10 @@
 //!
 //! One [`Gpu`] per widget run. The host:
 //! - calls [`Gpu::resize`] for each `gpu: true` canvas of the last render posted, when it sends the program that
-//!   canvas's size (`{ type: "canvas", key, width, height }`), and [`Gpu::remove`] for one that left the view;
-//! - calls [`Gpu::apply`] with each batch's ops and bytes, saying whether it rode a frame request;
+//!   canvas's size (`{ type: "canvas", key, width, height }`, the size from [`clamp_size`]), and [`Gpu::remove`] for
+//!   one that left the view;
+//! - calls [`Gpu::apply`] with each batch's ops and bytes, and [`Gpu::end_frame`] at each frame request, after the
+//!   batch it carries;
 //! - shows [`Gpu::canvas`]'s texture for each GPU canvas, presenting again when its `version` moves;
 //! - on an `Err`, shows the placeholder with the error on the canvases it stops ([`GpuError::canvases`]) and
 //!   reports it (phase [`PHASE`]) when it is the program's ([`ErrorKind::Program`]), else logs it. [`Gpu::error`]
@@ -45,6 +47,20 @@ pub fn device_limits() -> wgpu::Limits {
         max_buffer_size: check::BUFFER as u64,
         ..wgpu::Limits::default()
     }
+}
+
+/// A canvas's backing size: its physical pixels, scaled down to fit `maxTextureDimension2D` (4096) with the aspect
+/// kept (each side at least 1). The host sends the program this size and passes it to [`Gpu::resize`].
+pub fn clamp_size(width: u32, height: u32) -> (u32, u32) {
+    let max = check::DIMENSION as u32;
+    let long = width.max(height);
+    if long <= max {
+        return (width, height);
+    }
+    let fit = |side: u32| {
+        ((side as u64 * max as u64 + long as u64 / 2) / long as u64).clamp(1, max as u64) as u32
+    };
+    (fit(width), fit(height))
 }
 
 /// The canvas format a backend's surfaces prefer: what the host passes as the live input's `gpu.format`.
@@ -156,6 +172,8 @@ struct Target {
     format: Option<wgpu::TextureFormat>,
     alpha: AlphaMode,
     texture: Option<wgpu::Texture>,
+    /// No pass has drawn into it since the frame began: the next one starts from transparent.
+    fresh: bool,
     /// Counts textures made, for views of it.
     made: u64,
     version: u64,
@@ -373,10 +391,18 @@ impl Gpu {
         Ok(())
     }
 
-    /// Checks and replays a batch: its creation ops, writes and submitted commands, in order. `frame`: it rode a
-    /// frame request, which ends the frame the per-frame limits count. An error ends the batch and stops canvases
-    /// ([`Stops`]); one that would only stop canvases already stopped isn't returned again.
-    pub fn apply(&mut self, ops: &[Arg], bytes: &[u8], frame: bool) -> Result<(), GpuError> {
+    /// A frame request (`widget.frame()`), after applying the batch it carries: the per-frame limits count again,
+    /// and each canvas's first pass of the next frame starts from transparent, as a WebGPU canvas's texture does.
+    pub fn end_frame(&mut self) {
+        self.checks.end_frame();
+        for t in &mut self.canvases {
+            t.fresh = true;
+        }
+    }
+
+    /// Checks and replays a batch: its creation ops, writes and submitted commands, in order. An error ends the
+    /// batch and stops canvases ([`Stops`]); one that would only stop canvases already stopped isn't returned again.
+    pub fn apply(&mut self, ops: &[Arg], bytes: &[u8]) -> Result<(), GpuError> {
         if self.all.is_some() {
             return Ok(());
         }
@@ -389,7 +415,7 @@ impl Gpu {
             .collect();
         let checked = self
             .checks
-            .batch(ops, bytes.len(), frame, &|k| present.contains(&k));
+            .batch(ops, bytes.len(), &|k| present.contains(&k));
         let failed = match checked {
             Err(Failed::Stale) => return Ok(()),
             Err(Failed::Message(m)) => Some((ErrorKind::Program, m)),
@@ -455,6 +481,7 @@ impl Gpu {
                     format: None,
                     alpha: AlphaMode::Opaque,
                     texture: None,
+                    fresh: true,
                     made: 0,
                     version: 0,
                 });
