@@ -49,17 +49,16 @@ pub fn device_limits() -> wgpu::Limits {
     }
 }
 
-/// A canvas's backing size: its physical pixels, scaled down to fit `maxTextureDimension2D` (4096) with the aspect
-/// kept (each side at least 1). The host sends the program this size and passes it to [`Gpu::resize`].
+/// A canvas's backing size (`widgets-gpu.md`, Canvas size): its physical pixels, or when the larger side is over
+/// `maxTextureDimension2D` (4096), that side 4096 and the other ⌊side × 4096 / larger⌋, at least 1. The host sends
+/// the program this size and passes it to [`Gpu::resize`].
 pub fn clamp_size(width: u32, height: u32) -> (u32, u32) {
     let max = check::DIMENSION as u32;
     let long = width.max(height);
     if long <= max {
         return (width, height);
     }
-    let fit = |side: u32| {
-        ((side as u64 * max as u64 + long as u64 / 2) / long as u64).clamp(1, max as u64) as u32
-    };
+    let fit = |side: u32| (side as u64 * max as u64 / long as u64).max(1) as u32;
     (fit(width), fit(height))
 }
 
@@ -336,7 +335,8 @@ impl Gpu {
         }
     }
 
-    /// The error that stopped the canvas with that key, until the widget run ends.
+    /// The error that stopped the canvas with that key. A canvas an error stopped stays stopped for the run: after
+    /// [`Gpu::remove`] and a later [`Gpu::resize`] under the same key, and after [`Gpu::reset`].
     pub fn error(&self, key: &str) -> Option<&GpuError> {
         self.stopped.get(key).or(self.all.as_ref())
     }
@@ -375,9 +375,11 @@ impl Gpu {
         })
     }
 
-    /// After a device loss: every handle is gone, replay goes on with `device`; new handles keep counting up. A
-    /// batch the program posted before it learned of the loss (one naming a handle from before) is dropped. Canvas
-    /// sizes and stopped canvases are kept.
+    /// After a device loss: every handle is gone, replay goes on with `device`; new handles keep counting up. The
+    /// canvases the loss stopped (every canvas's texture is dropped) draw again once the program renders into them;
+    /// a canvas an error stopped stays stopped. A batch the program posted before it learned of the loss is dropped
+    /// quietly: one whose first failure is `no handle <h>`, `h` from 1 to the greatest handle made before the loss.
+    /// Canvas sizes are kept.
     pub fn reset(&mut self, device: wgpu::Device, queue: wgpu::Queue) -> Result<(), GpuError> {
         check_device(&device, self.format)?;
         self.device = device;
@@ -391,8 +393,10 @@ impl Gpu {
         Ok(())
     }
 
-    /// A frame request (`widget.frame()`), after applying the batch it carries: the per-frame limits count again,
-    /// and each canvas's first pass of the next frame starts from transparent, as a WebGPU canvas's texture does.
+    /// A frame request (`widget.frame()`), with a batch or without, after applying the batch: the per-frame limits
+    /// count again, and the canvases are cleared to transparent for the next frame. The texture is kept, so the clear
+    /// happens at the frame's first pass into each canvas (its load becomes a transparent clear): a frame with no
+    /// pass into a canvas leaves the last presented image showing.
     pub fn end_frame(&mut self) {
         self.checks.end_frame();
         for t in &mut self.canvases {

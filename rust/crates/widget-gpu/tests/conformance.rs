@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use psychoscript::{HostFunction, HostValue, Runtime};
 use serde_json::{Value, json};
-use widget_gpu::{Arg, Gpu, GpuError, Stops};
+use widget_gpu::{Arg, Gpu, GpuError, Stops, clamp_size};
 
 struct Posted {
     frame: bool,
@@ -110,9 +110,16 @@ fn error_json(e: &GpuError) -> Value {
     })
 }
 
-/// Replays a fixture as the driver posts it: the canvas sizes first, then the batches, a frame's canvas inputs
-/// after the batch of the frame request that frame answers.
+/// Frame requests that carried no batch, which a fixture's `batches` don't record: (fixture, the index of the batch
+/// they came before). `frame-counts-reset-at-a-bare-frame`'s program posts its first 10 passes before a sleep, then
+/// asks for a frame with nothing pending, then posts 10 more with the next.
+const BARE_FRAMES: &[(&str, usize)] = &[("frame-counts-reset-at-a-bare-frame", 2)];
+
+/// Replays a fixture as its driver runs it: the canvas sizes (clamped) first, then the batches in order. After a
+/// frame request (a batch that rode one, or a bare one), that frame's inputs (`canvas` messages, device losses), then
+/// its inputs marked `after`.
 fn replay(device: &wgpu::Device, queue: &wgpu::Queue, f: &Value) -> (Gpu, Vec<Value>) {
+    let name = f["name"].as_str().unwrap();
     let mut gpu = Gpu::new(
         device.clone(),
         queue.clone(),
@@ -120,9 +127,13 @@ fn replay(device: &wgpu::Device, queue: &wgpu::Queue, f: &Value) -> (Gpu, Vec<Va
     )
     .unwrap();
     assert_eq!(gpu.preferred_format(), f["gpu"]["format"].as_str().unwrap());
-    for c in f["canvases"].as_array().unwrap() {
+    let resize = |gpu: &mut Gpu, c: &Value| {
         let size = |k: &str| c[k].as_u64().unwrap() as u32;
-        gpu.resize(c["key"].as_str().unwrap(), size("width"), size("height"));
+        let (w, h) = clamp_size(size("width"), size("height"));
+        gpu.resize(c["key"].as_str().unwrap(), w, h);
+    };
+    for c in f["canvases"].as_array().unwrap() {
+        resize(&mut gpu, c);
     }
     let batches: Vec<Posted> = match f.get("batches") {
         Some(b) => b
@@ -142,22 +153,36 @@ fn replay(device: &wgpu::Device, queue: &wgpu::Queue, f: &Value) -> (Gpu, Vec<Va
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let mut errors = Vec::new();
     let mut frame = 0;
-    for b in &batches {
+    let mut frame_request = |gpu: &mut Gpu| {
+        gpu.end_frame();
+        for after in [false, true] {
+            let now = inputs.iter().filter(|i| {
+                i["frame"] == frame && i.get("after").is_some_and(|a| a == true) == after
+            });
+            for i in now {
+                let i = &i["input"];
+                match i["type"].as_str() {
+                    Some("canvas") => resize(gpu, i),
+                    Some("gpu") if i.get("lost").is_some() => {
+                        gpu.reset(device.clone(), queue.clone()).unwrap()
+                    }
+                    _ => {}
+                }
+            }
+        }
+        frame += 1;
+    };
+    let mut errors = Vec::new();
+    for (at, b) in batches.iter().enumerate() {
+        if BARE_FRAMES.contains(&(name, at)) {
+            frame_request(&mut gpu);
+        }
         if let Err(e) = gpu.apply(&b.ops, &b.bytes) {
             errors.push(error_json(&e));
         }
         if b.frame {
-            gpu.end_frame();
-            for i in inputs.iter().filter(|i| i["frame"] == frame) {
-                let i = &i["input"];
-                if i["type"] == "canvas" {
-                    let size = |k: &str| i[k].as_u64().unwrap() as u32;
-                    gpu.resize(i["key"].as_str().unwrap(), size("width"), size("height"));
-                }
-            }
-            frame += 1;
+            frame_request(&mut gpu);
         }
     }
     device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
@@ -258,4 +283,41 @@ fn post_processing_shows_the_offscreen_triangle() {
     // The middle: inside the triangle, its colors blended, with no vignette.
     let [r, g, b, _] = at(w / 2, h / 2);
     assert!(r > 60 && g > 60 && b > 60, "{:?}", at(w / 2, h / 2));
+}
+
+#[test]
+fn canvases_are_clamped_to_4096() {
+    let (device, queue) = common::device();
+    let (_, f) = fixtures()
+        .into_iter()
+        .find(|(n, _)| n == "canvas-clamped-to-4096")
+        .unwrap();
+    // The program made its depth textures at the clamped sizes it was told: 5120 × 2880 and then 9000 × 1000.
+    let sizes: Vec<_> = f["batches"].as_array().unwrap()[1..]
+        .iter()
+        .map(|b| {
+            (
+                b["ops"][0][2].as_u64().unwrap(),
+                b["ops"][0][3].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(sizes, [(4096, 2304), (4096, 455)]);
+    let (_, errors) = replay(&device, &queue, &f);
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
+fn a_lost_device_drops_the_batches_from_before_it() {
+    let (device, queue) = common::device();
+    let (_, f) = fixtures()
+        .into_iter()
+        .find(|(n, _)| n == "lost-device-drops-earlier-batches")
+        .unwrap();
+    let (gpu, errors) = replay(&device, &queue, &f);
+    assert!(errors.is_empty(), "{errors:?}");
+    // Drawn once before the loss; the batch on the old view dropped; drawn twice on the new device.
+    let c = gpu.canvas("scene").unwrap();
+    assert_eq!(c.version, 3);
+    assert!(gpu.error("scene").is_none());
 }

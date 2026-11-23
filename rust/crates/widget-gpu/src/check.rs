@@ -185,7 +185,8 @@ struct Handle {
 /// Why a batch fails the checks.
 pub(crate) enum Invalid {
     Msg(String),
-    /// `no handle <h>`: a batch from before a device loss when `h` is that old.
+    /// `no handle <h>`: as a batch's first failure, a batch from before a device loss when `h` is from 1 to the
+    /// greatest handle made before it.
     Missing(f64),
 }
 
@@ -530,7 +531,7 @@ impl Checks {
         let failed = move |e: Invalid, at: Option<usize>| {
             let prefix = at.map_or(String::new(), |i| format!("gpu op {i}: "));
             match e {
-                Invalid::Missing(h) if h <= stale => Failed::Stale,
+                Invalid::Missing(h) if h >= 1.0 && h <= stale => Failed::Stale,
                 Invalid::Missing(h) => Failed::Message(format!("{prefix}no handle {}", num(h))),
                 Invalid::Msg(m) => Failed::Message(format!("{prefix}{m}")),
             }
