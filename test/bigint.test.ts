@@ -165,6 +165,17 @@ describe("BigInt", () => {
     expect(performance.now() - started).toBeLessThan(500)
   })
 
+  test("the default sort converts equal huge BigInts once", async () => {
+    const started = performance.now()
+    expect(
+      await value(`const base = 2n ** 1048575n
+        const sorted = Array.from({ length: 200 }, (_, i) => base + BigInt((i * 3) % 5)).sort()
+        return [sorted.length, String(sorted[0] - base), String(sorted[39] - base), String(sorted[40] - base),
+          String(sorted[199] - base)]`),
+    ).toEqual([200, "0", "0", "1", "4"])
+    expect(performance.now() - started).toBeLessThan(1000)
+  })
+
   test("shows a BigInt with its suffix in the console", async () => {
     const result = await Runtime.make().execute("console.log(1n, [2n], { a: 3n }, new Map([[4n, 5n]])); return 0")
     expect(result.logs).toEqual(['1n [2n] {"a":3n} Map(1) [[4n,5n]]'])

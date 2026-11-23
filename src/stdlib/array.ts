@@ -94,12 +94,16 @@ export const sortArray = <R>(
   if (target instanceof Arr) for (let index = 0; index < items.length; index++) if (!(index in target.items)) holes++
   const callback = comparator === undefined ? undefined : requireCallback(comparator, into)
   if (callback === undefined && items.length <= SORT_RUN) {
+    const keys = sortKeys(items)
+    // Undefined entries stay undefined so sort still puts them last.
+    const keyed = items.map((item, at) => (item === undefined ? undefined : ([keys[at]!, item] as const)))
+    keyed.sort((a, b) => compareText(a![0], b![0]))
     return sorted(
       builtins,
       target,
       into,
       holes,
-      items.sort((a, b) => compareText(coerceToString(a), coerceToString(b))),
+      keyed.map((entry) => entry?.[1]),
     )
   }
   const defined = new Arr(
@@ -121,6 +125,19 @@ export const sortArray = <R>(
   plan(0, defined.items.length)
   const args = [target, into, holes, callback, defined, undefs, new Arr(builtins.Array, merges)]
   return new Invoke(ctx.prelude.fn("sortWith"), undefined, args, undefined)
+}
+
+/** The default sort's string keys, each value converted once. Equal BigInts, whose decimal text is slow, share one. */
+export const sortKeys = (items: Array<Value>) => {
+  const bigints = new Map<bigint, string>()
+  return items.map((item) => {
+    if (typeof item !== "bigint") return coerceToString(item)
+    const known = bigints.get(item)
+    if (known !== undefined) return known
+    const text = coerceToString(item)
+    bigints.set(item, text)
+    return text
+  })
 }
 
 export const sorted = (
