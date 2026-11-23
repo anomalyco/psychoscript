@@ -194,7 +194,12 @@ impl Shorthand {
         let Some(d) = &mut self.drawing else {
             return false;
         };
-        let _ = self.gpu.device().poll(wgpu::PollType::Poll);
+        if !crate::poll(self.gpu.device()) {
+            // The device is lost: the frame won't finish, and doesn't count.
+            self.gpu.lost();
+            self.drawing = None;
+            return false;
+        }
         if d.done.load(Ordering::Acquire) {
             // Done between two looks, unseen past the limit: as fast as can be told.
             if !d.slow {
@@ -242,6 +247,12 @@ impl Shorthand {
     /// client error for a shader too slow ([`Shorthand::too_slow`]).
     pub fn error(&self) -> Option<&GpuError> {
         self.gpu.error(KEY).or(self.stopped.as_ref())
+    }
+
+    /// The device is lost ([`Gpu::lost`]): call it as soon as the host knows, before [`Shorthand::reset`].
+    pub fn lost(&mut self) {
+        self.gpu.lost();
+        self.drawing = None;
     }
 
     /// After a device loss: the same shader on `device`. One that stopped for being too slow or a GPU hang stays
