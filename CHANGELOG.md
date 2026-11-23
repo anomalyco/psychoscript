@@ -8,6 +8,8 @@
   `readBigInt64*`/`writeBigInt64*` methods. A BigInt is capped at
   2^20 bits and cannot cross to the host; `JSON.stringify` throws on one unless the program defines
   `BigInt.prototype.toJSON`. Snapshots keep BigInts.
+- `String.prototype.matchAll` returns an iterator instead of an array; `String.raw` accepts a string `raw`; and
+  `Object.keys`/`values`/`entries`/`assign`/`hasOwn`, object spread and `for...in` index a string by UTF-16 code unit.
 
 ## 0.2.1
 

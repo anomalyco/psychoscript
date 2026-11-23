@@ -42,6 +42,13 @@ describe("Object.keys over arrays", () => {
     expect(
       await value(`return [Object.keys("ab"), Object.entries(42), Object.keys(() => 1), Object.keys(true)]`),
     ).toEqual([["0", "1"], [], [], []])
+    expect(
+      await value(`
+        const keys = []
+        for (const key in "😀") keys.push(key)
+        return [Object.keys("😀"), Object.hasOwn("😀", "1"), Object.keys({ ..."😀" }), keys, Object.values("😀")[1].length]
+      `),
+    ).toEqual([["0", "1"], true, ["0", "1"], ["0", "1"], 1])
     expect(await value(`try { Object.values(null) } catch (e) { return [e.name, e.message] }`)).toEqual([
       "TypeError",
       "Object.values(...) cannot convert null to an object.",

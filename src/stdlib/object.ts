@@ -49,7 +49,8 @@ export const enumerableSource = <R>(ctx: Interpreter<R>, label: string, value: V
       node,
     )
   }
-  if (typeof value === "string") return new Arr(ctx.builtins.Array, [...value])
+  // A string's own keys are its UTF-16 code unit indices.
+  if (typeof value === "string") return new Arr(ctx.builtins.Array, value.split(""))
   if (value instanceof Obj) return value
   return new Obj(ctx.builtins.Object)
 }

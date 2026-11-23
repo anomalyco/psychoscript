@@ -344,7 +344,7 @@ reject }` object.
       everything else as its string form (`o[null]` is `o["null"]`), in reads, writes, literals, `in`, and
       destructuring.
 - [x] `Object.keys`, `Object.values`, `Object.entries`, `Object.hasOwn`, `Object.assign`, and `Object.fromEntries`, with
-      synchronous iterator support for `fromEntries`. Sources follow ToObject: strings enumerate by index, other
+      synchronous iterator support for `fromEntries`. Sources follow ToObject: strings enumerate by UTF-16 code unit index, other
       primitives and wrappers contribute nothing, and `null`/`undefined` throw. `Object.assign` accepts array
       targets for index keys only; a primitive target is a `TypeError` rather than a boxed object.
 - [x] `Object.keys` over arrays and host namespaces.
@@ -433,7 +433,7 @@ reject }` object.
 - [x] Searching/tests: `includes`, `startsWith`, `endsWith`, `indexOf`, `lastIndexOf`, and `search`.
 - [x] Slicing/access: `slice`, `substring`, Annex B `substr`, `at`, `charAt`, `charCodeAt`, and `codePointAt`.
 - [x] Construction/transformation: `split`, `concat`, `repeat`, `padStart`, `padEnd`, `replace`, and `replaceAll`.
-- [x] Regular-expression integration: `match`, materialized `matchAll`, `replace`, `replaceAll`, `split`, and `search`.
+- [x] Regular-expression integration: `match`, `matchAll` (an iterator over matches collected up front), `replace`, `replaceAll`, `split`, and `search`.
 - [x] `localeCompare`, with its locales and collator options (`numeric`, `sensitivity`, `caseFirst`,
       `ignorePunctuation`, and the rest) passed to the host collator; there is still no global `Intl`.
 - [x] `isWellFormed` and `toWellFormed`.
@@ -445,7 +445,7 @@ reject }` object.
       ToPrimitive above). Opaque runtime references still reject as data errors, and `repeat` still requires a finite
       non-negative count.
 - [x] Native no-argument parity for `match()`, `matchAll()`, and `search()`; all behave as an empty pattern.
-- [x] `String.raw`, on a template object or any `{ raw }` object; raw strings and substitutions coerce through their own
+- [x] `String.raw`, on a template object or any `{ raw }` object, including a string `raw`; raw strings and substitutions coerce through their own
       `toString`.
 - [x] `match`, `matchAll`, `search`, and `split` read any non-RegExp argument as a pattern string, as `new RegExp(arg)`
       would: `"a1b".match(1)` matches `/1/`, `search(null)` looks for `"null"`, `undefined` is the empty pattern, and

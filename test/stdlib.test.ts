@@ -354,14 +354,14 @@ describe("RegExp", () => {
       await value(`
         const re = /a/g
         re.lastIndex = 2
-        return ["banana".matchAll(re).map((m) => m.index), re.lastIndex]
+        return ["banana".matchAll(re).map((m) => m.index).toArray(), re.lastIndex]
       `),
     ).toEqual([[3, 5], 2])
     expect(
       await value(`
         const re = /a/gy
         re.lastIndex = 1
-        return ["banana".matchAll(re).map((m) => m.index), re.lastIndex]
+        return ["banana".matchAll(re).map((m) => m.index).toArray(), re.lastIndex]
       `),
     ).toEqual([[1], 1])
   })
@@ -380,8 +380,16 @@ describe("RegExp", () => {
     expect(await value(`return "abc".match(/\\d/)`)).toBeNull()
   })
 
-  test("matchAll materializes match arrays with captures", async () => {
-    expect(await value(`return "a1b22".matchAll(/(\\d+)/g).map((m) => m[1])`)).toEqual(["1", "22"])
+  test("matchAll returns an iterator of match arrays with captures", async () => {
+    expect(await value(`return "a1b22".matchAll(/(\\d+)/g).map((m) => m[1]).toArray()`)).toEqual(["1", "22"])
+    expect(
+      await value(`
+        const it = "a1b2".matchAll(/\\d/g)
+        const first = it.next().value[0]
+        await null
+        return [Array.isArray(it), it[Symbol.iterator]() === it, first, [...it].map((m) => m.index), it.next().done]
+      `),
+    ).toEqual([false, true, "1", [3], true])
   })
 
   test("function replacers receive captures, offsets, input, and named groups", async () => {
