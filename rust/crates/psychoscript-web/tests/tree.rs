@@ -227,7 +227,8 @@ fn every_fixture_runs_natively_to_its_view_result_or_error() {
             .limits(Limits {
                 max_value_depth: Some(202),
                 ..Limits::default()
-            });
+            })
+            .typed_arrays(true);
         let _ = runtime.execute(program.as_str());
         let emitted = std::mem::take(&mut *emitted.lock().unwrap());
         if let Some(want) = f.json.get("built") {

@@ -1,4 +1,4 @@
-use psychoscript_web::{Error, Program};
+use psychoscript_web::{Error, LiveOptions, Program, Pump};
 
 const STEP: &str = r#"
 function __widget_step(input) {
@@ -72,4 +72,41 @@ fn inputs_and_outputs_are_checked() {
         named.run(r#"{"a":[1,"x"]}"#, None, None).unwrap(),
         r#"[1,"x"]"#
     );
+}
+
+/// Typed arrays are the widget runtime's: widget runs (`run_step`, `run_draw`, native live runs) have them, a plain
+/// run doesn't (psychoscript's default).
+#[test]
+fn only_widget_runs_have_typed_arrays() {
+    let probe = "typeof Float32Array + \" \" + typeof ArrayBuffer";
+    let plain = Program::new(&format!("return {probe}"), None).unwrap();
+    assert_eq!(
+        plain.run("null", None, None).unwrap(),
+        r#""undefined undefined""#
+    );
+    let step = Program::new(
+        &format!("__widget_emit({{ type: \"text\", text: {probe} }})\nreturn {{ state: {{}} }}"),
+        None,
+    )
+    .unwrap();
+    assert!(
+        step.run_step("null", None, None)
+            .unwrap()
+            .contains(r#""text":"function function""#)
+    );
+    let mut live = Program::new(
+        &format!("__host.post({{ type: \"probe\", text: {probe} }})"),
+        None,
+    )
+    .unwrap()
+    .start_live(
+        "null",
+        LiveOptions {
+            native: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    while live.pump(8.0) != Pump::Ended {}
+    assert!(live.take_outbox().contains(r#""text":"function function""#));
 }

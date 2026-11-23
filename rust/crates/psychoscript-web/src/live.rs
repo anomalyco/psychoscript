@@ -603,8 +603,9 @@ impl LiveRun {
         }));
         let mut runtime = runtime(&shared, input_name);
         if options.native {
-            // A native run posts views as built: handler functions cross as markers, 100 levels of view deep.
-            runtime = runtime.translate(MARK).limits(Limits {
+            // A native (widget) run posts views as built: handler functions cross as markers, 100 levels of view deep;
+            // it has typed arrays (a GPU canvas's data, widgets-gpu.md).
+            runtime = runtime.translate(MARK).typed_arrays(true).limits(Limits {
                 max_value_depth: Some(WIDGET_DEPTH),
                 ..Limits::default()
             });

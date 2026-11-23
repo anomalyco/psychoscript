@@ -152,7 +152,8 @@ impl Program {
                 ..Limits::default()
             });
         if emitted.is_some() {
-            runtime = runtime.translate(MARK);
+            // A widget step: typed arrays (a GPU canvas's data, widgets-gpu.md) are the widget runtime's.
+            runtime = runtime.translate(MARK).typed_arrays(true);
         }
         let outcome = runtime.execute(&self.compiled);
         drop(runtime);
