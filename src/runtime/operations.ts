@@ -35,6 +35,7 @@ import {
 import { circularValue, describeValue, hasCircularReference, isOpaque, typeofValue } from "./references.js"
 import type { Interpreter } from "./interpreter.js"
 import { enumerableSource } from "../stdlib/object.js"
+import { bigintSyntax } from "../stdlib/number.js"
 
 // The synchronous semantics the VM's ops share: operators, property references, and the checks around them. Nothing
 // here runs program code.
@@ -128,6 +129,10 @@ export const hasInstance = (lhs: Value, prototype: Value, node: AstNode | undefi
 export const applyBinaryOperator = (operator: string, lhs: Value, rhs: Value, node: AstNode): Value => {
   if (operator === "===") return lhs === rhs
   if (operator === "!==") return lhs !== rhs
+  if (typeof lhs === "bigint" && typeof rhs === "string" && rhs.length > 1024 && comparisons.has(operator))
+    return applyBinaryOperator(operator, lhs, longTextAsNumeric(rhs), node)
+  if (typeof lhs === "string" && typeof rhs === "bigint" && lhs.length > 1024 && comparisons.has(operator))
+    return applyBinaryOperator(operator, longTextAsNumeric(lhs), rhs, node)
   if (operator === "==") return looselyEqual(lhs, rhs, node)
   if (operator === "!=") return !looselyEqual(lhs, rhs, node)
   if (operator === "in" && rhs instanceof Obj && !isOpaque(lhs)) return has(rhs, propertyKey(lhs))
@@ -182,6 +187,22 @@ export const applyBinaryOperator = (operator: string, lhs: Value, rhs: Value, no
     default:
       throw typeError(`Unsupported binary operator '${operator}'.`, node)
   }
+}
+
+const comparisons = new Set(["==", "!=", "<", "<=", ">", ">="])
+
+// Comparing a BigInt with a string parses the string, which takes seconds for millions of digits. A long string is
+// read here instead, giving the same answers: NaN when it is not an integer (every comparison is false), an infinity
+// of its sign when it has more digits than any BigInt under the size limit, and otherwise the BigInt it spells.
+const longTextAsNumeric = (text: string): number | bigint => {
+  const trimmed = text.trim()
+  if (!bigintSyntax.test(trimmed)) return Number.NaN
+  const radix = /^0[xob]/i.test(trimmed) ? trimmed.slice(0, 2) : ""
+  const negative = radix === "" && trimmed.startsWith("-")
+  const digits = trimmed.slice(radix === "" ? (/^[+-]/.test(trimmed) ? 1 : 0) : 2).replace(/^0+/, "")
+  const bitsPerDigit = radix === "" ? Math.log2(10) : { x: 4, o: 3, b: 1 }[radix[1]!.toLowerCase()]!
+  if ((digits.length - 1) * bitsPerDigit >= MAX_BIGINT_BITS) return negative ? -Infinity : Infinity
+  return BigInt(`${negative ? "-" : ""}${radix}${digits || "0"}`)
 }
 
 const numericOperators = new Set(["+", "-", "*", "/", "%", "**", "&", "|", "^", "<<", ">>", ">>>"])
@@ -246,6 +267,8 @@ export const toNumeric = (value: Value): number | bigint => (typeof value === "b
 /** `-`, `+` and `~` on a primitive. Unary plus is ToNumber, which a BigInt refuses. */
 export const applyUnaryOperator = (sub: number, value: Value): number | bigint => {
   const n = sub === UnaryOp.PLUS ? coerceToNumber(value) : toNumeric(value)
+  // `~` and `-` of a BigInt at the limit can land one past it.
+  if (typeof n === "bigint") return checkBigIntSize(sub === UnaryOp.NEG ? -n : ~n)
   return sub === UnaryOp.NEG ? -n : sub === UnaryOp.PLUS ? n : ~n
 }
 

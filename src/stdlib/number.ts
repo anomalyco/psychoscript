@@ -141,7 +141,7 @@ const numberToBigInt = (value: number): bigint => {
   throw rangeError(`The number ${value} cannot be converted to a BigInt because it is not an integer.`)
 }
 
-const bigintSyntax = /^(?:[+-]?\d+|0[xX][\da-fA-F]+|0[oO][0-7]+|0[bB][01]+)?$/
+export const bigintSyntax = /^(?:[+-]?\d+|0[xX][\da-fA-F]+|0[oO][0-7]+|0[bB][01]+)?$/
 // Decimal digits past this many always exceed MAX_BIGINT_BITS (barring leading zeros); parsing them is quadratic.
 const maxDecimalDigits = Math.ceil(MAX_BIGINT_BITS * Math.log10(2)) + 1
 

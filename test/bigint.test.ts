@@ -133,6 +133,28 @@ describe("BigInt", () => {
     ])
   })
 
+  test("compares with a huge numeric string without parsing it, giving JS's answers", async () => {
+    const started = performance.now()
+    expect(
+      await value(`const many = "1".repeat(16_000_000)
+        const negative = "-" + many
+        const zeros = "0".repeat(2_000_000) + "42"
+        const hex = "0x" + "0".repeat(5000) + "ff"
+        return [many == 1n, many > 1n, many < 1n, 1n < many, negative < 1n, 1n != many, zeros == 42n, 42n <= zeros,
+          hex == 255n, (many + "x") == 1n, (many + "x") < 1n, (many + "x") > 1n, " 7 ".padEnd(5000) == 7n]`),
+    ).toEqual([false, true, false, true, true, true, true, true, true, false, false, false, true])
+    expect(performance.now() - started).toBeLessThan(1000)
+  })
+
+  test("a BigInt literal past the size limit is a RangeError, and so is ~ or - stepping past it", async () => {
+    const huge = `0x${"f".repeat(300_000)}n`
+    expect((await failure(`return String(${huge}).length`)).message).toContain("Maximum BigInt size exceeded")
+    expect((await failure("const max = (2n ** 1048575n - 1n) * 2n + 1n; return String(~max)")).message).toContain(
+      "Maximum BigInt size exceeded",
+    )
+    expect(await value("const max = (2n ** 1048575n - 1n) * 2n + 1n; return String(-max === -max)")).toBe("true")
+  })
+
   test("refuses to cross to the host or serialize to JSON without toJSON", async () => {
     expect((await failure("return 1n")).message).toContain("A BigInt cannot cross to the host")
     expect((await failure("return { a: [1n] }")).message).toContain("A BigInt cannot cross to the host")

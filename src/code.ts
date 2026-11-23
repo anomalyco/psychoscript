@@ -415,7 +415,7 @@ export const hashOf = (codes: ReadonlyArray<Code>): string => {
         mixStr(Object.is(k, -0) ? "-0" : String(k))
       } else if (typeof k === "bigint") {
         mix(7)
-        mixStr(String(k))
+        mixStr(k.toString(16))
       } else if ("pattern" in k) {
         mix(3)
         mixStr(k.pattern)

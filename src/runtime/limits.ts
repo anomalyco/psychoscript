@@ -18,8 +18,10 @@ export const MAX_BIGINT_BITS = 1 << 20
 const bigintBound = 1n << BigInt(MAX_BIGINT_BITS)
 const negativeBigintBound = -bigintBound
 
+export const fitsBigIntSize = (value: bigint): boolean => value < bigintBound && value > negativeBigintBound
+
 export const checkBigIntSize = (value: bigint): bigint => {
-  if (value >= bigintBound || value <= negativeBigintBound) throw rangeError("Maximum BigInt size exceeded")
+  if (!fitsBigIntSize(value)) throw rangeError("Maximum BigInt size exceeded")
   return value
 }
 
