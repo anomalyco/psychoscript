@@ -8,7 +8,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::{Value, json};
-use widget_gpu::{Arg, ErrorKind, Gpu, GpuError, Shorthand, Stops, Uniforms, clamp_size};
+use widget_gpu::{
+    Arg, ErrorKind, Gpu, GpuError, SavedStop, SavedStops, Shorthand, Stops, Uniforms, clamp_size,
+};
 
 const W: u32 = 64;
 const H: u32 = 64;
@@ -1179,6 +1181,103 @@ fn a_restored_run_drops_batches_naming_handles_from_before() {
         restored.apply(&b.ops, &[]).unwrap_err().message,
         "gpu op 0: handle 3 was already used"
     );
+}
+
+/// A restored run keeps its stopped canvases and their errors, and never reports them again; the others draw on.
+#[test]
+fn a_restored_run_keeps_its_stopped_canvases() {
+    let (device, queue) = common::device();
+    let run = || {
+        let mut gpu = Gpu::new(device.clone(), queue.clone(), RGBA).unwrap();
+        gpu.resize("a", 8, 8);
+        gpu.resize("b", 8, 8);
+        gpu
+    };
+    let contexts = |first: u32| {
+        let mut b = Batch::default();
+        b.op(json!(["context", first, "a", "rgba8unorm", "opaque"]))
+            .op(json!(["view", first + 1, first, {}]));
+        b.op(json!(["context", first + 2, "b", "rgba8unorm", "opaque"]))
+            .op(json!(["view", first + 3, first + 2, {}]));
+        b
+    };
+    let into = |view: u32, broken: bool| {
+        let mut b = Batch::default();
+        pass_into(&mut b, view, [0.0, 1.0, 0.0, 1.0]);
+        if broken {
+            b.op(json!(["draw", 3, 1, 0, 0]));
+        }
+        b.op(json!(["end"])).op(json!(["submit"]));
+        b
+    };
+
+    // The run: an error stops `a`.
+    let mut gpu = run();
+    gpu.apply(&contexts(1).ops, &[]).unwrap();
+    let e = gpu.apply(&into(2, true).ops, &[]).unwrap_err();
+    let saved = gpu.saved_stops();
+    assert_eq!(
+        saved,
+        SavedStops {
+            all: None,
+            canvases: vec![(
+                "a".into(),
+                SavedStop {
+                    kind: ErrorKind::Program,
+                    message: e.message.clone()
+                }
+            )],
+        }
+    );
+    let last = gpu.last_handle();
+
+    // Restored: `a` stays stopped with its error, its errors aren't reported again; `b` draws.
+    let mut restored = run();
+    restored.restored(last);
+    restored.restore_stops(saved.clone());
+    assert_eq!(restored.saved_stops(), saved);
+    let shown = restored.error("a").unwrap();
+    assert_eq!(
+        (shown.kind, &shown.message),
+        (ErrorKind::Program, &e.message)
+    );
+    assert_eq!(restored.error("b"), None);
+    // The program, told of the loss, recreates its contexts with new handles.
+    restored.apply(&contexts(5).ops, &[]).unwrap();
+    assert_eq!(restored.apply(&into(6, true).ops, &[]), Ok(()));
+    assert!(restored.canvas("a").is_none());
+    restored.apply(&into(8, false).ops, &[]).unwrap();
+    assert_eq!(
+        common::read(&device, &queue, restored.canvas("b").unwrap().texture)[0],
+        GREEN
+    );
+    // A batch from before the snapshot (an old handle) is dropped quietly.
+    assert_eq!(restored.apply(&into(4, true).ops, &[]), Ok(()));
+
+    // An error that stopped every canvas: restored, every canvas stays stopped and later batches are ignored.
+    let mut gpu = run();
+    let mut bad = Batch::default();
+    bad.op(json!(["buffer", 1, 6, 8])).write(1, 0, &[0; 6]);
+    let e = gpu.apply(&bad.ops, &bad.bytes).unwrap_err();
+    let saved = gpu.saved_stops();
+    assert_eq!(
+        saved.all,
+        Some(SavedStop {
+            kind: ErrorKind::Program,
+            message: e.message.clone()
+        })
+    );
+    let mut restored = run();
+    restored.restored(gpu.last_handle());
+    restored.restore_stops(saved);
+    assert_eq!(restored.error("b").map(|e| &e.message), Some(&e.message));
+    assert_eq!(
+        restored.error("later").map(|e| e.canvases.clone()),
+        Some(Stops::All)
+    );
+    assert_eq!(restored.apply(&contexts(2).ops, &[]), Ok(()));
+    assert_eq!(restored.apply(&bad.ops, &bad.bytes), Ok(()));
+    assert!(restored.canvas("b").is_none());
 }
 
 /// Replay cost of a typical frame: 48 ops, 64 KB of writes (`cargo test --release -p widget-gpu -- --ignored`).

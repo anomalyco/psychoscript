@@ -98,6 +98,23 @@ pub enum Stops {
     All,
 }
 
+/// The canvases errors stopped, to keep with a snapshot of the run ([`Gpu::saved_stops`]) and give the restored
+/// run ([`Gpu::restore_stops`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SavedStops {
+    /// The error that stopped every canvas, if one did.
+    pub all: Option<SavedStop>,
+    /// The canvases errors stopped, by key, in key order.
+    pub canvases: Vec<(String, SavedStop)>,
+}
+
+/// An error that stopped canvases, as a snapshot keeps it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedStop {
+    pub kind: ErrorKind,
+    pub message: String,
+}
+
 impl std::fmt::Display for GpuError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.message)
@@ -401,10 +418,45 @@ impl Gpu {
     }
 
     /// A run restored from a snapshot, whose program had made handles up to `last` ([`Gpu::last_handle`]): as after a
-    /// device loss, those handles are gone and a batch naming one is dropped quietly.
+    /// device loss, those handles are gone and a batch naming one is dropped quietly. Its stopped canvases come back
+    /// with [`Gpu::restore_stops`].
     pub fn restored(&mut self, last: u64) {
         self.checks.made(last as f64);
         self.checks.lost();
+    }
+
+    /// The canvases errors stopped, for a snapshot of the run.
+    pub fn saved_stops(&self) -> SavedStops {
+        let saved = |e: &GpuError| SavedStop {
+            kind: e.kind,
+            message: e.message.clone(),
+        };
+        let mut canvases: Vec<_> = (self.stopped.iter())
+            .map(|(k, e)| (k.clone(), saved(e)))
+            .collect();
+        canvases.sort_by(|a, b| a.0.cmp(&b.0));
+        SavedStops {
+            all: self.all.as_ref().map(saved),
+            canvases,
+        }
+    }
+
+    /// A run restored from a snapshot keeps the canvases errors stopped ([`Gpu::saved_stops`]), with their errors:
+    /// they stay stopped, [`Gpu::error`] gives their errors, and they are never reported again. Call it with
+    /// [`Gpu::restored`].
+    pub fn restore_stops(&mut self, stops: SavedStops) {
+        let error = |s: SavedStop, canvases| GpuError {
+            kind: s.kind,
+            message: s.message,
+            canvases,
+        };
+        for (key, s) in stops.canvases {
+            let e = error(s, Stops::Canvases(vec![key.clone()]));
+            self.stopped.insert(key, e);
+        }
+        if let Some(s) = stops.all {
+            self.all = Some(error(s, Stops::All));
+        }
     }
 
     /// A frame request (`widget.frame()`), with a batch or without, after applying the batch: the per-frame limits
