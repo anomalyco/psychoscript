@@ -1,4 +1,4 @@
-//! The GPU conformance fixtures (opencode `packages/widget/test/fixtures/gpu`, widgets 3efef1c62; `fixtures/gpu/
+//! The GPU conformance fixtures (opencode `packages/widget/test/fixtures/gpu`, widgets 0a6b8ba1b; `fixtures/gpu/
 //! fixtures`) as live runs: each program with the preludes, its posts through the real `__host.post` and the widget
 //! encoder, its batches replayed on this machine's device. Each must post the fixture's `batches` (ops, and bytes
 //! from psychoscript's `Math`), give its GPU program errors (message and canvases) and end as it says. The driver is the spec's (`widgets-gpu.md`, Conformance); a device loss among
@@ -13,7 +13,8 @@ use std::time::{Duration, Instant};
 
 use gpu_support::*;
 use psychoscript_mobile::{
-    GpuCanvasState, LiveExit, gpu_input_format, gpu_lose_device, gpu_record_batches,
+    GpuCanvasState, LiveExit, gpu_input_format, gpu_lose_device, gpu_lose_device_at_frame_end,
+    gpu_record_batches, gpu_wait_idle,
 };
 use serde_json::{Value, json};
 use widget_wire::Post;
@@ -42,13 +43,21 @@ fn input(r: &mut Run, i: &Value) {
             let m = json!({ "type": "canvas", "key": i["key"], "width": w, "height": h });
             r.run.deliver(m.to_string()).unwrap();
         }
+        // `inFlight`: lost at the last frame's end, its work in flight (`drive` asked for it then), a strike; else
+        // with the work all seen finished. The program has the loss when the app is told (a canvas `lost`, or every
+        // canvas stopped by a second strike).
         Some("gpu") if i.get("lost").is_some() => {
-            gpu_lose_device();
-            let lost = r.wait(|e| match e {
-                Event::Gpu(k, GpuCanvasState::Lost) => Some(k.clone()),
+            if i["inFlight"] != true {
+                gpu_wait_idle();
+                gpu_lose_device();
+            }
+            let (key, state) = r.wait(|e| match e {
+                Event::Gpu(k, s @ (GpuCanvasState::Lost | GpuCanvasState::Stopped { .. })) => {
+                    Some((k.clone(), s.clone()))
+                }
                 _ => None,
             });
-            r.seen.push(Event::Gpu(lost, GpuCanvasState::Lost));
+            r.seen.push(Event::Gpu(key, state));
         }
         _ => r.run.deliver(i.to_string()).unwrap(),
     }
@@ -135,7 +144,7 @@ fn drive(f: &Value) -> (Vec<Value>, String, String, Vec<Value>) {
     // What the run will do, from the fixture: its frame requests (`frame: true` entries, answered up to 10), its
     // batches and errors. A run that stays open (`stop`) is stopped once it has done all of it. Every wait is on
     // events, capped generously: nothing here counts on the machine's speed.
-    let batches = f["batches"].as_array();
+    let batches = batches_of(f);
     let requests = batches.map_or(10, |b| {
         b.iter().filter(|b| b["frame"] == true).count().min(10)
     });
@@ -185,6 +194,13 @@ fn drive(f: &Value) -> (Vec<Value>, String, String, Vec<Value>) {
                 for i in now(frame, false) {
                     input(&mut r, &i);
                 }
+                // The next frame's `inFlight` loss comes at this frame's end.
+                if now(frame + 1, false)
+                    .iter()
+                    .any(|i| i["lost"].is_string() && i["inFlight"] == true)
+                {
+                    gpu_lose_device_at_frame_end();
+                }
                 r.run.deliver(gpu_support::frame(frame)).unwrap();
                 for i in now(frame, true) {
                     input(&mut r, &i);
@@ -209,6 +225,18 @@ fn drive(f: &Value) -> (Vec<Value>, String, String, Vec<Value>) {
     (errors, end.unwrap(), events, posted)
 }
 
+/// A fixture's `batches`: the recorded ones; none to compare without (a `raw-` one's), or when it says
+/// `"from-source"` (its batches are what its source posts: the errors and the end are still checked, and it must post
+/// some).
+fn batches_of(f: &Value) -> Option<&Vec<Value>> {
+    match &f["batches"] {
+        Value::Array(b) => Some(b),
+        Value::Null => None,
+        Value::String(s) if s == "from-source" => None,
+        other => panic!("{}: `batches` is {other}", f["name"]),
+    }
+}
+
 #[test]
 fn every_gpu_fixture_as_a_live_run() {
     gpu_record_batches();
@@ -220,9 +248,12 @@ fn every_gpu_fixture_as_a_live_run() {
         let (errors, end, events, posted) = drive(&f);
         let took = started.elapsed();
         // The batches as posted: the same ops and, from psychoscript's `Math`, the same bytes.
-        let expected = f.get("batches").and_then(Value::as_array);
+        let expected = batches_of(&f);
         if let Some(d) = expected.and_then(|e| batches_differ(&posted, e)) {
             failures.push(format!("{name}: {d}"));
+        }
+        if f["batches"] == "from-source" && posted.is_empty() {
+            failures.push(format!("{name}: its source posted no batch"));
         }
         ran += 1;
         if errors.as_slice() != f["errors"].as_array().unwrap().as_slice() || end != f["end"] {
@@ -233,16 +264,16 @@ fn every_gpu_fixture_as_a_live_run() {
                 events.chars().take(600).collect::<String>()
             ));
         } else {
-            let compared = f
-                .get("batches")
-                .and_then(Value::as_array)
-                .map_or(0, Vec::len);
-            eprintln!(
-                "{name}: ok ({} errors, {end}, {compared} batches the same)",
-                errors.len()
-            );
+            let batches = match expected {
+                Some(e) => format!("{} batches the same", e.len()),
+                None if f["batches"] == "from-source" => {
+                    format!("{} batches posted from its source", posted.len())
+                }
+                None => "0 batches the same".to_owned(),
+            };
+            eprintln!("{name}: ok ({} errors, {end}, {batches})", errors.len());
         }
     }
-    assert_eq!(ran, 49);
+    assert_eq!(ran, 52);
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
 }

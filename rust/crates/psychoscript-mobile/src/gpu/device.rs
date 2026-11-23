@@ -6,7 +6,9 @@ use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::task::{Context, Poll, Waker};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(feature = "test-hooks")]
+use std::time::Instant;
 
 /// A device and what it was made with.
 pub(crate) struct Dev {
@@ -19,6 +21,7 @@ pub(crate) struct Dev {
     /// Counts devices made: a newer one replaced a lost one.
     pub generation: u64,
     /// How long making it took.
+    #[cfg(feature = "test-hooks")]
     pub made_ms: f64,
 }
 
@@ -242,13 +245,16 @@ pub(crate) fn instance() -> Result<wgpu::Instance, String> {
 }
 
 /// For tests: devices fail to be made, after this long (`gpu_fail_devices`).
+#[cfg(feature = "test-hooks")]
 pub(crate) static FAIL: Mutex<Option<std::time::Duration>> = Mutex::new(None);
 
 fn make() -> Result<Dev, String> {
+    #[cfg(feature = "test-hooks")]
     if let Some(after) = *lock(&FAIL) {
         std::thread::sleep(after);
         return Err("no GPU device (as the test asked)".into());
     }
+    #[cfg(feature = "test-hooks")]
     let started = Instant::now();
     let instance = instance()?;
     let adapter = block(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -289,6 +295,7 @@ fn make() -> Result<Dev, String> {
         device,
         queue,
         generation,
+        #[cfg(feature = "test-hooks")]
         made_ms: started.elapsed().as_secs_f64() * 1000.0,
     })
 }
@@ -381,6 +388,7 @@ pub(crate) fn poll(device: &wgpu::Device, wait: bool) -> bool {
 }
 
 /// Each watched submit's GPU time in ms, when recorded (Rust only, for tests: [`super::gpu_submit_times`]).
+#[cfg(feature = "test-hooks")]
 pub(crate) static TIMES: Mutex<Option<Vec<f64>>> = Mutex::new(None);
 
 /// The end on the GPU of what was submitted so far ([`watch`]).
@@ -401,8 +409,11 @@ pub(crate) fn watch(dev: &Dev) -> Arc<Watch> {
     let watch = Arc::new(Watch {
         done: AtomicBool::new(false),
     });
-    let (at, w) = (Instant::now(), watch.clone());
+    let w = watch.clone();
+    #[cfg(feature = "test-hooks")]
+    let at = Instant::now();
     dev.queue.on_submitted_work_done(move || {
+        #[cfg(feature = "test-hooks")]
         if let Some(times) = lock(&TIMES).as_mut() {
             times.push(at.elapsed().as_secs_f64() * 1e3);
         }
@@ -411,73 +422,9 @@ pub(crate) fn watch(dev: &Dev) -> Arc<Watch> {
     watch
 }
 
-/// What a widget's GPU tells of submissions the GPU aborted (`widgets-gpu.md`, GPU hang): on Metal, rune's wgpu-hal
-/// does (`Queue::aborted`, the workspace's `[patch.crates-io]`); elsewhere nothing, and the time rules tell a hang.
-pub(crate) fn aborts() -> Option<Arc<dyn widget_gpu::Aborts>> {
-    if let Some(after) = *lock(&FAKE_ABORTS) {
-        return Some(Arc::new(FakeAborts(after)));
-    }
-    #[cfg(any(target_os = "ios", target_os = "macos"))]
-    return Some(Arc::new(MetalAborts));
-    #[cfg(not(any(target_os = "ios", target_os = "macos")))]
-    None
-}
-
-/// Every submission aborted after this long, for the GPUs made from now on (Rust only, for tests:
-/// [`super::gpu_fake_aborts`]): the hang rules without a real hang.
-pub(crate) static FAKE_ABORTS: Mutex<Option<Duration>> = Mutex::new(None);
-
-struct FakeAborts(Duration);
-
-impl widget_gpu::Aborts for FakeAborts {
-    fn aborted(&self, _: &wgpu::Queue, _: &wgpu::SubmissionIndex) -> Option<Duration> {
-        Some(self.0)
-    }
-}
-
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-struct MetalAborts;
-
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-impl widget_gpu::Aborts for MetalAborts {
-    fn aborted(&self, queue: &wgpu::Queue, submission: &wgpu::SubmissionIndex) -> Option<Duration> {
-        let value = submission_value(submission)?;
-        // SAFETY: the hal queue is only read.
-        let hal = unsafe { queue.as_hal::<wgpu::hal::api::Metal>() }?;
-        hal.aborted(value)
-    }
-}
-
-/// A submission's index, the fence value wgpu-hal signals for it. wgpu keeps it private; its `Debug` shows it
-/// (`SubmissionIndex { index: 7 }`), which a test pins.
-#[cfg_attr(not(any(target_os = "ios", target_os = "macos")), allow(dead_code))]
-fn submission_value(submission: &wgpu::SubmissionIndex) -> Option<u64> {
-    format!("{submission:?}")
-        .strip_prefix("SubmissionIndex { index: ")?
-        .strip_suffix(" }")?
-        .parse()
-        .ok()
-}
-
 /// Waits (on a run's thread) until the GPU is done with `watch`, `dev` is lost or `stop` says.
 pub(crate) fn settle(dev: &Dev, watch: &Watch, stop: impl Fn() -> bool) {
     while !watch.done(dev) && current().is_some_and(|d| d.generation == dev.generation) && !stop() {
         std::thread::sleep(std::time::Duration::from_millis(1));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    /// The submission index is read from wgpu's `Debug` of it ([`super::submission_value`]): a wgpu that shows it
-    /// otherwise fails here.
-    #[test]
-    fn a_submission_index_reads_from_its_debug() {
-        let Ok(dev) = super::get() else {
-            return eprintln!("no GPU here");
-        };
-        let first = super::submission_value(&dev.queue.submit([]));
-        let next = super::submission_value(&dev.queue.submit([]));
-        assert!(first.is_some(), "{:?}", dev.queue.submit([]));
-        assert_eq!(next, first.map(|v| v + 1));
     }
 }

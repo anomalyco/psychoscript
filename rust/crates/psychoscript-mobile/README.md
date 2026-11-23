@@ -403,8 +403,9 @@ WebGPU, shader translation and presenting are this crate's.
   work. Work still unfinished 250 ms after its submit stops the canvases it draws into: `stopped(client, "the GPU work
   hung; the canvas is stopped")`. Apple's GPUs stop work themselves sooner (after 0.05 to 0.6 s on an M5 Max) and fail
   what follows it on the queue: with Rune's wgpu-hal (the workspace's `[patch.crates-io]`; stock wgpu-hal counts such
-  work finished and tells nothing) that loses the device, every run gets `lost` and draws again on a new one, and work
-  the GPU aborted after running 30 ms or more is the hang, stopped as above, so a widget hangs the GPU once at most. The
+  work finished and tells nothing) that loses the device: every run gets `lost` and draws again on a new one. A loss
+  with a run's GPU work in flight is a strike against it; a second within 30 s stops every canvas of the run, the
+  same `stopped(client, "the GPU work hung; the canvas is stopped")`, so a widget can't keep resetting the GPU. The
   app's thread never waits on any of it. On the iOS Simulator only, such a timeout can bring down the Simulator's
   Metal host, which then kills the app (`OS_REASON_METAL`, "Connection to SimMetalHost ... lost"), or leave other Metal
   work of the process stuck.
@@ -418,7 +419,7 @@ WebGPU, shader translation and presenting are this crate's.
   on its last frame (`widgets-gpu.md`): `render` returns `.client` with reason `the shader took over 50 ms a frame,
   three frames in a row` once; log it and keep the surface (its last frame), not the placeholder. A frame the GPU hung
   on (Heavy GPU work, above) returns `.client` with `the GPU work hung; the canvas is stopped`: log it, show the
-  placeholder. A device loss recompiles the shader on the new device. `resize(width:, height:)` takes effect at the
+  placeholder. After a device loss it draws again on the new device. `resize(width:, height:)` takes effect at the
   next frame. Drop it before its surface goes: once dropped, it never touches the surface again (a present in progress finishes first).
 
 ```swift

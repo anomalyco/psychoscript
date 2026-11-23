@@ -3,6 +3,7 @@
 //! app's calls only record what to draw: a thread of the canvas's own waits for the device, compiles the shader and
 //! renders and presents the newest frame, so the UI thread never waits on the GPU.
 
+#[cfg(feature = "test-hooks")]
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
@@ -40,6 +41,7 @@ struct Shared {
     /// The surface, held by the canvas's thread while it presents (dropping the canvas waits for that alone).
     #[cfg_attr(not(feature = "widget-gpu"), allow(dead_code))]
     attached: Mutex<Option<imp::Attached>>,
+    #[cfg(feature = "test-hooks")]
     #[cfg_attr(not(feature = "widget-gpu"), allow(dead_code))]
     presents: AtomicU64,
 }
@@ -78,6 +80,7 @@ impl ShaderCanvas {
             }),
             wake: Condvar::new(),
             attached: Mutex::new(None),
+            #[cfg(feature = "test-hooks")]
             presents: AtomicU64::new(0),
         });
         imp::start(&shared, wgsl, surface, width, height);
@@ -130,10 +133,10 @@ impl ShaderCanvas {
     }
 }
 
-/// Rust only, for tests and benchmarks.
+/// Rust only, for tests and benchmarks (feature `test-hooks`).
+#[cfg(feature = "test-hooks")]
 impl ShaderCanvas {
     /// Frames presented so far.
-    #[doc(hidden)]
     pub fn presents(&self) -> u64 {
         self.shared.presents.load(Ordering::SeqCst)
     }
@@ -216,11 +219,7 @@ mod imp {
 
     fn compile(dev: &Dev, wgsl: &str) -> Result<Shorthand, GpuFailure> {
         let submits = device::submits();
-        let made =
-            Shorthand::new(dev.device.clone(), dev.queue.clone(), dev.format, wgsl).map(|mut s| {
-                s.set_aborts(device::aborts());
-                s
-            });
+        let made = Shorthand::new(dev.device.clone(), dev.queue.clone(), dev.format, wgsl);
         drop(submits);
         Ok(made?)
     }
@@ -284,9 +283,8 @@ mod imp {
                 continue;
             };
             if now.generation != dev.generation {
-                // A frame the GPU hung on (`Shorthand::lost`: running 250 ms at the loss, or aborted after 30 ms)
-                // would hang every new device: it stops, a client error, and as its frame is lost the placeholder
-                // shows.
+                // A frame the GPU hung on (`Shorthand::lost`: the loss found it unfinished) would hang every new
+                // device: it stops, a client error, and as its frame is lost the placeholder shows.
                 shorthand.lost();
                 if let Some(e) = hung(&shorthand) {
                     return fail(s, e);
@@ -297,11 +295,12 @@ mod imp {
                 }
                 dev = now;
                 (drawing, drawn, shown) = (None, 0, (0, (0, 0)));
-                // Compiled again (`Shorthand::reset` makes handles a loss made old).
-                shorthand = match compile(&dev, wgsl) {
-                    Ok(shorthand) => shorthand,
-                    Err(e) => return fail(s, e),
-                };
+                let submits = device::submits();
+                let reset = shorthand.reset(dev.device.clone(), dev.queue.clone());
+                drop(submits);
+                if let Err(e) = reset {
+                    return fail(s, e.into());
+                }
             }
             if let Some(u) = u {
                 let uniforms = Uniforms {
@@ -361,6 +360,7 @@ mod imp {
             match a.present(&frame, &mut blit) {
                 Ok(super::super::present::Shown::Yes) => {
                     shown = (version, size);
+                    #[cfg(feature = "test-hooks")]
                     s.presents.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 }
                 // No texture in time: the next frame tries again.

@@ -30,10 +30,12 @@ pub use error::PsychoScriptError;
 pub use fetch::{
     FetchCompletion, FetchRequest, FetchResponse, FetchTransport, HttpHeader, is_public_address,
 };
+pub use gpu::{GpuCanvasState, GpuErrorKind, GpuFailure, GpuSurface, ShaderCanvas};
+/// Rust only, for tests (feature `test-hooks`, never in a release build).
+#[cfg(feature = "test-hooks")]
 pub use gpu::{
-    GpuCanvasState, GpuDeviceInfo, GpuErrorKind, GpuFailure, GpuStats, GpuSurface, ShaderCanvas,
-    gpu_device, gpu_fail_devices, gpu_fake_aborts, gpu_input_format, gpu_lose_device,
-    gpu_record_batches, gpu_submit_times, gpu_wait_idle,
+    GpuDeviceInfo, GpuStats, gpu_device, gpu_fail_devices, gpu_input_format, gpu_lose_device,
+    gpu_lose_device_at_frame_end, gpu_record_batches, gpu_submit_times, gpu_wait_idle,
 };
 pub use live::{LiveContext, LiveExit, LiveHandler, LiveOptions, LiveRun, LiveSurfaces};
 pub use program::{Program, RunOptions, RunSession};

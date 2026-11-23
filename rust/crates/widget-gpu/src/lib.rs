@@ -35,9 +35,10 @@ use std::future::Future;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
+use std::time::Instant;
 
 use check::{Checks, Failed};
-pub use hang::{Aborts, HANG, HANG_ABORTED, HANG_AT_LOSS, HANG_MESSAGE};
+pub use hang::{HANG, HANG_MESSAGE, STRIKE_WINDOW};
 pub use shorthand::{HEADER, SLOW_FRAME, SLOW_FRAMES, SLOW_MESSAGE, Shorthand, Uniforms};
 pub use widget_wire::Arg;
 
@@ -161,10 +162,10 @@ pub struct Gpu {
     all: Option<GpuError>,
     /// The batches' GPU work not known finished, with the canvases each draws into, and whether it was found hung.
     submits: Vec<Tracked>,
-    /// The submissions the batch being replayed made.
-    submissions: Vec<wgpu::SubmissionIndex>,
-    /// What the host tells of aborted submissions.
-    aborts: Option<Arc<dyn Aborts>>,
+    /// Whether the batch being replayed submitted work.
+    submitted: bool,
+    /// Device losses while the run's GPU work was in flight.
+    strikes: hang::Strikes,
     /// A hang found as the device was lost, for the next [`Gpu::poll`].
     hung: Option<GpuError>,
     /// The device is lost (until [`Gpu::reset`]).
@@ -343,11 +344,9 @@ fn caught(poll: impl FnOnce() -> Result<wgpu::PollStatus, wgpu::PollError>) -> b
     }
 }
 
-/// A batch's GPU work being watched for a hang: its submissions, the canvases it draws into, and whether its hang
-/// was found.
+/// A batch's GPU work being watched for a hang: the canvases it draws into, and whether its hang was found.
 struct Tracked {
     submit: Arc<hang::Submit>,
-    submissions: Vec<wgpu::SubmissionIndex>,
     keys: Vec<String>,
     reported: bool,
 }
@@ -395,8 +394,8 @@ impl Gpu {
             stopped: HashMap::new(),
             all: None,
             submits: Vec::new(),
-            submissions: Vec::new(),
-            aborts: None,
+            submitted: false,
+            strikes: hang::Strikes::default(),
             hung: None,
             lost: false,
         })
@@ -460,8 +459,8 @@ impl Gpu {
 
     /// After a device loss: every handle is gone, replay goes on with `device`; new handles keep counting up. The
     /// canvases the loss stopped (every canvas's texture is dropped) draw again once the program renders into them;
-    /// a canvas an error or a GPU hang stopped stays stopped, the work the device lost was hung on included
-    /// ([`Gpu::lost`], which it calls if the host didn't). A batch the program posted before it learned of the loss is dropped quietly: one
+    /// a canvas an error or a GPU hang stopped stays stopped, and so does a run two strikes stopped ([`Gpu::lost`],
+    /// which it calls if the host didn't). A batch the program posted before it learned of the loss is dropped quietly: one
     /// whose first failure is `no handle <h>`, `h` from 1 to the greatest handle made before the loss. Canvas sizes
     /// are kept.
     pub fn reset(&mut self, device: wgpu::Device, queue: wgpu::Queue) -> Result<(), GpuError> {
@@ -571,12 +570,11 @@ impl Gpu {
         if skip {
             return checked;
         }
-        self.submissions.clear();
+        self.submitted = false;
         let replayed = self.replay(&ops[..count], bytes).err();
-        if !self.submissions.is_empty() {
+        if self.submitted {
             self.submits.push(Tracked {
                 submit: hang::submitted(&self.queue),
-                submissions: std::mem::take(&mut self.submissions),
                 keys: keys.clone(),
                 reported: false,
             });
@@ -589,9 +587,8 @@ impl Gpu {
     }
 
     /// Watches the batches' GPU work for a hang (`widgets-gpu.md`, GPU hang): work still unfinished 250 ms after its
-    /// submit, or with [`Gpu::set_aborts`] work the GPU aborted after executing [`HANG_ABORTED`], stops the canvases
-    /// its batch draws into, or every canvas when it draws into none, for the rest of the run, with a client error
-    /// ([`HANG_MESSAGE`]). Call it often, as each display frame: it never waits. A hang is
+    /// submit stops the canvases its batch draws into, or every canvas when it draws into none, for the rest of the
+    /// run, with a client error ([`HANG_MESSAGE`]). Call it often, as each display frame: it never waits. A hang is
     /// returned once; one that would only stop canvases already stopped isn't returned.
     pub fn poll(&mut self) -> Result<(), GpuError> {
         if let Some(e) = self.hung.take() {
@@ -604,52 +601,47 @@ impl Gpu {
             self.lost();
             return self.hung.take().map_or(Ok(()), Err);
         }
-        self.hangs(HANG, false)
+        self.hangs(HANG)
     }
 
     /// The device is lost: call it as soon as the host knows, before [`Gpu::reset`] (which calls it if the host
-    /// didn't, and [`Gpu::poll`] does when it finds the device lost). The oldest unfinished work on the queue that had
-    /// run [`HANG_AT_LOSS`] hung (a watchdog may have killed it): its canvases stop as a GPU hang's do, and the next
-    /// [`Gpu::poll`] returns the error. With [`Gpu::set_aborts`], so does work it tells was aborted.
+    /// didn't, and [`Gpu::poll`] does when it finds the device lost). A loss while the run's GPU work is in flight
+    /// (submitted, not seen finished) is a strike; the second within [`STRIKE_WINDOW`] stops every canvas of the run
+    /// for the rest of the run, with [`HANG_MESSAGE`], and the next [`Gpu::poll`] returns the error. A first strike,
+    /// or a loss with no work in flight, changes nothing visible.
     pub fn lost(&mut self) {
+        self.lost_at(Instant::now());
+    }
+
+    /// [`Gpu::lost`], the loss at `now` (a test's clock).
+    pub fn lost_at(&mut self, now: Instant) {
         if self.lost {
             return;
         }
         self.lost = true;
-        if let Err(e) = self.hangs(HANG_AT_LOSS, true) {
-            self.hung = Some(e);
-        }
+        let in_flight = self.submits.iter().any(|t| !t.submit.done());
         for t in self.submits.drain(..) {
             t.submit.forget();
         }
+        if in_flight
+            && self.strikes.strike(now)
+            && self.all.is_none()
+            && let Err(e) = self.stop(Vec::new(), ErrorKind::Client, HANG_MESSAGE.into())
+        {
+            self.hung = Some(e);
+        }
     }
 
-    /// Tells which submissions the GPU aborted, and how long they had executed (`widgets-gpu.md`, GPU hang): a batch's
-    /// work aborted after [`HANG_ABORTED`] hung. Without it, only the time rules tell a hang.
-    pub fn set_aborts(&mut self, aborts: Option<Arc<dyn Aborts>>) {
-        self.aborts = aborts;
-    }
-
-    /// Finds hung work: unfinished `after` its submit, or aborted after [`HANG_ABORTED`] (asked of work seen finished,
-    /// and of all of it at a loss).
-    fn hangs(&mut self, after: std::time::Duration, at_loss: bool) -> Result<(), GpuError> {
+    /// Finds hung work: unfinished `after` its submit.
+    fn hangs(&mut self, after: std::time::Duration) -> Result<(), GpuError> {
         if self.submits.is_empty() {
             return Ok(());
         }
         hang::judge(&self.queue, after);
-        let (aborts, queue) = (&self.aborts, &self.queue);
-        let aborted = |t: &Tracked| {
-            aborts.as_ref().is_some_and(|a| {
-                (t.submissions.iter())
-                    .any(|i| a.aborted(queue, i).is_some_and(|d| d >= HANG_ABORTED))
-            })
-        };
         let mut keys: Vec<String> = Vec::new();
         let (mut found, mut none) = (false, false);
         for t in &mut self.submits {
-            let hung =
-                t.submit.hung() || ((at_loss || t.submit.done()) && !t.reported && aborted(t));
-            if hung && !t.reported {
+            if t.submit.hung() && !t.reported {
                 t.reported = true;
                 found = true;
                 none |= t.keys.is_empty();

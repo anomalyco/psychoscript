@@ -310,6 +310,7 @@ pub struct LivePosts {
     /// The GPU canvas keys last given to the host.
     gpu_keys: Vec<String>,
     /// The batches posted, as the GPU fixtures write them ([`LivePosts::record_batches`]).
+    #[cfg(feature = "test-hooks")]
     recorded: Option<Vec<serde_json::Value>>,
 }
 
@@ -347,20 +348,21 @@ impl LivePosts {
             frame: false,
             gpu: None,
             gpu_keys: Vec::new(),
+            #[cfg(feature = "test-hooks")]
             recorded: None,
         }
     }
 
-    /// For tests: keeps every batch posted from now on, as the GPU conformance fixtures write them
-    /// ([`LivePosts::recorded`]).
-    #[doc(hidden)]
+    /// For tests (feature `test-hooks`): keeps every batch posted from now on, as the GPU conformance fixtures write
+    /// them ([`LivePosts::recorded`]).
+    #[cfg(feature = "test-hooks")]
     pub fn record_batches(&mut self) {
         self.recorded.get_or_insert_with(Vec::new);
     }
 
     /// The batches posted since [`LivePosts::record_batches`], each `{ frame, ops, bytes }` (`widgets-gpu.md`,
     /// Conformance).
-    #[doc(hidden)]
+    #[cfg(feature = "test-hooks")]
     pub fn recorded(&self) -> &[serde_json::Value] {
         self.recorded.as_deref().unwrap_or_default()
     }
@@ -475,6 +477,7 @@ impl LivePosts {
                 // A frame request while one is pending changes nothing, but the GPU batch it carries still goes.
                 let request = kind == "frame" && !self.frame;
                 self.frame |= request;
+                #[cfg(feature = "test-hooks")]
                 if let (Some(r), true) = (self.recorded.as_mut(), request || batch.is_some()) {
                     r.push(crate::gpu::recorded(request, batch));
                 }

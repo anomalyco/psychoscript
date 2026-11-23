@@ -28,7 +28,9 @@ use crate::cpu::ThreadClock;
 use crate::encoder::{EncodePosts, Reject, Thrown, ValueEncoder, marked};
 use crate::error::PsychoScriptError;
 use crate::fetch::{self, FetchTransport, Rejection, Request};
-use crate::gpu::{GpuCanvasState, GpuStats, GpuSurface};
+#[cfg(feature = "test-hooks")]
+use crate::gpu::GpuStats;
+use crate::gpu::{GpuCanvasState, GpuSurface};
 use crate::json::{self, Input};
 use crate::timer::{self, Fire};
 
@@ -105,6 +107,7 @@ impl LiveContext {
     /// Wakes the run: its encoder's [`EncodePosts::due`] is called soon, on the run's thread.
     pub fn wake(&self) {
         if let Some(c) = self.0.upgrade() {
+            c.woken.store(true, Ordering::SeqCst);
             c.wake_all();
         }
     }
@@ -120,12 +123,12 @@ pub trait LiveSurfaces: Send + Sync {
     fn attach(&self, key: String, surface: Arc<GpuSurface>, width: u32, height: u32);
     fn detach(&self, key: &str);
     /// See [`LiveRun::gpu_stats`].
-    #[doc(hidden)]
+    #[cfg(feature = "test-hooks")]
     fn stats(&self) -> GpuStats {
         GpuStats::default()
     }
     /// See [`LiveRun::gpu_pixels`].
-    #[doc(hidden)]
+    #[cfg(feature = "test-hooks")]
     fn pixels(&self, _key: &str) -> Option<(u32, u32, Vec<u8>)> {
         None
     }
@@ -173,17 +176,16 @@ impl LiveRun {
     }
 }
 
-/// Rust only, for diagnostics, tests and benchmarks.
+/// Rust only, for tests and benchmarks (feature `test-hooks`).
+#[cfg(feature = "test-hooks")]
 impl LiveRun {
     /// The run's GPU work so far, with feature `widget-gpu`.
-    #[doc(hidden)]
     pub fn gpu_stats(&self) -> Option<GpuStats> {
         self.control.surfaces.as_ref().map(|s| s.stats())
     }
 
     /// The GPU batches the program posted, as the conformance fixtures write them (`{ frame, ops, bytes }` JSON), when
     /// the run started after [`crate::gpu_record_batches`].
-    #[doc(hidden)]
     pub fn gpu_posted(&self) -> Vec<String> {
         self.control
             .encoded
@@ -194,7 +196,6 @@ impl LiveRun {
 
     /// The newest image of the GPU canvas `key`: its width, height and RGBA8 pixels, row by row (it waits for the
     /// GPU).
-    #[doc(hidden)]
     pub fn gpu_pixels(&self, key: &str) -> Option<(u32, u32, Vec<u8>)> {
         self.control.surfaces.as_ref()?.pixels(key)
     }
@@ -489,6 +490,9 @@ pub(crate) struct Control {
     typed_arrays: bool,
     /// When the timer asks for the encoder's held-back posts next.
     due_at: Mutex<Option<Instant>>,
+    /// [`LiveContext::wake`] asked for the encoder's [`EncodePosts::due`]: a host call that waits on is polled again
+    /// between the VM's runs, where it is called (the wake may have come while no call was waiting yet).
+    woken: AtomicBool,
     /// A program error that ended the run at once (a view the encoder refused).
     ended: Mutex<Option<PsychoScriptError>>,
     thrown: Thrown,
@@ -535,6 +539,7 @@ impl Control {
                 delivered: Mutex::new(Vec::new()),
                 ended: Mutex::new(None),
                 due_at: Mutex::new(None),
+                woken: AtomicBool::new(false),
                 thrown: Thrown::default(),
                 state: Mutex::new(State::Starting),
                 run: Mutex::new(None),
@@ -1221,6 +1226,9 @@ impl Control {
 
     /// Moves the encoder's due posts, or with `all` every held-back one, into the outbox.
     fn take_held(&self, all: bool) {
+        if !all {
+            self.woken.store(false, Ordering::SeqCst);
+        }
         let Some(mut encoder) = self.encoder() else {
             return;
         };
@@ -1267,7 +1275,8 @@ impl Control {
             self.flush();
         }
         let result = poll(cx);
-        if at == At::Inside && result.is_pending() && !lock(&self.outbox).is_empty() {
+        let posts = at == At::Inside && !lock(&self.outbox).is_empty();
+        if result.is_pending() && (posts || self.woken.load(Ordering::SeqCst)) {
             cx.waker().wake_by_ref();
         }
         result

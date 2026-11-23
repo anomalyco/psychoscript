@@ -191,7 +191,7 @@ fn replay(device: &wgpu::Device, queue: &wgpu::Queue, f: &Value) -> (Gpu, Vec<Va
         .cloned()
         .unwrap_or_default();
     let mut frame = 0;
-    let mut frame_request = |gpu: &mut Gpu| {
+    let mut frame_request = |gpu: &mut Gpu, errors: &mut Vec<Value>| {
         gpu.end_frame();
         for after in [false, true] {
             let now = inputs.iter().filter(|i| {
@@ -202,7 +202,17 @@ fn replay(device: &wgpu::Device, queue: &wgpu::Queue, f: &Value) -> (Gpu, Vec<Va
                 match i["type"].as_str() {
                     Some("canvas") => resize(gpu, i),
                     Some("gpu") if i.get("lost").is_some() => {
-                        gpu.reset(device.clone(), queue.clone()).unwrap()
+                        // `inFlight`: the last batch's submit, not seen finished (wgpu tells it at the next submit
+                        // or poll), is in flight at the loss, a strike. Without it, all the work is seen finished.
+                        if i["inFlight"] != true {
+                            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                            gpu.poll().unwrap();
+                        }
+                        gpu.lost();
+                        gpu.reset(device.clone(), queue.clone()).unwrap();
+                        if let Err(e) = gpu.poll() {
+                            errors.push(error_json(&e));
+                        }
                     }
                     _ => {}
                 }
@@ -224,7 +234,7 @@ fn replay(device: &wgpu::Device, queue: &wgpu::Queue, f: &Value) -> (Gpu, Vec<Va
             errors.push(error_json(&e));
         }
         if b.frame {
-            frame_request(&mut gpu);
+            frame_request(&mut gpu, &mut errors);
         }
     }
     device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
