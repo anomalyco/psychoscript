@@ -552,33 +552,40 @@ impl Gpu {
             .filter(|t| t.present)
             .map(|t| t.key.as_str())
             .collect();
+        // Every canvas it renders into was stopped: none of it replays, its passes into other textures included (a
+        // hung canvas's heavy work never runs again).
+        let skip = !keys.is_empty() && keys.iter().all(|k| self.stopped.contains_key(k));
         let checked = self
             .checks
             .batch(ops, bytes.len(), &|k| present.contains(&k));
-        let failed = match checked {
+        // A batch that fails at an op stops its canvases, and the ops before it take effect, as separate calls would
+        // (what it created and wrote, what it submitted); a pass or encoder open at the failure isn't submitted.
+        let (count, checked) = match checked {
+            Ok(()) => (ops.len(), Ok(())),
             Err(Failed::Stale) => return Ok(()),
-            Err(Failed::Message(m)) => Some((ErrorKind::Program, m)),
-            // Every canvas it renders into is stopped: none of it replays, its passes into other textures included
-            // (a hung canvas's heavy work never runs again).
-            Ok(()) if !keys.is_empty() && keys.iter().all(|k| self.stopped.contains_key(k)) => None,
-            Ok(()) => {
-                self.submissions.clear();
-                let replayed = self.replay(ops, bytes).err();
-                if replayed.is_none() && !self.submissions.is_empty() {
-                    self.submits.push(Tracked {
-                        submit: hang::submitted(&self.queue),
-                        submissions: std::mem::take(&mut self.submissions),
-                        keys: keys.clone(),
-                        reported: false,
-                    });
-                }
-                replayed
+            Err(Failed::Message(m, None)) => return self.stop(keys, ErrorKind::Program, m),
+            Err(Failed::Message(m, Some(count))) => {
+                (count, self.stop(keys.clone(), ErrorKind::Program, m))
             }
         };
-        match failed {
+        if skip {
+            return checked;
+        }
+        self.submissions.clear();
+        let replayed = self.replay(&ops[..count], bytes).err();
+        if !self.submissions.is_empty() {
+            self.submits.push(Tracked {
+                submit: hang::submitted(&self.queue),
+                submissions: std::mem::take(&mut self.submissions),
+                keys: keys.clone(),
+                reported: false,
+            });
+        }
+        let replayed = match replayed {
             None => Ok(()),
             Some((kind, message)) => self.stop(keys, kind, message),
-        }
+        };
+        checked.and(replayed)
     }
 
     /// Watches the batches' GPU work for a hang (`widgets-gpu.md`, GPU hang): work still unfinished 250 ms after its
