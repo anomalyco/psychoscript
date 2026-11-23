@@ -319,6 +319,7 @@ whole demo (27 widgets). A live widget's worker is terminated when it stops.
 cd web
 bun install
 bash scripts/build-wasm.sh   # cargo (wasm32-unknown-unknown) + wasm-bindgen 0.2.130 + wasm-opt -> web/wasm/
+                             # (source paths remapped: no build machine's directories in the module)
 bun scripts/build.ts         # -> web/dist/ (index.js, worker.js, .wasm, .d.ts)
 bun scripts/fixtures.ts      # demo/fixtures.js from an opencode checkout's packages/widget
 bun scripts/gpu-fixtures.ts  # the GPU conformance fixtures on wasm/: batches byte for byte, host-check errors, ends
