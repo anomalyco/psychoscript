@@ -111,6 +111,16 @@ impl Attached {
             made.surface.configure(&dev.device, &config);
             drop(submits);
             if let Some(e) = device::block(scope.pop()) {
+                // A device lost in the middle of a present keeps that present's texture out, which no configure on
+                // the new device gets past: once, a new surface over the same layer or window.
+                if made
+                    .config
+                    .as_ref()
+                    .is_some_and(|(_, g, _)| *g != dev.generation)
+                {
+                    self.surface = None;
+                    return self.try_present(frame, blit);
+                }
                 return Err(format!("the surface can't be configured: {e}"));
             }
             if let Some(layer) = self.native.layer() {
