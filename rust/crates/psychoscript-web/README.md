@@ -43,8 +43,9 @@ the same way and gives the commands the program emitted, as JSON reads them (`nu
 its canvas's id; its `render` and `draw` posts go out under the post rate (a bucket of 8 refilled at
 `maxPostsPerSecond`, 240; waiting posts coalesce by render and by canvas key, and go out at the run's end unless it is
 stopped); GPU batches (`{ type: "frame", gpu }`, `{ type: "gpu", ops, bytes }`, widgets-gpu.md) take no token but
-never overtake a waiting post, and go as they are for the client's host checks: their ops as JSON, an `ArrayBuffer`'s
-bytes (read in place) in the byte outbox (`takeBytes`), other bytes `null`; a render carries its GPU canvases' ids by
+never overtake a waiting post, and go as they are for the client's host checks: their ops as JSON reads them, with
+their non-finite numbers (which JSON writes as `null`) listed by path in `nonFinite` for the client to put back, an
+`ArrayBuffer`'s bytes (read in place) in the byte outbox (`takeBytes`), other bytes `null`; a render carries its GPU canvases' ids by
 key (`gpu`). Widget runs (`runStep`, `runDraw`, `native` live runs) have typed arrays (`Runtime::typed_arrays`); a
 plain `run` doesn't. A
 `draw` without a string `key`, over 2,000 commands or with an invalid command (type `draw`), ends the run. Draws, live posts and

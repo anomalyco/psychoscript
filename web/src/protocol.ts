@@ -124,3 +124,23 @@ export const MAX_FPS = 60
 export const SHADER_FRAME_BUDGET_MS = 50
 export const MAX_SHADER_BYTES = 16 * 1024
 export const MAX_SHADER_VALUES = 16
+
+/**
+ * A GPU batch's ops as the program posted them (widgets-gpu.md, Transport): JSON writes a non-finite number as `null`,
+ * so the runner lists those by path in `nonFinite`, `[[path, "NaN" | "Infinity" | "-Infinity"], …]`; they go back in
+ * place, and `nonFinite` goes.
+ */
+export function restoreNonFinite(batch: { ops?: unknown; nonFinite?: unknown }) {
+  const list = batch.nonFinite as Array<[Array<string | number>, string]> | undefined
+  if (list === undefined) return
+  delete batch.nonFinite
+  for (const [path, value] of list) {
+    if (path.length === 0) {
+      batch.ops = Number(value)
+      continue
+    }
+    let at = batch.ops as Record<string | number, unknown>
+    for (let i = 0; i < path.length - 1; i++) at = at[path[i]!] as Record<string | number, unknown>
+    at[path[path.length - 1]!] = Number(value)
+  }
+}

@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// The GPU conformance fixtures (opencode `packages/widget/test/fixtures/gpu/*.json`, widgets 6fefac75b; copies in
+// The GPU conformance fixtures (opencode `packages/widget/test/fixtures/gpu/*.json`, widgets 3efef1c62; copies in
 // rust/crates/psychoscript-web/tests/fixtures/gpu): each program runs on this host's WebAssembly (the worker's
 // `LiveRun`, from wasm/) under the fixtures' driver, and must post the same batches (ops, and bytes byte for byte),
 // give the same program errors from the host checks (src/gpu-checks.ts, which the page runs before replaying), and
@@ -10,6 +10,7 @@
 import path from "node:path"
 import { initSync, Program } from "../wasm/psychoscript_web.js"
 import { canvasSize, gpuChecks } from "../src/gpu-checks.ts"
+import { restoreNonFinite } from "../src/protocol.ts"
 
 const root = path.resolve(import.meta.dir, "..")
 const dir = path.resolve(root, "../rust/crates/psychoscript-web/tests/fixtures")
@@ -29,6 +30,32 @@ interface Fixture {
   errors: Array<{ message: string; canvases: string[] | "all" }>
   end: string
 }
+
+/** A value with every number JSON can't hold (NaN, Infinity, -Infinity) as `{ $num: "NaN" }` and so on, as the
+ * fixtures write ops; the rest as is. */
+const tagged = (value: unknown): unknown => {
+  if (typeof value === "number") return Number.isFinite(value) ? value : { $num: String(value) }
+  if (Array.isArray(value)) return value.map(tagged)
+  if (value === null || typeof value !== "object") return value
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, tagged(item)]))
+}
+
+/** The fixtures' ops read back: `{ $num }` as its number. */
+const untagged = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(untagged)
+  if (value === null || typeof value !== "object") return value
+  const entries = Object.entries(value)
+  if (entries.length === 1 && entries[0]![0] === "$num") return Number(entries[0]![1])
+  return Object.fromEntries(entries.map(([key, item]) => [key, untagged(item)]))
+}
+
+/** Equal, NaN to NaN. */
+const same = (a: unknown, b: unknown): boolean =>
+  Object.is(a, b) ||
+  (Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((item, i) => same(item, b[i]))) ||
+  (!!a && !!b && typeof a === "object" && typeof b === "object" && !Array.isArray(a) && !Array.isArray(b) &&
+    Object.keys(a).length === Object.keys(b).length &&
+    Object.entries(a).every(([key, item]) => same(item, (b as Record<string, unknown>)[key])))
 
 /** Frame `i` at `t = i / 60`, on a canvas 300 x 200 at scale 2. */
 const frame = (i: number) => ({ t: i / 60, dt: 1 / 60, width: 300, height: 200, scale: 2, pointer: null, dark: false })
@@ -64,7 +91,8 @@ async function run(f: Fixture) {
         }
         continue
       }
-      const batch = value as { ops?: unknown; bytes?: unknown }
+      const batch = value as { ops?: unknown; bytes?: unknown; nonFinite?: unknown }
+      if (batch && typeof batch === "object" && batch.nonFinite !== undefined) restoreNonFinite(batch)
       if (batch && typeof batch === "object" && Array.isArray(batch.bytes)) {
         bytes ??= live.takeBytes()
         const [offset, length] = batch.bytes as [number, number]
@@ -146,7 +174,9 @@ for (const file of files) {
       const have = got.batches[i]
       if (!have) return
       if (have.frame !== want.frame) problems.push(`batch ${i}: frame ${have.frame}, want ${want.frame}`)
-      if (JSON.stringify(have.ops) !== JSON.stringify(want.ops)) problems.push(`batch ${i}: ops differ`)
+      // Written with tags as the fixtures are, and the fixtures' read back as numbers: both the same.
+      if (JSON.stringify(tagged(have.ops)) !== JSON.stringify(want.ops) || !same(have.ops, untagged(want.ops)))
+        problems.push(`batch ${i}: ops differ`)
       if (have.bytes !== want.bytes) problems.push(`batch ${i}: bytes differ (${have.bytes?.length ?? null} vs ${want.bytes?.length ?? null} base64 chars)`)
     })
   }
@@ -155,6 +185,53 @@ for (const file of files) {
   const ms = (performance.now() - started).toFixed(0)
   if (problems.length > 0) failed++
   console.log(`${problems.length === 0 ? "ok  " : "FAIL"} ${f.name} (${f.batches ? `${f.batches.length} batches, ` : ""}${f.errors.length} errors, ${ms} ms)${problems.length ? "\n     " + problems.join("\n     ") : ""}`)
+}
+
+// Non-finite numbers in ops (widgets-gpu.md, Transport): numbers are read as they are, so NaN and infinities fail the
+// check that reads them, never becoming null. Each case's ops go through this host's transport and must give the error
+// gpu.ts gives (written here), which the checks also give on the ops as posted, before any transport. A null would pass
+// where the field may be null (rowsPerImage, depthClearValue).
+const VIEW = `{ dimension: "2d", baseMipLevel: 0, mipLevelCount: 1, baseArrayLayer: 0, arrayLayerCount: 1 }`
+const nonFinite: Array<{ name: string; ops: string; error: { message: string; canvases: string[] | "all" } }> = [
+  {
+    name: "NaN in a nullable whole number",
+    ops: `[["buffer", 1, 256, 4], ["texture", 2, 4, 4, 1, "rgba8unorm", 2, 1, 1], ["copyBufferToTexture", 1, 0, 256, NaN, 2, 0, [0, 0, 0], [1, 1, 1]]]`,
+    error: { message: 'gpu op 2: "copyBufferToTexture" argument 4 must be a whole number', canvases: "all" },
+  },
+  {
+    name: "NaN in a nullable finite number",
+    ops: `[["texture", 1, 4, 4, 1, "depth24plus", 16, 1, 1], ["view", 2, 1, ${VIEW}], ["pass", { colorAttachments: [], depthStencilAttachment: { view: 2, depthClearValue: NaN, depthLoadOp: "clear", depthStoreOp: "store", depthReadOnly: false } }], ["end"]]`,
+    error: { message: 'gpu op 2: "pass" argument 1.depthStencilAttachment.depthClearValue must be a finite number', canvases: "all" },
+  },
+  {
+    name: "Infinity in a clear value",
+    ops: `[["context", 1, "scene", "rgba8unorm", "opaque"], ["view", 2, 1, ${VIEW}], ["pass", { colorAttachments: [{ view: 2, resolveTarget: null, clearValue: [0, Infinity, 0, 1], loadOp: "clear", storeOp: "store" }], depthStencilAttachment: null }], ["end"]]`,
+    error: { message: 'gpu op 2: "pass" argument 1.colorAttachments[0].clearValue[1] must be a finite number', canvases: ["scene"] },
+  },
+  {
+    name: "-Infinity as a size",
+    ops: `[["buffer", 1, -Infinity, 4]]`,
+    error: { message: 'gpu op 0: "buffer" argument 2 must be a whole number', canvases: "all" },
+  },
+  { name: "NaN as the ops", ops: `NaN`, error: { message: "a batch's ops must be a list", canvases: "all" } },
+]
+for (const c of nonFinite) {
+  if (only.length > 0 && !only.includes(c.name)) continue
+  const source = `async function main() {
+  widget.render(ui.canvas({ key: "scene", gpu: true, height: 100 }))
+  __host.post({ type: "gpu", ops: ${c.ops}, bytes: new ArrayBuffer(0) })
+  await widget.frame()
+}`
+  const got = await run({ name: c.name, source, canvases: [{ key: "scene", width: 200, height: 200 }], gpu: { available: true, format: "rgba8unorm" }, errors: [], end: "return" })
+  const direct = gpuChecks(() => new Set(["scene"])).batch({ ops: new Function(`return ${c.ops}`)(), bytes: new Uint8Array(0) }).error
+  const want = JSON.stringify([c.error])
+  const problems = [
+    JSON.stringify(got.errors) !== want && `errors ${JSON.stringify(got.errors)}, want ${want}`,
+    JSON.stringify(direct && [{ message: direct.message, canvases: direct.canvases }]) !== want && `as posted, before transport: ${JSON.stringify(direct)}`,
+    got.end !== "return" && `end ${got.end}`,
+  ].filter(Boolean)
+  if (problems.length > 0) failed++
+  console.log(`${problems.length === 0 ? "ok  " : "FAIL"} ${c.name}${problems.length ? "\n     " + problems.join("\n     ") : ""}`)
 }
 console.log(failed === 0 ? "all GPU fixtures pass" : `${failed} GPU fixture(s) failed`)
 process.exit(failed === 0 ? 0 : 1)

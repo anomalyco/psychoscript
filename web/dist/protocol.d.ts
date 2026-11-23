@@ -189,3 +189,12 @@ export declare const MAX_FPS = 60;
 export declare const SHADER_FRAME_BUDGET_MS = 50;
 export declare const MAX_SHADER_BYTES: number;
 export declare const MAX_SHADER_VALUES = 16;
+/**
+ * A GPU batch's ops as the program posted them (widgets-gpu.md, Transport): JSON writes a non-finite number as `null`,
+ * so the runner lists those by path in `nonFinite`, `[[path, "NaN" | "Infinity" | "-Infinity"], …]`; they go back in
+ * place, and `nonFinite` goes.
+ */
+export declare function restoreNonFinite(batch: {
+    ops?: unknown;
+    nonFinite?: unknown;
+}): void;

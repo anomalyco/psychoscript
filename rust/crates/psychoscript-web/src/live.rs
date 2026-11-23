@@ -463,8 +463,8 @@ impl Shared {
 
     /// Writes a GPU batch as it is, for the client's checks (widgets-gpu.md, Host checks): an object as `{"ops":...,
     /// "bytes":` with its bytes given (an `ArrayBuffer`'s, read in place), their `[offset, length]` and `}` to follow
-    /// once it is in the outbox; else whole, `bytes` `null` when they aren't an `ArrayBuffer`. A function in it fails
-    /// the call.
+    /// once it is in the outbox; else whole, `bytes` `null` when they aren't an `ArrayBuffer`. Its ops' non-finite
+    /// numbers, written `null`, are listed in `nonFinite` too ([`json::write_ops`]). A function in it fails the call.
     fn batch(&self, batch: &HostValue, out: &mut String) -> Result<Option<Vec<u8>>, HostValue> {
         let carried = || json::carried(1, POST);
         let HostValue::Object(_) = batch else {
@@ -476,9 +476,16 @@ impl Shared {
             .get("ops")
             .filter(|o| !matches!(o, HostValue::Undefined))
         {
+            let (ops, non_finite) = json::write_ops(ops).ok_or_else(carried)?;
             out.push_str(r#""ops":"#);
-            out.push_str(&json::write_checked(ops).ok_or_else(carried)?);
+            out.push_str(&ops);
             out.push(',');
+            // Numbers stay as they are: the non-finite ones, written null, by path (the client puts them back).
+            if let Some(list) = non_finite {
+                out.push_str(r#""nonFinite":"#);
+                out.push_str(&list);
+                out.push(',');
+            }
         }
         out.push_str(r#""bytes":"#);
         match batch.get("bytes") {

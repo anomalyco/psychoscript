@@ -4,7 +4,7 @@
 
 import { initSync, LiveRun, Program } from "../wasm/psychoscript_web.js"
 import type { ErrorInfo, FromWorker, LiveExit, StepOutput, ToWorker } from "./protocol.js"
-import { DRAW_TIMEOUT_MS, STEP_TIMEOUT_MS } from "./protocol.js"
+import { DRAW_TIMEOUT_MS, restoreNonFinite, STEP_TIMEOUT_MS } from "./protocol.js"
 
 /**
  * Widget protocol 2, a native host (widgets.md, "Protocol", "Native hosts"): functions cross as markers, steps hand
@@ -203,7 +203,8 @@ function flush(wid: number, live: Live) {
   // GPU batches name their bytes by `[offset, length]` in the run's byte outbox: one copy out of the WebAssembly,
   // transferred to the page, each batch a view of it.
   let bytes: Uint8Array | undefined
-  const batch = (b: { bytes?: unknown } | undefined) => {
+  const batch = (b: { bytes?: unknown; nonFinite?: unknown } | undefined) => {
+    if (b?.nonFinite !== undefined) restoreNonFinite(b)
     if (!b || !Array.isArray(b.bytes)) return
     const all = (bytes ??= live.run.takeBytes())
     const [offset, length] = b.bytes as [number, number]

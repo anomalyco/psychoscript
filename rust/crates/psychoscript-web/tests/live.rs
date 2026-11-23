@@ -676,6 +676,44 @@ fn gpu_batches_carry_their_ops_and_bytes() {
     assert_eq!(out[7]["value"], "TypeError");
 }
 
+/// A GPU batch's ops cross as JSON reads them (widgets-gpu.md, Transport): an `undefined` list item is `null`, an
+/// `undefined` member is absent. Numbers stay as they are: a non-finite one, written `null`, is listed by its path in
+/// `nonFinite` for the client to put back; a batch without one has no `nonFinite`.
+#[test]
+fn gpu_batch_ops_keep_non_finite_numbers_by_path() {
+    let mut run = start_widget(
+        r#"async function main() {
+  widget.render(ui.canvas({ key: "scene", gpu: true, height: 10 }))
+  __host.post({ type: "gpu", ops: [["pass", { colorAttachments: [undefined, { clearValue: [0, NaN, Infinity], "a\"b": -Infinity, gone: undefined }] }], ["buffer", 1, NaN, 4]], bytes: new ArrayBuffer(0) })
+  __host.post({ type: "frame", gpu: { ops: NaN, bytes: new ArrayBuffer(0) } })
+  __host.post({ type: "gpu", ops: [["buffer", 2, null, 4]], bytes: new ArrayBuffer(0) })
+}"#,
+        240,
+    );
+    let out = run_for(&mut run, 200);
+    assert_eq!(
+        out[1],
+        json!({ "type": "gpu", "batch": {
+            "ops": [["pass", { "colorAttachments": [null, { "clearValue": [0, null, null], "a\"b": null }] }], ["buffer", 1, null, 4]],
+            "nonFinite": [
+                [[0, 1, "colorAttachments", 1, "clearValue", 1], "NaN"],
+                [[0, 1, "colorAttachments", 1, "clearValue", 2], "Infinity"],
+                [[0, 1, "colorAttachments", 1, "a\"b"], "-Infinity"],
+                [[1, 2], "NaN"],
+            ],
+            "bytes": [0, 0],
+        } })
+    );
+    assert_eq!(
+        out[2],
+        json!({ "type": "frame", "gpu": { "ops": null, "nonFinite": [[[], "NaN"]], "bytes": [0, 0] } })
+    );
+    assert_eq!(
+        out[3],
+        json!({ "type": "gpu", "batch": { "ops": [["buffer", 2, null, 4]], "bytes": [0, 0] } })
+    );
+}
+
 /// A GPU batch never overtakes a waiting render or draw: it waits behind them (taking no token) and goes out right
 /// after the post before it, with its bytes; a frame request without a batch still goes out at once.
 #[test]

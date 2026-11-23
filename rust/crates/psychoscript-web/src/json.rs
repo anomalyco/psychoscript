@@ -82,7 +82,78 @@ impl<'de> Visitor<'de> for Json {
 /// the top; non-finite numbers are `null`), or `None` when it holds a function, which a host call's argument may not.
 pub(crate) fn write_checked(value: &HostValue) -> Option<String> {
     let mut out = String::new();
-    write_into(value, &mut out).then_some(out)
+    write_into(value, &mut out, &mut false).then_some(out)
+}
+
+/// A GPU batch's ops as [`write_checked`] writes them, and, when they hold non-finite numbers (which it writes as
+/// `null`), those numbers by path from the ops, `[[path, "NaN" | "Infinity" | "-Infinity"], …]`: ops are read as JSON
+/// reads them except that numbers stay as they are (widgets-gpu.md, Transport), so the client puts them back.
+pub(crate) fn write_ops(value: &HostValue) -> Option<(String, Option<String>)> {
+    let mut out = String::new();
+    let mut seen = false;
+    if !write_into(value, &mut out, &mut seen) {
+        return None;
+    }
+    if !seen {
+        return Some((out, None));
+    }
+    let mut list = String::from("[");
+    non_finite(value, &mut Vec::new(), &mut list);
+    list.push(']');
+    Some((out, Some(list)))
+}
+
+/// A step on the way to a value inside ops: a list index or an object key.
+enum Step<'a> {
+    Index(usize),
+    Key(&'a HostString),
+}
+
+/// Lists the non-finite numbers in `value`, at `path`, where [`write_into`] writes them.
+fn non_finite<'a>(value: &'a HostValue, path: &mut Vec<Step<'a>>, list: &mut String) {
+    match value {
+        HostValue::Number(n) if !n.is_finite() => {
+            if list.len() > 1 {
+                list.push(',');
+            }
+            list.push_str("[[");
+            for (i, step) in path.iter().enumerate() {
+                if i > 0 {
+                    list.push(',');
+                }
+                match step {
+                    Step::Index(i) => list.push_str(&i.to_string()),
+                    Step::Key(k) => string(&k.to_string_lossy(), list),
+                }
+            }
+            list.push_str("],");
+            list.push_str(if n.is_nan() {
+                r#""NaN""#
+            } else if *n > 0.0 {
+                r#""Infinity""#
+            } else {
+                r#""-Infinity""#
+            });
+            list.push(']');
+        }
+        HostValue::Array(items) => {
+            for (i, item) in items.iter().enumerate() {
+                if let Some(item) = item.as_ref().filter(|item| !skipped(item)) {
+                    path.push(Step::Index(i));
+                    non_finite(item, path, list);
+                    path.pop();
+                }
+            }
+        }
+        HostValue::Object(fields) => {
+            for (k, v) in fields.iter().filter(|(_, v)| !skipped(v)) {
+                path.push(Step::Key(k));
+                non_finite(v, path, list);
+                path.pop();
+            }
+        }
+        _ => {}
+    }
 }
 
 fn is_function(v: &HostValue) -> bool {
@@ -120,12 +191,15 @@ fn has_function(v: &HostValue) -> bool {
     }
 }
 
-/// Writes `value`; false when it holds a function.
-fn write_into(value: &HostValue, out: &mut String) -> bool {
+/// Writes `value`; false when it holds a function. `seen`: set when it writes a non-finite number (as `null`).
+fn write_into(value: &HostValue, out: &mut String, seen: &mut bool) -> bool {
     match value {
         HostValue::Null => out.push_str("null"),
         HostValue::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        HostValue::Number(n) => number(*n, out),
+        HostValue::Number(n) => {
+            *seen |= !n.is_finite();
+            number(*n, out)
+        }
         HostValue::String(s) => string(&s.to_string_lossy(), out),
         HostValue::Array(items) => {
             out.push('[');
@@ -136,7 +210,7 @@ fn write_into(value: &HostValue, out: &mut String) -> bool {
                 match item {
                     Some(item) if is_function(item) => return false,
                     Some(item) if !skipped(item) => {
-                        if !write_into(item, out) {
+                        if !write_into(item, out, seen) {
                             return false;
                         }
                     }
@@ -161,7 +235,7 @@ fn write_into(value: &HostValue, out: &mut String) -> bool {
                 first = false;
                 string(&k.to_string_lossy(), out);
                 out.push(':');
-                if !write_into(v, out) {
+                if !write_into(v, out, seen) {
                     return false;
                 }
             }

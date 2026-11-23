@@ -1251,6 +1251,19 @@ for (const query of ["?only=shader-broken"]) {
     { reports: written.reports, alt: written.alt },
   )
   await done(page)
+  // NaN and infinities reach the page's checks as numbers (the worker puts back what JSON wrote as null): the fixtures'
+  // exact messages, where a null would pass.
+  for (const name of ["error-nan-rows-per-image", "error-infinite-depth-clear-value"]) {
+    const f = (await Bun.file(new URL(`../../rust/crates/psychoscript-web/tests/fixtures/gpu/${name}.json`, import.meta.url)).json()) as { source: string; errors: { message: string }[] }
+    await mount(page, f.source)
+    const got = await state(page)
+    check(
+      got.reports.length === 1 && got.reports[0]!.message === f.errors[0]!.message,
+      `gpu: ${name} on the page: the fixture's message, the number kept a number`,
+      { reports: got.reports, want: f.errors[0]!.message },
+    )
+    await done(page)
+  }
 
   // opencode's example widget templates (test/fixtures/gpu/templates), running on.
   await copies()

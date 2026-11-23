@@ -98,7 +98,8 @@ Behavior, per the contract:
 - GPU canvas (`canvas` with `gpu: true` and a `key`, live mode; widgets-gpu.md): the live input tells the program
   `gpu: { available, format }` (WebGPU in this browser, its preferred canvas format). The program's `widget.gpu` calls,
   recorded by the live prelude into batches (ops and one `ArrayBuffer` of bytes, in a frame request or on their own;
-  a batch never overtakes a waiting render or draw), are checked and then replayed on the page's thread on the
+  a batch never overtakes a waiting render or draw; ops read as JSON reads them, numbers kept, `NaN` and infinities
+  put back by the worker), are checked and then replayed on the page's thread on the
   browser's WebGPU: one device per widget, resources by handle, a context's canvas found by its key among the GPU
   canvases of the last render, sized before it is configured. The checks are the spec's Host checks with their exact
   messages (`src/gpu-checks.ts`, a port of opencode's reference; the per-frame counts start again at every frame
