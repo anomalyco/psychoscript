@@ -610,7 +610,7 @@ with a hint to encode as text first (`TextDecoder`, `toBase64`, `toHex`).
       `Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))` decodes base64. `BYTES_PER_ELEMENT` is 1 on the
       constructor, its instances, and `Buffer`.
 - [x] Index reads and writes with JS byte semantics: values wrap modulo 256, out-of-range writes are ignored, indexes
-      cannot be deleted. `length` is a prototype accessor, so `Object.keys` lists only indexes.
+      cannot be deleted. `length`, `byteLength` and `byteOffset` are prototype accessors, so `Object.keys` lists only indexes.
 - [x] `at`, `slice`, `subarray` (a view on the same bytes), `set`, `fill`, `reverse`, `indexOf`, `lastIndexOf`,
       `includes`, `join`, `toString`, `toBase64` (with `alphabet` and `omitPadding`), `toHex`, and live `keys`, `values`, `entries`, and `[Symbol.iterator]`
       iterators. Start indexes coerce as for arrays, search values do not (`bytes.includes("1")` is `false`), and

@@ -1069,6 +1069,14 @@ describe("Uint8Array", () => {
     ).toEqual([1, 1, 1, 1, 4, false, false, []])
   })
 
+  test("byteLength is the length and byteOffset is where a view starts, on Uint8Array and Buffer", async () => {
+    expect(
+      await value(`const b = new TextEncoder().encode("héllo")
+        return [b.byteLength, b.subarray(2).byteLength, Buffer.from("abc").byteLength, Object.keys(b).includes("byteLength"),
+          new Uint8Array(4).byteOffset, new Uint8Array(4).subarray(2).subarray(1).byteOffset]`),
+    ).toEqual([6, 4, 3, false, 0, 3])
+  })
+
   test("index reads and writes clamp to a byte and ignore out-of-range writes, like JS", async () => {
     expect(
       await value(`
