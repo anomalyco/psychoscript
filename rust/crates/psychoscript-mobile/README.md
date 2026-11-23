@@ -402,8 +402,8 @@ WebGPU, shader translation and presenting are this crate's.
   program whose frames take the GPU longer than the display's waits for it on its own thread, and never queues up GPU
   work. Work still unfinished 250 ms after its submit stops the canvases it draws into: `stopped(client, "the GPU work
   hung; the canvas is stopped")`. Apple's GPUs stop work themselves sooner (after 0.05 to 0.6 s on an M5 Max) and fail
-  what follows it on the queue: with Rune's wgpu-hal (the workspace's `[patch.crates-io]`; stock wgpu-hal counts such
-  work finished and tells nothing) that loses the device: every run gets `lost` and draws again on a new one. A loss
+  what follows it on the queue: with the vendored wgpu-hal (`rust/vendor/`, gfx-rs/wgpu#10875; stock wgpu-hal counts
+  such work finished and tells nothing) that loses the device: every run gets `lost` and draws again on a new one. A loss
   with a run's GPU work in flight is a strike against it; a second within 30 s stops every canvas of the run, the
   same `stopped(client, "the GPU work hung; the canvas is stopped")`, so a widget can't keep resetting the GPU. The
   app's thread never waits on any of it. On the iOS Simulator only, such a timeout can bring down the Simulator's

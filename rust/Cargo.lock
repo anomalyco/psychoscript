@@ -1525,6 +1525,7 @@ name = "psychoscript-mobile"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "objc2-metal",
  "psychoscript",
  "psychoscript-mobile",
  "serde",
@@ -2293,8 +2294,7 @@ dependencies = [
 
 [[package]]
 name = "wgpu-hal"
-version = "30.0.1"
-source = "git+https://github.com/anomalyco/rune?rev=9a915b1face3445afd025059eabc190977db6f24#9a915b1face3445afd025059eabc190977db6f24"
+version = "30.0.2"
 dependencies = [
  "android_system_properties",
  "arrayvec",

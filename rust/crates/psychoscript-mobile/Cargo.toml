@@ -54,6 +54,10 @@ wgpu = { version = "~30.0.1", default-features = false, features = ["std", "wgsl
 [target.'cfg(any(target_os = "android", target_os = "linux"))'.dependencies]
 wgpu = { version = "~30.0.1", default-features = false, features = ["std", "wgsl", "vulkan"], optional = true }
 
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+# `tests/gpu_metal_loss.rs`'s shared event (features wgpu-hal enables already).
+objc2-metal = { version = "0.3.2", default-features = false, features = ["std", "MTLDevice", "MTLEvent"] }
+
 [dev-dependencies]
 # This crate with its test hooks, for its tests.
 # (Its default features as the build asks: `--no-default-features` tests without them.)

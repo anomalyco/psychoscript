@@ -21,6 +21,10 @@ targets=(aarch64-apple-ios aarch64-apple-ios-sim aarch64-apple-darwin)
 pkg="$out/PsychoScript"
 
 cd "$root"
+# The vendored wgpu-hal's Metal fence tests (`vendor/wgpu-hal.patch`; logic only, no GPU work), before shipping it.
+if [ -d vendor/wgpu-hal ]; then
+  cargo test -q --manifest-path vendor/wgpu-hal/Cargo.toml --features metal --lib --target-dir target -- metal::fence_tests
+fi
 export IPHONEOS_DEPLOYMENT_TARGET="${IPHONEOS_DEPLOYMENT_TARGET:-15.0}"
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}"
 for triple in "${targets[@]}"; do
