@@ -10,11 +10,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use psychoscript_mobile::{
-    EncodePosts, EncodeStep, EncodeValues, Failure, HostValue, LiveExit, LiveHandler, LiveOptions,
-    LiveRun, Program, PsychoScriptError, Reject, RunOptions, ValueEncoder,
+    EncodePosts, EncodeStep, EncodeValues, Failure, GpuCanvasState, HostValue, LiveContext,
+    LiveExit, LiveHandler, LiveOptions, LiveRun, Program, PsychoScriptError, Reject, RunOptions,
+    ValueEncoder,
 };
 use serde_json::{Value, json};
-use widget_wire::{Arg, DrawOutput, Node, Output, Post, StepOutput, decode_output, decode_post};
+use widget_wire::{DrawOutput, Node, Output, Post, StepOutput, decode_output, decode_post};
 
 const PRELUDE: &str = include_str!("fixtures/workloads/prelude.js");
 /// The prelude of 523750c6a, which still built the tree in the script (`__widget_step`, `__widget_live(input)`): the
@@ -147,6 +148,7 @@ impl LiveHandler for Handler {
         let _ = self.0.lock().unwrap().send(Event::Bytes(messages));
     }
     fn on_warning(&self, _message: String) {}
+    fn on_gpu_canvas(&self, _key: Option<String>, _state: GpuCanvasState) {}
     fn on_exit(&self, exit: LiveExit) {
         let _ = self.0.lock().unwrap().send(Event::Exit(exit));
     }
@@ -194,7 +196,7 @@ impl EncodeValues for Both {
     fn step(&self, _input: &HostValue) -> Box<dyn EncodeStep> {
         unreachable!()
     }
-    fn live(&self) -> Box<dyn EncodePosts> {
+    fn live(&self, _ctx: LiveContext) -> Box<dyn EncodePosts> {
         Box::new(Both)
     }
 }
@@ -301,12 +303,14 @@ fn posts_read_values_of_other_kinds_as_their_json_does() {
     run.stop();
 }
 
+/// GPU batches are replayed by the library (`widgets-gpu.md`; `tests/gpu.rs`): the app gets the frame request alone.
 #[test]
-fn a_gpu_batch_carries_the_programs_typed_array_bytes() {
+fn gpu_batches_never_reach_the_app() {
     let source = r#"
       const v = new Float32Array([1.5, -2, 0.25])
-      __host.post({ type: "frame", gpu: { ops: [["writeBuffer", 4, 0, 0, v.byteLength], ["submit"]], bytes: v } })
+      __host.post({ type: "frame", gpu: { ops: [["writeBuffer", 4, 0, 0, v.byteLength], ["submit"]], bytes: v.buffer } })
       __host.post({ type: "gpu", ops: [], bytes: v.buffer })
+      __host.post({ type: "send", value: 1 })
       await __host.receive()
     "#;
     let (h, rx) = handler();
@@ -322,19 +326,17 @@ fn a_gpu_batch_carries_the_programs_typed_array_bytes() {
     let Event::Bytes(list) = next(&rx) else {
         panic!("bytes")
     };
-    let floats: Vec<u8> = [1.5f32, -2.0, 0.25]
-        .iter()
-        .flat_map(|f| f.to_le_bytes())
-        .collect();
-    let Post::FrameGpu(batch) = decode_post(&list[0]).unwrap() else {
-        panic!()
-    };
-    assert_eq!(batch.bytes, floats);
-    assert_eq!(batch.ops[1], Arg::List(vec![Arg::Str("submit".into())]));
-    let Post::Gpu(batch) = decode_post(&list[1]).unwrap() else {
-        panic!()
-    };
-    assert_eq!(batch.bytes, floats);
+    let posts: Vec<Post> = list.iter().map(|b| decode_post(b).unwrap()).collect();
+    assert_eq!(
+        posts,
+        [
+            Post::Frame,
+            Post::Send {
+                value: json!(1),
+                wake: true
+            }
+        ]
+    );
     run.stop();
 }
 
@@ -390,24 +392,6 @@ fn an_invalid_post_ends_the_live_run_as_a_program_error() {
     };
     assert_eq!(kind, "InvalidDataValue");
     assert!(reason.contains("unknown post type \"explode\""), "{reason}");
-
-    let (h, rx) = handler();
-    let _run = program("__host.post({ type: \"frame\", gpu: { ops: [], bytes: [1, 2] } })".into())
-        .start_live(
-            "null".into(),
-            h,
-            LiveOptions::default(),
-            None,
-            Some(ValueEncoder::widget()),
-        )
-        .unwrap();
-    let Event::Exit(LiveExit::Failed {
-        error: PsychoScriptError::Runtime { kind, .. },
-    }) = next(&rx)
-    else {
-        panic!("a program error")
-    };
-    assert_eq!(kind, "InvalidGpu");
 }
 
 #[test]
@@ -856,7 +840,7 @@ impl EncodeValues for Built {
     fn step(&self, _input: &HostValue) -> Box<dyn EncodeStep> {
         unreachable!()
     }
-    fn live(&self) -> Box<dyn EncodePosts> {
+    fn live(&self, _ctx: LiveContext) -> Box<dyn EncodePosts> {
         Box::new(Built)
     }
 }

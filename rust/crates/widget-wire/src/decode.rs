@@ -375,6 +375,7 @@ struct Props {
     fullscreen: Option<bool>,
     capture: Option<String>,
     pointer: bool,
+    gpu: bool,
     place: Option<u32>,
     inset: Option<Inset>,
 }
@@ -420,6 +421,7 @@ fn read_prop(s: &mut Streams, p: &mut Props, tag: u32) -> Result<(), Malformed> 
         (33, K_INT) => p.fullscreen = Some(b(s)?),
         (34, K_STR) => p.capture = Some(s.str()?),
         (35, K_INT) => p.pointer = b(s)?,
+        (38, K_INT) => p.gpu = b(s)?,
         (36, K_INT) => p.place = Some(s.ints.int()?),
         (37, K_F64) => {
             let v = s.floats.f64()?;
@@ -711,6 +713,7 @@ fn shell(t: u32, mut p: Props) -> Result<(Node, Layer), DecodeError> {
             wgsl: p.wgsl,
             values: p.values,
             pointer: p.pointer,
+            gpu: p.gpu,
             fill: p.fill,
             fullscreen,
             capture,

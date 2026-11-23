@@ -207,6 +207,9 @@ pub enum Node {
         values: Vec<f64>,
         #[serde(default)]
         pointer: bool,
+        /// Drawn by a live program's `widget.gpu` (`widgets-gpu.md`); not with `wgsl`.
+        #[serde(default)]
+        gpu: bool,
         #[serde(default)]
         fill: Option<bool>,
         #[serde(default)]
@@ -245,8 +248,8 @@ impl Node {
         }
     }
 
-    /// Reads a view from a step's JSON: invalid when it doesn't parse, or a canvas has `values` without `wgsl` or
-    /// more than [`MAX_WGSL`] of it.
+    /// Reads a view from a step's JSON: invalid when it doesn't parse, or a canvas has `values` without `wgsl`, more
+    /// than [`MAX_WGSL`] of it, or both `gpu` and `wgsl`.
     pub fn from_value(v: &Value) -> Result<Node, String> {
         let node = Node::deserialize(v).map_err(|e| format!("invalid view: {e}"))?;
         node.check()?;
@@ -257,9 +260,15 @@ impl Node {
     pub(crate) fn check(&self) -> Result<(), String> {
         let mut bad = None;
         self.walk(&mut |n| {
-            if let Node::Canvas { wgsl, values, .. } = n {
+            if let Node::Canvas {
+                wgsl, values, gpu, ..
+            } = n
+            {
                 if wgsl.is_none() && !values.is_empty() {
                     bad.get_or_insert("a canvas's `values` need `wgsl`".to_owned());
+                }
+                if *gpu && wgsl.is_some() {
+                    bad.get_or_insert("a canvas's `gpu` and `wgsl` exclude each other".to_owned());
                 }
                 if let Some(w) = wgsl.as_ref().filter(|w| w.len() > MAX_WGSL) {
                     bad.get_or_insert(format!(

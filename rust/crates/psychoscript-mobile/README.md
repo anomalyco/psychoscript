@@ -1,8 +1,9 @@
 # psychoscript-mobile
 
 PsychoScript for iOS and Android: UniFFI bindings over the `psychoscript` crate, with no JavaScript engine. A host
-hands a program JSON and reads JSON back. With the `shader` feature (on by default) it also translates WGSL to MSL and
-GLSL ES 3.00 with naga.
+hands a program JSON and reads JSON back. With the `widget-gpu` feature (on by default) it also replays OpenCode widgets'
+GPU canvases on the device's GPU (wgpu: Metal on iOS, Vulkan on Android) and presents them into the app's surfaces
+([GPU canvases](#gpu-canvases)).
 
 | | Swift | Kotlin |
 | --- | --- | --- |
@@ -42,17 +43,6 @@ val out = program.run("""{"n":21}""", RunOptions(timeoutMs = 250uL))
     `timeoutMs` 0).
   - `MemoryLimitExceeded(reason, maxHeapBytes)`: the run's heap went over `maxHeapBytes`. Sizes follow the language's
     model of what the program can still reach, not the process's memory.
-- `translateWgsl(source, target: msl | glslEs300, stage: vertex | fragment, entry) -> TranslatedShader(code,
-  entryName, uniformBlocks: [UniformBlock(group, binding, name, slot)])`, or `ShaderError` (Kotlin `ShaderException`):
-  `Parse` / `Validation` (with `line`, `column`), `Unsupported` (no such entry, or a resource other than uniform
-  buffers), `Translation`. Validation allows baseline capabilities only, indexing is bounds-checked (`Restrict`) and MSL
-  loops are forced bounded, so untrusted shaders can't read out of bounds or hang the GPU in a loop.
-  - MSL 2.3: bind uniform `slot` as `[[buffer(slot)]]` (`setFragmentBytes(_, length:, index: slot)`); the function is
-    `entryName`.
-  - GLSL ES 3.00: the entry is `main`; bind a block with
-    `glUniformBlockBinding(prog, glGetUniformBlockIndex(prog, name), slot)`. Clip space stays WGSL's (no y flip, z in
-    0...1), and `gl_FragCoord` counts from the bottom left, unlike WGSL's `@builtin(position)`.
-
 Swift errors also get `.reason` on the enum. Kotlin exceptions' `message` lists every field.
 
 ### Bytes instead of JSON
@@ -105,20 +95,22 @@ A snapshot resumes only with the same setting, so restore a widget run with the 
   (`widgets-live.md`, Post rate): `render` and `draw` posts take a token from a bucket of 8 refilled at 240 a second;
   without one they wait, a newer render replacing the waiting render and a newer draw the waiting draw of its canvas
   key, and go out in order as tokens come. Every post is checked when it's posted (errors and `post`'s answer don't
-  wait). `submit` and `dismiss` hand over what waits first; `frame`, `send`, `capture` and GPU batches go at once;
-  a frame request while one is pending (no `frame` delivered since) sends nothing but its GPU batch. Nothing is
-  dropped and the rate is never an error. A `draw` post whose `key` isn't a string ends the run with
+  wait). `submit` and `dismiss` hand over what waits first; `frame`, `send` and `capture` go at once. A post carrying
+  a GPU batch takes no token but waits behind waiting posts, in order (the frame request it rides in too); a frame
+  request while one is pending (no `frame` delivered since) sends nothing, its batch still applies. GPU batches never
+  reach `onPostsBytes`: they are replayed here ([GPU canvases](#gpu-canvases)). Nothing is dropped and the rate is
+  never an error. A `draw` post whose `key` isn't a string ends the run with
   `Failed(Runtime(kind: "InvalidDataValue", reason: "A draw post needs a string key"))`, no line.
 - A function (marker) in the argument of a host function the encoder doesn't handle, or where the encoder allows none
   (a post's values, draw commands, `fetch`'s request), fails the call with the runtime's `TypeError`
   `Argument <n> to <name> contains a function, which cannot be passed to the host.` at the call, as it does without
   an encoder: a real `TypeError` the program can catch, located at the call when uncaught.
 - Widget live draws name their canvas by key (`{ type: "draw", key, commands }`); the encoder sends the canvas's id
-  from the last render. An unknown key, or a canvas drawn by its `wgsl`, throws an `Error` at the post that the
-  program can catch, as the prelude does.
+  from the last render. An unknown key, or a canvas drawn by its `wgsl` or by the GPU (`gpu: true`), throws an
+  `Error` at the post that the program can catch, as the prelude does.
 - The widget encoder's kinds name the spec's phase for the report: `InvalidView` (phase `view`), `InvalidDraw`
-  (`draw`), `InvalidGpu` (`gpu`, a batch in a frame request or on its own). Anything else it can't write (an unknown
-  post type) is `InvalidDataValue`, an invalid post as today.
+  (`draw`). Anything else it can't write (an unknown post type) is `InvalidDataValue`, an invalid post as today. A GPU
+  batch's errors don't end the run: they stop canvases (`onGpuCanvas`, phase `gpu`).
 
 ## Live runs
 
@@ -138,7 +130,8 @@ its own until it returns or is stopped. Beside its input function it gets `__hos
   frame costs one callback, not two. `onPostsBytes(messages)` replaces `onPosts` for a run with an encoder (above);
   implement it as a no-op otherwise. `onWarning(message)` comes in its own call (the crate sends none at present). Both run on the run's thread: hand
   them to the UI thread and return. `onExit(LiveExit)` runs once on the run's thread:
-  `Finished(resultJson)`, `Failed(error)` (`SliceBudget`, `Runtime`, ...), or `Stopped`.
+  `Finished(resultJson)`, `Failed(error)` (`SliceBudget`, `Runtime`, ...), or `Stopped`. `onGpuCanvas(key, state)`
+  tells a widget run's GPU canvas states ([GPU canvases](#gpu-canvases)); implement it as a no-op otherwise.
 - `LiveOptions(sliceBudgetMs = 50, httpsHosts = nil, allowLocalNetwork = false, maxHeapBytes = nil)`. The crate
   limits no post rate: a widget's is its encoder's (above).
   - **Slice budget:** a run computing past the budget without waiting is stopped with `SliceBudget`. Only the VM's
@@ -157,7 +150,8 @@ its own until it returns or is stopped. Beside its input function it gets `__hos
   - **Heap:** `maxHeapBytes` caps the run's heap: over it the run ends with `Failed(MemoryLimitExceeded)`. The
     contract's default for live widgets is 32 MB (`32 * 1024 * 1024`), but the crate sets no default: pass it.
     A snapshot keeps the cap it ran with.
-- `deliver(json)`, `pause()`, `resume()`, `snapshot()`, `stop()`, `isRunning()`;
+- `deliver(json)`, `pause()`, `resume()`, `snapshot()`, `stop()`, `isRunning()`, `attachSurface(key, surface, width,
+  height)`, `detachSurface(key)` ([GPU canvases](#gpu-canvases));
   `LiveRun.restore(snapshot, handler, inputName = "__input", options = LiveOptions(), transport = nil, encoder = nil)`.
   - `pause()`: no frames, messages or timers reach the program. `sleep` timers freeze with their remaining time,
     `now()` stops, delivered messages and finished fetches are held, and nothing is scheduled. A stretch of compute in
@@ -357,6 +351,59 @@ What one `run` copies:
 
 Logs (`console.log`) are kept for the run and dropped; the timeout bounds them.
 
+## GPU canvases
+
+With feature `widget-gpu` (on by default), a widget run replays its GPU canvases itself (opencode
+`specs/v2/widgets-gpu.md`, `widget-gpu` crate): the app attaches a surface per canvas and shows placeholders; batches,
+WebGPU, shader translation and presenting are this crate's.
+
+- **The device:** one per app, shared by every widget run, made when first needed (a live run with
+  `ValueEncoder.widget()`, or the first `ShaderCanvas`), never for steps, on a thread of its own: a live run's
+  `__input()` doesn't wait for it, and what the program posts meanwhile replays once it is there. Metal on iOS; Vulkan
+  1.1 or newer on Android 15 and 16 (API 35, 36), else none. The program's input gets `gpu: { available, format }`
+  (`format` `bgra8unorm` on iOS, `rgba8unorm` on Android). After a device loss the crate makes a new device, tells the
+  program (`{ type: "gpu", lost }`) and replays on it; a run restored from a snapshot is told the same.
+- **Surfaces:** `GpuSurface.metal(layer)` (Swift, a `CAMetalLayer`, retained while the surface lives; Rust/FFI
+  `GpuSurface.metalLayer(pointer:)`), `PsychoScriptGpu.surface(surface)` (Kotlin, an `android.view.Surface`, e.g.
+  `SurfaceHolder.surface` in `surfaceCreated`; it holds the `ANativeWindow` until the `GpuSurface` is dropped).
+- **`liveRun.attachSurface(key, surface, width, height)`:** the `gpu: true` canvas `key` (from the decoded view) is
+  presented into `surface`, `width` × `height` physical pixels (its view's size × scale). The program gets that size,
+  clamped to 4096 a side with the aspect kept, before its next frame; a clamped canvas is scaled to the surface. Call
+  it again with the new size when the view's size changes (or with a new surface).
+- **`liveRun.detachSurface(key)`:** before the surface goes (Android `surfaceDestroyed`, an iOS view leaving its
+  window): once it returns (it waits for a present in progress, at most a frame), the surface is never touched again.
+- **`handler.onGpuCanvas(key, state)`:** `key` the canvas, or `nil` for every GPU canvas of the run (now and later).
+  On the run's thread, like the other callbacks. Show the surface for `live`, the canvas's placeholder (`poster`, else
+  `alt`, else "GPU canvas not supported") for anything else:
+  - `live`: it has an image;
+  - `unavailable`: no GPU here (a client error, nothing to report);
+  - `stopped(kind, message, report)`: an error stopped it for the rest of the run, with `message`. `report` once per
+    error (`kind` `program`: report it, phase `gpu`); `kind` `client` (a driver failure, out of GPU memory, a surface
+    that failed): log it;
+  - `lost`: the device was lost; `live` again when the program draws on the new one.
+- **Threading:** batches replay on the run's thread, with the program's bytes in place (no copy, nothing crosses to
+  Swift or Kotlin); a thread of the run's own presents (one copy of the canvas into the surface's next texture, or a
+  scaled draw), so a slow, hidden or detached surface never holds up the run. Presents beyond the surface's rate are
+  skipped. `attachSurface` doesn't block; `detachSurface` waits only for a present in progress.
+- **`ShaderCanvas(wgsl:, surface:, width:, height:)`:** the `wgsl` shorthand, in steps and live widgets (`widgets.md`,
+  GPU canvases): `render(time:, scale:, pointer:, values:)` on the display link at the canvas's `fps` (it presents on
+  the calling thread), `resize(width:, height:)`. Fails with `GpuFailure.program` for a WGSL error (its line the
+  template's: report it, phase `gpu`) or `.client` without a GPU; `render` returns an error once, then does nothing.
+
+```swift
+let surface = try GpuSurface.metal(metalView.layer as! CAMetalLayer)
+run.attachSurface(key: "scene", surface: surface, width: UInt32(w * scale), height: UInt32(h * scale))
+// view leaving: run.detachSurface(key: "scene")
+func onGpuCanvas(key: String?, state: GpuCanvasState) { DispatchQueue.main.async { ui.gpu(key, state) } }
+```
+
+```kotlin
+override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+    run.attachSurface("scene", PsychoScriptGpu.surface(holder.surface), width.toUInt(), height.toUInt())
+}
+override fun surfaceDestroyed(holder: SurfaceHolder) = run.detachSurface("scene")
+```
+
 ## Building
 
 ```sh
@@ -367,7 +414,8 @@ ANDROID_NDK_HOME=… rust/crates/psychoscript-mobile/scripts/build-android.sh <o
 
 Both need the toolchain in `rust/rust-toolchain.toml` with the targets they name (`rustup target add …`), and
 `cargo install cargo-ndk` for Android. They write `<out>/REVISION` (the commit) and copy this README.
-`FEATURES=--no-default-features` builds without `translateWgsl` (about 1 MB less code). The ICU data the language
+`FEATURES=--no-default-features` builds the language alone; `FEATURES="--no-default-features --features widget-wire"`
+the widget encoder without GPU canvases (no wgpu). The ICU data the language
 crate compiles in for `Intl`-style date formatting and collation (most of the ~5 MB of read-only data) can't be left
 out from this crate: that would need a feature in `psychoscript` itself.
 
@@ -430,35 +478,5 @@ val run = liveProgram.startLive(input, handler, opts, transport, wire)          
 
 `examples/wire_bench.rs` times both paths on opencode's bench workloads (`tests/fixtures/workloads`).
 
-A `shader` node: wrap its `wgsl` in the spec's header and entry point, translate `widget_main`, and draw a full-screen
-triangle. GLES flips `frag.y` in the entry point so templates see a top-left origin everywhere (`resolution` is in
-physical pixels):
-
-```swift
-let header = """
-struct Widget { resolution: vec2f, time: f32, scale: f32, pointer: vec4f, values: array<vec4f, 4> }
-@group(0) @binding(0) var<uniform> widget: Widget;
-
-"""
-let entry = "\n@fragment fn widget_main(@builtin(position) p: vec4f) -> @location(0) vec4f { return shade(p.xy); }\n"
-let vertex = """
-@vertex fn widget_vertex(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
-  let uv = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
-  return vec4f(uv * 2.0 - 1.0, 0.0, 1.0);
-}
-"""
-let fragment = try translateWgsl(source: header + node.wgsl + entry, target: .msl, stage: .fragment, entry: "widget_main")
-let vs = try translateWgsl(source: vertex, target: .msl, stage: .vertex, entry: "widget_vertex")
-// MTLLibrary(source: fragment.code).makeFunction(name: fragment.entryName); setFragmentBytes(&uniforms, length: 96, index: 0)
-```
-
-```kotlin
-val entryGl = "\n@fragment fn widget_main(@builtin(position) p: vec4f) -> @location(0) vec4f " +
-    "{ return shade(vec2f(p.x, widget.resolution.y - p.y)); }\n"
-val fs = translateWgsl(header + node.wgsl + entryGl, ShaderTarget.GLSL_ES300, ShaderStage.FRAGMENT, "widget_main")
-val vs = translateWgsl(vertex, ShaderTarget.GLSL_ES300, ShaderStage.VERTEX, "widget_vertex")
-// after linking: fs.uniformBlocks.forEach { glUniformBlockBinding(prog, glGetUniformBlockIndex(prog, it.name), it.slot.toInt()) }
-```
-
-The 16 KB source cap, the draw command cap, output parsing and the 50 ms shader frame budget are the app's, per the
-spec.
+A `wgsl` canvas, in a step or a live widget: a [`ShaderCanvas`](#gpu-canvases) per canvas, drawn on the display link.
+The 16 KB source cap, the draw command cap and output parsing are the app's, per the spec.

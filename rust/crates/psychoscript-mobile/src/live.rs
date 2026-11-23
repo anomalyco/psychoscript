@@ -28,6 +28,7 @@ use crate::cpu::ThreadClock;
 use crate::encoder::{EncodePosts, Reject, Thrown, ValueEncoder, marked};
 use crate::error::PsychoScriptError;
 use crate::fetch::{self, FetchTransport, Rejection, Request};
+use crate::gpu::{GpuCanvasState, GpuStats, GpuSurface};
 use crate::json::{self, Input};
 use crate::timer::{self, Fire};
 
@@ -73,6 +74,53 @@ pub trait LiveHandler: Send + Sync {
     fn on_posts_bytes(&self, messages: Vec<Vec<u8>>);
     fn on_warning(&self, message: String);
     fn on_exit(&self, exit: LiveExit);
+    /// A GPU canvas's state (widget runs, `widgets-gpu.md`): the canvas `key`, or `None` for every GPU canvas of the
+    /// run (now and later).
+    fn on_gpu_canvas(&self, key: Option<String>, state: GpuCanvasState);
+}
+
+/// What an encoder's live posts ([`crate::EncodeValues::live`]) may do with their run.
+#[derive(Clone)]
+pub struct LiveContext(Weak<Control>);
+
+impl LiveContext {
+    /// Queues a message for the program, as [`LiveRun::deliver`] does; nothing once the run ended.
+    pub fn deliver(&self, message: HostValue) {
+        let Some(c) = self.0.upgrade() else { return };
+        if matches!(*c.state(), State::Ended) {
+            return;
+        }
+        lock(&c.inbox).queue.push_back(message);
+        c.wake_receive();
+    }
+
+    /// Wakes the run: its encoder's [`EncodePosts::due`] is called soon, on the run's thread.
+    pub fn wake(&self) {
+        if let Some(c) = self.0.upgrade() {
+            c.wake_all();
+        }
+    }
+
+    /// The run's handler (call it on the run's thread), unless the run is gone.
+    pub fn handler<R>(&self, f: impl FnOnce(&dyn LiveHandler) -> R) -> Option<R> {
+        self.0.upgrade().map(|c| f(&*c.handler))
+    }
+}
+
+/// Where a live run's GPU canvases are presented ([`LiveRun::attach_surface`]).
+pub trait LiveSurfaces: Send + Sync {
+    fn attach(&self, key: String, surface: Arc<GpuSurface>, width: u32, height: u32);
+    fn detach(&self, key: &str);
+    /// See [`LiveRun::gpu_stats`].
+    #[doc(hidden)]
+    fn stats(&self) -> GpuStats {
+        GpuStats::default()
+    }
+    /// See [`LiveRun::gpu_pixels`].
+    #[doc(hidden)]
+    fn pixels(&self, _key: &str) -> Option<(u32, u32, Vec<u8>)> {
+        None
+    }
 }
 
 /// How a live run ended.
@@ -117,6 +165,22 @@ impl LiveRun {
     }
 }
 
+/// Rust only, for diagnostics, tests and benchmarks.
+impl LiveRun {
+    /// The run's GPU work so far, with feature `widget-gpu`.
+    #[doc(hidden)]
+    pub fn gpu_stats(&self) -> Option<GpuStats> {
+        self.control.surfaces.as_ref().map(|s| s.stats())
+    }
+
+    /// The newest image of the GPU canvas `key`: its width, height and RGBA8 pixels, row by row (it waits for the
+    /// GPU).
+    #[doc(hidden)]
+    pub fn gpu_pixels(&self, key: &str) -> Option<(u32, u32, Vec<u8>)> {
+        self.control.surfaces.as_ref()?.pixels(key)
+    }
+}
+
 #[uniffi::export]
 impl LiveRun {
     /// Continues a run from a [`LiveRun::snapshot`], in this process or a later one of the same build: the program
@@ -147,12 +211,32 @@ impl LiveRun {
         if matches!(*self.control.state(), State::Ended) {
             return Err(ended());
         }
-        if let Some(encoded) = &self.control.encoded {
-            lock(encoded).delivered(&message);
+        if self.control.encoded.is_some() {
+            lock(&self.control.delivered).push(message.clone());
         }
         lock(&self.control.inbox).queue.push_back(message);
         self.control.wake_receive();
         Ok(())
+    }
+
+    /// Presents the GPU canvas `key` (a `gpu: true` canvas of the view, `widgets-gpu.md`) into `surface`, which is
+    /// `width` × `height` physical pixels: the program gets that size (clamped to 4096 a side) before its next frame,
+    /// and the canvas is scaled to the surface when clamped. Call it again with the new size when the canvas's size
+    /// changes, or with another surface. Presenting happens on a thread of the run's own. No-op for runs without the
+    /// widget encoder's GPU.
+    pub fn attach_surface(&self, key: String, surface: Arc<GpuSurface>, width: u32, height: u32) {
+        if let Some(s) = &self.control.surfaces {
+            s.attach(key, surface, width, height);
+        }
+    }
+
+    /// Stops presenting the canvas `key`: once this returns (a present in progress finishes first, at most a frame),
+    /// its surface is never touched again and is released, so the app may destroy it (Android `surfaceDestroyed`,
+    /// a view leaving). Call it before destroying the surface.
+    pub fn detach_surface(&self, key: String) {
+        if let Some(s) = &self.control.surfaces {
+            s.detach(&key);
+        }
     }
 
     /// Pauses the run in memory: `sleep` timers freeze with their remaining time, `now()` stops, delivered messages
@@ -376,6 +460,10 @@ pub(crate) struct Control {
     transport: Option<Arc<dyn FetchTransport>>,
     /// With an encoder, posts as its bytes, not JSON; the failure it threw at a post.
     encoded: Option<Mutex<Box<dyn EncodePosts>>>,
+    /// Messages delivered that the encoder hasn't been told of (it is told on the run's thread, not the app's).
+    delivered: Mutex<Vec<HostValue>>,
+    /// The encoder's surfaces.
+    surfaces: Option<Arc<dyn LiveSurfaces>>,
     /// The encoder's boundary depth.
     max_value_depth: Option<usize>,
     /// Whether the encoder's runs have typed arrays.
@@ -413,46 +501,61 @@ impl Control {
         encoder: Option<Arc<ValueEncoder>>,
     ) -> Arc<Control> {
         let now = Instant::now();
-        Arc::new_cyclic(|me| Control {
-            me: me.clone(),
-            handler,
-            options,
-            input_name,
-            transport,
-            max_value_depth: encoder.as_ref().and_then(|e| e.0.max_value_depth()),
-            typed_arrays: encoder.as_ref().is_some_and(|e| e.0.typed_arrays()),
-            encoded: encoder.map(|e| Mutex::new(e.0.live())),
-            ended: Mutex::new(None),
-            due_at: Mutex::new(None),
-            thrown: Thrown::default(),
-            state: Mutex::new(State::Starting),
-            run: Mutex::new(None),
-            inbox: Mutex::default(),
-            outbox: Mutex::default(),
-            sleeps: Mutex::default(),
-            fetches: Mutex::default(),
-            fetch_budget: Mutex::default(),
-            clock: Mutex::new(Clock {
-                base: now,
-                offset_ms: 0.0,
-                paused: None,
-            }),
-            stopping: AtomicBool::new(false),
-            slice: Mutex::new(Slice {
-                busy: false,
-                n: 0,
-                clock: ThreadClock::current(),
-                start: Duration::ZERO,
-                armed: false,
-                probe: None,
-                probe_cpu: Duration::ZERO,
-                host_depth: 0,
-                host_since: Duration::ZERO,
-                host_time: Duration::ZERO,
-            }),
-            why: Mutex::new(Why::None),
-            suspending: Mutex::new(()),
+        Arc::new_cyclic(|me| {
+            let encoded = encoder.as_ref().map(|e| e.0.live(LiveContext(me.clone())));
+            Control {
+                me: me.clone(),
+                handler,
+                options,
+                input_name,
+                transport,
+                max_value_depth: encoder.as_ref().and_then(|e| e.0.max_value_depth()),
+                typed_arrays: encoder.as_ref().is_some_and(|e| e.0.typed_arrays()),
+                surfaces: encoded.as_ref().and_then(|e| e.surfaces()),
+                encoded: encoded.map(Mutex::new),
+                delivered: Mutex::new(Vec::new()),
+                ended: Mutex::new(None),
+                due_at: Mutex::new(None),
+                thrown: Thrown::default(),
+                state: Mutex::new(State::Starting),
+                run: Mutex::new(None),
+                inbox: Mutex::default(),
+                outbox: Mutex::default(),
+                sleeps: Mutex::default(),
+                fetches: Mutex::default(),
+                fetch_budget: Mutex::default(),
+                clock: Mutex::new(Clock {
+                    base: now,
+                    offset_ms: 0.0,
+                    paused: None,
+                }),
+                stopping: AtomicBool::new(false),
+                slice: Mutex::new(Slice {
+                    busy: false,
+                    n: 0,
+                    clock: ThreadClock::current(),
+                    start: Duration::ZERO,
+                    armed: false,
+                    probe: None,
+                    probe_cpu: Duration::ZERO,
+                    host_depth: 0,
+                    host_since: Duration::ZERO,
+                    host_time: Duration::ZERO,
+                }),
+                why: Mutex::new(Why::None),
+                suspending: Mutex::new(()),
+            }
         })
+    }
+
+    /// The encoder, told first of the messages delivered since.
+    fn encoder(&self) -> Option<MutexGuard<'_, Box<dyn EncodePosts>>> {
+        let mut encoder = lock(self.encoded.as_ref()?);
+        let delivered = std::mem::take(&mut *lock(&self.delivered));
+        for m in &delivered {
+            encoder.delivered(m);
+        }
+        Some(encoder)
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
@@ -576,6 +679,9 @@ impl Control {
     }
 
     fn end(&self) {
+        if let Some(mut encoder) = self.encoder() {
+            encoder.ended();
+        }
         *self.state() = State::Ended;
         lock(&self.inbox).waker = None;
         lock(&self.sleeps).clear();
@@ -618,7 +724,11 @@ impl Control {
                     c.computing();
                     let _host = HostSection::enter(&c);
                     c.unmarked(&args, 0, &label)?;
-                    Ok(Input::parse(&text).unwrap_or_default())
+                    let input = Input::parse(&text).unwrap_or_default();
+                    Ok(match c.encoder() {
+                        Some(mut encoder) => encoder.input(input),
+                        None => input,
+                    })
                 });
                 let c = control.clone();
                 let post = HostFunction::new(move |args: Vec<HostValue>, _call| -> HostResult {
@@ -1040,9 +1150,10 @@ impl Control {
     /// Queues a post and returns what `post` gives the program: `undefined`, or with an encoder what it says (a
     /// native widget render: whether the view has handlers). An encoder's failure is thrown at the post.
     fn post(&self, message: &HostValue) -> HostResult {
-        let (first, ret) = match &self.encoded {
-            Some(encoded) => {
-                let posted = lock(encoded).post(message, Instant::now());
+        let (first, ret) = match self.encoder() {
+            Some(mut encoder) => {
+                let posted = encoder.post(message, Instant::now());
+                drop(encoder);
                 let (bytes, ret) = posted.map_err(|r| self.reject(r))?;
                 self.arm_due();
                 if bytes.is_empty() {
@@ -1091,11 +1202,14 @@ impl Control {
 
     /// Moves the encoder's due posts, or with `all` every held-back one, into the outbox.
     fn take_held(&self, all: bool) {
-        let Some(encoded) = &self.encoded else { return };
-        let bytes = match all {
-            true => lock(encoded).release(),
-            false => lock(encoded).due(Instant::now()),
+        let Some(mut encoder) = self.encoder() else {
+            return;
         };
+        let bytes = match all {
+            true => encoder.release(),
+            false => encoder.due(Instant::now()),
+        };
+        drop(encoder);
         if !bytes.is_empty() {
             lock(&self.outbox).bytes.extend(bytes);
         }
@@ -1153,6 +1267,13 @@ impl Control {
         } {
             Some(message) => {
                 drop(inbox);
+                if let Some(mut encoder) = self.encoder() {
+                    let bytes = encoder.received(&message);
+                    drop(encoder);
+                    if !bytes.is_empty() {
+                        lock(&self.outbox).bytes.extend(bytes);
+                    }
+                }
                 self.resolved(at);
                 Poll::Ready(Ok(message))
             }

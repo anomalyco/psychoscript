@@ -362,6 +362,16 @@ pub(crate) struct Checks {
 }
 
 impl Checks {
+    /// The greatest handle made.
+    pub(crate) fn last(&self) -> f64 {
+        self.last
+    }
+
+    /// Handles up to `last` were made before (a run restored from a snapshot): new ones count up from it.
+    pub(crate) fn made(&mut self, last: f64) {
+        self.last = self.last.max(last);
+    }
+
     /// The device is lost: every handle is gone; new ones keep counting up.
     pub(crate) fn lost(&mut self) {
         self.handles.clear();

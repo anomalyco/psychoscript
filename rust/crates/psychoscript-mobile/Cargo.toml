@@ -11,12 +11,13 @@ description = "PsychoScript for iOS (Swift) and Android (Kotlin): UniFFI binding
 name = "psychoscript_mobile"
 
 [features]
-default = ["shader", "widget-wire"]
-# `translate_wgsl`: WGSL to MSL and GLSL ES 3.00 with naga (about 1 MB of code). Off, the library is the
-# language alone.
-shader = ["dep:naga"]
+default = ["widget-gpu"]
 # `ValueEncoder.widget()`: OpenCode widgets' binary format, from the `widget-wire` crate.
 widget-wire = ["dep:widget-wire"]
+# GPU canvases (`widget-gpu`, opencode `specs/v2/widgets-gpu.md`): widget runs replay their GPU batches on wgpu
+# (Metal on iOS and macOS, Vulkan on Android and Linux) and present into the app's surfaces; `ShaderCanvas` for the
+# `wgsl` shorthand. Off, a run has no GPU (`gpu.available` false) and surfaces are refused.
+widget-gpu = ["widget-wire", "dep:widget-gpu", "dep:wgpu"]
 # The bindings generators (`uniffi-bindgen`, `uniffi-bindgen-swift`), for the build scripts only.
 cli = ["uniffi/cli"]
 
@@ -42,4 +43,10 @@ serde_json = { version = "1", features = ["preserve_order"] }
 uniffi = "0.32"
 url = "2.5"
 widget-wire = { path = "../widget-wire", optional = true }
-naga = { version = "30", default-features = false, features = ["wgsl-in", "msl-out", "glsl-out"], optional = true }
+widget-gpu = { path = "../widget-gpu", optional = true }
+
+[target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
+wgpu = { version = "~30.0.1", default-features = false, features = ["std", "wgsl", "metal"], optional = true }
+
+[target.'cfg(any(target_os = "android", target_os = "linux"))'.dependencies]
+wgpu = { version = "~30.0.1", default-features = false, features = ["std", "wgsl", "vulkan"], optional = true }

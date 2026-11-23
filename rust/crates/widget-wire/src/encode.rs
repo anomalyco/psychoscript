@@ -10,6 +10,7 @@ use crate::VERSION;
 use crate::draw::{
     Cap, Color, Fill, Gradient, GradientShape, MAX_COMMANDS, Paint, TextAlign, TextOptions, Token,
 };
+use crate::gpu::Arg;
 use crate::json;
 use crate::native::{Canvas, Found};
 use crate::schema::*;
@@ -256,19 +257,70 @@ const EPSILON: f64 = 1e-9;
 /// The failure of a draw post without a canvas key (an invalid post, phase `main`).
 pub const DRAW_KEY: &str = "A draw post needs a string key";
 
+/// A host that replays a live run's GPU batches itself (`widgets-gpu.md`) instead of handing them to the client.
+/// [`LivePosts`] calls it in the order the program posted what it calls for, a batch never ahead of a waiting
+/// `render` or `draw` (`widgets-live.md`, Post rate).
+pub trait GpuHost: Send {
+    /// A batch: its ops as JSON reads them, and its bytes (the program's `ArrayBuffer`, borrowed, when it applies at
+    /// once).
+    fn batch(&mut self, ops: &[Arg], bytes: &[u8]);
+    /// A posted batch of the wrong shape: the spec's message (`a batch must be an object`, `a batch's ops must be a
+    /// list`, `a batch's bytes must be an ArrayBuffer`), a program error in phase `gpu` (`Gpu::shape_error`), with
+    /// its ops when they are a list. The run goes on.
+    fn shape_error(&mut self, ops: Option<&[Arg]>, message: String);
+    /// A frame request (`Gpu::end_frame`), after the batch it carries; one while a request is pending isn't.
+    fn end_frame(&mut self);
+    /// The keys of the `gpu: true` canvases of the render just posted, when they changed.
+    fn canvases(&mut self, keys: &[String]);
+    /// A `{ type: "canvas", key, width, height }` the program received.
+    fn resize(&mut self, key: &str, width: u32, height: u32);
+}
+
+/// What the GPU host does, when it waits behind counted posts.
+enum Step {
+    Batch(Vec<Arg>, Vec<u8>),
+    ShapeError(Option<Vec<Arg>>, String),
+    EndFrame,
+    Canvases(Vec<String>),
+    Resize(String, u32, u32),
+}
+
+enum Waiting {
+    /// A counted post: the render (`None`) or a draw by canvas key.
+    Counted(Option<String>, Vec<u8>),
+    /// Behind them without a token: a step for the GPU host, then the bytes of the post that carried it.
+    Behind(Option<Step>, Option<Vec<u8>>),
+}
+
 /// A native host's live posts (`widgets-live.md`): each render is walked as it is encoded, a draw names its canvas by
 /// key, which the last render's canvases map to the canvas's id, and `render` and `draw` posts go to the client under
-/// the post rate. Every post is checked and encoded when the program posts it; only its delivery waits.
-#[derive(Debug)]
+/// the post rate. Every post is checked and encoded when the program posts it; only its delivery waits. With a
+/// [`GpuHost`], it gets the GPU batches; without one (no GPU: the program gets `gpu.available` false), they are
+/// dropped. Batches never reach the client.
 pub struct LivePosts {
     last: Found,
     per_second: f64,
     tokens: f64,
     at: Option<Instant>,
-    /// The counted posts waiting for a token, oldest first: the render (`None`) and a draw per canvas key.
-    waiting: Vec<(Option<String>, Vec<u8>)>,
+    /// The posts waiting, oldest first: counted ones for a token, and posts carrying a batch behind them.
+    waiting: Vec<Waiting>,
     /// A frame request went out and no frame came since.
     frame: bool,
+    gpu: Option<Box<dyn GpuHost>>,
+    /// The GPU canvas keys last given to the host.
+    gpu_keys: Vec<String>,
+}
+
+impl std::fmt::Debug for LivePosts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LivePosts")
+            .field("last", &self.last)
+            .field("tokens", &self.tokens)
+            .field("waiting", &self.waiting.len())
+            .field("frame", &self.frame)
+            .field("gpu", &self.gpu.is_some())
+            .finish()
+    }
 }
 
 impl Default for LivePosts {
@@ -291,7 +343,14 @@ impl LivePosts {
             at: None,
             waiting: Vec::new(),
             frame: false,
+            gpu: None,
+            gpu_keys: Vec::new(),
         }
+    }
+
+    /// Replays GPU batches with `host` from now on (`widgets-gpu.md`): they no longer go to the client.
+    pub fn set_gpu(&mut self, host: Box<dyn GpuHost>) {
+        self.gpu = Some(host);
     }
 
     /// What the last render found: its handler ids and canvases.
@@ -312,14 +371,6 @@ impl LivePosts {
         m: &HostValue,
         now: Instant,
     ) -> Result<(Vec<Vec<u8>>, Option<bool>), CallError> {
-        let invalid = |kind| {
-            move |e: String| {
-                CallError::Invalid(EncodeError {
-                    kind,
-                    message: format!("invalid post: {e}"),
-                })
-            }
-        };
         let fields = match m {
             HostValue::Object(fields) => &fields[..],
             _ => &[],
@@ -343,9 +394,21 @@ impl LivePosts {
                 }
                 let handled = !found.handlers.is_empty();
                 self.last = found;
-                let mut out = vec![VERSION, RENDER];
-                s.finish_into(&mut out);
-                Ok((self.counted(None, out, now), Some(handled)))
+                let mut out = Vec::new();
+                if self.gpu.is_some() {
+                    let keys: Vec<String> = (self.last.canvases.iter())
+                        .filter(|c| c.gpu)
+                        .map(|c| c.key.clone())
+                        .collect();
+                    if keys != self.gpu_keys {
+                        self.gpu_keys = keys.clone();
+                        out = self.behind(Some(Step::Canvases(keys)), None, false);
+                    }
+                }
+                let mut bytes = vec![VERSION, RENDER];
+                s.finish_into(&mut bytes);
+                out.extend(self.counted(None, bytes, now));
+                Ok((out, Some(handled)))
             }
             Some("draw") => {
                 let Some(HostValue::String(key)) = field(m, "key") else {
@@ -365,6 +428,11 @@ impl LivePosts {
                         "Canvas \"{key}\" is drawn by its wgsl; it takes no draw commands"
                     )));
                 }
+                if canvas.gpu {
+                    return Err(CallError::Throw(format!(
+                        "Canvas \"{key}\" is drawn by the GPU; it takes no draw commands"
+                    )));
+                }
                 if rest_marked(&[]) {
                     return Err(CallError::Function { arg: 1 });
                 }
@@ -382,20 +450,35 @@ impl LivePosts {
                 Ok((self.counted(Some(key), out, now), None))
             }
             _ if crate::native::marked(m) => Err(CallError::Function { arg: 1 }),
-            // A frame request while one is pending changes nothing, but the GPU batch it carries still goes.
-            Some("frame") if self.frame => {
-                match field(m, "gpu").filter(|g| !matches!(g, HostValue::Null)) {
-                    Some(batch) => {
-                        let mut out = vec![VERSION, GPU];
-                        crate::gpu::encode(batch, &mut out).map_err(invalid(INVALID_GPU))?;
-                        Ok((vec![out], None))
-                    }
-                    None => Ok((Vec::new(), None)),
+            Some(kind @ ("frame" | "gpu")) => {
+                let batch = match kind {
+                    "gpu" => Some(m),
+                    _ => field(m, "gpu").filter(|g| !matches!(g, HostValue::Null)),
+                };
+                // A frame request while one is pending changes nothing, but the GPU batch it carries still goes.
+                let request = kind == "frame" && !self.frame;
+                self.frame |= request;
+                let mut out = Vec::new();
+                let gpu = self.gpu.is_some();
+                if let (Some(batch), true) = (batch, gpu) {
+                    self.batch(batch);
                 }
+                if request {
+                    let bytes = vec![VERSION, FRAME];
+                    match (gpu, batch.is_some()) {
+                        // The frame request waits behind what waits only when it carries a batch.
+                        (true, true) => out = self.behind(Some(Step::EndFrame), Some(bytes), true),
+                        (true, false) => {
+                            out = self.behind(Some(Step::EndFrame), None, false);
+                            out.push(bytes);
+                        }
+                        (false, _) => out.push(bytes),
+                    }
+                }
+                Ok((out, None))
             }
             _ => {
                 let bytes = encode_post(m).map_err(CallError::Invalid)?;
-                self.frame |= ty == Some("frame");
                 let mut out = match ty {
                     Some("submit" | "dismiss") => self.release(),
                     _ => Vec::new(),
@@ -413,13 +496,39 @@ impl LivePosts {
         }
     }
 
-    /// The waiting posts whose tokens came by `now`, in order.
+    /// A message the program received: a GPU canvas's size goes to the GPU host after the batches posted before.
+    pub fn received(&mut self, m: &HostValue) -> Vec<Vec<u8>> {
+        if self.gpu.is_none() || field(m, "type").and_then(HostValue::as_str) != Some("canvas") {
+            return Vec::new();
+        }
+        let size = |k| match field(m, k) {
+            Some(HostValue::Number(n)) if *n >= 0.0 && *n <= u32::MAX as f64 => Some(*n as u32),
+            _ => None,
+        };
+        let (Some(key), Some(width), Some(height)) = (
+            field(m, "key").and_then(HostValue::as_str),
+            size("width"),
+            size("height"),
+        ) else {
+            return Vec::new();
+        };
+        let step = Step::Resize(key.to_owned(), width, height);
+        self.behind(Some(step), None, false)
+    }
+
+    /// The waiting posts whose tokens came by `now`, in order, and the batches behind them.
     pub fn due(&mut self, now: Instant) -> Vec<Vec<u8>> {
         self.refill(now);
         let mut out = Vec::new();
-        while !self.waiting.is_empty() && self.tokens >= 1.0 - EPSILON {
-            self.tokens -= 1.0;
-            out.push(self.waiting.remove(0).1);
+        while let Some(first) = self.waiting.first() {
+            if matches!(first, Waiting::Counted(..)) {
+                if self.tokens < 1.0 - EPSILON {
+                    break;
+                }
+                self.tokens -= 1.0;
+            }
+            let first = self.waiting.remove(0);
+            self.run(first, &mut out);
         }
         out
     }
@@ -433,7 +542,66 @@ impl LivePosts {
 
     /// Every waiting post, at once, in order: the run ends by `submit`, `dismiss`, `main` returning or a program error.
     pub fn release(&mut self) -> Vec<Vec<u8>> {
-        self.waiting.drain(..).map(|(_, bytes)| bytes).collect()
+        let mut out = Vec::new();
+        for w in std::mem::take(&mut self.waiting) {
+            self.run(w, &mut out);
+        }
+        out
+    }
+
+    /// A waiting post going out: its bytes, after its step.
+    fn run(&mut self, w: Waiting, out: &mut Vec<Vec<u8>>) {
+        let (step, bytes) = match w {
+            Waiting::Counted(_, bytes) => (None, Some(bytes)),
+            Waiting::Behind(step, bytes) => (step, bytes),
+        };
+        if let (Some(step), Some(gpu)) = (step, self.gpu.as_mut()) {
+            match step {
+                Step::Batch(ops, bytes) => gpu.batch(&ops, &bytes),
+                Step::ShapeError(ops, message) => gpu.shape_error(ops.as_deref(), message),
+                Step::EndFrame => gpu.end_frame(),
+                Step::Canvases(keys) => gpu.canvases(&keys),
+                Step::Resize(key, w, h) => gpu.resize(&key, w, h),
+            }
+        }
+        out.extend(bytes);
+    }
+
+    /// A step for the GPU host and the bytes of the post that carries it: at once, or behind what waits. A post
+    /// carrying a batch (`batch`) waits while anything does; anything else only while a step waits, to keep its order.
+    fn behind(&mut self, step: Option<Step>, bytes: Option<Vec<u8>>, batch: bool) -> Vec<Vec<u8>> {
+        let wait = match batch {
+            true => !self.waiting.is_empty(),
+            false => (self.waiting.iter()).any(|w| matches!(w, Waiting::Behind(Some(_), _))),
+        };
+        if wait {
+            self.waiting.push(Waiting::Behind(step, bytes));
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        self.run(Waiting::Behind(step, bytes), &mut out);
+        out
+    }
+
+    /// A batch for the GPU host: applied at once with the program's bytes in place, or copied to wait.
+    fn batch(&mut self, batch: &HostValue) {
+        let wait = !self.waiting.is_empty();
+        let gpu = self.gpu.as_mut().filter(|_| !wait);
+        let queued = crate::gpu::read(batch, |read| match (gpu, read) {
+            (Some(gpu), Ok((ops, bytes))) => {
+                gpu.batch(&ops, bytes);
+                None
+            }
+            (Some(gpu), Err((ops, message))) => {
+                gpu.shape_error(ops.as_deref(), message);
+                None
+            }
+            (None, Ok((ops, bytes))) => Some(Step::Batch(ops, bytes.to_vec())),
+            (None, Err((ops, message))) => Some(Step::ShapeError(ops, message)),
+        });
+        if let Some(step) = queued {
+            self.waiting.push(Waiting::Behind(Some(step), None));
+        }
     }
 
     fn refill(&mut self, now: Instant) {
@@ -451,9 +619,13 @@ impl LivePosts {
             self.tokens -= 1.0;
             return vec![bytes];
         }
-        match self.waiting.iter_mut().find(|(k, _)| *k == key) {
-            Some(entry) => entry.1 = bytes,
-            None => self.waiting.push((key, bytes)),
+        let same = self.waiting.iter_mut().find_map(|w| match w {
+            Waiting::Counted(k, b) if *k == key => Some(b),
+            _ => None,
+        });
+        match same {
+            Some(b) => *b = bytes,
+            None => self.waiting.push(Waiting::Counted(key, bytes)),
         }
         Vec::new()
     }

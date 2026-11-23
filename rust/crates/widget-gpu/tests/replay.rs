@@ -1152,6 +1152,35 @@ fn shape_errors_stop_the_canvases_the_batch_renders_into() {
     assert_eq!(e.canvases, Stops::Canvases(vec!["a".into(), "b".into()]));
 }
 
+#[test]
+fn a_restored_run_drops_batches_naming_handles_from_before() {
+    let mut f = fixture();
+    let mut b = Batch::default();
+    b.op(json!(["buffer", 1, 16, 8]))
+        .op(json!(["buffer", 5, 16, 8]));
+    f.gpu.apply(&b.ops, &[]).unwrap();
+    assert_eq!(f.gpu.last_handle(), 5);
+    let (device, queue) = common::device();
+    let mut restored = Gpu::new(device, queue, RGBA).unwrap();
+    restored.restored(5);
+    let destroy = |h: u32| vec![Arg::from_json(&json!(["destroy", h]))];
+    assert_eq!(restored.apply(&destroy(5), &[]), Ok(()));
+    assert_eq!(
+        restored.apply(&destroy(6), &[]).unwrap_err().message,
+        "gpu op 0: no handle 6"
+    );
+    // New handles count up from the program's last.
+    let (device, queue) = common::device();
+    let mut restored = Gpu::new(device, queue, RGBA).unwrap();
+    restored.restored(5);
+    let mut b = Batch::default();
+    b.op(json!(["buffer", 3, 16, 8]));
+    assert_eq!(
+        restored.apply(&b.ops, &[]).unwrap_err().message,
+        "gpu op 0: handle 3 was already used"
+    );
+}
+
 /// Replay cost of a typical frame: 48 ops, 64 KB of writes (`cargo test --release -p widget-gpu -- --ignored`).
 #[test]
 #[ignore]

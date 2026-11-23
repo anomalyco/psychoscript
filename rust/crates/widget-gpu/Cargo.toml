@@ -12,6 +12,10 @@ serde_json = "1"
 # Backends are the host's: it enables the ones it runs on (Rune its own, psychoscript-mobile `metal` or `vulkan`).
 wgpu = { version = "~30.0.1", default-features = false, features = ["std", "wgsl"] }
 
+[features]
+# The tests on Metal (macOS) instead of Vulkan: `cargo test -p widget-gpu --features metal`.
+metal = ["wgpu/metal"]
+
 [dev-dependencies]
 # Tests run on Vulkan: this VM's lavapipe, or a real GPU.
 wgpu = { version = "~30.0.1", default-features = false, features = ["std", "wgsl", "vulkan"] }

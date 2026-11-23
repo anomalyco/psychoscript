@@ -1,4 +1,5 @@
-//! A Vulkan device (lavapipe on a machine without a GPU) and canvas readback, for the tests.
+//! A Vulkan device (lavapipe on a machine without a GPU), or with the `metal` feature a Metal one, and canvas
+//! readback, for the tests.
 
 #![allow(dead_code)]
 
@@ -17,11 +18,15 @@ pub fn block<F: Future>(f: F) -> F::Output {
 
 pub fn device() -> (wgpu::Device, wgpu::Queue) {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::VULKAN,
+        backends: if cfg!(feature = "metal") {
+            wgpu::Backends::METAL
+        } else {
+            wgpu::Backends::VULKAN
+        },
         ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
     let adapter = block(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
-        .expect("a Vulkan adapter");
+        .expect("an adapter");
     let info = adapter.get_info();
     eprintln!(
         "adapter: {} ({:?}, {:?})",

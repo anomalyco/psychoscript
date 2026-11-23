@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use psychoscript_mobile::{
-    FetchCompletion, FetchRequest, FetchResponse, FetchTransport, HttpHeader, LiveExit,
-    LiveHandler, LiveOptions, LiveRun, Program, PsychoScriptError, is_public_address,
+    FetchCompletion, FetchRequest, FetchResponse, FetchTransport, GpuCanvasState, HttpHeader,
+    LiveExit, LiveHandler, LiveOptions, LiveRun, Program, PsychoScriptError, is_public_address,
 };
 
 const LOOP: &str = r#"
@@ -51,6 +51,7 @@ impl LiveHandler for Handler {
     fn on_warning(&self, message: String) {
         let _ = self.0.lock().unwrap().send(Event::Warning(message));
     }
+    fn on_gpu_canvas(&self, _key: Option<String>, _state: GpuCanvasState) {}
     fn on_exit(&self, exit: LiveExit) {
         let _ = self.0.lock().unwrap().send(Event::Exit(exit));
     }
@@ -688,6 +689,7 @@ impl LiveHandler for Batches {
         let _ = self.0.lock().unwrap().send(messages_json);
     }
     fn on_warning(&self, _message: String) {}
+    fn on_gpu_canvas(&self, _key: Option<String>, _state: GpuCanvasState) {}
     fn on_exit(&self, _exit: LiveExit) {}
 }
 
@@ -736,6 +738,7 @@ impl LiveHandler for Slow {
         let _ = self.0.lock().unwrap().send(messages_json);
     }
     fn on_warning(&self, _message: String) {}
+    fn on_gpu_canvas(&self, _key: Option<String>, _state: GpuCanvasState) {}
     fn on_exit(&self, exit: LiveExit) {
         let _ = self.0.lock().unwrap().send(vec![format!("exit {exit:?}")]);
     }

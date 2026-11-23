@@ -395,6 +395,18 @@ impl Gpu {
         Ok(())
     }
 
+    /// The greatest handle the program has made: what a snapshot of the run keeps, for [`Gpu::restored`].
+    pub fn last_handle(&self) -> u64 {
+        self.checks.last() as u64
+    }
+
+    /// A run restored from a snapshot, whose program had made handles up to `last` ([`Gpu::last_handle`]): as after a
+    /// device loss, those handles are gone and a batch naming one is dropped quietly.
+    pub fn restored(&mut self, last: u64) {
+        self.checks.made(last as f64);
+        self.checks.lost();
+    }
+
     /// A frame request (`widget.frame()`), with a batch or without, after applying the batch: the per-frame limits
     /// count again, and the canvases are cleared to transparent for the next frame. The texture is kept, so the clear
     /// happens at the frame's first pass into each canvas (its load becomes a transparent clear): a frame with no

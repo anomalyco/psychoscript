@@ -129,17 +129,32 @@ fn over_bytes(n: usize) -> String {
     format!("a GPU batch's bytes are {n} bytes, over the limit of {MAX_GPU_BYTES}")
 }
 
+/// A posted batch (`{ ops, bytes }`) as the spec's host checks take it in (`widgets-gpu.md`, Host checks: a native
+/// host makes these three as it converts the value): its ops and its bytes, the program's `ArrayBuffer`; or the
+/// failure, with the ops when they are a list (they decide which canvases it stops). The limits on ops and bytes are
+/// the host checks' (`widget-gpu`).
+type Ops<'a> = &'a [Option<HostValue>];
+
+fn shape(
+    batch: &HostValue,
+) -> Result<(Ops<'_>, &psychoscript::TypedArray), (Option<Ops<'_>>, String)> {
+    if !matches!(batch, HostValue::Object(_)) {
+        return Err((None, "a batch must be an object".into()));
+    }
+    let Some(HostValue::Array(ops)) = batch.get("ops") else {
+        return Err((None, "a batch's ops must be a list".into()));
+    };
+    match batch.get("bytes") {
+        Some(HostValue::TypedArray(t)) if t.kind() == psychoscript::TypedKind::ArrayBuffer => {
+            Ok((ops, t))
+        }
+        _ => Err((Some(ops), "a batch's bytes must be an ArrayBuffer".into())),
+    }
+}
+
 /// Section `G` from the VM's batch value (`{ ops, bytes }`).
 pub(crate) fn encode(batch: &HostValue, out: &mut Vec<u8>) -> Result<(), String> {
-    let Some(HostValue::Array(ops)) = batch.get("ops") else {
-        return Err("a GPU batch needs ops".into());
-    };
-    if ops.len() > MAX_GPU_OPS {
-        return Err(format!(
-            "a GPU batch has {} ops, over the limit of {MAX_GPU_OPS}",
-            ops.len()
-        ));
-    }
+    let (ops, bytes) = shape(batch).map_err(|(_, message)| message)?;
     out.push(b'G');
     let at = out.len();
     out.extend_from_slice(&[0; 4]);
@@ -149,24 +164,67 @@ pub(crate) fn encode(batch: &HostValue, out: &mut Vec<u8>) -> Result<(), String>
     }
     let len = u32::try_from(out.len() - at - 4).map_err(|_| "a GPU batch's ops are too large")?;
     out[at..at + 4].copy_from_slice(&len.to_le_bytes());
-    let mut put = |b: &[u8]| -> Result<(), String> {
-        if b.len() > MAX_GPU_BYTES {
-            return Err(over_bytes(b.len()));
-        }
-        out.extend_from_slice(&(b.len() as u32).to_le_bytes());
+    bytes.with_bytes(|b| {
+        let len = u32::try_from(b.len()).map_err(|_| "a GPU batch's bytes are too large")?;
+        out.extend_from_slice(&len.to_le_bytes());
         out.extend_from_slice(b);
         Ok(())
-    };
-    match batch.get("bytes") {
-        None | Some(HostValue::Undefined | HostValue::Null) => put(&[]),
-        Some(HostValue::TypedArray(t)) => {
-            if t.byte_len() > MAX_GPU_BYTES {
-                return Err(over_bytes(t.byte_len()));
-            }
-            t.with_bytes(put)
+    })
+}
+
+/// An argument as JSON reads it (`JSON.stringify`: `undefined` and functions left out of objects and `null` in
+/// lists, non-finite numbers `null`, other kinds as their JSON); past [`MAX_ARG_DEPTH`], `null`, which no op takes.
+fn arg(a: &HostValue, depth: usize) -> Arg {
+    if depth > MAX_ARG_DEPTH {
+        return Arg::Null;
+    }
+    match a {
+        HostValue::Bool(b) => Arg::Bool(*b),
+        HostValue::Number(n) if n.is_finite() => Arg::Num(*n),
+        HostValue::String(s) => Arg::Str(s.to_string_lossy().into_owned()),
+        HostValue::Array(items) => Arg::List(
+            items
+                .iter()
+                .map(|i| match i {
+                    Some(i) if !json::skipped(i) => arg(i, depth + 1),
+                    _ => Arg::Null,
+                })
+                .collect(),
+        ),
+        HostValue::Object(fields) => Arg::Obj(
+            fields
+                .iter()
+                .filter(|(_, v)| !json::skipped(v))
+                .map(|(k, v)| (k.to_string_lossy().into_owned(), arg(v, depth + 1)))
+                .collect(),
+        ),
+        HostValue::Null | HostValue::Undefined | HostValue::Number(_) => Arg::Null,
+        other => Arg::from_json(&other.to_json().unwrap_or(Value::Null)),
+    }
+}
+
+/// The ops as JSON reads them.
+fn args(ops: &[Option<HostValue>]) -> Vec<Arg> {
+    ops.iter()
+        .map(|o| match o {
+            Some(o) if !json::skipped(o) => arg(o, 1),
+            _ => Arg::Null,
+        })
+        .collect()
+}
+
+/// A posted batch for a host that replays it: `f` gets its ops as JSON reads them and its bytes, the program's
+/// `ArrayBuffer` borrowed in place, or the failure of its shape, with the ops when they are a list.
+pub(crate) fn read<R>(
+    batch: &HostValue,
+    f: impl FnOnce(Result<(Vec<Arg>, &[u8]), (Option<Vec<Arg>>, String)>) -> R,
+) -> R {
+    match shape(batch) {
+        Ok((ops, bytes)) => {
+            let ops = args(ops);
+            bytes.with_bytes(|b| f(Ok((ops, b))))
         }
-        Some(HostValue::Bytes(b) | HostValue::Buffer(b)) => put(b),
-        Some(_) => Err("a GPU batch's bytes must be an ArrayBuffer or a typed array".into()),
+        Err((ops, message)) => f(Err((ops.map(args), message))),
     }
 }
 

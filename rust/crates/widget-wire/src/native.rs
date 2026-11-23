@@ -24,7 +24,7 @@ pub struct Found {
     /// Each id given a handler, with its event (`press`, `change`, `pointer`), in walk order; a later one with the
     /// same id takes its place.
     pub handlers: Vec<(String, &'static str)>,
-    /// Each keyed canvas, the first by its key (`String(key)`): its key, id and whether it has `wgsl`.
+    /// Each keyed canvas, the first by its key (`String(key)`): its key, id and whether it has `wgsl` or `gpu: true`.
     pub canvases: Vec<Canvas>,
 }
 
@@ -33,6 +33,8 @@ pub struct Canvas {
     pub key: String,
     pub id: String,
     pub wgsl: bool,
+    /// A GPU canvas (`gpu: true`, `widgets-gpu.md`).
+    pub gpu: bool,
 }
 
 /// Why a walk stopped.
@@ -306,6 +308,7 @@ impl Walk {
                             key: k.into_owned(),
                             id: self.path.clone(),
                             wgsl: matches!(field(v, "wgsl"), Some(HostValue::String(_))),
+                            gpu: matches!(field(v, "gpu"), Some(HostValue::Bool(true))),
                         });
                     }
                 }

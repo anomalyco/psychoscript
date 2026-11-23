@@ -305,9 +305,8 @@ fn every_post_kind_decodes_as_its_json() {
     {{ type: "draw", id: "", commands: [] }},
     {{ type: "frame" }},
     {{ type: "frame", gpu: {{ ops, bytes: all }}, expect: undefined }},
-    {{ type: "frame", gpu: {{ ops: [["submit"]], bytes: vertices }} }},
-    {{ type: "frame", gpu: {{ ops: [], bytes: new Uint8Array([1, 2, 3]) }} }},
-    {{ type: "frame", gpu: {{ ops: [["end"]] }} }},
+    {{ type: "frame", gpu: {{ ops: [["submit"]], bytes: vertices.buffer }} }},
+    {{ type: "frame", gpu: {{ ops: [], bytes: new ArrayBuffer(0) }} }},
     {{ type: "gpu", ops, bytes: all }},
     {{ type: "submit", value: {{ choice: "b", n: [1, 2] }} }},
     {{ type: "submit", value: null }},
@@ -325,7 +324,7 @@ fn every_post_kind_decodes_as_its_json() {
   }})
 }})()"##
     ));
-    assert_eq!(pairs.len(), 19);
+    assert_eq!(pairs.len(), 18);
     for (i, (bin, json)) in pairs.iter().enumerate() {
         assert_eq!(bin, json, "post {i}");
     }
@@ -397,21 +396,26 @@ fn invalid_outputs_and_posts_fail_to_encode() {
             r#"{ type: "draw", id: "x", commands: [["nope"]] }"#,
             "draw command 0",
         ),
+        // The batch's shape, in the spec's words (`widgets-gpu.md`, Host checks).
+        (
+            r#"{ type: "frame", gpu: 5 }"#,
+            "invalid post: a batch must be an object",
+        ),
         (
             r#"{ type: "frame", gpu: { bytes: new ArrayBuffer(4) } }"#,
-            "needs ops",
+            "invalid post: a batch's ops must be a list",
         ),
         (
             r#"{ type: "frame", gpu: { ops: [], bytes: [1, 2, 3] } }"#,
-            "an ArrayBuffer or a typed array",
+            "invalid post: a batch's bytes must be an ArrayBuffer",
         ),
         (
-            r#"{ type: "gpu", ops: [], bytes: new ArrayBuffer(4 * 1024 * 1024 + 4) }"#,
-            "over the limit of 4194304",
+            r#"{ type: "gpu", ops: [], bytes: new Float32Array(1) }"#,
+            "invalid post: a batch's bytes must be an ArrayBuffer",
         ),
         (
-            r#"{ type: "gpu", ops: Array.from({ length: 20001 }, () => ["end"]) }"#,
-            "20001 ops, over the limit of 20000",
+            r#"{ type: "gpu", ops: [] }"#,
+            "invalid post: a batch's bytes must be an ArrayBuffer",
         ),
     ] {
         let e = error_of(src, encode_post);
@@ -422,15 +426,18 @@ fn invalid_outputs_and_posts_fail_to_encode() {
         };
         assert!(e.message.contains(why) && e.kind == kind, "{src}: {e}");
     }
-    // At the limits it encodes.
+    // The limits on ops and bytes are the host checks' (`widget-gpu`), not the encoder's.
     let (enc, _) = run(
-        "__emit({ type: 'gpu', ops: Array.from({ length: 20000 }, () => ['end']), bytes: new Float32Array(1024 * 1024) })\nreturn null",
+        "__emit({ type: 'gpu', ops: Array.from({ length: 20001 }, () => ['end']), bytes: new ArrayBuffer(4 * 1024 * 1024 + 4) })\nreturn null",
         encode_post,
     );
-    let Post::Gpu(b) = decode_post(enc[0].as_ref().unwrap()).unwrap() else {
-        panic!()
-    };
-    assert_eq!((b.ops.len(), b.bytes.len()), (20000, 4 * 1024 * 1024));
+    // It encodes; a decoder holds a message to its own bounds.
+    let bytes = enc[0].as_ref().expect("encodes");
+    assert!(
+        matches!(decode_post(bytes), Err(DecodeError::Malformed(_))),
+        "{:?}",
+        decode_post(bytes)
+    );
 }
 
 #[test]
@@ -483,6 +490,7 @@ fn optional_props_of_the_wrong_shape_are_left_out() {
                 wgsl: Some("w".into()),
                 values: vec![],
                 pointer: false,
+                gpu: false,
                 fill: None,
                 fullscreen: None,
                 capture: None,
@@ -510,7 +518,7 @@ fn malformed_bytes_are_malformed_never_a_panic() {
     let (posts, _) = run(
         r#"for (const m of [
              { type: "render", node: { type: "column", children: [{ type: "text", text: "x" }, { type: "select", id: "s", options: [{ value: "a", label: "A", description: "d" }], value: ["a"] }] } },
-             { type: "frame", gpu: { ops: [["pass", { a: [1, "x", null, true] }]], bytes: new Float32Array([1, 2]) } },
+             { type: "frame", gpu: { ops: [["pass", { a: [1, "x", null, true] }]], bytes: new Float32Array([1, 2]).buffer } },
              { type: "send", value: { a: 1 }, wake: false },
            ]) __emit(m)
            return null"#,

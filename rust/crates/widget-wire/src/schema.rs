@@ -89,6 +89,7 @@ pub(crate) fn prop_id(key: &str) -> u32 {
         "pointer" => 35,
         "place" => 36,
         "inset" => 37,
+        "gpu" => 38,
         _ => 0,
     }
 }
@@ -133,7 +134,7 @@ pub(crate) fn shape(id: u32) -> Shape {
         6 => Shape::Enum(TONE),
         14 => Shape::Enum(VARIANT),
         36 => Shape::Enum(PLACE),
-        3 | 12 | 15 | 16 | 22 | 24 | 32 | 33 | 35 => Shape::Bool,
+        3 | 12 | 15 | 16 | 22 | 24 | 32 | 33 | 35 | 38 => Shape::Bool,
         4 | 7 | 8 | 10 | 13 | 23 | 29 | 31 | 34 => Shape::Str,
         17 => Shape::Value,
         21 => Shape::Options,

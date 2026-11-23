@@ -9,8 +9,9 @@
 //! [`ValueEncoder`] ([`ValueEncoder::widget`] with feature `widget-wire`, on by default), [`Program::run_bytes`] and
 //! live posts hand the app the encoder's bytes instead of JSON.
 //!
-//! With feature `shader` (on by default), [`translate_wgsl`] translates a WGSL entry point with naga
-//! to MSL (Metal) or GLSL ES 3.00 (OpenGL ES 3).
+//! With feature `widget-gpu` (on by default), widget runs replay their GPU canvases themselves (`widgets-gpu.md`):
+//! the app attaches a [`GpuSurface`] per canvas ([`LiveRun::attach_surface`]), and [`ShaderCanvas`] draws the `wgsl`
+//! shorthand.
 //!
 //! `README.md` covers packaging, threading and what a run copies.
 
@@ -18,11 +19,10 @@ mod cpu;
 mod encoder;
 mod error;
 mod fetch;
+mod gpu;
 mod json;
 mod live;
 mod program;
-#[cfg(feature = "shader")]
-mod shader;
 mod timer;
 
 pub use encoder::{EncodePosts, EncodeStep, EncodeValues, Reject, ValueEncoder};
@@ -30,12 +30,12 @@ pub use error::PsychoScriptError;
 pub use fetch::{
     FetchCompletion, FetchRequest, FetchResponse, FetchTransport, HttpHeader, is_public_address,
 };
-pub use live::{LiveExit, LiveHandler, LiveOptions, LiveRun};
+pub use gpu::{
+    GpuCanvasState, GpuDeviceInfo, GpuErrorKind, GpuFailure, GpuStats, GpuSurface, ShaderCanvas,
+    gpu_device, gpu_lose_device,
+};
+pub use live::{LiveContext, LiveExit, LiveHandler, LiveOptions, LiveRun, LiveSurfaces};
 pub use program::{Program, RunOptions, RunSession};
 pub use psychoscript::{Failure, HostValue};
-#[cfg(feature = "shader")]
-pub use shader::{
-    ShaderError, ShaderStage, ShaderTarget, TranslatedShader, UniformBlock, translate_wgsl,
-};
 
 uniffi::setup_scaffolding!("psychoscript_mobile");

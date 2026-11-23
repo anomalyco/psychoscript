@@ -6,7 +6,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use psychoscript_mobile::{LiveExit, LiveHandler, LiveOptions, LiveRun, Program};
+use psychoscript_mobile::{GpuCanvasState, LiveExit, LiveHandler, LiveOptions, LiveRun, Program};
 
 const PRELUDE: &str = include_str!("fixtures/prelude.js");
 const MINIGAME: &str = include_str!("fixtures/minigame.js");
@@ -27,6 +27,7 @@ impl LiveHandler for Handler {
         }
     }
     fn on_warning(&self, _message: String) {}
+    fn on_gpu_canvas(&self, _key: Option<String>, _state: GpuCanvasState) {}
     fn on_exit(&self, exit: LiveExit) {
         let _ = self.0.lock().unwrap().send(Event::Exit(exit));
     }

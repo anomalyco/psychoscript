@@ -30,8 +30,8 @@ pub trait EncodeValues: Send + Sync {
     }
     /// What one `run_bytes` keeps between its emit calls and its result, for a run with this input.
     fn step(&self, input: &HostValue) -> Box<dyn EncodeStep>;
-    /// What a live run keeps between its posts.
-    fn live(&self) -> Box<dyn EncodePosts>;
+    /// What a live run keeps between its posts, and what it may do with its run (`ctx`).
+    fn live(&self, ctx: crate::LiveContext) -> Box<dyn EncodePosts>;
 }
 
 /// Why an encoder's call fails.
@@ -81,8 +81,22 @@ pub trait EncodePosts: Send {
     fn release(&mut self) -> Vec<Vec<u8>> {
         Vec::new()
     }
-    /// A message the app delivered to the program.
+    /// A message the app delivered to the program, told before the run's next post or receive.
     fn delivered(&mut self, _message: &HostValue) {}
+    /// The run's input, as `__input()` returns it.
+    fn input(&mut self, input: HostValue) -> HostValue {
+        input
+    }
+    /// A message the program received; the bytes to hand to the app.
+    fn received(&mut self, _message: &HostValue) -> Vec<Vec<u8>> {
+        Vec::new()
+    }
+    /// Where the app's surfaces go ([`crate::LiveRun::attach_surface`]), asked once as the run starts.
+    fn surfaces(&self) -> Option<Arc<dyn crate::LiveSurfaces>> {
+        None
+    }
+    /// The run ended (it won't post again): release what it holds.
+    fn ended(&mut self) {}
     /// What a snapshot keeps of it, for [`EncodePosts::load`] in the restored run.
     fn save(&self) -> Data {
         Data::Null
@@ -228,9 +242,30 @@ mod widget {
             let draw = input.get("phase").and_then(HostValue::as_str) == Some("draw");
             Box::new(widget_wire::NativeStep::new(draw))
         }
-        fn live(&self) -> Box<dyn EncodePosts> {
-            Box::new(widget_wire::LivePosts::new())
+        fn live(&self, ctx: crate::LiveContext) -> Box<dyn EncodePosts> {
+            #[allow(unused_mut)]
+            let mut posts = widget_wire::LivePosts::new();
+            #[cfg(feature = "widget-gpu")]
+            let gpu = {
+                let gpu = crate::gpu::run::RunGpu::new(ctx);
+                posts.set_gpu(gpu.host());
+                gpu
+            };
+            #[cfg(not(feature = "widget-gpu"))]
+            let _ = ctx;
+            Box::new(WidgetLive {
+                posts,
+                #[cfg(feature = "widget-gpu")]
+                gpu,
+            })
         }
+    }
+
+    /// A widget run's posts ([`widget_wire::LivePosts`]) and, with feature `widget-gpu`, its GPU.
+    struct WidgetLive {
+        posts: widget_wire::LivePosts,
+        #[cfg(feature = "widget-gpu")]
+        gpu: Arc<crate::gpu::run::RunGpu>,
     }
 
     impl EncodeStep for widget_wire::NativeStep {
@@ -246,32 +281,60 @@ mod widget {
         }
     }
 
-    impl EncodePosts for widget_wire::LivePosts {
+    impl EncodePosts for WidgetLive {
         fn post(
             &mut self,
             message: &HostValue,
             now: Instant,
         ) -> Result<(Vec<Vec<u8>>, HostValue), Reject> {
-            let (bytes, handled) =
-                widget_wire::LivePosts::post(self, message, now).map_err(reject)?;
+            let (bytes, handled) = self.posts.post(message, now).map_err(reject)?;
             Ok((bytes, handled.map_or(HostValue::Undefined, HostValue::Bool)))
         }
         fn due(&mut self, now: Instant) -> Vec<Vec<u8>> {
-            widget_wire::LivePosts::due(self, now)
+            #[cfg(feature = "widget-gpu")]
+            self.gpu.due();
+            self.posts.due(now)
         }
         fn next_due(&self) -> Option<Instant> {
-            widget_wire::LivePosts::next_due(self)
+            self.posts.next_due()
         }
         fn release(&mut self) -> Vec<Vec<u8>> {
-            widget_wire::LivePosts::release(self)
+            let released = self.posts.release();
+            #[cfg(feature = "widget-gpu")]
+            self.gpu.finish();
+            released
         }
         fn delivered(&mut self, message: &HostValue) {
-            widget_wire::LivePosts::delivered(self, message)
+            self.posts.delivered(message)
         }
-        /// The last render's canvases, `[[key, id, wgsl], ...]`.
+        fn received(&mut self, message: &HostValue) -> Vec<Vec<u8>> {
+            self.posts.received(message)
+        }
+        /// `{ data, gpu: { available, format } }` (`widgets-gpu.md`).
+        fn input(&mut self, input: HostValue) -> HostValue {
+            #[cfg(feature = "widget-gpu")]
+            if let HostValue::Object(mut fields) = input {
+                fields.retain(|(k, _)| k != "gpu");
+                fields.push(("gpu".into(), self.gpu.input()));
+                return HostValue::Object(fields);
+            }
+            input
+        }
+        fn surfaces(&self) -> Option<Arc<dyn crate::LiveSurfaces>> {
+            #[cfg(feature = "widget-gpu")]
+            return Some(self.gpu.clone());
+            #[cfg(not(feature = "widget-gpu"))]
+            None
+        }
+        fn ended(&mut self) {
+            #[cfg(feature = "widget-gpu")]
+            self.gpu.ended();
+        }
+        /// `{ canvases: [[key, id, wgsl, gpu], ...], gpu: <the program's last GPU handle> }`.
         fn save(&self) -> Data {
-            Data::Array(
-                self.last_render()
+            let canvases = Data::Array(
+                self.posts
+                    .last_render()
                     .canvases
                     .iter()
                     .map(|c| {
@@ -279,26 +342,57 @@ mod widget {
                             Data::String(c.key.as_str().into()),
                             Data::String(c.id.as_str().into()),
                             Data::Bool(c.wgsl),
+                            Data::Bool(c.gpu),
                         ])
                     })
                     .collect(),
-            )
+            );
+            #[cfg(feature = "widget-gpu")]
+            let last = self.gpu.last_handle();
+            #[cfg(not(feature = "widget-gpu"))]
+            let last = 0;
+            Data::Object(vec![
+                ("canvases".into(), canvases),
+                ("gpu".into(), Data::Number(last.into())),
+            ])
         }
         fn load(&mut self, saved: &Data) {
-            let Data::Array(list) = saved else { return };
+            // Snapshots from before GPU canvases are the canvases alone.
+            let (list, last) = match saved {
+                Data::Array(list) => (list, 0),
+                Data::Object(_) => match (saved.get("canvases"), saved.get("gpu")) {
+                    (Some(Data::Array(list)), Some(Data::Number(n))) => {
+                        (list, n.as_u64().unwrap_or(0))
+                    }
+                    _ => return,
+                },
+                _ => return,
+            };
             let text = |d: &Data| d.as_string().map(|s| s.to_string_lossy().into_owned());
-            let canvases = list
+            let canvases: Vec<widget_wire::Canvas> = list
                 .iter()
                 .filter_map(|c| match c {
-                    Data::Array(f) if f.len() == 3 => Some(widget_wire::Canvas {
+                    Data::Array(f) if f.len() == 3 || f.len() == 4 => Some(widget_wire::Canvas {
                         key: text(&f[0])?,
                         id: text(&f[1])?,
                         wgsl: matches!(f[2], Data::Bool(true)),
+                        gpu: matches!(f.get(3), Some(Data::Bool(true))),
                     }),
                     _ => None,
                 })
                 .collect();
-            self.restore_canvases(canvases);
+            #[cfg(feature = "widget-gpu")]
+            self.gpu.restored(
+                last,
+                canvases
+                    .iter()
+                    .filter(|c| c.gpu)
+                    .map(|c| c.key.clone())
+                    .collect(),
+            );
+            #[cfg(not(feature = "widget-gpu"))]
+            let _ = last;
+            self.posts.restore_canvases(canvases);
         }
     }
 

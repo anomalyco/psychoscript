@@ -15,7 +15,7 @@ use std::sync::Mutex;
 use std::sync::mpsc::{Sender, channel};
 use std::time::{Duration, Instant};
 
-use psychoscript_mobile::{LiveExit, LiveHandler, LiveOptions, Program};
+use psychoscript_mobile::{GpuCanvasState, LiveExit, LiveHandler, LiveOptions, Program};
 
 const ECHO: &str = "while (true) __host.post(await __host.receive())";
 
@@ -45,6 +45,7 @@ impl LiveHandler for Timing {
     fn on_warning(&self, message: String) {
         eprintln!("warning: {message}");
     }
+    fn on_gpu_canvas(&self, _key: Option<String>, _state: GpuCanvasState) {}
     fn on_exit(&self, exit: LiveExit) {
         if !matches!(exit, LiveExit::Stopped) {
             eprintln!("exit: {exit:?}");

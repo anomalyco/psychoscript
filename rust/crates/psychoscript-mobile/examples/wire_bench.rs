@@ -19,7 +19,9 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use psychoscript_mobile::{LiveExit, LiveHandler, LiveOptions, Program, RunOptions, ValueEncoder};
+use psychoscript_mobile::{
+    GpuCanvasState, LiveExit, LiveHandler, LiveOptions, Program, RunOptions, ValueEncoder,
+};
 use serde_json::{Value, json};
 use widget_wire::{Arg, DrawOutput, Node, StepOutput, decode_output, decode_post};
 
@@ -177,6 +179,7 @@ impl LiveHandler for Client {
         }
     }
     fn on_warning(&self, _message: String) {}
+    fn on_gpu_canvas(&self, _key: Option<String>, _state: GpuCanvasState) {}
     fn on_exit(&self, exit: LiveExit) {
         if !matches!(exit, LiveExit::Stopped) {
             panic!("{exit:?}");
