@@ -671,7 +671,7 @@ method works on it, and its text conversions default to UTF-8.
       `[Symbol.iterator]`; iteration is live and sorted by name, with `set-cookie` values kept apart.
 - [x] Headers serialize to a `{ name: value }` object in JSON, in results, and in host function arguments.
 - [ ] `Request`, `Response`, and `Blob`.
-- [x] A host-provided streaming fetch response exposes `bodyUsed`, whole-body readers, a default stream reader and `for await` iteration. `arrayBuffer()` crosses as a `Uint8Array`.
+- [x] A host-provided streaming fetch response exposes `type`, `bodyUsed`, `clone()`, whole-body readers, a default stream reader (with `closed`) and `for await` iteration. `arrayBuffer()` crosses as a `Uint8Array`. `blob()`, `formData()` and the body's `tee`, `pipeTo` and `pipeThrough` throw a TypeError.
 - [ ] `crypto.subtle` and non-UTF-8 `TextDecoder` encodings.
 
 ## Host functions

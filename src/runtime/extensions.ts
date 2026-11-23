@@ -66,6 +66,11 @@ type Within = {
  */
 // A synchronous call's signal: its pending work, if any, runs later under the driver's own.
 
+// What a host response offers that needs a Blob, FormData or WritableStream, none of which this runtime has.
+const unsupported = (name: string) => (): never => {
+  throw new TypeError(`${name} is not supported in this runtime; read the body with bytes(), text() or arrayBuffer().`)
+}
+
 const setterOnly = (slot: Slot): boolean => !("value" in slot) && slot.get === undefined
 
 export const hostGlobals = <R>(
@@ -216,18 +221,56 @@ export const hostGlobals = <R>(
             "cancel",
             next(async (reason?: unknown) => body.cancel(reason), `${label}.body.cancel`),
           )
+          // Made here rather than by a host function so the reader can hold `closed`, one promise for every read.
           define(
             stream,
             "getReader",
-            next((options?: { mode?: string }) => {
-              if (options?.mode !== undefined) throw new TypeError("Only the default stream reader is supported.")
-              const reader = body.getReader()
-              return {
-                read: async () => reader.read(),
-                cancel: async (reason?: unknown) => reader.cancel(reason),
-                releaseLock: () => reader.releaseLock(),
-              }
-            }, `${label}.body.getReader`),
+            native(builtins, {
+              runtime: "host",
+              name: "getReader",
+              call: (_, values) => {
+                const options = values[0]
+                if (options instanceof Obj && get(options, "mode") !== undefined)
+                  throw typeError("Only the default stream reader is supported.")
+                if (body.locked) throw typeError("ReadableStream is locked.")
+                const reader = body.getReader()
+                const made = next(
+                  {
+                    read: async () => reader.read(),
+                    cancel: async (reason?: unknown) => reader.cancel(reason),
+                    releaseLock: () => reader.releaseLock(),
+                  },
+                  `${label}.body.getReader()`,
+                ) as Obj
+                const watch = plain(() => reader.closed)
+                let closed: Value | undefined
+                const getter = native(builtins, {
+                  runtime: "host",
+                  name: "get closed",
+                  call: (_, __, site) => {
+                    if (closed !== undefined) return closed
+                    const got = ctx.vm.hosts.call(
+                      watch,
+                      [],
+                      site,
+                      { label: `${label}.body.getReader().closed`, path: undefined, owner: undefined },
+                      getter,
+                    )
+                    if (got instanceof PromiseObj) closed = got
+                    return got
+                  },
+                })
+                defineAccessorHalf(made, "closed", "get", getter, false)
+                return made
+              },
+            }),
+          )
+          define(stream, "tee", next(unsupported("ReadableStream.tee()"), `${label}.body.tee`))
+          define(stream, "pipeThrough", next(unsupported("ReadableStream.pipeThrough()"), `${label}.body.pipeThrough`))
+          define(
+            stream,
+            "pipeTo",
+            next(async () => unsupported("ReadableStream.pipeTo()")(), `${label}.body.pipeTo`),
           )
           define(
             stream,
@@ -242,7 +285,7 @@ export const hostGlobals = <R>(
           )
         }
         const result = new Obj(builtins.Object)
-        for (const key of ["url", "status", "statusText", "ok", "headers"] as const)
+        for (const key of ["type", "url", "status", "statusText", "ok", "headers"] as const)
           define(result, key, next(response[key], `${label}.${key}`))
         define(result, "redirected", value.redirected)
         define(result, "body", body ? stream : null)
@@ -259,6 +302,17 @@ export const hostGlobals = <R>(
             key,
             next(async () => response[key](), `${label}.${key}`),
           )
+        for (const key of ["blob", "formData"] as const)
+          define(
+            result,
+            key,
+            next(async () => unsupported(`Response.${key}()`)(), `${label}.${key}`),
+          )
+        define(
+          result,
+          "clone",
+          next(() => new StreamingResponse(response.clone() as typeof response, value.redirected), `${label}.clone`),
+        )
         return result
       }
       if (value instanceof RegExp) return new RegExpObj(builtins.RegExp, value.source, value.flags)
