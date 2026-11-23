@@ -14,10 +14,12 @@ export const MAX_VALUE_DEPTH = 32
 
 /** Most bits a BigInt may have. Past about a million bits, one multiplication, division or decimal conversion can take tens of milliseconds. */
 export const MAX_BIGINT_BITS = 1 << 20
+// Both bounds are made once: negating a million-bit BigInt on every check would copy it each time.
 const bigintBound = 1n << BigInt(MAX_BIGINT_BITS)
+const negativeBigintBound = -bigintBound
 
 export const checkBigIntSize = (value: bigint): bigint => {
-  if (value >= bigintBound || value <= -bigintBound) throw rangeError("Maximum BigInt size exceeded")
+  if (value >= bigintBound || value <= negativeBigintBound) throw rangeError("Maximum BigInt size exceeded")
   return value
 }
 
