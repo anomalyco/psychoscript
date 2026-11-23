@@ -277,8 +277,9 @@ impl Shorthand {
     }
 
     /// The device is lost ([`Gpu::lost`]): call it as soon as the host knows, before [`Shorthand::reset`]. A frame in
-    /// flight at the loss is a strike; the second within [`crate::STRIKE_WINDOW`] stops the shader with
-    /// [`crate::HANG_MESSAGE`] and its placeholder.
+    /// flight at the loss is a strike if a frame finished since the last strike (one per reset, as [`Gpu::lost`]
+    /// counts); the second within [`crate::STRIKE_WINDOW`] stops the shader with [`crate::HANG_MESSAGE`] and its
+    /// placeholder.
     pub fn lost(&mut self) {
         self.lost_at(Instant::now());
     }

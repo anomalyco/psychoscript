@@ -15,8 +15,11 @@ wgpu = { version = "~30.0.1", default-features = false, features = ["std", "wgsl
 [features]
 # The tests on Metal (macOS) instead of Vulkan: `cargo test -p widget-gpu --features metal`.
 metal = ["wgpu/metal"]
+# Hooks for this crate's tests, never in a host's build.
+test-hooks = []
 
 [dev-dependencies]
 # Tests run on Vulkan: this VM's lavapipe, or a real GPU.
 wgpu = { version = "~30.0.1", default-features = false, features = ["std", "wgsl", "vulkan"] }
 psychoscript = { path = "../psychoscript" }
+widget-gpu = { path = ".", features = ["test-hooks"] }

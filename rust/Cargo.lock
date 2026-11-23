@@ -2366,6 +2366,7 @@ dependencies = [
  "psychoscript",
  "serde_json",
  "wgpu",
+ "widget-gpu",
  "widget-wire",
 ]
 

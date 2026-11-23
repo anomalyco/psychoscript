@@ -1,4 +1,4 @@
-//! The GPU conformance fixtures (opencode `packages/widget/test/fixtures/gpu`, widgets 0a6b8ba1b; `fixtures/gpu/
+//! The GPU conformance fixtures (opencode `packages/widget/test/fixtures/gpu`, widgets 2364311f1; `fixtures/gpu/
 //! fixtures`) as live runs: each program with the preludes, its posts through the real `__host.post` and the widget
 //! encoder, its batches replayed on this machine's device. Each must post the fixture's `batches` (ops, and bytes
 //! from psychoscript's `Math`), give its GPU program errors (message and canvases) and end as it says. The driver is the spec's (`widgets-gpu.md`, Conformance); a device loss among
@@ -43,12 +43,15 @@ fn input(r: &mut Run, i: &Value) {
             let m = json!({ "type": "canvas", "key": i["key"], "width": w, "height": h });
             r.run.deliver(m.to_string()).unwrap();
         }
-        // `inFlight`: lost at the last frame's end, its work in flight (`drive` asked for it then), a strike; else
-        // with the work all seen finished. The program has the loss when the app is told (a canvas `lost`, or every
-        // canvas stopped by a second strike).
+        // `inFlight`: lost at the last frame's end, its work in flight (`drive` asked for it then); else with the work
+        // all seen finished first, unless `finished` is false. A strike is a loss with work in flight and work seen
+        // finished since the last (`finished`, default true). The program has the loss when the app is told (a canvas
+        // `lost`, or every canvas stopped by a second strike).
         Some("gpu") if i.get("lost").is_some() => {
             if i["inFlight"] != true {
-                gpu_wait_idle();
+                if i["finished"] != false {
+                    gpu_wait_idle();
+                }
                 gpu_lose_device();
             }
             let (key, state) = r.wait(|e| match e {
@@ -195,11 +198,12 @@ fn drive(f: &Value) -> (Vec<Value>, String, String, Vec<Value>) {
                     input(&mut r, &i);
                 }
                 // The next frame's `inFlight` loss comes at this frame's end.
-                if now(frame + 1, false)
+                let next = now(frame + 1, false);
+                if let Some(i) = next
                     .iter()
-                    .any(|i| i["lost"].is_string() && i["inFlight"] == true)
+                    .find(|i| i["lost"].is_string() && i["inFlight"] == true)
                 {
-                    gpu_lose_device_at_frame_end();
+                    gpu_lose_device_at_frame_end(i["finished"] != false);
                 }
                 r.run.deliver(gpu_support::frame(frame)).unwrap();
                 for i in now(frame, true) {
@@ -274,6 +278,6 @@ fn every_gpu_fixture_as_a_live_run() {
             eprintln!("{name}: ok ({} errors, {end}, {batches})", errors.len());
         }
     }
-    assert_eq!(ran, 52);
+    assert_eq!(ran, 53);
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
 }

@@ -17,15 +17,27 @@ pub const HANG_MESSAGE: &str = "the GPU work hung; the canvas is stopped";
 /// Two device losses this close, each with the run's GPU work in flight, stop every canvas of the run.
 pub const STRIKE_WINDOW: Duration = Duration::from_secs(30);
 
-/// A run's strikes: device losses while its GPU work was in flight. Only the last one's time matters.
+/// A run's strikes: device losses while its GPU work was in flight, one per GPU reset. Only the last one's time
+/// matters.
 #[derive(Default)]
 pub(crate) struct Strikes {
     last: Option<Instant>,
+    /// The run's GPU work finished on a device since the last strike (or the run's start).
+    finished: bool,
 }
 
 impl Strikes {
-    /// A strike at `now`; whether it is the second within [`STRIKE_WINDOW`].
+    /// The run's GPU work finished on the current device.
+    pub(crate) fn finished(&mut self) {
+        self.finished = true;
+    }
+
+    /// A loss at `now` with the run's work in flight: a strike if work finished since the last one (losses in a row
+    /// with none in between are one reset); whether it is the second within [`STRIKE_WINDOW`].
     pub(crate) fn strike(&mut self, now: Instant) -> bool {
+        if !std::mem::take(&mut self.finished) {
+            return false;
+        }
         let second = self
             .last
             .is_some_and(|last| now.saturating_duration_since(last) <= STRIKE_WINDOW);
@@ -190,18 +202,43 @@ mod tests {
         assert!(late.hung());
     }
 
-    /// Two strikes within 30 s stop the run; a first one, or one after a longer gap, doesn't.
+    /// Two strikes within 30 s stop the run; a first one, or one after a longer gap, doesn't. Each follows finished
+    /// work.
     #[test]
     fn two_strikes_within_30_s() {
         let t0 = Instant::now();
         let s = |n: u64| t0 + Duration::from_secs(n);
         let mut strikes = Strikes::default();
-        assert!(!strikes.strike(s(0)));
+        let mut strike = |at| {
+            strikes.finished();
+            strikes.strike(s(at))
+        };
+        assert!(!strike(0));
         // 31 s later: it starts again from this one.
-        assert!(!strikes.strike(s(31)));
-        assert!(strikes.strike(s(61)));
+        assert!(!strike(31));
+        assert!(strike(61));
         let mut strikes = Strikes::default();
+        strikes.finished();
         assert!(!strikes.strike(s(100)));
+        strikes.finished();
         assert!(strikes.strike(s(130)));
+    }
+
+    /// Losses in a row with no finished work in between are one reset, one strike: a reset that loses each new
+    /// device before its first work finishes. Before any work finished, a loss is no strike.
+    #[test]
+    fn one_reset_is_one_strike() {
+        let t0 = Instant::now();
+        let s = |n: u64| t0 + Duration::from_secs(n);
+        let mut strikes = Strikes::default();
+        assert!(!strikes.strike(s(0)));
+        strikes.finished();
+        assert!(!strikes.strike(s(1)));
+        assert!(!strikes.strike(s(2)));
+        assert!(!strikes.strike(s(3)));
+        // Work finishes on the new device: the next loss is the second strike, 30 s after the first.
+        strikes.finished();
+        strikes.finished();
+        assert!(strikes.strike(s(31)));
     }
 }

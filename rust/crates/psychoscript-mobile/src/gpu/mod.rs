@@ -99,15 +99,17 @@ pub fn gpu_submit_times() -> Vec<f64> {
 }
 
 /// Has the run that next ends a frame lose the device right then, with that frame's last batch in flight (submitted,
-/// not seen finished: a strike): the GPU fixtures' `inFlight` losses (Rust only, for tests).
+/// not seen finished), and with `finished` some of its work seen finished before (`Gpu::work_finished`): the GPU
+/// fixtures' `inFlight` losses, a strike when `finished` (Rust only, for tests).
 #[cfg(feature = "test-hooks")]
-pub fn gpu_lose_device_at_frame_end() {
-    LOSE_AT_FRAME_END.store(true, std::sync::atomic::Ordering::SeqCst);
+pub fn gpu_lose_device_at_frame_end(finished: bool) {
+    LOSE_AT_FRAME_END.store(1 + u8::from(finished), std::sync::atomic::Ordering::SeqCst);
 }
 
+/// 0 none, 1 without work seen finished, 2 with.
 #[cfg(feature = "test-hooks")]
-pub(crate) static LOSE_AT_FRAME_END: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+pub(crate) static LOSE_AT_FRAME_END: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(0);
 
 /// Has every device made from now on fail, `after_ms` into making it (Rust only, for tests of a GPU that turns out
 /// to be missing).
