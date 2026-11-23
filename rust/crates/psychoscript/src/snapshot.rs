@@ -1954,7 +1954,9 @@ impl Dec<'_> {
                     .then(|| num_bigint::BigInt::parse_bytes(digits.as_bytes(), 16))
                     .flatten()
                     .filter(|_| magnitude.bytes().all(|c| c.is_ascii_hexdigit()));
-                Kind::BigInt(n.ok_or_else(|| invalid("a BigInt is malformed."))?)
+                Kind::BigInt(Box::new(
+                    n.ok_or_else(|| invalid("a BigInt is malformed."))?,
+                ))
             }
             "td" => Kind::TextDecoder(Box::new(crate::builtins::bytes::Decoder {
                 fatal: boolean(f(1)?)?,

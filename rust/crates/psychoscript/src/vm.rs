@@ -3734,8 +3734,9 @@ impl Vm {
                         }
                         let x = match a {
                             Value::Num(x) => x,
-                            // ToNumeric keeps a BigInt.
-                            Value::Big(_) if op == Op::ToNumeric => {
+                            // ToNumeric keeps a BigInt. `matches!`, not `==`: `PartialEq` takes `op` by
+                            // reference, which keeps every decoded instruction in memory.
+                            Value::Big(_) if matches!(op, Op::ToNumeric) => {
                                 self.push(a);
                                 continue;
                             }
@@ -4698,5 +4699,12 @@ mod layout {
             at + std::mem::size_of::<Vec<crate::value::Slot>>() <= 512,
             "Vm::stack is at offset {at}; keep it within 488"
         );
+    }
+
+    /// Every heap object holds a `Kind`, so a variant with a payload over 24 bytes makes each object larger: box it
+    /// instead.
+    #[test]
+    fn kind_is_small() {
+        assert_eq!(std::mem::size_of::<crate::object::Kind>(), 32);
     }
 }

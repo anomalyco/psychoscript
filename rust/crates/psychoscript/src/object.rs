@@ -577,8 +577,8 @@ pub enum Kind {
     /// An object with accessors the host answers, such as a streaming response.
     /// The getter and setter of an accessor property (see `ACCESSOR`), never reachable as a value.
     Accessor(Box<Accessor>),
-    /// The integer of a `Value::Big`, immutable and never reachable as an object.
-    BigInt(num_bigint::BigInt),
+    /// The integer of a `Value::Big`, immutable and never reachable as an object; boxed, so `Kind` stays small.
+    BigInt(Box<num_bigint::BigInt>),
 }
 
 pub struct Combinator {

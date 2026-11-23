@@ -102,7 +102,7 @@ impl Vm {
             self.gc_shade_big(id);
             return Value::Big(id);
         }
-        let id = self.alloc(Obj::new(None, Kind::BigInt(n)));
+        let id = self.alloc(Obj::new(None, Kind::BigInt(Box::new(n))));
         self.bigints.add(h, id);
         Value::Big(id)
     }
