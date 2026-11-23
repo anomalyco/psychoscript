@@ -390,6 +390,26 @@ impl Checks {
         Ok(found)
     }
 
+    /// A canvas's texture has usage `RENDER_ATTACHMENT` alone: no copy, write or binding may use it.
+    fn not_canvas(&self, h: f64, path: &str) -> C<()> {
+        match self.handles.get(&(h as u64)) {
+            Some(Handle {
+                kind: Kind::Context,
+                key: Some(key),
+                ..
+            }) => fail(format!(
+                "{path} uses canvas \"{key}\"'s texture, which can only be rendered into"
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// A texture a copy or a write takes.
+    fn copied(&self, v: V, path: &str) -> C<()> {
+        self.not_canvas(whole(v, path)?, path)?;
+        self.find(v, path, &[Kind::Texture]).map(|_| ())
+    }
+
     fn create(&mut self, v: V, path: &str, made: Handle) -> C<()> {
         let h = whole(v, path)?;
         if h <= self.last {
@@ -825,7 +845,9 @@ impl Checks {
                             &[Kind::Sampler],
                         )?;
                     } else if r.has("view") {
-                        self.find(r.get("view"), &format!("{p}.resource.view"), &[Kind::View])?;
+                        let path = format!("{p}.resource.view");
+                        let texture = self.find(r.get("view"), &path, &[Kind::View])?.texture;
+                        self.not_canvas(texture, &path)?;
                     } else {
                         return fail(format!(
                             "{p}.resource must be a buffer binding, a sampler or a view"
@@ -846,7 +868,7 @@ impl Checks {
                 range(whole(at(3), &a(3))?, whole(at(4), &a(4))?, bytes)
             }
             "writeTexture" => {
-                self.find(at(1), &a(1), &[Kind::Texture])?;
+                self.copied(at(1), &a(1))?;
                 whole(at(2), &a(2))?;
                 triple(at(3), &a(3))?;
                 range(whole(at(4), &a(4))?, whole(at(5), &a(5))?, bytes)?;
@@ -870,16 +892,16 @@ impl Checks {
                 if !is_null(at(4)) {
                     whole(at(4), &a(4))?;
                 }
-                self.find(at(5), &a(5), &[Kind::Texture])?;
+                self.copied(at(5), &a(5))?;
                 whole(at(6), &a(6))?;
                 triple(at(7), &a(7))?;
                 triple(at(8), &a(8))
             }
             "copyTextureToTexture" => {
-                self.find(at(1), &a(1), &[Kind::Texture])?;
+                self.copied(at(1), &a(1))?;
                 whole(at(2), &a(2))?;
                 triple(at(3), &a(3))?;
-                self.find(at(4), &a(4), &[Kind::Texture])?;
+                self.copied(at(4), &a(4))?;
                 whole(at(5), &a(5))?;
                 triple(at(6), &a(6))?;
                 triple(at(7), &a(7))
