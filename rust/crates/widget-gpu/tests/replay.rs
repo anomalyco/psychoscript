@@ -9,7 +9,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::{Value, json};
 use widget_gpu::{
-    Arg, ErrorKind, Gpu, GpuError, SavedStop, SavedStops, Shorthand, Stops, Uniforms, clamp_size,
+    Arg, ErrorKind, Gpu, GpuError, SLOW_MESSAGE, SavedStop, SavedStops, Shorthand, Stops, Uniforms,
+    clamp_size,
 };
 
 const W: u32 = 64;
@@ -867,6 +868,8 @@ fn the_wgsl_shorthand() {
         values,
     };
     s.render(W, H, &u).unwrap();
+    // A frame isn't drawn while the last one still is.
+    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
     s.render(W, H, &u).unwrap();
     let canvas = s.canvas().unwrap();
     assert_eq!(
@@ -1278,6 +1281,64 @@ fn a_restored_run_keeps_its_stopped_canvases() {
     assert_eq!(restored.apply(&contexts(2).ops, &[]), Ok(()));
     assert_eq!(restored.apply(&bad.ops, &bad.bytes), Ok(()));
     assert!(restored.canvas("b").is_none());
+}
+
+/// Renders `s` every 5 ms for at most `seconds`, or until it stops for being too slow: how many calls, and the
+/// longest one took.
+fn run_for(s: &mut Shorthand, seconds: f64) -> (u32, std::time::Duration) {
+    let start = std::time::Instant::now();
+    let (mut calls, mut longest) = (0, std::time::Duration::ZERO);
+    let u = Uniforms {
+        scale: 1.0,
+        ..Default::default()
+    };
+    while start.elapsed().as_secs_f64() < seconds && !s.too_slow() {
+        let at = std::time::Instant::now();
+        s.render(256, 256, &u).unwrap();
+        longest = longest.max(at.elapsed());
+        calls += 1;
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    (calls, longest)
+}
+
+/// Over 50 ms a frame three frames in a row: the shader stops on its last frame, a client error; `render` never
+/// waits for the GPU.
+#[test]
+fn a_shader_too_slow_stops_on_its_last_frame() {
+    let (device, queue) = common::device();
+    let heavy = "fn shade(frag: vec2f) -> vec4f {
+    var v = frag.x * 0.001 + frag.y;
+    for (var i = 0; i < 6000; i++) { v = fract(sin(v + f32(i)) * 43758.5453); }
+    return vec4f(v, 0.0, 0.0, 1.0);
+}";
+    let mut s = Shorthand::new(device.clone(), queue.clone(), RGBA, heavy).unwrap();
+    let (calls, longest) = run_for(&mut s, 30.0);
+    assert!(s.too_slow(), "not stopped after {calls} calls");
+    let e = s.error().unwrap();
+    assert_eq!(
+        (e.kind, e.message.as_str()),
+        (ErrorKind::Client, SLOW_MESSAGE)
+    );
+    // Three frames drew (or were drawing): one at a time, never queued behind each other.
+    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    let version = s.canvas().unwrap().version;
+    assert_eq!(version, 3, "{calls} calls");
+    // It keeps its last frame, and draws no more.
+    s.render(256, 256, &Uniforms::default()).unwrap();
+    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    assert_eq!(s.canvas().unwrap().version, version);
+    assert!(
+        longest < std::time::Duration::from_millis(40),
+        "a render took {longest:?}"
+    );
+    eprintln!("stopped after {calls} calls; the longest took {longest:?}");
+
+    // A light shader at the same pace doesn't stop.
+    let mut s = Shorthand::new(device, queue, RGBA, PLASMA).unwrap();
+    let (calls, _) = run_for(&mut s, 1.0);
+    assert!(!s.too_slow() && s.error().is_none());
+    assert!(s.canvas().unwrap().version > 10, "{calls} calls");
 }
 
 /// Replay cost of a typical frame: 48 ops, 64 KB of writes (`cargo test --release -p widget-gpu -- --ignored`).

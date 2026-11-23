@@ -33,7 +33,7 @@ use std::hash::{BuildHasherDefault, Hasher};
 use std::task::{Context, Poll, Waker};
 
 use check::{Checks, Failed};
-pub use shorthand::{HEADER, Shorthand, Uniforms};
+pub use shorthand::{HEADER, SLOW_FRAME, SLOW_FRAMES, SLOW_MESSAGE, Shorthand, Uniforms};
 pub use widget_wire::Arg;
 
 /// The phase a program's [`GpuError`] is reported in.
@@ -344,6 +344,14 @@ impl Gpu {
             stopped: HashMap::new(),
             all: None,
         })
+    }
+
+    pub(crate) fn device(&self) -> &wgpu::Device {
+        &self.device
+    }
+
+    pub(crate) fn queue(&self) -> &wgpu::Queue {
+        &self.queue
     }
 
     /// The live input's `gpu.format`: `"bgra8unorm"` or `"rgba8unorm"`.
