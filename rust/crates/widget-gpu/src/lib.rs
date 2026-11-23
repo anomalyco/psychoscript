@@ -164,7 +164,7 @@ pub struct Gpu {
     submits: Vec<Tracked>,
     /// Whether the batch being replayed submitted work.
     submitted: bool,
-    /// Device losses while the run's GPU work was in flight.
+    /// Device losses while the run's GPU work was in flight, and whether work finished since the last.
     strikes: hang::Strikes,
     /// A hang found as the device was lost, for the next [`Gpu::poll`].
     hung: Option<GpuError>,
@@ -606,11 +606,22 @@ impl Gpu {
 
     /// The device is lost: call it as soon as the host knows, before [`Gpu::reset`] (which calls it if the host
     /// didn't, and [`Gpu::poll`] does when it finds the device lost). A loss while the run's GPU work is in flight
-    /// (submitted, not seen finished) is a strike; the second within [`STRIKE_WINDOW`] stops every canvas of the run
-    /// for the rest of the run, with [`HANG_MESSAGE`], and the next [`Gpu::poll`] returns the error. A first strike,
-    /// or a loss with no work in flight, changes nothing visible.
+    /// (submitted, not seen finished) is a strike if some of its work finished on a device (its
+    /// `on_submitted_work_done` fired) since the last strike or the run's start: losses in a row with none in between
+    /// are one reset, one strike. The second strike within [`STRIKE_WINDOW`] stops every canvas of the run for the
+    /// rest of the run, with [`HANG_MESSAGE`], and the next [`Gpu::poll`] returns the error. A first strike, or a loss
+    /// that is none, changes nothing visible.
     pub fn lost(&mut self) {
         self.lost_at(Instant::now());
+    }
+
+    /// Test hook (feature `test-hooks`): the run's GPU work finished on the current device, as an
+    /// `on_submitted_work_done` that fired tells [`Gpu::lost`]. For a fixture's driver, which may need work finished
+    /// and work in flight at a loss that followed one submit.
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn work_finished(&mut self) {
+        self.strikes.finished();
     }
 
     /// [`Gpu::lost`], the loss at `now` (a test's clock).
@@ -620,6 +631,9 @@ impl Gpu {
         }
         self.lost = true;
         let in_flight = self.submits.iter().any(|t| !t.submit.done());
+        if self.submits.iter().any(|t| t.submit.done()) {
+            self.strikes.finished();
+        }
         for t in self.submits.drain(..) {
             t.submit.forget();
         }
@@ -648,7 +662,11 @@ impl Gpu {
                 keys.extend(t.keys.iter().cloned());
             }
         }
+        let before = self.submits.len();
         self.submits.retain(|t| !t.submit.done());
+        if self.submits.len() < before {
+            self.strikes.finished();
+        }
         if !found || self.all.is_some() {
             return Ok(());
         }

@@ -1637,9 +1637,10 @@ fn a_stopped_canvas_draws_no_more() {
     assert_eq!(sample(&mut gpu), RED);
 }
 
-/// Strikes (`widgets-gpu.md`, Strikes): a device loss while the run's GPU work is in flight is a strike, and the
-/// second within 30 s stops every canvas for the rest of the run, with the hang's message, across resets and
-/// snapshots. A first strike changes nothing visible; a loss with no work in flight is no strike.
+/// Strikes (`widgets-gpu.md`, Strikes): a device loss while the run's GPU work is in flight is a strike if some of its
+/// work finished since the last strike, and the second within 30 s stops every canvas for the rest of the run, with
+/// the hang's message, across resets and snapshots. A first strike changes nothing visible; a loss with no work in
+/// flight is no strike, and losses in a row with none finished in between (one reset losing each new device) are one.
 #[test]
 fn two_losses_with_work_in_flight_stop_the_run() {
     let _gpu = shared();
@@ -1658,27 +1659,37 @@ fn two_losses_with_work_in_flight_stop_the_run() {
         b.op(json!(["end"])).op(json!(["submit"]));
         gpu.apply(&b.ops, &[]).unwrap();
     };
+    // The same, seen finished.
+    let finish = |gpu: &mut Gpu, h: u32| {
+        draw(gpu, h);
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        assert_eq!(gpu.poll(), Ok(()));
+    };
     let loss = |gpu: &mut Gpu, at: u64| {
         gpu.lost_at(s(at));
         gpu.reset(device.clone(), queue.clone()).unwrap();
+        gpu.poll()
     };
     // A loss with no work in flight: no strike.
-    draw(&mut gpu, 1);
-    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-    assert_eq!(gpu.poll(), Ok(()));
-    loss(&mut gpu, 0);
+    finish(&mut gpu, 1);
+    assert_eq!(loss(&mut gpu, 0), Ok(()));
     // A first strike: nothing visible.
     draw(&mut gpu, 3);
-    loss(&mut gpu, 1);
-    assert_eq!((gpu.poll(), gpu.error("a")), (Ok(()), None));
-    // The second, 31 s later: too late, it counts as a first again.
+    assert_eq!(loss(&mut gpu, 1), Ok(()));
+    // The reset loses each new device before its work finishes: the same strike.
     draw(&mut gpu, 5);
-    loss(&mut gpu, 32);
-    assert_eq!((gpu.poll(), gpu.error("a")), (Ok(()), None));
-    // The next within 30 s: every canvas stops, for good.
+    assert_eq!(loss(&mut gpu, 2), Ok(()));
     draw(&mut gpu, 7);
-    loss(&mut gpu, 50);
-    let e = gpu.poll().unwrap_err();
+    assert_eq!(loss(&mut gpu, 3), Ok(()));
+    assert_eq!(gpu.error("a"), None);
+    // The second, 31 s after the first: too late, it counts as a first again.
+    finish(&mut gpu, 9);
+    draw(&mut gpu, 11);
+    assert_eq!(loss(&mut gpu, 32), Ok(()));
+    // The next within 30 s: every canvas stops, for good.
+    finish(&mut gpu, 13);
+    draw(&mut gpu, 15);
+    let e = loss(&mut gpu, 50).unwrap_err();
     assert_eq!(
         (e.kind, e.message.as_str(), &e.canvases),
         (ErrorKind::Client, HANG_MESSAGE, &Stops::All)
@@ -1691,8 +1702,7 @@ fn two_losses_with_work_in_flight_stop_the_run() {
             message: HANG_MESSAGE.into()
         })
     );
-    loss(&mut gpu, 60);
-    assert_eq!(gpu.poll(), Ok(()));
+    assert_eq!(loss(&mut gpu, 60), Ok(()));
     assert_eq!(
         gpu.error("a").map(|e| e.message.as_str()),
         Some(HANG_MESSAGE)
@@ -1703,8 +1713,8 @@ fn two_losses_with_work_in_flight_stop_the_run() {
     assert_eq!(restored.error("a"), Some(&e));
 }
 
-/// A shader with a frame in flight at a loss gets a strike; the second within 30 s stops it with the hang's
-/// placeholder.
+/// A shader with a frame in flight at a loss gets a strike if a frame finished since the last; the second within
+/// 30 s stops it with the hang's placeholder. Losses in a row with no frame finished in between are one strike.
 #[test]
 fn a_shader_struck_twice_stops() {
     let _gpu = shared();
@@ -1715,16 +1725,26 @@ fn a_shader_struck_twice_stops() {
         scale: 1.0,
         ..Default::default()
     };
-    for (at, stopped) in [(0, false), (10, true)] {
+    // A frame seen finished.
+    let finish = |s: &mut Shorthand| {
+        s.render(W, H, &u).unwrap();
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        s.poll();
+    };
+    // A loss at `at` s with a frame in flight; the error after the reset.
+    let lose = |s: &mut Shorthand, at: u64| {
         s.render(W, H, &u).unwrap();
         s.lost_at(t0 + std::time::Duration::from_secs(at));
         s.reset(device.clone(), queue.clone()).unwrap();
         s.poll();
-        assert_eq!(
-            s.error().map(|e| e.message.as_str()),
-            stopped.then_some(HANG_MESSAGE)
-        );
-    }
+        s.error().map(|e| e.message.clone())
+    };
+    finish(&mut s);
+    assert_eq!(lose(&mut s, 0), None);
+    assert_eq!(lose(&mut s, 1), None);
+    assert_eq!(lose(&mut s, 2), None);
+    finish(&mut s);
+    assert_eq!(lose(&mut s, 10).as_deref(), Some(HANG_MESSAGE));
     assert!(!s.too_slow());
 }
 
