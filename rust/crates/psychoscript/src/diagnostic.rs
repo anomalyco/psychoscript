@@ -15,6 +15,22 @@ pub struct Limits {
     /// [`MAX_VALUE_DEPTH_LIMIT`](crate::MAX_VALUE_DEPTH_LIMIT), as the copies recurse on the native stack once a
     /// level. A value nested deeper fails with a `TypeError` (a `RangeError` for the result and `JSON.stringify`).
     pub max_value_depth: Option<usize>,
+    /// What `timeout_ms` counts; [`Clock::Wall`] by default.
+    pub clock: Clock,
+}
+
+/// What a run's `timeout_ms` counts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Clock {
+    /// Wall-clock time while the run is active, across resumes.
+    #[default]
+    Wall,
+    /// The CPU time of the threads while they run the program, across resumes: a loaded machine, which keeps a thread
+    /// waiting for a core, never times a program out. It includes the host functions the run's thread calls itself,
+    /// not those a run computing on its worker hands back to the thread driving it. Waiting on host calls uses no CPU
+    /// time, so waits count on the wall clock, up to ten times the timeout, which then also ends the run. Where a
+    /// platform has no thread CPU clock (wasm), it is the wall clock.
+    ThreadCpu,
 }
 
 /// A diagnostic's kind: the language's own, or one a host function's failure names ([`Failure`](crate::Failure)),

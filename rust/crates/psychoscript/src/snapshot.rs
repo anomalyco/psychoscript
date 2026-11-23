@@ -393,6 +393,10 @@ pub fn capture(vm: &Vm, c: &Capture) -> Result<Snapshot, Refusal> {
     if let Some(n) = limits.max_heap_bytes {
         header["limits"]["maxHeapBytes"] = json!(n);
     }
+    // The run's time is its CPU time (`activeMs` too); a wall-clock run's header is as it always was.
+    if limits.clock == crate::Clock::ThreadCpu {
+        header["limits"]["clock"] = json!("threadCpu");
+    }
     if let Some(n) = limits.max_value_depth {
         header["limits"]["maxValueDepth"] = json!(n);
     }
@@ -2116,6 +2120,10 @@ pub fn header(snapshot: &Snapshot) -> R<Restored> {
             timeout_ms: opt("timeoutMs")?,
             max_output_bytes: opt("maxOutputBytes")?.map(|n| n as usize),
             max_heap_bytes: limits.get("maxHeapBytes").and_then(J::as_u64),
+            clock: match limits.get("clock").and_then(J::as_str) {
+                Some("threadCpu") => crate::Clock::ThreadCpu,
+                _ => crate::Clock::Wall,
+            },
             max_value_depth: match limits.get("maxValueDepth") {
                 None => None,
                 // Checked as `Runtime::limits` checks it: past the bound, the copies could run out of stack.

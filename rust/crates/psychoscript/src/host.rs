@@ -1023,10 +1023,12 @@ fn take_back(vm: &mut Vm) {
 /// complete with waits in the inbox. The run's timeout stops the wait; the call then fails as the run times out. While
 /// the run is on its worker, the wait and the other calls' polls happen where the run is driven.
 fn block(vm: &mut Vm, work: BoxFuture<'static, HostResult>) -> HostResult {
-    let deadline = vm
-        .limits
-        .timeout_ms
-        .map(|ms| vm.start + std::time::Duration::from_millis(ms));
+    // Under `Clock::ThreadCpu`, the wait counts on the wall clock, against the backstop (see `cpu.rs`).
+    let deadline = vm.limits.timeout_ms.map(|ms| match &vm.cpu {
+        None => vm.start + std::time::Duration::from_millis(ms),
+        Some(c) => std::time::Instant::now() + c.wait_left(std::time::Duration::from_millis(ms)),
+    });
+    let began = std::time::Instant::now();
     let (settled, done) = match home_of(vm) {
         None => wait(&mut vm.host.tasks, work, deadline),
         Some(home) => {
@@ -1041,6 +1043,9 @@ fn block(vm: &mut Vm, work: BoxFuture<'static, HostResult>) -> HostResult {
             waited
         }
     };
+    if let Some(c) = &mut vm.cpu {
+        c.waited(began.elapsed());
+    }
     for (p, s) in settled {
         vm.host.settled(p);
         vm.inbox.push_back((p, s));

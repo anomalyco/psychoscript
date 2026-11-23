@@ -50,6 +50,7 @@ let mesh = HostFunction::new(|_, _| HostValue::TypedArray(TypedArray::from_f32(&
 | `toBytes`, `fromBytes` | `to_bytes`, `from_bytes` |
 | a host typed array or `ArrayBuffer` (a view of the program's bytes) | `HostValue::TypedArray(TypedArray)` |
 | `limits.maxValueDepth` (at most 256) | `Limits::max_value_depth` (at most `MAX_VALUE_DEPTH_LIMIT`) |
+| `limits.timeoutMs` (wall clock) | `Limits::timeout_ms`, on `Limits::clock`: `Clock::Wall` (the default) or `Clock::ThreadCpu` (Rust only) |
 | `typedArrays: true` | `Runtime::typed_arrays(true)` |
 | `Host.functionMarker` (under `translate: { functions: "mark" }`) | `HostValue::FunctionMarker`, `Data::FunctionMarker` |
 
@@ -108,8 +109,13 @@ Known differences:
   at safe points only (`bench/GC.md`). `Limits::max_heap_bytes` (the reference's `maxHeapBytes`) caps what a run
   can reach, measured in the size model both share (`heap.rs`), so a measurement finds the same in both; when the
   measurements between the first and the last fall differs, as the pacing counts allocations each its own way.
+- **Time:** `Limits::timeout_ms` counts wall-clock time by default. With `Limits::clock: Clock::ThreadCpu` it counts
+  the CPU time of the threads while they run the program (`cpu.rs`), so a loaded machine never times out a program
+  that is only waiting for a core; waits on host calls count on the wall clock, up to ten times the timeout. The check
+  reads the thread's clock only when the wall time since its last reading could have used up the budget.
 - Layout: `crates/psychoscript` (compiler on `oxc_parser`, VM, standard library, host functions, snapshots),
-  `conformance/` (generators and recordings), `bench/`, `test262/`.
+  `crates/thread-clock` (a thread's CPU time, read on it or from another thread, for hosts too), `conformance/`
+  (generators and recordings), `bench/`, `test262/`.
 
-Rules: pure Rust and few dependencies, no `unsafe`, never panic on user input, and unsupported syntax throws
-`UnsupportedSyntax` with a location where it runs.
+Rules: pure Rust and few dependencies, no `unsafe` (outside `crates/thread-clock`, whose blocks are each one documented
+OS call), never panic on user input, and unsupported syntax throws `UnsupportedSyntax` with a location where it runs.

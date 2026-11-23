@@ -170,6 +170,10 @@ impl Drop for Worker {
 
 /// One stretch of compute: until the run ends, waits on the host, or stops at a safe point.
 fn compute(r: &mut Running, home: &Home) {
+    // Under `Clock::ThreadCpu`, a stretch of the run on this thread (see `cpu.rs`).
+    if let Some(c) = &mut r.vm.cpu {
+        c.enter();
+    }
     let probe = 0u8;
     r.vm.stack_base = &probe as *const u8 as usize;
     r.vm.stack_budget = RUN_STACK_BUDGET;
@@ -179,4 +183,7 @@ fn compute(r: &mut Running, home: &Home) {
         let _ = r.vm.drive();
     }
     r.vm.host.offload().home = None;
+    if let Some(c) = &mut r.vm.cpu {
+        c.leave(false);
+    }
 }

@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rustc_hash::FxHashMap;
 
@@ -347,6 +347,8 @@ pub struct Vm {
     /// them their bytes for its duration, any other call gets copies (see `call_host`). While a call's result crosses
     /// back, the ones it lent, so a handle it returns is the same buffer again. Last, away from the hot fields.
     pub(crate) lends: Vec<(Id, crate::host_function::SharedBytes)>,
+    /// Under `Clock::ThreadCpu`, the run's clock, from its start (see `cpu.rs`).
+    pub(crate) cpu: Option<Box<crate::cpu::CpuMeter>>,
 }
 
 impl Vm {
@@ -452,6 +454,7 @@ impl Vm {
             heap_meter: None,
             lazy_builtins: Vec::new(),
             lends: Vec::new(),
+            cpu: None,
         }
     }
 
@@ -1105,12 +1108,39 @@ impl Vm {
         self.rebudget();
     }
 
+    /// Under `Clock::ThreadCpu`, whether the run is over a timeout of `ms` (see `cpu.rs`).
+    #[cold]
+    #[inline(never)]
+    fn cpu_over(&mut self, ms: u64) -> bool {
+        self.cpu
+            .as_mut()
+            .is_some_and(|c| c.over(Duration::from_millis(ms)))
+    }
+
+    /// Under `Clock::ThreadCpu`, the run's clock, idle until its first stretch.
+    pub(crate) fn start_cpu_meter(&mut self) {
+        if self.limits.clock == crate::Clock::ThreadCpu {
+            self.cpu = Some(Box::new(crate::cpu::CpuMeter::new()));
+        }
+    }
+
+    /// The time the run used, of the clock its timeout counts.
+    pub(crate) fn time_used(&mut self) -> Duration {
+        match &mut self.cpu {
+            Some(c) => c.used(),
+            None => self.start.elapsed(),
+        }
+    }
+
     pub fn check_time(&mut self) -> Result<(), Value> {
         if self.fatal.is_some() {
             return Err(Value::Undef);
         }
         if let Some(ms) = self.limits.timeout_ms
-            && self.start.elapsed().as_millis() as u64 >= ms
+            && match self.cpu.is_some() {
+                false => self.start.elapsed().as_millis() as u64 >= ms,
+                true => self.cpu_over(ms),
+            }
         {
             self.fatal = Some((
                 DiagnosticKind::TimeoutExceeded,

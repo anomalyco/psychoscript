@@ -16,6 +16,7 @@ mod collector;
 mod compiler;
 mod conversion;
 mod convert;
+mod cpu;
 mod cross;
 mod data;
 mod diagnostic;
@@ -48,7 +49,7 @@ mod vm;
 
 pub use convert::MAX_VALUE_DEPTH_LIMIT;
 pub use data::Data;
-pub use diagnostic::{Diagnostic, DiagnosticKind, Interrupted, Limits};
+pub use diagnostic::{Clock, Diagnostic, DiagnosticKind, Interrupted, Limits};
 pub use exec::BoxFuture;
 #[cfg(feature = "gc-stats")]
 #[doc(hidden)]
