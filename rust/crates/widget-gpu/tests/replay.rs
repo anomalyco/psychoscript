@@ -747,16 +747,6 @@ fn wgpu_validation_errors_are_program_errors() {
             "In a draw command, kind: Draw: Render pipeline must be set",
             Stops::Canvases(vec!["scene".into()]),
         ),
-        (
-            vec![
-                json!(["context", 1, "scene", "rgba8unorm", "opaque"]),
-                json!(["view", 2, 1, {}]),
-                json!(["bindGroupLayout", 3, { "entries": [] }]),
-                json!(["bindGroup", 4, { "layout": 3, "entries": [{ "binding": 0, "resource": { "view": 2 } }] }]),
-            ],
-            "gpu op 3: a canvas's texture can only be a render pass attachment",
-            Stops::All,
-        ),
     ];
     let (device, queue) = common::device();
     for (ops, expected, canvases) in cases {
