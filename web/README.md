@@ -120,7 +120,7 @@ Behavior, per the contract:
   with `RENDER_ATTACHMENT` alone, the usage the program's canvas texture has. A frame with no pass into a canvas keeps
   its last image. A GPU hang, a batch's work unfinished 250 ms after its submit, stops the canvases it renders into,
   else every GPU canvas, for the rest of the run, as an error would (a new device never restarts them): a client error
-  `the GPU work took over 250 ms; the canvas is stopped`, the placeholder with it. A queue's watchdog
+  `the GPU work hung; the canvas is stopped`, the placeholder with it. A queue's watchdog
   (`src/watchdog.ts`; `onSubmittedWorkDone` and one timer, never waited on) times only its oldest unfinished submit,
   from its submit or, if later, from when the one before it finished, so work queued behind a hung submit isn't
   blamed; at a device loss the oldest unfinished submit running 250 ms counts as a hang too. Without WebGPU the canvas shows `poster`, else `alt`, else "GPU canvas not
@@ -137,7 +137,7 @@ Behavior, per the contract:
   A frame is submitted only once the last is done (`onSubmittedWorkDone`); a frame unfinished 50 ms after its submit
   three frames in a row stops it, its last frame kept (client error `the shader took over 50 ms a frame, three frames
   in a row`); a frame unfinished 250 ms after its submit, before that, stops it for the rest of the run, its
-  placeholder showing the client error `the GPU work took over 250 ms; the canvas is stopped` (a GPU hang; the shaders
+  placeholder showing the client error `the GPU work hung; the canvas is stopped` (a GPU hang; the shaders
   share one device, and its watchdog stops only the hung frame's canvas). A failing shader shows
   `poster` or `alt` with the error.
 - Canvases are never drawn or rendered while they have a zero width or height; `Frame.width`/`height` are > 0.

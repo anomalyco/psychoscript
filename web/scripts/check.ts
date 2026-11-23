@@ -356,7 +356,7 @@ for (const [query, backend] of [["?only=backdrop", "webgpu"]] as const) {
   await page.goto(base + "?only=shader-demo")
   const w = widget(page, "shader-demo")
   await w.locator('.pw-surface[data-backend="webgpu"]').waitFor({ timeout: 20000 }).catch(() => {})
-  const message = "the GPU work took over 250 ms; the canvas is stopped"
+  const message = "the GPU work hung; the canvas is stopped"
   await waitLog(page, (l) => l.startsWith("shader-demo client-error"), 8000)
   // The 1.5 s frame finishes after the hang: nothing more.
   await page.waitForTimeout(1500)
@@ -1598,7 +1598,7 @@ for (const query of ["?only=shader-broken"]) {
     await page.waitForTimeout(1500)
     const after = await canvases(page)
     const b = await centre(page, after.canvases[1]!.rect)
-    const message = "the GPU work took over 250 ms; the canvas is stopped"
+    const message = "the GPU work hung; the canvas is stopped"
     check(
       before.clientErrors.length === 1 && before.clientErrors[0] === message && before.reports.length === 0 &&
         before.canvases[0]!.alt === "A\n" + message && before.canvases[1]!.alt === "" && near(bDrawn, [0, 255, 0]),
