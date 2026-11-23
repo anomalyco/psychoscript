@@ -319,7 +319,7 @@ mod imp {
                     .filter(|v| *v != drawn);
                 if let Some(v) = new {
                     drawn = v;
-                    drawing = Some(device::watch(&dev));
+                    drawing = Some(device::watch(&dev, &submits));
                 }
                 drop(submits);
                 if let Err(e) = rendered {

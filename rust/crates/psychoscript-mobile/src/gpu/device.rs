@@ -175,8 +175,11 @@ fn listeners() -> Vec<Arc<dyn Loss>> {
 }
 
 /// Held around every submission to the shared device and every surface configuration: wgpu configures a surface
-/// only when the device is idle, which another thread's submission would break. Never held while waiting for a
-/// surface's texture.
+/// once its wait for the queue left it empty, and fails it (`Failed to wait for GPU to come idle before reconfiguring
+/// the Surface`) when another thread submitted meanwhile. A submission is a queue's `submit`, and also its
+/// `on_submitted_work_done` ([`watch`]), which first submits the writes queued since the last submit (`writeBuffer`
+/// ops a batch replayed without a `submit`), and its `present`, which submits the surface texture's move to the
+/// present state. Never held while waiting for a surface's texture.
 pub(crate) fn submits() -> MutexGuard<'static, ()> {
     static SUBMITS: Mutex<()> = Mutex::new(());
     lock(&SUBMITS)
@@ -470,8 +473,8 @@ impl Watch {
     }
 }
 
-/// Watches what was submitted to `dev` so far.
-pub(crate) fn watch(dev: &Dev) -> Arc<Watch> {
+/// Watches what was submitted to `dev` so far; `_submits` is [`submits`], held: this submits the queued writes.
+pub(crate) fn watch(dev: &Dev, _submits: &MutexGuard<'static, ()>) -> Arc<Watch> {
     let watch = Arc::new(Watch {
         done: AtomicBool::new(false),
     });

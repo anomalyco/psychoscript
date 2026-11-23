@@ -190,10 +190,11 @@ impl Attached {
                 config.format,
             );
         }
+        // `present` submits too: the texture's move to the present state (wgpu holds off other submits meanwhile).
         let submits = device::submits();
         dev.queue.submit([encoder.finish()]);
-        drop(submits);
         dev.queue.present(target);
+        drop(submits);
         Ok(Shown::Yes)
     }
 }

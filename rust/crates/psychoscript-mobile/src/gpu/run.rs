@@ -360,6 +360,7 @@ impl RunGpu {
         let started = std::time::Instant::now();
         let submits = device::submits();
         let applied = gpu.apply(ops, bytes);
+        let watch = st.dev.as_ref().map(|dev| device::watch(dev, &submits));
         drop(submits);
         #[cfg(feature = "test-hooks")]
         (self.surfaces.stats()).replayed(started.elapsed().as_secs_f64() * 1e6);
@@ -375,9 +376,7 @@ impl RunGpu {
             }
             self.stopped(&e);
         }
-        if let Some(dev) = &st.dev {
-            st.flights.push_back(device::watch(dev));
-        }
+        st.flights.extend(watch);
         self.present(st);
     }
 
