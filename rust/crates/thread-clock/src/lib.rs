@@ -297,6 +297,49 @@ mod tests {
     fn assert_send_sync<T: Send + Sync>() {}
 
     #[test]
+    fn an_ended_thread_s_clock_reads_zero_and_never_another_thread_s() {
+        if !MEASURES_CPU {
+            return;
+        }
+        // The clocks of threads that used CPU time and ended, and clones of them.
+        let ended: Vec<ThreadClock> = (0..16)
+            .map(|_| {
+                std::thread::spawn(|| {
+                    spin(Duration::from_millis(2));
+                    ThreadClock::current()
+                })
+                .join()
+                .unwrap()
+            })
+            .collect();
+        let copies: Vec<ThreadClock> = ended.to_vec();
+        // Two thousand threads come and go since, each taking its own clock and spinning while the ended ones are
+        // read: a port name (Apple) or thread id (Linux) of an ended thread given to one of them would read its time.
+        for round in 0..250 {
+            let batch: Vec<_> = (0..8)
+                .map(|_| {
+                    std::thread::spawn(|| {
+                        let clock = ThreadClock::current();
+                        spin(Duration::from_micros(200));
+                        clock.now()
+                    })
+                })
+                .collect();
+            for (i, clock) in ended.iter().chain(&copies).enumerate() {
+                assert_eq!(clock.now(), Duration::ZERO, "round {round}, clock {i}");
+            }
+            for t in batch {
+                assert!(t.join().unwrap() > Duration::ZERO);
+            }
+        }
+        // The clones hold their own references: dropping the originals leaves them reading zero.
+        drop(ended);
+        for clock in &copies {
+            assert_eq!(clock.now(), Duration::ZERO);
+        }
+    }
+
+    #[test]
     fn a_spinning_thread_s_clock_grows_and_a_sleeping_one_s_does_not() {
         assert_send_sync::<ThreadClock>();
         let clock = ThreadClock::current();

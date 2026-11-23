@@ -215,11 +215,28 @@ mod pin {
     }
 }
 
+/// Where this thread runs, and the threads that will keep that CPU busy: on Linux the thread and sixteen spinners
+/// pinned to one CPU; elsewhere (macOS has no pinning) sixteen spinners for every core.
 #[cfg(target_os = "linux")]
+fn starve() -> Option<(usize, fn())> {
+    static CPU: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let cpu = pin::first_cpu().filter(|&c| pin::to(c))?;
+    CPU.set(cpu).ok();
+    Some((16, || {
+        pin::to(*CPU.get().unwrap());
+    }))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn starve() -> Option<(usize, fn())> {
+    let cores = thread::available_parallelism().map_or(8, |n| n.get());
+    Some((16 * cores, || {}))
+}
+
 #[test]
 fn a_run_starved_by_a_cpu_hog_is_not_timed_out() {
     thread::spawn(|| {
-        let Some(cpu) = pin::first_cpu().filter(|&c| pin::to(c)) else {
+        let Some((spinners, place)) = starve() else {
             eprintln!("skipped: this thread can't be pinned to a CPU");
             return;
         };
@@ -228,19 +245,19 @@ fn a_run_starved_by_a_cpu_hog_is_not_timed_out() {
             format!("let s = 0; for (let i = 0; i < {n}; i++) s = (s + i * 7) % 1000003; return s")
         };
         let probe = 200_000u64;
-        let before = thread_clock::ThreadClock::current().now();
+        let clock = thread_clock::ThreadClock::current();
+        let before = clock.now();
         Runtime::make().execute(&program(probe)).result.unwrap();
-        let per =
-            (thread_clock::ThreadClock::current().now() - before).as_secs_f64() / probe as f64;
+        let per = (clock.now() - before).as_secs_f64() / probe as f64;
         let n = ((0.08 / per) as u64).max(1000);
         let code = program(n);
-        // Sixteen threads spinning on the same CPU, for a few seconds at most.
+        // The spinners, for a few seconds at most.
         let stop = Arc::new(AtomicBool::new(false));
-        let hogs: Vec<_> = (0..16)
+        let hogs: Vec<_> = (0..spinners)
             .map(|_| {
                 let stop = stop.clone();
                 thread::spawn(move || {
-                    pin::to(cpu);
+                    place();
                     let until = Instant::now() + Duration::from_secs(4);
                     while !stop.load(Ordering::Relaxed) && Instant::now() < until {
                         std::hint::spin_loop();
@@ -273,7 +290,7 @@ fn a_run_starved_by_a_cpu_hog_is_not_timed_out() {
             wall.result
         );
         eprintln!(
-            "a run of {n} iterations, about 80 ms of CPU time, took {took:?} on the starved CPU"
+            "{spinners} spinners: a run of {n} iterations, about 80 ms of CPU time, took {took:?}"
         );
     })
     .join()
