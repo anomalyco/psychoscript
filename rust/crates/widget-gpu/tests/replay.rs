@@ -1320,7 +1320,9 @@ fn run_for(s: &mut Shorthand, seconds: f64) -> (u32, std::time::Duration) {
 #[test]
 fn a_shader_too_slow_stops_on_its_last_frame() {
     let _timed = timed();
-    let (device, queue) = common::device();
+    let Some((device, queue)) = common::hang_device() else {
+        return;
+    };
     // Frames of about 120 ms: past 50, well under the 250 ms of a hang.
     let steps = steps_for(&device, &queue, 120);
     let mut s = Shorthand::new(device.clone(), queue.clone(), RGBA, &costly(steps)).unwrap();
@@ -1350,6 +1352,35 @@ fn a_shader_too_slow_stops_on_its_last_frame() {
     let (calls, _) = run_for(&mut s, 1.0);
     assert!(!s.too_slow() && s.error().is_none());
     assert!(s.canvas().unwrap().version > 10, "{calls} calls");
+}
+
+/// The tests that hang the GPU on purpose run only on a software adapter, or with the opt-in: never by accident on
+/// a real GPU. (This one makes no device.)
+#[test]
+fn hang_tests_need_a_software_adapter_or_the_opt_in() {
+    use wgpu::DeviceType;
+    let lavapipe = "llvmpipe (LLVM 17.0.6, 256 bits)";
+    assert_eq!(common::may_hang(lavapipe, DeviceType::Cpu, false), Ok(()));
+    assert_eq!(
+        common::may_hang("lavapipe", DeviceType::Other, false),
+        Ok(())
+    );
+    for (gpu, kind) in [
+        ("Apple M5 Max", DeviceType::IntegratedGpu),
+        ("Mali-G715", DeviceType::IntegratedGpu),
+        ("NVIDIA GeForce RTX 4090", DeviceType::DiscreteGpu),
+    ] {
+        let note = common::may_hang(gpu, kind, false).unwrap_err();
+        assert!(note.starts_with("skipped: it hangs the GPU on purpose") && note.contains(gpu));
+        assert!(note.contains("WIDGET_GPU_REAL_HANGS=1"));
+        assert_eq!(common::may_hang(gpu, kind, true), Ok(()));
+    }
+    let info = common::adapter().get_info();
+    let here = common::may_hang(&info.name, info.device_type, false);
+    eprintln!(
+        "here: {}",
+        here.err().unwrap_or_else(|| "the hang tests run".into())
+    );
 }
 
 /// The tests that time GPU work run alone: lavapipe's threads are shared, so the others wait for them.
@@ -1413,7 +1444,9 @@ fn until<T>(seconds: f64, mut f: impl FnMut() -> Option<T>) -> Option<T> {
 #[test]
 fn a_shader_frame_that_hangs_stops_the_canvas() {
     let _timed = timed();
-    let (device, queue) = common::device();
+    let Some((device, queue)) = common::hang_device() else {
+        return;
+    };
     let (slow, hangs) = (
         steps_for(&device, &queue, 120),
         steps_for(&device, &queue, 800),
@@ -1470,7 +1503,9 @@ fn a_shader_frame_that_hangs_stops_the_canvas() {
 #[test]
 fn a_batch_that_hangs_stops_its_canvases() {
     let _timed = timed();
-    let (device, queue) = common::device();
+    let Some((device, queue)) = common::hang_device() else {
+        return;
+    };
     let mut gpu = Gpu::new(device.clone(), queue.clone(), RGBA).unwrap();
     gpu.resize("a", 256, 256);
     gpu.resize("b", 256, 256);
