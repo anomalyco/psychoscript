@@ -360,7 +360,7 @@ WebGPU, shader translation and presenting are this crate's.
 - **The device:** one per app, shared by every widget run, made when first needed (a live run with
   `ValueEncoder.widget()`, or the first `ShaderCanvas`), never for steps, on a thread of its own: a live run's
   `__input()` doesn't wait for it, and what the program posts meanwhile replays once it is there. Metal on iOS; Vulkan
-  1.1 or newer on Android 15 and 16 (API 35, 36), else none. On the iOS Simulator only, whose GPU is under some of the
+  1.1 or newer on Android 15 or newer (API 35 and up), else none. On the iOS Simulator only, whose GPU is under some of the
   spec's limits (`max_inter_stage_shader_variables` 15), the device has the Simulator's where they fall short (said once
   on stderr), and a program over them gets wgpu's validation error there; real devices have the spec's. The program's
   input gets `gpu: { available, format }`
@@ -388,8 +388,8 @@ WebGPU, shader translation and presenting are this crate's.
   `alt`, else "GPU canvas not supported") for anything else:
   - `live`: it has an image;
   - `unavailable(reason)`: no GPU here (a client error, nothing to report). `reason` says why, worked out once when
-    the canvases go unavailable: the Android version (`GPU canvases need Android 15 or 16 (API 35 or 36), not API
-    37`), no Vulkan adapter (wgpu's text), the GPU's Vulkan version, each limit under the spec's with the GPU's value
+    the canvases go unavailable: the Android version (`GPU canvases need Android 15 or newer (API 35), not API
+    34`), no Vulkan adapter (wgpu's text), the GPU's Vulkan version, each limit under the spec's with the GPU's value
     and the one needed (`the GPU (Mali-G715, Vulkan, driver ...) is under the spec's limits:
     maxStorageBuffersPerShaderStage 4 (needs 8)`), or wgpu's error making the device. Show it (in a development
     build, say) or ignore it; the crate logs nothing;

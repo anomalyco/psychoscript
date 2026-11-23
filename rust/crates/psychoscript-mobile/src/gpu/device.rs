@@ -1,5 +1,5 @@
 //! The app's one GPU device, shared by every widget run and [`super::ShaderCanvas`]: Metal on iOS and macOS, Vulkan
-//! on Android (Android 15 and 16, API 35 and 36, only: `widgets-gpu.md`) and Linux. Made when first needed, on a
+//! on Android (Android 15 or newer, API 35 and up: `widgets-gpu.md` names 15 and 16) and Linux. Made when first needed, on a
 //! thread of its own ([`prepare`]), and made again after a loss.
 
 use std::future::Future;
@@ -216,9 +216,10 @@ fn backends() -> Result<wgpu::Backends, String> {
     return Ok(wgpu::Backends::METAL);
     #[cfg(target_os = "android")]
     return match android_api() {
-        Some(35..=36) => Ok(wgpu::Backends::VULKAN),
+        // No upper bound: a newer Android keeps Vulkan (Android 17, API 37, on every Pixel since 6).
+        Some(35..) => Ok(wgpu::Backends::VULKAN),
         Some(api) => Err(format!(
-            "GPU canvases need Android 15 or 16 (API 35 or 36), not API {api}"
+            "GPU canvases need Android 15 or newer (API 35), not API {api}"
         )),
         None => Err("the Android version is unknown".into()),
     };
