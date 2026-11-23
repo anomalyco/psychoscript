@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::{Value, json};
-use widget_gpu::{Arg, ErrorKind, Gpu, GpuError, Shorthand, Stops, Uniforms};
+use widget_gpu::{Arg, ErrorKind, Gpu, GpuError, Shorthand, Stops, Uniforms, clamp_size};
 
 const W: u32 = 64;
 const H: u32 = 64;
@@ -176,9 +176,11 @@ fn floats(f: &[f32]) -> Vec<u8> {
 }
 
 impl Fixture {
-    /// A batch in a frame request.
+    /// A batch in a frame request: applied, then the frame ends.
     fn apply(&mut self, b: &Batch) -> Result<(), GpuError> {
-        self.gpu.apply(&b.ops, &b.bytes, true)
+        let r = self.gpu.apply(&b.ops, &b.bytes);
+        self.gpu.end_frame();
+        r
     }
 
     fn pixels(&self, key: &str) -> Vec<[u8; 4]> {
@@ -765,7 +767,7 @@ fn wgpu_validation_errors_are_program_errors() {
             b.op(op);
         }
         b.bytes = vec![0; 4];
-        let e = gpu.apply(&b.ops, &b.bytes, true).unwrap_err();
+        let e = gpu.apply(&b.ops, &b.bytes).unwrap_err();
         eprintln!("{} {:?}", e.message, e.canvases);
         assert_eq!(e.kind, ErrorKind::Program);
         assert!(
@@ -776,7 +778,7 @@ fn wgpu_validation_errors_are_program_errors() {
         assert_eq!(e.canvases, canvases);
         assert_eq!(gpu.error("scene"), Some(&e));
         // The canvas is stopped: nothing more is reported for it.
-        assert_eq!(gpu.apply(&b.ops, &b.bytes, true), Ok(()));
+        assert_eq!(gpu.apply(&b.ops, &b.bytes), Ok(()));
     }
 }
 
@@ -894,6 +896,104 @@ fn the_wgsl_shorthand() {
         "{}",
         e.message
     );
+}
+
+#[test]
+fn a_resolve_target_counts_as_rendering_into_its_canvas() {
+    let mut f = fixture();
+    let mut b = Batch::default();
+    context(&mut b);
+    b.op(json!(["texture", 3, W, H, 1, "rgba8unorm", 16, 1, 4]));
+    b.op(json!(["view", 4, 3, {}]));
+    b.op(json!(["pass", { "colorAttachments": [{ "view": 4, "resolveTarget": 2, "clearValue": [0, 0, 0, 1],
+        "loadOp": "clear", "storeOp": "discard" }] }]));
+    b.op(json!(["draw", 3, 1, 0, 0]))
+        .op(json!(["end"]))
+        .op(json!(["submit"]));
+    let e = f.apply(&b).unwrap_err();
+    assert!(
+        e.message.contains("Render pipeline must be set"),
+        "{}",
+        e.message
+    );
+    assert_eq!(e.canvases, Stops::Canvases(vec!["scene".into()]));
+}
+
+#[test]
+fn each_frame_starts_from_a_transparent_canvas() {
+    let mut f = fixture();
+    let mut b = Batch::default();
+    context(&mut b);
+    pass_into(&mut b, 2, [1.0, 0.0, 0.0, 1.0]);
+    b.op(json!(["end"])).op(json!(["submit"]));
+    f.apply(&b).unwrap();
+    assert_eq!(f.pixel(5, 5), RED);
+    // A pass that loads, in a frame of its own: last frame's red is gone.
+    let load = |b: &mut Batch| {
+        b.op(json!(["pass", { "colorAttachments": [{ "view": 2, "loadOp": "load", "storeOp": "store" }] }]))
+            .op(json!(["end"]))
+            .op(json!(["submit"]));
+    };
+    let mut b = Batch::default();
+    load(&mut b);
+    f.apply(&b).unwrap();
+    assert_eq!(f.pixel(5, 5), [0, 0, 0, 0]);
+    // Within a frame, a later batch (one posted before a sleep) loads what earlier passes drew.
+    let mut first = Batch::default();
+    pass_into(&mut first, 2, [0.0, 1.0, 0.0, 1.0]);
+    first.op(json!(["end"])).op(json!(["submit"]));
+    f.gpu.apply(&first.ops, &first.bytes).unwrap();
+    let mut then = Batch::default();
+    load(&mut then);
+    f.gpu.apply(&then.ops, &then.bytes).unwrap();
+    assert_eq!(f.pixel(5, 5), GREEN);
+    // And in one batch, the second pass loads the first's.
+    f.gpu.end_frame();
+    let mut both = Batch::default();
+    pass_into(&mut both, 2, [0.0, 0.0, 1.0, 1.0]);
+    both.op(json!(["end"]));
+    load(&mut both);
+    f.apply(&both).unwrap();
+    assert_eq!(f.pixel(5, 5), BLUE);
+    assert_eq!(f.gpu.canvas("scene").unwrap().version, 6);
+}
+
+#[test]
+fn the_frame_counts_start_again_at_every_frame_request() {
+    let mut f = fixture();
+    let mut b = Batch::default();
+    context(&mut b);
+    f.gpu.apply(&b.ops, &b.bytes).unwrap();
+    let passes = |n: usize| {
+        let mut b = Batch::default();
+        for _ in 0..n {
+            pass_into(&mut b, 2, [0.0; 4]);
+            b.op(json!(["end"]));
+        }
+        b.op(json!(["submit"]));
+        b
+    };
+    // 16 in a frame, over three batches; a frame request with no batch still ends the frame.
+    f.gpu.apply(&passes(10).ops, &[]).unwrap();
+    f.gpu.apply(&passes(6).ops, &[]).unwrap();
+    f.gpu.end_frame();
+    f.gpu.apply(&passes(16).ops, &[]).unwrap();
+    let e = f.gpu.apply(&passes(1).ops, &[]).unwrap_err();
+    assert_eq!(
+        e.message,
+        "gpu op 0: the number of render passes in a frame is over the limit of 16"
+    );
+}
+
+#[test]
+fn clamping_a_canvas_size() {
+    assert_eq!(clamp_size(1920, 1080), (1920, 1080));
+    assert_eq!(clamp_size(4096, 4096), (4096, 4096));
+    assert_eq!(clamp_size(5120, 2880), (4096, 2304));
+    assert_eq!(clamp_size(2880, 5120), (2304, 4096));
+    assert_eq!(clamp_size(100, 9000), (46, 4096));
+    assert_eq!(clamp_size(100_000, 1), (4096, 1));
+    assert_eq!(clamp_size(0, 0), (0, 0));
 }
 
 /// Replay cost of a typical frame: 48 ops, 64 KB of writes (`cargo test --release -p widget-gpu -- --ignored`).

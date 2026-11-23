@@ -97,9 +97,7 @@ impl Shorthand {
             }],
             ["bindGroup", 8, { "layout": 5, "entries": [{ "binding": 0, "resource": { "buffer": 4, "offset": 0, "size": -1 } }] }],
         ]));
-        self.gpu
-            .apply(&setup, &[], false)
-            .map_err(|e| self.relocate(e))
+        self.gpu.apply(&setup, &[]).map_err(|e| self.relocate(e))
     }
 
     /// A WGSL position in the template's lines, or none when it falls outside them.
@@ -136,7 +134,9 @@ impl Shorthand {
         for (b, f) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(f) {
             b.copy_from_slice(&f.to_le_bytes());
         }
-        self.gpu.apply(&self.frame, &bytes, true)
+        let r = self.gpu.apply(&self.frame, &bytes);
+        self.gpu.end_frame();
+        r
     }
 
     /// The canvas's texture, once rendered: premultiplied, sRGB-encoded colors.

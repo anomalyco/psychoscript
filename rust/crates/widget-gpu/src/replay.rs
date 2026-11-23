@@ -539,7 +539,10 @@ impl Gpu {
                 continue;
             }
             let c = Obj::of(Some(c), "a color attachment")?;
+            let before = written.len();
             let view = self.attachment(c.get("view"), &mut written)?;
+            // A canvas's first pass of a frame loads transparent, not the last frame.
+            let fresh = written.len() > before && self.canvases[written[before]].fresh;
             let resolve = match c.get("resolveTarget") {
                 None => None,
                 r => Some(self.attachment(r, &mut written)?),
@@ -548,6 +551,8 @@ impl Gpu {
             let store = c.enumeration("storeOp", wgpu::StoreOp::Store, desc::store_op)?;
             let load = if clear {
                 wgpu::LoadOp::Clear(desc::color(c.get("clearValue"))?)
+            } else if fresh {
+                wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
             } else {
                 wgpu::LoadOp::Load
             };
@@ -723,6 +728,9 @@ impl Gpu {
             }
         }
         drop(pass);
+        for &c in &written {
+            self.canvases[c].fresh = false;
+        }
         run.written.extend(written);
         Ok(())
     }
