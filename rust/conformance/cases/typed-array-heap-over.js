@@ -1,3 +1,4 @@
+// @typed_arrays true
 // @limits {"max_heap_bytes": 4127}
 // One byte less than typed-array-heap-under.js keeps: over the limit.
 Math.kept = new Float32Array(1000)

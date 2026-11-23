@@ -157,6 +157,7 @@ pub fn compile(source: &str, atoms: &mut Strings) -> R<Program> {
         consts: c.consts,
         globals: c.globals,
         templates: c.templates,
+        typed_consts: c.typed_consts,
     })
 }
 
@@ -1180,6 +1181,8 @@ struct Compiler<'a, 's> {
     num_consts: FxHashMap<u64, u32>,
     globals: Vec<Atom>,
     global_of: FxHashMap<Atom, u32>,
+    /// Whether an assignment to a typed array's global was compiled (see `Program::typed_consts`).
+    typed_consts: bool,
     templates: Vec<TemplateSite>,
     pos: u32,
     chains: Vec<Vec<usize>>,
@@ -1229,6 +1232,7 @@ impl<'a, 's> Compiler<'a, 's> {
             num_consts: FxHashMap::default(),
             globals: Vec::new(),
             global_of: FxHashMap::default(),
+            typed_consts: false,
             templates: Vec::new(),
             pos: 0,
             chains: Vec::new(),
@@ -1938,12 +1942,15 @@ impl<'a, 's> Compiler<'a, 's> {
             None => {
                 let a = self.atom(id.name.as_str());
                 self.emit(Op::Pop);
+                // A typed array's global is an unknown name where programs don't have typed arrays.
+                let typed = crate::builtins::TYPED_GLOBALS.contains(&id.name.as_str());
                 if self.global_of.contains_key(&a)
-                    || is_builtin_global(id.name.as_str())
+                    || (is_builtin_global(id.name.as_str()) && !typed)
                     || id.name == "undefined"
                 {
                     self.emit(Op::ThrowConst(a));
                 } else {
+                    self.typed_consts |= typed;
                     self.emit(Op::ThrowRef(a));
                 }
                 Ok(())

@@ -1,3 +1,4 @@
+// @typed_arrays true
 // Indexed reads and writes at the edges: out of range, negative, -0, past 2^31, strings, and values that are not
 // numbers yet.
 const f = new Float32Array(3)

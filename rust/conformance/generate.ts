@@ -14,6 +14,7 @@
 //   `limits` (default none)
 //   // @translate {"functions": "drop", "promises": "await"}  the runtime's `translate` (default the reference's:
 //                                                          both "error")
+//   // @typed_arrays true                               the runtime's `typedArrays` (default off)
 //   // @platform "linux"
 // A case with @platform depends on the system libm or compiler, so it is recorded and checked only on that platform
 // (`process.platform`). Elsewhere this keeps its recorded outcome but rewrites it in the current format, and fails
@@ -89,6 +90,7 @@ for (const name of names) {
   const bindings = header(code, "bindings") ?? {}
   const limits = header(code, "limits")
   const translate = header(code, "translate")
+  const typedArrays = header(code, "typed_arrays")
   if (platform !== undefined && platform !== process.platform) {
     console.log(
       `${name.padEnd(36)} ${refreshSkipped(name, { bindings, limits, translate }) ? "reformatted" : "skipped"} (${platform} only)`,
@@ -108,12 +110,14 @@ for (const name of names) {
           },
         }),
     ...(translate === undefined ? {} : { translate }),
+    ...(typedArrays === undefined ? {} : { typedArrays }),
   })
   const result = await Effect.runPromise(runtime.execute(code, { bindings }))
   const expected = {
     bindings,
     ...(limits === undefined ? {} : { limits }),
     ...(translate === undefined ? {} : { translate }),
+    ...(typedArrays === undefined ? {} : { typed_arrays: typedArrays }),
     ...(result.ok ? { ok: true, value: result.value } : { ok: false, kind: result.error.kind }),
     logs: result.logs ?? [],
     metadata: result.metadata,

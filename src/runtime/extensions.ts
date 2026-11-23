@@ -305,8 +305,8 @@ export const hostGlobals = <R>(
       if (typeof Buffer !== "undefined" && Buffer.isBuffer(value))
         return new BufferObj(builtins.Buffer, new Uint8Array(value))
       if (value instanceof Uint8Array) return new Bytes(builtins.Uint8Array, new Uint8Array(value))
-      // The other typed arrays view the same bytes, without a copy.
-      if (ArrayBuffer.isView(value)) {
+      // The other typed arrays view the same bytes, without a copy; without typed arrays, they can't cross.
+      if (ctx.typedArrays && ArrayBuffer.isView(value)) {
         const name = (value as unknown as { [Symbol.toStringTag]: string })[Symbol.toStringTag]
         if (!Object.hasOwn(typedArrays, name) || value instanceof DataView) {
           throw typeError(`${label} produced ${describeHost(value)}, which the program cannot hold.`)

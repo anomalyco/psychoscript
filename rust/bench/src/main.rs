@@ -73,9 +73,17 @@ fn main() {
     }
 
     let runtime = runtime();
+    // The cases with `// @typed_arrays true` run where programs have typed arrays.
+    let typed = Runtime::make()
+        .globals(|_| [("tools", HostValue::from(reference::tools()))])
+        .typed_arrays(true);
     let options = psychoscript::ProgramOptions::new();
     // `--async` drives each run as a future, where a long one computes on a worker thread.
     let execute = |code: &str| {
+        let runtime = match code.contains("// @typed_arrays true") {
+            true => &typed,
+            false => &runtime,
+        };
         if future {
             return block_on(runtime.execute_async(code, &options)).expect("not interrupted");
         }

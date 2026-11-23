@@ -183,6 +183,7 @@ pub(crate) struct Setup {
     pub modules: Arc<[(String, String)]>,
     pub limits: Limits,
     pub translate: Translate,
+    pub typed_arrays: bool,
 }
 
 impl Setup {
@@ -269,6 +270,19 @@ impl Runtime {
     /// How host calls' arguments carry functions and promises; see [`Translate`].
     pub fn translate(mut self, translate: Translate) -> Self {
         self.setup.translate = translate;
+        self
+    }
+
+    /// Whether programs have the typed arrays besides `Uint8Array` (`ArrayBuffer`, `Uint16Array`, `Uint32Array`,
+    /// `Int32Array`, `Float32Array`, `Float64Array`), and host functions may return them ([`HostValue::TypedArray`]),
+    /// the reference's `typedArrays`; off by default. Off, as before they were added, a host function that returns one
+    /// fails at the call (a Uint8Array or an `ArrayBuffer` arrives as a Uint8Array), and a Uint8Array has no
+    /// `byteLength`, `byteOffset` or `buffer` and keeps keys such as `-1` and `1.5` as properties. A run resumes only
+    /// in a runtime with the same setting.
+    ///
+    /// [`HostValue::TypedArray`]: crate::HostValue::TypedArray
+    pub fn typed_arrays(mut self, on: bool) -> Self {
+        self.setup.typed_arrays = on;
         self
     }
 

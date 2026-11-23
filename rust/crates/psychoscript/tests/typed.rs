@@ -17,7 +17,7 @@ fn value(rt: &Runtime, code: &str) -> psychoscript::Json {
 
 #[test]
 fn elements_round_and_wrap_and_views_share_their_buffer() {
-    let rt = Runtime::make();
+    let rt = Runtime::make().typed_arrays(true);
     assert_eq!(
         value(
             &rt,
@@ -48,7 +48,7 @@ fn elements_round_and_wrap_and_views_share_their_buffer() {
 #[test]
 fn storage_counts_against_the_heap_cap_once_per_buffer() {
     let capped = |bytes| {
-        Runtime::make().limits(Limits {
+        Runtime::make().typed_arrays(true).limits(Limits {
             max_heap_bytes: Some(bytes),
             ..Limits::default()
         })
@@ -77,7 +77,7 @@ type Kept = Arc<Mutex<Vec<TypedArray>>>;
 fn gpu() -> (Runtime, Kept) {
     let kept: Kept = Arc::default();
     let k = kept.clone();
-    let rt = Runtime::make().globals(move |_| {
+    let rt = Runtime::make().typed_arrays(true).globals(move |_| {
         let (upload, later, mesh, stale) = (k.clone(), k.clone(), k.clone(), k.clone());
         [
             (
@@ -226,7 +226,7 @@ fn a_returned_typed_array_is_the_program_s() {
 fn a_uint8array_crosses_as_a_copy() {
     let seen: Arc<Mutex<Option<HostValue>>> = Arc::default();
     let s = seen.clone();
-    let rt = Runtime::make().globals(move |_| {
+    let rt = Runtime::make().typed_arrays(true).globals(move |_| {
         let s = s.clone();
         [(
             "take",
@@ -238,4 +238,94 @@ fn a_uint8array_crosses_as_a_copy() {
     });
     value(&rt, "take(new Uint8Array([1, 2])); return 1");
     assert!(matches!(&*seen.lock().unwrap(), Some(HostValue::Bytes(b)) if b == &[1, 2]));
+}
+
+#[test]
+fn without_typed_arrays_programs_and_host_functions_behave_as_before_they_were_added() {
+    let rt = Runtime::make().globals(|_| {
+        [
+            (
+                "wide",
+                HostFunction::new(|_, _| {
+                    HostValue::TypedArray(TypedArray::new(TypedKind::U16, vec![7, 0]).unwrap())
+                }),
+            ),
+            (
+                "nested",
+                HostFunction::new(|_, _| {
+                    let i = TypedArray::new(TypedKind::I32, vec![0; 4]).unwrap();
+                    HostValue::object([("list", HostValue::array([HostValue::TypedArray(i)]))])
+                }),
+            ),
+            (
+                "buf",
+                HostFunction::new(|_, _| {
+                    HostValue::TypedArray(
+                        TypedArray::new(TypedKind::ArrayBuffer, vec![5, 6]).unwrap(),
+                    )
+                }),
+            ),
+        ]
+    });
+    let names = [
+        "ArrayBuffer",
+        "Uint16Array",
+        "Uint32Array",
+        "Int32Array",
+        "Float32Array",
+        "Float64Array",
+    ];
+    let types = names.map(|n| format!("typeof {n}")).join(", ");
+    assert_eq!(
+        value(&rt, &format!("return [{types}, typeof Uint8Array]")),
+        json!([
+            "undefined",
+            "undefined",
+            "undefined",
+            "undefined",
+            "undefined",
+            "undefined",
+            "function"
+        ])
+    );
+    for (code, column) in [("new Float32Array(1)", 5), ("Float32Array = 1", 1)] {
+        let e = rt.execute(code).result.unwrap_err();
+        assert_eq!(
+            e.message_lossy(),
+            format!("ReferenceError: Unknown identifier 'Float32Array'. (line 1, col {column})")
+        );
+    }
+    assert!(
+        names
+            .iter()
+            .all(|n| !psychoscript::global_names().contains(n))
+    );
+    let e = rt.execute("const w = wide()").result.unwrap_err();
+    assert_eq!(
+        (e.kind.name(), e.message_lossy(), e.location),
+        (
+            DiagnosticKind::ExecutionFailure.name(),
+            "TypeError: wide produced a Uint16Array, which the program cannot hold. (line 1, col 11)".into(),
+            Some((1, 11))
+        )
+    );
+    assert_eq!(
+        value(&rt, "try { nested() } catch (e) { return e.message }"),
+        json!("nested.list[0] produced an Int32Array, which the program cannot hold.")
+    );
+    assert_eq!(
+        value(
+            &rt,
+            "const b = buf(); return [b instanceof Uint8Array, Array.from(b)]"
+        ),
+        json!([true, [5, 6]])
+    );
+    assert_eq!(
+        value(
+            &rt,
+            "const u = new Uint8Array(2); u[-1] = 5; u[1.5] = 6; \
+             return [u.byteLength, u.byteOffset, u.buffer, Object.keys(u), u[-1], 'byteLength' in u]"
+        ),
+        json!([null, null, null, ["0", "1", "-1", "1.5"], 5, false])
+    );
 }

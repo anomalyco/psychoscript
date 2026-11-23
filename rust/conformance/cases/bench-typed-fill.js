@@ -1,3 +1,4 @@
+// @typed_arrays true
 // Fills a 100k-float Float32Array in script, ten times, and sums it back.
 const n = 100000
 const a = new Float32Array(n)

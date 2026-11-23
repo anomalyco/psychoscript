@@ -1,3 +1,4 @@
+// @typed_arrays true
 // Each typed array converts what is written as JS does: float32 rounding, integer wrapping, NaN and infinities as 0.
 const f = new Float32Array(6)
 f[0] = 1.1; f[1] = 16777217; f[2] = 1e40; f[3] = -0.1; f[4] = -1e-50; f[5] = "2.5"

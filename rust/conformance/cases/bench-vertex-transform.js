@@ -1,3 +1,4 @@
+// @typed_arrays true
 // Transforms 1k vertices by a per-frame rotation matrix into an output Float32Array, for 60 frames.
 const n = 1000
 const positions = new Float32Array(n * 3)

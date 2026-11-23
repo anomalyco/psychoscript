@@ -1,3 +1,4 @@
+// @typed_arrays true
 // What fails, and how: bad lengths and offsets, a missing new, a set past the end, the wrong receiver, read-only
 // properties, and the Array methods typed arrays here leave out.
 const buf = new ArrayBuffer(16)

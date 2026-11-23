@@ -11,6 +11,8 @@ const ref = await reference(process.env.PSYCHOSCRIPT_REF)
 const Effect = ref.Effect
 const tools = toolsGlobal(ref)
 const runtime = ref.Language.Runtime.make({ globals: () => ({ tools }) })
+// The cases with `// @typed_arrays true` run where programs have typed arrays.
+const typed = ref.Language.Runtime.make({ globals: () => ({ tools }), typedArrays: true })
 
 const flag = process.argv.indexOf("--iterations")
 const iterations = flag === -1 ? 11 : Number(process.argv[flag + 1])
@@ -18,12 +20,13 @@ const slugs = process.argv.slice(2).filter((arg, i, all) => arg !== "--iteration
 
 for (const slug of slugs) {
   const code = await Bun.file(resolve(import.meta.dir, `../../conformance/cases/bench-${slug}.js`)).text()
-  const warm = await Effect.runPromise(runtime.execute(code))
+  const rt = code.includes("// @typed_arrays true") ? typed : runtime
+  const warm = await Effect.runPromise(rt.execute(code))
   if (warm.ok !== true) throw new Error(`${slug} failed: ${JSON.stringify(warm)}`)
   const times: Array<number> = []
   for (let i = 0; i < iterations; i++) {
     const start = performance.now()
-    await Effect.runPromise(runtime.execute(code))
+    await Effect.runPromise(rt.execute(code))
     times.push(performance.now() - start)
   }
   const sorted = [...times].sort((a, b) => a - b)

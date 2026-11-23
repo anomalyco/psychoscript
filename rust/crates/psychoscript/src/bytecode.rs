@@ -288,7 +288,7 @@ pub enum Capture {
 pub const CLASS_BASE: u8 = 1;
 pub const CLASS_DERIVED: u8 = 2;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct FuncProto {
     pub name: Atom,
     pub code: Vec<Op>,
@@ -359,6 +359,8 @@ pub struct Program {
     pub globals: Vec<Atom>,
     /// The strings of each tagged template site, for `Template`.
     pub templates: Vec<TemplateSite>,
+    /// Whether it assigns to a typed array's global (`ThrowRef`), a constant where programs have them (see `Vm::load`).
+    pub typed_consts: bool,
 }
 
 /// A tagged template's text: each part cooked (`None` for an invalid escape) and raw, as string constants.

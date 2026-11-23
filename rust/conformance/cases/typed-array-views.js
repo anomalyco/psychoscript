@@ -1,3 +1,4 @@
+// @typed_arrays true
 // Views share their buffer: writes through one show through every other, and every view of one buffer gives the same
 // ArrayBuffer. slice copies.
 const buf = new ArrayBuffer(16)

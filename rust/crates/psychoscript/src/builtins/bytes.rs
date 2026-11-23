@@ -374,6 +374,9 @@ pub fn get_prop(vm: &mut Vm, id: Id, key: Atom) -> Option<Value> {
     if key == vm.names.length {
         return Some(Value::Num(b.len as f64));
     }
+    if !vm.realm.std.typed_arrays {
+        return None;
+    }
     if key == vm.names.byte_length {
         return Some(Value::Num(b.byte_len() as f64));
     }
@@ -410,15 +413,15 @@ pub fn set_prop(vm: &mut Vm, id: Id, key: Atom, val: Value) -> Option<Result<(),
             super::builtin_number(vm, &val).map(|n| bytes_ref(vm, id).set_num(vm, i as usize, n)),
         );
     }
+    if key == vm.names.length {
+        return Some(Err(vm.only_getter(&Value::Obj(id), key)));
+    }
+    // Without typed arrays, a Uint8Array keeps any other key as a property.
+    if !vm.realm.std.typed_arrays {
+        return None;
+    }
     let names = &vm.names;
-    if [
-        names.length,
-        names.byte_length,
-        names.byte_offset,
-        names.buffer,
-    ]
-    .contains(&key)
-    {
+    if [names.byte_length, names.byte_offset, names.buffer].contains(&key) {
         return Some(Err(vm.only_getter(&Value::Obj(id), key)));
     }
     // A typed array has no element at another numeric key (-1, 1.5, 2 ** 32): writing one does nothing.
@@ -652,7 +655,11 @@ pub fn setup(vm: &mut Vm) {
     );
     vm.constant(ctor, "BYTES_PER_ELEMENT", Value::Num(1.0));
     vm.constant(proto, "BYTES_PER_ELEMENT", Value::Num(1.0));
-    super::accessors(vm, proto, &["length", "byteLength", "byteOffset", "buffer"]);
+    if vm.realm.std.typed_arrays {
+        super::accessors(vm, proto, &["length", "byteLength", "byteOffset", "buffer"]);
+    } else {
+        super::accessors(vm, proto, &["length"]);
+    }
     vm.methods(
         proto,
         &[
