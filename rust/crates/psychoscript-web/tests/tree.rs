@@ -1,5 +1,5 @@
 //! The native host against the conformance fixtures (opencode `packages/widget/test/fixtures/wire`, at widgets
-//! e2a4c7a3c, with its `prelude.js`). Each fixture holds a widget template `source` and a step `input`, `built` (the
+//! 9e274cdc0, with its `prelude.js`). Each fixture holds a widget template `source` and a step `input`, `built` (the
 //! view as emitted, each function as `"$function"`) when it crosses, and either `view`, `handlers`, `canvases` and
 //! `result`, or `error`. `<name>.wire` is `JSON.stringify(view)`, made from the fixture with
 //! `bun -e 'for (const f of fs.readdirSync(".")) if (f.endsWith(".json")) { const d = JSON.parse(fs.readFileSync(f)); if ("view" in d) fs.writeFileSync(f.replace(/json$/, "wire"), JSON.stringify(d.view)) }'`.
