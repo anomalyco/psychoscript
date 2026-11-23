@@ -1798,7 +1798,6 @@ built-ins/Object/create/15.2.3.5-4-57.js  # TypeError: ConstructFun is not a con
 built-ins/Object/create/15.2.3.5-4-58.js  # TypeError: ConstructFun is not a constructor: only classes can be constructed with new. Use a class,
 built-ins/Object/create/15.2.3.5-4-71.js  # TypeError: Cannot read properties of undefined (reading '…').
 built-ins/Object/create/15.2.3.5-4-96.js  # accessed !== true
-built-ins/Object/create/properties-arg-to-object-bigint.js  # TypeError: Object.getOwnPropertySymbols is not a function.
 built-ins/Object/defineProperties/15.2.3.7-2-16.js  # TypeError: Fun is not a constructor: only classes can be constructed with new. Use a class, or call 
 built-ins/Object/defineProperties/15.2.3.7-2-18.js  # TypeError: Cannot read properties of undefined (reading '…').
 built-ins/Object/defineProperties/15.2.3.7-3-3.js  # TypeError: Con is not a constructor: only classes can be constructed with new. Use a class, or call 
@@ -2087,7 +2086,7 @@ built-ins/Promise/all/new-resolve-function.js  # p1.then call count Expected Sam
 built-ins/Promise/all/resolve-before-loop-exit-from-same.js  # TypeError: p1OnFulfilled is not a function.
 built-ins/Promise/all/resolve-before-loop-exit.js  # callCount after call to all() Expected SameValue(«0», «1») to be true
 built-ins/Promise/all/resolve-element-function-extensible.js  # Expected true but got false
-built-ins/Promise/all/resolve-element-function-nonconstructor.js  # TypeError: Object.prototype.hasOwnProperty called on incompatible receiver undefined.
+built-ins/Promise/all/resolve-element-function-nonconstructor.js  # TypeError: Object.prototype.hasOwnProperty cannot convert undefined to an object.
 built-ins/Promise/all/resolve-element-function-property-order.js  # TypeError: Object.getOwnPropertyNames cannot convert undefined to an object.
 built-ins/Promise/all/resolve-from-same-thenable.js  # TypeError: p1OnFulfilled is not a function.
 built-ins/Promise/all/resolve-non-callable.js  # Expected true but got false
@@ -2125,10 +2124,10 @@ built-ins/Promise/allSettled/new-reject-function.js  # p1.then call count Expect
 built-ins/Promise/allSettled/new-resolve-function.js  # p1.then call count Expected SameValue(«0», «1») to be true
 built-ins/Promise/allSettled/reject-element-function-extensible.js  # Expected true but got false
 built-ins/Promise/allSettled/reject-element-function-multiple-calls.js  # rejectCallCount after call to allSettled() Expected SameValue(«0», «1») to be true
-built-ins/Promise/allSettled/reject-element-function-nonconstructor.js  # TypeError: Object.prototype.hasOwnProperty called on incompatible receiver undefined.
+built-ins/Promise/allSettled/reject-element-function-nonconstructor.js  # TypeError: Object.prototype.hasOwnProperty cannot convert undefined to an object.
 built-ins/Promise/allSettled/reject-element-function-property-order.js  # TypeError: Object.getOwnPropertyNames cannot convert undefined to an object.
 built-ins/Promise/allSettled/resolve-element-function-extensible.js  # Expected true but got false
-built-ins/Promise/allSettled/resolve-element-function-nonconstructor.js  # TypeError: Object.prototype.hasOwnProperty called on incompatible receiver undefined.
+built-ins/Promise/allSettled/resolve-element-function-nonconstructor.js  # TypeError: Object.prototype.hasOwnProperty cannot convert undefined to an object.
 built-ins/Promise/allSettled/resolve-element-function-property-order.js  # TypeError: Object.getOwnPropertyNames cannot convert undefined to an object.
 built-ins/Promise/allSettled/resolve-non-callable.js  # Expected true but got false
 built-ins/Promise/allSettled/resolve-not-callable-reject-with-typeerror.js  # "The promise should not be resolved."
@@ -2164,7 +2163,7 @@ built-ins/Promise/any/invoke-then-on-promises-every-iteration.js  # `then` invok
 built-ins/Promise/any/invoke-then.js  # $DONE was never called
 built-ins/Promise/any/new-reject-function.js  # p1.then call count Expected SameValue(«0», «1») to be true
 built-ins/Promise/any/reject-element-function-extensible.js  # Expected true but got false
-built-ins/Promise/any/reject-element-function-nonconstructor.js  # TypeError: Object.prototype.hasOwnProperty called on incompatible receiver undefined.
+built-ins/Promise/any/reject-element-function-nonconstructor.js  # TypeError: Object.prototype.hasOwnProperty cannot convert undefined to an object.
 built-ins/Promise/any/reject-element-function-property-order.js  # TypeError: Object.getOwnPropertyNames cannot convert undefined to an object.
 built-ins/Promise/any/reject-from-same-thenable.js  # TypeError: p1OnRejected is not a function.
 built-ins/Promise/any/resolve-before-loop-exit-from-same.js  # TypeError: p1OnRejected is not a function.
@@ -2311,7 +2310,6 @@ built-ins/String/prototype/charCodeAt/S15.5.4.5_A2.js  # TypeError: Cannot read 
 built-ins/String/prototype/constructor/S15.5.4.1_A1_T2.js  # TypeError: new __constr(...) is not supported; call __constr(...) without new instead.
 built-ins/String/prototype/repeat/count-coerced-to-zero-returns-empty-string.js  # RangeError: String.repeat expects a finite non-negative count.
 built-ins/String/prototype/slice/S15.5.4.13_A3_T4.js  # TypeError: Cannot read properties of undefined (reading '…').
-built-ins/String/prototype/split/instance-is-math.js  # The value of __split[0] is "[object Math]" Expected SameValue(«"[object Object]"», «"[object Math]"»
 built-ins/String/prototype/split/separator-tostring-error.js  # TypeError: Cannot read properties of undefined (reading '…').
 built-ins/String/prototype/split/transferred-to-custom.js  # TypeError: Cannot read properties of undefined (reading '…').
 built-ins/String/prototype/substring/S15.5.4.15_A3_T10.js  # TypeError: Cannot read properties of undefined (reading '…').

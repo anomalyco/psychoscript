@@ -402,7 +402,7 @@ function setMethod(target, other, name) {
 function Object$fromEntries(entries) {
   const result = {}
   for (const entry of entries) {
-    if (!$IsObject(entry, true)) $Throw("TypeError", "Object.fromEntries expects [key, value] entry objects.")
+    if (!$IsObject(entry)) $Throw("TypeError", "Object.fromEntries expects [key, value] entry objects.")
     $Define(result, String(entry[0]), entry[1], true)
   }
   return result

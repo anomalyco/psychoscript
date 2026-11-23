@@ -229,7 +229,7 @@ export const arrayGlobal = <R>(ctx: Interpreter<R>) => {
           if (target === undefined) throw typeError("Array.prototype.toString called on null or undefined.")
           const join = get(target, "join")
           if (readsPending()) return undefined
-          if (typeofValue(join) !== "function") return `[object ${classTag(thisValue)}]`
+          if (typeofValue(join) !== "function") return `[object ${classTag(ctx, thisValue)}]`
           return new Invoke(requireCallback(join, "Array.prototype.toString"), thisValue, [], undefined)
         }),
     ],

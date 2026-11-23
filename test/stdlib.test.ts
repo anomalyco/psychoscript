@@ -1616,6 +1616,8 @@ describe("Object.prototype.toString", () => {
         new Map().toString(), new Set().toString(), new Headers().toString(), Promise.resolve(1).toString(),
         [1].values().toString(), ({}).toString(), String(new Map()), String(Promise.resolve(1)),
         \`\${new Set([1])}\`, [new Map()] + "", new Map() == "[object Map]",
+        ...[Math, JSON, crypto, new TextEncoder(), new TextDecoder(), Symbol.iterator, function* () {}, async () => {},
+          async function* () {}].map((x) => Object.prototype.toString.call(x)),
       ]
     `),
     ).toEqual([
@@ -1630,6 +1632,15 @@ describe("Object.prototype.toString", () => {
       "[object Set]",
       "[object Map]",
       true,
+      "[object Math]",
+      "[object JSON]",
+      "[object Crypto]",
+      "[object TextEncoder]",
+      "[object TextDecoder]",
+      "[object Symbol]",
+      "[object GeneratorFunction]",
+      "[object AsyncFunction]",
+      "[object AsyncGeneratorFunction]",
     ])
   })
 })
@@ -1846,12 +1857,41 @@ describe("stdlib integration", () => {
       { e: 5 },
       { "[object Object]": 6, "1970-01-01T00:00:00.000Z": 7, null: 8, undefined: 9 },
     ])
-    expect(await value(`try { Object.fromEntries(new Set([Math.max])); return false } catch { return true }`)).toBe(
+    expect(await value(`try { Object.fromEntries([1]); return false } catch (e) { return e instanceof TypeError }`)).toBe(
       true,
     )
     expect(
-      await value(`try { Object.fromEntries(new Map([["fn", Math.max]])); return false } catch { return true }`),
+      await value(`
+        const o = Object.fromEntries(new Map([["fn", Math.max], ["arrow", () => 2], ["p", Promise.resolve(1)]]))
+        return [o.fn(1, 3), o.arrow(), typeof o.p.then, Object.keys(Object.fromEntries([Math.max]))]
+      `),
+    ).toEqual([3, 2, "function", ["undefined"]])
+  })
+
+  test("Object own-property checks box primitive receivers and convert keys with ToPropertyKey", async () => {
+    expect(
+      await value(`
+        const key = { toString() { return "a" } }
+        const has = Object.prototype.hasOwnProperty, enumerable = Object.prototype.propertyIsEnumerable
+        return [
+          has.call("abc", "0"), has.call("abc", "length"), has.call(5, "x"), enumerable.call("abc", "0"),
+          enumerable.call("abc", "length"), Object.hasOwn({ a: 1 }, key), ({ a: 1 }).hasOwnProperty(key),
+          ({ a: 1 }).propertyIsEnumerable(key),
+        ]
+      `),
+    ).toEqual([true, true, false, true, false, true, true, true])
+    expect(
+      await value(`try { Object.prototype.hasOwnProperty.call(null, "x"); return false } catch (e) { return e instanceof TypeError }`),
     ).toBe(true)
+  })
+
+  test("Object.getOwnPropertySymbols lists the own symbol keys", async () => {
+    expect(
+      await value(`
+        const o = { a: 1, [Symbol.iterator]: 1 }
+        return [Object.getOwnPropertySymbols(o)[0] === Symbol.iterator, Object.getOwnPropertySymbols("ab").length]
+      `),
+    ).toEqual([true, 0])
   })
 
   test("deterministic Math methods match the host runtime", async () => {

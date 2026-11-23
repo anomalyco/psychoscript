@@ -23,6 +23,7 @@ import {
   define,
   defineOwnProperty,
   type Descriptor,
+  Fn,
   get,
   has,
   parseArrayIndex,
@@ -34,6 +35,7 @@ import { describeValue, rejectCircularInsertion } from "../runtime/references.js
 import { invokeMethod, readsPending, withPrimitives, withReads } from "../runtime/callback.js"
 import { Invoke } from "../runtime/signals.js"
 import type { Interpreter } from "../runtime/interpreter.js"
+import { CodeFlags } from "../opcodes.js"
 
 // ToObject for enumeration.
 export const enumerableSource = <R>(ctx: Interpreter<R>, label: string, value: Value, node?: AstNode): Obj => {
@@ -93,15 +95,57 @@ const accessorsOnChain = (target: Obj): boolean => {
   return false
 }
 
-export const classTag = (value: Value): string => {
+// The tag `Object.prototype.toString` reports for a value.
+export const classTag = <R>(ctx: Interpreter<R>, value: Value): string => {
+  const tags = toStringTags(ctx)
   if (value === null) return "Null"
   if (value === undefined) return "Undefined"
-  if (value instanceof Obj) return value.tag
+  if (value instanceof Obj) return inheritedTag(tags, value) ?? functionTag(value) ?? value.tag
   if (typeof value === "string") return "String"
   if (typeof value === "number") return "Number"
   if (typeof value === "bigint") return "BigInt"
   if (typeof value === "boolean") return "Boolean"
+  if (typeof value === "symbol") return "Symbol"
   return "Object"
+}
+
+// Resolved on first use: Object is made before these globals.
+const tagsByRun = new WeakMap<Interpreter<unknown>, ReadonlyMap<Obj, string>>()
+const toStringTags = <R>(ctx: Interpreter<R>) => {
+  const cached = tagsByRun.get(ctx)
+  if (cached !== undefined) return cached
+  const tags = new Map(
+    (
+      [
+        ["Math", "Math"],
+        ["JSON", "JSON"],
+        ["crypto", "Crypto"],
+        ["TextEncoder.prototype", "TextEncoder"],
+        ["TextDecoder.prototype", "TextDecoder"],
+      ] as const
+    ).flatMap(([name, tag]) => {
+      const intrinsic = ctx.intrinsics.valueOf(name)
+      return intrinsic === undefined ? [] : [[intrinsic, tag] as const]
+    }),
+  )
+  tagsByRun.set(ctx, tags)
+  return tags
+}
+
+// The `Symbol.toStringTag` JS puts on these intrinsics, which objects inheriting from them report too.
+const inheritedTag = (tags: ReadonlyMap<Obj, string>, value: Obj): string | undefined => {
+  for (let current: Obj | null = value; current !== null; current = current.proto) {
+    const tag = tags.get(current)
+    if (tag !== undefined) return tag
+  }
+  return undefined
+}
+
+const functionTag = (value: Obj): string | undefined => {
+  if (!(value instanceof Fn)) return undefined
+  const async = (value.code.flags & CodeFlags.ASYNC) !== 0
+  if (value.generator) return async ? "AsyncGeneratorFunction" : "GeneratorFunction"
+  return async ? "AsyncFunction" : undefined
 }
 
 const propertyKey = (value: Value): PropertyKey =>
@@ -280,7 +324,14 @@ export const objectGlobal = <R>(ctx: Interpreter<R>) => {
         )
       },
     ],
-    ["hasOwn", 2, (_, args) => hasOwn(enumerableSource(ctx, "Object.hasOwn(...)", args[0]), propertyKey(args[1]))],
+    [
+      "hasOwn",
+      2,
+      (_, args) => {
+        const source = enumerableSource(ctx, "Object.hasOwn(...)", args[0])
+        return withPrimitives("string", [args[1]], ([key]) => hasOwn(source, propertyKey(key)))
+      },
+    ],
     ["is", 2, (_, args) => Object.is(args[0], args[1])],
     ["assign", 2, (_, args) => objectAssign(ctx, args)],
     ["freeze", 1, (_, args) => restrict("freeze", args[0])],
@@ -362,6 +413,16 @@ export const objectGlobal = <R>(ctx: Interpreter<R>) => {
       },
     ],
     [
+      "getOwnPropertySymbols",
+      1,
+      (_, args) => {
+        const value = args[0]
+        requireObjectCoercible(value, "getOwnPropertySymbols")
+        const symbols = value instanceof Obj ? ownKeys(value).filter((key) => typeof key === "symbol") : []
+        return new Arr(builtins.Array, symbols)
+      },
+    ],
+    [
       "getOwnPropertyNames",
       1,
       (_, args) => {
@@ -378,7 +439,12 @@ export const objectGlobal = <R>(ctx: Interpreter<R>) => {
     [
       "hasOwnProperty",
       1,
-      (thisValue, args) => hasOwn(receiver(Obj, thisValue, "Object.prototype.hasOwnProperty"), propertyKey(args[0])),
+      (thisValue, args) =>
+        withPrimitives("string", [args[0]], ([raw]) => {
+          const key = propertyKey(raw)
+          requireObjectCoercible(thisValue, "prototype.hasOwnProperty")
+          return thisValue instanceof Obj ? hasOwn(thisValue, key) : primitiveSlot(thisValue, key) !== undefined
+        }),
     ],
     [
       "isPrototypeOf",
@@ -389,10 +455,14 @@ export const objectGlobal = <R>(ctx: Interpreter<R>) => {
       "propertyIsEnumerable",
       1,
       (thisValue, args) =>
-        own(receiver(Obj, thisValue, "Object.prototype.propertyIsEnumerable"), propertyKey(args[0]))?.enumerable ===
-        true,
+        withPrimitives("string", [args[0]], ([raw]) => {
+          const key = propertyKey(raw)
+          requireObjectCoercible(thisValue, "prototype.propertyIsEnumerable")
+          const slot = thisValue instanceof Obj ? own(thisValue, key) : primitiveSlot(thisValue, key)
+          return slot?.enumerable === true
+        }),
     ],
-    ["toString", 0, (thisValue) => `[object ${classTag(thisValue)}]`],
+    ["toString", 0, (thisValue) => `[object ${classTag(ctx, thisValue)}]`],
     [
       "toLocaleString",
       0,
