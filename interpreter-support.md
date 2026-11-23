@@ -321,11 +321,11 @@ Math.floor)` is `"3"`). A detached method loses its receiver, as in JS: `values.
       throw rejects unless the promise already settled, resolving with a promise or callable thenable adopts it, and
       resolving with the promise itself rejects with a `TypeError`. Resolver callables work anywhere callbacks are
       accepted, including `.then`/`.catch` handlers and collection callbacks, and vanish at the data boundary like
-      any function.
+      any function. Any callable that callback sites accept, bound functions included, works as an executor.
 - [x] `Promise.withResolvers()`: the same promise and resolver callables as the constructor, as a `{ promise, resolve,
 reject }` object.
 - [x] `Promise.try(fn, ...args)`: calls `fn` synchronously; a throw rejects, a return fulfils, and a returned promise or
-      thenable is adopted.
+      thenable is adopted. A non-function `fn` returns a promise rejected with a `TypeError`.
 - [x] Recursive assimilation of objects with an own callable `then` field across `Promise.resolve`, combinators,
       constructors, reactions, `finally`, `await`, and async returns. Thenable methods run deferred, receive
       first-call-wins resolve/reject functions, and ignore throws after settlement. Inherited and accessor `then`

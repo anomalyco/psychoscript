@@ -10,6 +10,8 @@
   `BigInt.prototype.toJSON`. Snapshots keep BigInts.
 - `String.prototype.matchAll` returns an iterator instead of an array; `String.raw` accepts a string `raw`; and
   `Object.keys`/`values`/`entries`/`assign`/`hasOwn`, object spread and `for...in` index a string by UTF-16 code unit.
+- Promises: `Promise.try(nonFunction)` returns a rejected promise instead of throwing, and `new Promise` accepts bound
+  functions as executors.
 
 ## 0.2.1
 
