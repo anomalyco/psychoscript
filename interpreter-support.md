@@ -408,7 +408,7 @@ reject }` object.
 - [x] Aggregation: `reduce` and `reduceRight`.
 - [x] Ordering: `sort`, `toSorted`, `reverse`, and `toReversed`.
 - [x] Access/copying: `at`, `slice`, `concat`, `flat`, `with`, `join`, and `toLocaleString` (each element's
-      `toLocaleString`, holes and nullish elements as empty strings).
+      `toLocaleString` with the same locales and options, holes and nullish elements as empty strings).
 - [x] Mutation: `push`, `pop`, `shift`, `unshift`, `splice`, `fill`, and `copyWithin`.
 - [x] `keys`, `values`, `entries`, and `[Symbol.iterator]` (the same function as `values`) return live iterator objects
       with `next()` and `[Symbol.iterator]`, as in JS. Iterator objects are opaque references: they print as
@@ -464,7 +464,8 @@ reject }` object.
 - [x] Number predicates/parsers: `Number.isInteger`, `Number.isFinite`, `Number.isNaN`, `Number.isSafeInteger`,
       `Number.parseInt`, and `Number.parseFloat`.
 - [x] Number formatting: `toFixed`, `toPrecision`, `toExponential`, `toString`, `valueOf`, and `toLocaleString`, which
-      always formats as `en-US` (`"1,234.5"`) so output does not depend on the host.
+      formats through the host's `Intl.NumberFormat`, honoring the locale and options (`style`, `currency`,
+      `maximumFractionDigits`, ...); without a locale it formats as `en-US` (`"1,234.5"`), Bun's default.
 - [x] `Number.prototype.toString` truncates a fractional radix before validating the 2–36 range; invalid radixes
       throw a catchable `RangeError`.
 - [x] Number constants: `MAX_SAFE_INTEGER`, `MIN_SAFE_INTEGER`, `MAX_VALUE`, `MIN_VALUE`, `EPSILON`, `NaN`,
@@ -493,8 +494,8 @@ reject }` object.
       `RangeError`. Comparisons and `==` work across BigInts, numbers and strings, and Maps and Sets key BigInts by
       value.
 - [x] `BigInt(value)` from integers, booleans, and decimal, hex, octal and binary strings; `BigInt.asIntN`,
-      `BigInt.asUintN`, and `toString(radix)`, `toLocaleString` (`en-US`) and `valueOf` on the prototype. `new
-      BigInt()` is a `TypeError`.
+      `BigInt.asUintN`, and `toString(radix)`, `toLocaleString` (locale and options as for numbers) and `valueOf` on
+      the prototype. `new BigInt()` is a `TypeError`.
 - [x] A BigInt has at most 2^20 bits (about 315,000 decimal digits), so no single operator runs for long; a larger
       result is a `RangeError` (`Maximum BigInt size exceeded`), and `**` and `<<` refuse before computing it.
 - [x] `JSON.stringify` throws a `TypeError` on a BigInt unless the program defines `BigInt.prototype.toJSON`. A BigInt

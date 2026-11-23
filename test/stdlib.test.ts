@@ -1753,6 +1753,33 @@ describe("toLocaleString", () => {
     ])
   })
 
+  test("numbers, BigInts and arrays honor the locale and options, through Intl", async () => {
+    expect(
+      await value(`
+      return [
+        (1234.56).toLocaleString("en-US", { style: "currency", currency: "USD" }),
+        (0.256).toLocaleString("en-US", { style: "percent", maximumFractionDigits: { valueOf() { return 1 } } }),
+        (1234.5).toLocaleString("de-DE"),
+        (1234).toLocaleString("en-US", { useGrouping: false }),
+        12345678901234567890n.toLocaleString("de-DE"),
+        1234n.toLocaleString("en-US", { style: "currency", currency: "EUR" }),
+        [1234.5, new Date(0)].toLocaleString("en-US", { timeZone: "UTC", maximumFractionDigits: 0 }),
+        [].toLocaleString.length,
+      ]
+    `),
+    ).toEqual(["$1,234.56", "25.6%", "1.234,5", "1234", "12.345.678.901.234.567.890", "€1,234.00", "1,235,1/1/1970, 12:00:00 AM", 0])
+    expect(
+      await value(`
+      const attempt = (f) => { try { return f() } catch (e) { return e.name } }
+      return [
+        attempt(() => (1).toLocaleString("en-US", { style: "currency" })),
+        attempt(() => (1).toLocaleString("en-US", { style: "bogus" })),
+        attempt(() => (1).toLocaleString("en-US", null)),
+      ]
+    `),
+    ).toEqual(["TypeError", "RangeError", "TypeError"])
+  })
+
   test("date formatting without a timeZone uses the local time, like getHours", async () => {
     expect(
       await value(`
