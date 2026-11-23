@@ -3,6 +3,7 @@
 //! that fails them isn't replayed.
 
 use std::collections::HashMap;
+use std::fmt;
 
 use widget_wire::Arg;
 
@@ -26,6 +27,15 @@ const TEXTURE_FORMATS: [(&str, f64); 7] = [
     ("depth24plus", 4.0),
     ("depth32float", 4.0),
 ];
+const TEXTURE_FORMAT_NAMES: [&str; TEXTURE_FORMATS.len()] = {
+    let mut names = [""; TEXTURE_FORMATS.len()];
+    let mut i = 0;
+    while i < names.len() {
+        names[i] = TEXTURE_FORMATS[i].0;
+        i += 1;
+    }
+    names
+};
 const COLOR_FORMATS: &[&str] = &[
     "rgba8unorm",
     "rgba8unorm-srgb",
@@ -199,18 +209,51 @@ fn fail<T>(m: impl Into<String>) -> C<T> {
 /// A value as JavaScript has it: `None` is `undefined` (a missing member), `Some(Null)` is `null`.
 type V<'a> = Option<&'a Arg>;
 
+/// Where a value is, for an error message (`"view" argument 3.dimension`): written out only when a check fails.
+#[derive(Clone, Copy)]
+enum Path<'a> {
+    /// `"<op>" argument <i>`.
+    Arg(&'a str, usize),
+    /// What a limit counts, as it is.
+    Text(&'a str),
+    /// `<path>.<field>`.
+    Field(&'a Path<'a>, &'a str),
+    /// `<path>[<i>]`.
+    Index(&'a Path<'a>, usize),
+}
+
+impl<'a> Path<'a> {
+    fn field(&'a self, field: &'a str) -> Path<'a> {
+        Path::Field(self, field)
+    }
+    fn index(&'a self, i: usize) -> Path<'a> {
+        Path::Index(self, i)
+    }
+}
+
+impl fmt::Display for Path<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Path::Arg(op, i) => write!(f, "\"{op}\" argument {i}"),
+            Path::Text(t) => f.write_str(t),
+            Path::Field(p, field) => write!(f, "{p}.{field}"),
+            Path::Index(p, i) => write!(f, "{p}[{i}]"),
+        }
+    }
+}
+
 fn num(n: f64) -> String {
     format!("{n}")
 }
 
-fn whole(v: V, path: &str) -> C<f64> {
+fn whole(v: V, path: Path) -> C<f64> {
     match v {
         Some(Arg::Num(n)) if n.is_finite() && n.fract() == 0.0 && *n >= 0.0 => Ok(*n),
         _ => fail(format!("{path} must be a whole number")),
     }
 }
 
-fn whole_or_all(v: V, path: &str) -> C<f64> {
+fn whole_or_all(v: V, path: Path) -> C<f64> {
     match v {
         Some(Arg::Num(n)) if *n == -1.0 || (n.is_finite() && n.fract() == 0.0 && *n >= 0.0) => {
             Ok(*n)
@@ -219,35 +262,35 @@ fn whole_or_all(v: V, path: &str) -> C<f64> {
     }
 }
 
-fn integer(v: V, path: &str) -> C<f64> {
+fn integer(v: V, path: Path) -> C<f64> {
     match v {
         Some(Arg::Num(n)) if n.is_finite() && n.fract() == 0.0 => Ok(*n),
         _ => fail(format!("{path} must be an integer")),
     }
 }
 
-fn finite(v: V, path: &str) -> C<f64> {
+fn finite(v: V, path: Path) -> C<f64> {
     match v {
         Some(Arg::Num(n)) if n.is_finite() => Ok(*n),
         _ => fail(format!("{path} must be a finite number")),
     }
 }
 
-fn boolean(v: V, path: &str) -> C<bool> {
+fn boolean(v: V, path: Path) -> C<bool> {
     match v {
         Some(Arg::Bool(b)) => Ok(*b),
         _ => fail(format!("{path} must be true or false")),
     }
 }
 
-fn text<'a>(v: V<'a>, path: &str) -> C<&'a str> {
+fn text<'a>(v: V<'a>, path: Path) -> C<&'a str> {
     match v {
         Some(Arg::Str(s)) => Ok(s),
         _ => fail(format!("{path} must be a string")),
     }
 }
 
-fn one_of<'a>(v: V<'a>, options: &[&str], path: &str) -> C<&'a str> {
+fn one_of<'a>(v: V<'a>, options: &[&str], path: Path) -> C<&'a str> {
     match v {
         Some(Arg::Str(s)) if options.contains(&s.as_str()) => Ok(s),
         _ => fail(format!("{path} must be one of {}", options.join(", "))),
@@ -255,14 +298,14 @@ fn one_of<'a>(v: V<'a>, options: &[&str], path: &str) -> C<&'a str> {
 }
 
 /// `1` or `4` (a sample count).
-fn samples(v: V, path: &str) -> C<f64> {
+fn samples(v: V, path: Path) -> C<f64> {
     match v {
         Some(Arg::Num(n)) if *n == 1.0 || *n == 4.0 => Ok(*n),
         _ => fail(format!("{path} must be one of 1, 4")),
     }
 }
 
-fn list<'a>(v: V<'a>, path: &str, length: Option<usize>) -> C<&'a [Arg]> {
+fn list<'a>(v: V<'a>, path: Path, length: Option<usize>) -> C<&'a [Arg]> {
     match (v, length) {
         (Some(Arg::List(l)), None) => Ok(l),
         (Some(Arg::List(l)), Some(n)) if l.len() == n => Ok(l),
@@ -283,7 +326,7 @@ impl<'a> Rec<'a> {
     }
 }
 
-fn record<'a>(v: V<'a>, path: &str) -> C<Rec<'a>> {
+fn record<'a>(v: V<'a>, path: Path) -> C<Rec<'a>> {
     match v {
         Some(Arg::Obj(o)) => Ok(Rec(o)),
         _ => fail(format!("{path} must be an object")),
@@ -299,7 +342,7 @@ fn int32(n: f64) -> i32 {
     n.rem_euclid(4_294_967_296.0) as u32 as i32
 }
 
-fn flags(v: V, names: &[(&str, i32)], path: &str) -> C<f64> {
+fn flags(v: V, names: &[(&str, i32)], path: Path) -> C<f64> {
     let all = names.iter().fold(0, |sum, (_, bit)| sum | bit);
     match v {
         Some(Arg::Num(n))
@@ -314,7 +357,7 @@ fn flags(v: V, names: &[(&str, i32)], path: &str) -> C<f64> {
     }
 }
 
-fn limit(value: f64, max: f64, what: &str) -> C<f64> {
+fn limit(value: f64, max: f64, what: Path) -> C<f64> {
     if value > max {
         fail(format!("{what} is over the limit of {}", num(max)))
     } else {
@@ -322,9 +365,9 @@ fn limit(value: f64, max: f64, what: &str) -> C<f64> {
     }
 }
 
-fn triple(v: V, path: &str) -> C<()> {
+fn triple(v: V, path: Path) -> C<()> {
     for (i, item) in list(v, path, Some(3))?.iter().enumerate() {
-        whole(Some(item), &format!("{path}[{i}]"))?;
+        whole(Some(item), path.index(i))?;
     }
     Ok(())
 }
@@ -382,7 +425,7 @@ impl Checks {
         self.stale = self.last;
     }
 
-    fn find(&self, v: V, path: &str, kinds: &[Kind]) -> C<&Handle> {
+    fn find(&self, v: V, path: Path, kinds: &[Kind]) -> C<&Handle> {
         let h = whole(v, path)?;
         let Some(found) = self.handles.get(&(h as u64)) else {
             return Err(Invalid::Missing(h));
@@ -403,7 +446,7 @@ impl Checks {
     }
 
     /// A canvas's texture has usage `RENDER_ATTACHMENT` alone: no copy, write or binding may use it.
-    fn not_canvas(&self, h: f64, path: &str) -> C<()> {
+    fn not_canvas(&self, h: f64, path: Path) -> C<()> {
         match self.handles.get(&(h as u64)) {
             Some(Handle {
                 kind: Kind::Context,
@@ -417,12 +460,12 @@ impl Checks {
     }
 
     /// A texture a copy or a write takes.
-    fn copied(&self, v: V, path: &str) -> C<()> {
+    fn copied(&self, v: V, path: Path) -> C<()> {
         self.not_canvas(whole(v, path)?, path)?;
         self.find(v, path, &[Kind::Texture]).map(|_| ())
     }
 
-    fn create(&mut self, v: V, path: &str, made: Handle) -> C<()> {
+    fn create(&mut self, v: V, path: Path, made: Handle) -> C<()> {
         let h = whole(v, path)?;
         if h <= self.last {
             return fail(format!("handle {} was already used", num(h)));
@@ -434,14 +477,14 @@ impl Checks {
         limit(
             self.live as f64,
             HANDLES as f64,
-            "the number of live handles",
+            Path::Text("the number of live handles"),
         )?;
         if bytes != 0.0 {
             self.resources += bytes;
             limit(
                 self.resources,
                 RESOURCES,
-                "the size of buffers and textures",
+                Path::Text("the size of buffers and textures"),
             )?;
         }
         Ok(())
@@ -475,9 +518,16 @@ impl Checks {
     /// The keys of the canvases a batch renders into, in order: a pass's color attachment or resolve target that is
     /// a view of a context, made in this batch or earlier.
     pub(crate) fn rendered(&self, ops: &[Arg]) -> Vec<String> {
+        let mut keys = Vec::new();
+        self.rendered_into(ops, &mut keys);
+        keys
+    }
+
+    /// [`Checks::rendered`] into `keys`, its strings written over (no allocation once they have room).
+    pub(crate) fn rendered_into(&self, ops: &[Arg], keys: &mut Vec<String>) {
         let mut textures = HashMap::new();
         let mut contexts = HashMap::new();
-        let mut keys: Vec<String> = Vec::new();
+        let mut count = 0;
         let num_at = |o: &[Arg], i: usize| match o.get(i) {
             Some(Arg::Num(n)) => Some(*n),
             _ => None,
@@ -487,7 +537,7 @@ impl Checks {
             let Some(h) = num_at(o, 1) else { continue };
             match (o.first(), o.get(2)) {
                 (Some(Arg::Str(n)), Some(Arg::Str(key))) if n == "context" => {
-                    contexts.insert(h.to_bits(), key.clone());
+                    contexts.insert(h.to_bits(), key.as_str());
                 }
                 (Some(Arg::Str(n)), Some(Arg::Num(t))) if n == "view" => {
                     textures.insert(h.to_bits(), *t);
@@ -496,11 +546,11 @@ impl Checks {
             }
         }
         let context = |h: f64| {
-            contexts.get(&h.to_bits()).cloned().or_else(|| {
+            contexts.get(&h.to_bits()).copied().or_else(|| {
                 self.handles
                     .get(&(h as u64))
                     .filter(|f| f.kind == Kind::Context && h.fract() == 0.0 && h >= 0.0)
-                    .and_then(|f| f.key.clone())
+                    .and_then(|f| f.key.as_deref())
             })
         };
         for o in ops {
@@ -527,14 +577,21 @@ impl Checks {
                             .map(|f| f.texture)
                     });
                     if let Some(key) = texture.and_then(context)
-                        && !keys.contains(&key)
+                        && !keys[..count].iter().any(|k| k == key)
                     {
-                        keys.push(key);
+                        match keys.get_mut(count) {
+                            Some(k) => {
+                                k.clear();
+                                k.push_str(key);
+                            }
+                            None => keys.push(key.to_owned()),
+                        }
+                        count += 1;
                     }
                 }
             }
         }
-        keys
+        keys.truncate(count);
     }
 
     /// A `widget.frame()`: the per-frame counts start again.
@@ -568,10 +625,18 @@ impl Checks {
                 Invalid::Msg(m) => Failed::Message(format!("{prefix}{m}"), at),
             }
         };
-        limit(ops.len() as f64, OPS as f64, "the number of ops in a batch")
-            .map_err(|e| failed(e, None))?;
-        limit(bytes as f64, BYTES as f64, "the size of a batch's bytes")
-            .map_err(|e| failed(e, None))?;
+        limit(
+            ops.len() as f64,
+            OPS as f64,
+            Path::Text("the number of ops in a batch"),
+        )
+        .map_err(|e| failed(e, None))?;
+        limit(
+            bytes as f64,
+            BYTES as f64,
+            Path::Text("the size of a batch's bytes"),
+        )
+        .map_err(|e| failed(e, None))?;
         let mut open = false;
         for (index, o) in ops.iter().enumerate() {
             self.op(o, &mut open, bytes, canvas)
@@ -607,7 +672,7 @@ impl Checks {
             return fail(format!("\"{name}\" takes {arity} arguments"));
         }
         if name == "error" {
-            return fail(text(o.get(1), "\"error\" argument 1")?);
+            return fail(text(o.get(1), Path::Arg(name, 1))?);
         }
         if name == "pass" {
             if *open {
@@ -637,17 +702,17 @@ impl Checks {
         bytes: usize,
         canvas: &dyn Fn(&str) -> bool,
     ) -> C<()> {
-        let a = |i: usize| format!("\"{name}\" argument {i}");
+        let a = |i: usize| Path::Arg(name, i);
         let at = |i: usize| o.get(i);
         match name {
             "context" => {
-                let key = text(at(2), &a(2))?;
-                one_of(at(3), &["bgra8unorm", "rgba8unorm"], &a(3))?;
-                one_of(at(4), &["opaque", "premultiplied"], &a(4))?;
+                let key = text(at(2), a(2))?;
+                one_of(at(3), &["bgra8unorm", "rgba8unorm"], a(3))?;
+                one_of(at(4), &["opaque", "premultiplied"], a(4))?;
                 if !canvas(key) {
                     return fail(format!("no GPU canvas with key \"{key}\""));
                 }
-                let h = whole(at(1), &a(1))?;
+                let h = whole(at(1), a(1))?;
                 if let Some(e) = self.handles.get(&(h as u64))
                     && e.kind == Kind::Context
                     && e.key.as_deref() == Some(key)
@@ -656,7 +721,7 @@ impl Checks {
                 }
                 self.create(
                     at(1),
-                    &a(1),
+                    a(1),
                     Handle {
                         key: Some(key.to_owned()),
                         ..Self::make(Kind::Context)
@@ -664,11 +729,11 @@ impl Checks {
                 )
             }
             "buffer" => {
-                let size = limit(whole(at(2), &a(2))?, BUFFER, &a(2))?;
-                flags(at(3), BUFFER_USAGE, &a(3))?;
+                let size = limit(whole(at(2), a(2))?, BUFFER, a(2))?;
+                flags(at(3), BUFFER_USAGE, a(3))?;
                 self.create(
                     at(1),
-                    &a(1),
+                    a(1),
                     Handle {
                         bytes: size,
                         ..Self::make(Kind::Buffer)
@@ -676,14 +741,13 @@ impl Checks {
                 )
             }
             "texture" => {
-                let width = limit(whole(at(2), &a(2))?, DIMENSION, &a(2))?;
-                let height = limit(whole(at(3), &a(3))?, DIMENSION, &a(3))?;
-                let layers = limit(whole(at(4), &a(4))?, LAYERS, &a(4))?;
-                let names: Vec<_> = TEXTURE_FORMATS.iter().map(|(n, _)| *n).collect();
-                let format = one_of(at(5), &names, &a(5))?;
-                flags(at(6), TEXTURE_USAGE, &a(6))?;
-                let mips = whole(at(7), &a(7))?;
-                let samples = samples(at(8), &a(8))?;
+                let width = limit(whole(at(2), a(2))?, DIMENSION, a(2))?;
+                let height = limit(whole(at(3), a(3))?, DIMENSION, a(3))?;
+                let layers = limit(whole(at(4), a(4))?, LAYERS, a(4))?;
+                let format = one_of(at(5), &TEXTURE_FORMAT_NAMES, a(5))?;
+                flags(at(6), TEXTURE_USAGE, a(6))?;
+                let mips = whole(at(7), a(7))?;
+                let samples = samples(at(8), a(8))?;
                 let texel = TEXTURE_FORMATS
                     .iter()
                     .find(|(n, _)| *n == format)
@@ -691,7 +755,7 @@ impl Checks {
                 let bytes = texture_bytes(width, height, layers, texel, samples, mips);
                 self.create(
                     at(1),
-                    &a(1),
+                    a(1),
                     Handle {
                         bytes,
                         ..Self::make(Kind::Texture)
@@ -699,13 +763,14 @@ impl Checks {
                 )
             }
             "view" => {
-                let texture = whole(at(2), &a(2))?;
-                self.find(at(2), &a(2), &[Kind::Texture, Kind::Context])?;
-                let d = record(at(3), &a(3))?;
+                let texture = whole(at(2), a(2))?;
+                self.find(at(2), a(2), &[Kind::Texture, Kind::Context])?;
+                let p = a(3);
+                let d = record(at(3), p)?;
                 one_of(
                     d.get("dimension"),
                     &["2d", "2d-array", "cube"],
-                    &format!("{}.dimension", a(3)),
+                    p.field("dimension"),
                 )?;
                 for field in [
                     "baseMipLevel",
@@ -713,11 +778,11 @@ impl Checks {
                     "baseArrayLayer",
                     "arrayLayerCount",
                 ] {
-                    whole(d.get(field), &format!("{}.{field}", a(3)))?;
+                    whole(d.get(field), p.field(field))?;
                 }
                 self.create(
                     at(1),
-                    &a(1),
+                    a(1),
                     Handle {
                         texture,
                         ..Self::make(Kind::View)
@@ -725,40 +790,39 @@ impl Checks {
                 )
             }
             "sampler" => {
-                let d = record(at(2), &a(2))?;
-                let p = |f: &str| format!("{}.{f}", a(2));
+                let p = a(2);
+                let d = record(at(2), p)?;
                 for f in ["addressModeU", "addressModeV", "addressModeW"] {
                     one_of(
                         d.get(f),
                         &["clamp-to-edge", "repeat", "mirror-repeat"],
-                        &p(f),
+                        p.field(f),
                     )?;
                 }
                 for f in ["magFilter", "minFilter", "mipmapFilter"] {
-                    one_of(d.get(f), &["nearest", "linear"], &p(f))?;
+                    one_of(d.get(f), &["nearest", "linear"], p.field(f))?;
                 }
-                finite(d.get("lodMinClamp"), &p("lodMinClamp"))?;
-                finite(d.get("lodMaxClamp"), &p("lodMaxClamp"))?;
+                finite(d.get("lodMinClamp"), p.field("lodMinClamp"))?;
+                finite(d.get("lodMaxClamp"), p.field("lodMaxClamp"))?;
                 if !is_null(d.get("compare")) {
-                    one_of(d.get("compare"), COMPARE, &p("compare"))?;
+                    one_of(d.get("compare"), COMPARE, p.field("compare"))?;
                 }
-                whole(d.get("maxAnisotropy"), &p("maxAnisotropy"))?;
-                self.create(at(1), &a(1), Self::make(Kind::Sampler))
+                whole(d.get("maxAnisotropy"), p.field("maxAnisotropy"))?;
+                self.create(at(1), a(1), Self::make(Kind::Sampler))
             }
             "shader" => {
-                limit(text(at(2), &a(2))?.len() as f64, SHADER, &a(2))?;
-                self.create(at(1), &a(1), Self::make(Kind::Shader))
+                limit(text(at(2), a(2))?.len() as f64, SHADER, a(2))?;
+                self.create(at(1), a(1), Self::make(Kind::Shader))
             }
             "bindGroupLayout" => {
-                let d = record(at(2), &a(2))?;
-                for (i, item) in list(d.get("entries"), &format!("{}.entries", a(2)), None)?
-                    .iter()
-                    .enumerate()
-                {
-                    let p = format!("{}.entries[{i}]", a(2));
-                    let e = record(Some(item), &p)?;
-                    whole(e.get("binding"), &format!("{p}.binding"))?;
-                    flags(e.get("visibility"), STAGES, &format!("{p}.visibility"))?;
+                let arg = a(2);
+                let d = record(at(2), arg)?;
+                let entries = arg.field("entries");
+                for (i, item) in list(d.get("entries"), entries, None)?.iter().enumerate() {
+                    let p = entries.index(i);
+                    let e = record(Some(item), p)?;
+                    whole(e.get("binding"), p.field("binding"))?;
+                    flags(e.get("visibility"), STAGES, p.field("visibility"))?;
                     let present = ["buffer", "sampler", "texture"]
                         .iter()
                         .filter(|k| !is_null(e.get(k)))
@@ -769,192 +833,177 @@ impl Checks {
                         ));
                     }
                     if !is_null(e.get("buffer")) {
-                        let b = record(e.get("buffer"), &format!("{p}.buffer"))?;
+                        let w = p.field("buffer");
+                        let b = record(e.get("buffer"), w)?;
                         one_of(
                             b.get("type"),
                             &["uniform", "storage", "read-only-storage"],
-                            &format!("{p}.buffer.type"),
+                            w.field("type"),
                         )?;
-                        boolean(
-                            b.get("hasDynamicOffset"),
-                            &format!("{p}.buffer.hasDynamicOffset"),
-                        )?;
-                        whole(
-                            b.get("minBindingSize"),
-                            &format!("{p}.buffer.minBindingSize"),
-                        )?;
+                        boolean(b.get("hasDynamicOffset"), w.field("hasDynamicOffset"))?;
+                        whole(b.get("minBindingSize"), w.field("minBindingSize"))?;
                     }
                     if !is_null(e.get("sampler")) {
-                        let s = record(e.get("sampler"), &format!("{p}.sampler"))?;
+                        let w = p.field("sampler");
+                        let s = record(e.get("sampler"), w)?;
                         one_of(
                             s.get("type"),
                             &["filtering", "non-filtering", "comparison"],
-                            &format!("{p}.sampler.type"),
+                            w.field("type"),
                         )?;
                     }
                     if !is_null(e.get("texture")) {
-                        let t = record(e.get("texture"), &format!("{p}.texture"))?;
+                        let w = p.field("texture");
+                        let t = record(e.get("texture"), w)?;
                         one_of(
                             t.get("sampleType"),
                             &["float", "unfilterable-float", "depth", "sint", "uint"],
-                            &format!("{p}.texture.sampleType"),
+                            w.field("sampleType"),
                         )?;
                         one_of(
                             t.get("viewDimension"),
                             &["2d", "2d-array", "cube"],
-                            &format!("{p}.texture.viewDimension"),
+                            w.field("viewDimension"),
                         )?;
-                        boolean(t.get("multisampled"), &format!("{p}.texture.multisampled"))?;
+                        boolean(t.get("multisampled"), w.field("multisampled"))?;
                     }
                 }
-                self.create(at(1), &a(1), Self::make(Kind::BindGroupLayout))
+                self.create(at(1), a(1), Self::make(Kind::BindGroupLayout))
             }
             "pipelineLayout" => {
-                for (i, item) in list(at(2), &a(2), None)?.iter().enumerate() {
-                    self.find(
-                        Some(item),
-                        &format!("{}[{i}]", a(2)),
-                        &[Kind::BindGroupLayout],
-                    )?;
+                let p = a(2);
+                for (i, item) in list(at(2), p, None)?.iter().enumerate() {
+                    self.find(Some(item), p.index(i), &[Kind::BindGroupLayout])?;
                 }
-                self.create(at(1), &a(1), Self::make(Kind::PipelineLayout))
+                self.create(at(1), a(1), Self::make(Kind::PipelineLayout))
             }
             "renderPipeline" => {
-                self.pipeline(record(at(2), &a(2))?, &a(2))?;
-                self.create(at(1), &a(1), Self::make(Kind::RenderPipeline))
+                self.pipeline(record(at(2), a(2))?, a(2))?;
+                self.create(at(1), a(1), Self::make(Kind::RenderPipeline))
             }
             "autoLayout" => {
-                self.find(at(2), &a(2), &[Kind::RenderPipeline])?;
-                whole(at(3), &a(3))?;
-                self.create(at(1), &a(1), Self::make(Kind::BindGroupLayout))
+                self.find(at(2), a(2), &[Kind::RenderPipeline])?;
+                whole(at(3), a(3))?;
+                self.create(at(1), a(1), Self::make(Kind::BindGroupLayout))
             }
             "bindGroup" => {
-                let d = record(at(2), &a(2))?;
+                let arg = a(2);
+                let d = record(at(2), arg)?;
                 self.find(
                     d.get("layout"),
-                    &format!("{}.layout", a(2)),
+                    arg.field("layout"),
                     &[Kind::BindGroupLayout],
                 )?;
-                for (i, item) in list(d.get("entries"), &format!("{}.entries", a(2)), None)?
-                    .iter()
-                    .enumerate()
-                {
-                    let p = format!("{}.entries[{i}]", a(2));
-                    let e = record(Some(item), &p)?;
-                    whole(e.get("binding"), &format!("{p}.binding"))?;
-                    let r = record(e.get("resource"), &format!("{p}.resource"))?;
+                let entries = arg.field("entries");
+                for (i, item) in list(d.get("entries"), entries, None)?.iter().enumerate() {
+                    let p = entries.index(i);
+                    let e = record(Some(item), p)?;
+                    whole(e.get("binding"), p.field("binding"))?;
+                    let w = p.field("resource");
+                    let r = record(e.get("resource"), w)?;
                     if r.has("buffer") {
-                        self.find(
-                            r.get("buffer"),
-                            &format!("{p}.resource.buffer"),
-                            &[Kind::Buffer],
-                        )?;
-                        whole(r.get("offset"), &format!("{p}.resource.offset"))?;
-                        whole_or_all(r.get("size"), &format!("{p}.resource.size"))?;
+                        self.find(r.get("buffer"), w.field("buffer"), &[Kind::Buffer])?;
+                        whole(r.get("offset"), w.field("offset"))?;
+                        whole_or_all(r.get("size"), w.field("size"))?;
                     } else if r.has("sampler") {
-                        self.find(
-                            r.get("sampler"),
-                            &format!("{p}.resource.sampler"),
-                            &[Kind::Sampler],
-                        )?;
+                        self.find(r.get("sampler"), w.field("sampler"), &[Kind::Sampler])?;
                     } else if r.has("view") {
-                        let path = format!("{p}.resource.view");
-                        let texture = self.find(r.get("view"), &path, &[Kind::View])?.texture;
-                        self.not_canvas(texture, &path)?;
+                        let path = w.field("view");
+                        let texture = self.find(r.get("view"), path, &[Kind::View])?.texture;
+                        self.not_canvas(texture, path)?;
                     } else {
-                        return fail(format!(
-                            "{p}.resource must be a buffer binding, a sampler or a view"
-                        ));
+                        return fail(format!("{w} must be a buffer binding, a sampler or a view"));
                     }
                 }
-                self.create(at(1), &a(1), Self::make(Kind::BindGroup))
+                self.create(at(1), a(1), Self::make(Kind::BindGroup))
             }
             "destroy" => {
-                let h = whole(at(1), &a(1))?;
-                self.find(at(1), &a(1), &[Kind::Buffer, Kind::Texture])?;
+                let h = whole(at(1), a(1))?;
+                self.find(at(1), a(1), &[Kind::Buffer, Kind::Texture])?;
                 self.free(h);
                 Ok(())
             }
             "writeBuffer" => {
-                self.find(at(1), &a(1), &[Kind::Buffer])?;
-                whole(at(2), &a(2))?;
-                range(whole(at(3), &a(3))?, whole(at(4), &a(4))?, bytes)
+                self.find(at(1), a(1), &[Kind::Buffer])?;
+                whole(at(2), a(2))?;
+                range(whole(at(3), a(3))?, whole(at(4), a(4))?, bytes)
             }
             "writeTexture" => {
-                self.copied(at(1), &a(1))?;
-                whole(at(2), &a(2))?;
-                triple(at(3), &a(3))?;
-                range(whole(at(4), &a(4))?, whole(at(5), &a(5))?, bytes)?;
-                whole(at(6), &a(6))?;
+                self.copied(at(1), a(1))?;
+                whole(at(2), a(2))?;
+                triple(at(3), a(3))?;
+                range(whole(at(4), a(4))?, whole(at(5), a(5))?, bytes)?;
+                whole(at(6), a(6))?;
                 if !is_null(at(7)) {
-                    whole(at(7), &a(7))?;
+                    whole(at(7), a(7))?;
                 }
-                triple(at(8), &a(8))
+                triple(at(8), a(8))
             }
             "copyBufferToBuffer" => {
-                self.find(at(1), &a(1), &[Kind::Buffer])?;
-                whole(at(2), &a(2))?;
-                self.find(at(3), &a(3), &[Kind::Buffer])?;
-                whole(at(4), &a(4))?;
-                whole(at(5), &a(5)).map(|_| ())
+                self.find(at(1), a(1), &[Kind::Buffer])?;
+                whole(at(2), a(2))?;
+                self.find(at(3), a(3), &[Kind::Buffer])?;
+                whole(at(4), a(4))?;
+                whole(at(5), a(5)).map(|_| ())
             }
             "copyBufferToTexture" => {
-                self.find(at(1), &a(1), &[Kind::Buffer])?;
-                whole(at(2), &a(2))?;
-                whole(at(3), &a(3))?;
+                self.find(at(1), a(1), &[Kind::Buffer])?;
+                whole(at(2), a(2))?;
+                whole(at(3), a(3))?;
                 if !is_null(at(4)) {
-                    whole(at(4), &a(4))?;
+                    whole(at(4), a(4))?;
                 }
-                self.copied(at(5), &a(5))?;
-                whole(at(6), &a(6))?;
-                triple(at(7), &a(7))?;
-                triple(at(8), &a(8))
+                self.copied(at(5), a(5))?;
+                whole(at(6), a(6))?;
+                triple(at(7), a(7))?;
+                triple(at(8), a(8))
             }
             "copyTextureToTexture" => {
-                self.copied(at(1), &a(1))?;
-                whole(at(2), &a(2))?;
-                triple(at(3), &a(3))?;
-                self.copied(at(4), &a(4))?;
-                whole(at(5), &a(5))?;
-                triple(at(6), &a(6))?;
-                triple(at(7), &a(7))
+                self.copied(at(1), a(1))?;
+                whole(at(2), a(2))?;
+                triple(at(3), a(3))?;
+                self.copied(at(4), a(4))?;
+                whole(at(5), a(5))?;
+                triple(at(6), a(6))?;
+                triple(at(7), a(7))
             }
-            "setPipeline" => self.find(at(1), &a(1), &[Kind::RenderPipeline]).map(|_| ()),
+            "setPipeline" => self.find(at(1), a(1), &[Kind::RenderPipeline]).map(|_| ()),
             "setBindGroup" => {
-                whole(at(1), &a(1))?;
-                self.find(at(2), &a(2), &[Kind::BindGroup])?;
-                for (i, item) in list(at(3), &a(3), None)?.iter().enumerate() {
-                    whole(Some(item), &format!("{}[{i}]", a(3)))?;
+                whole(at(1), a(1))?;
+                self.find(at(2), a(2), &[Kind::BindGroup])?;
+                let p = a(3);
+                for (i, item) in list(at(3), p, None)?.iter().enumerate() {
+                    whole(Some(item), p.index(i))?;
                 }
                 Ok(())
             }
             "setVertexBuffer" => {
-                whole(at(1), &a(1))?;
-                self.find(at(2), &a(2), &[Kind::Buffer])?;
-                whole(at(3), &a(3))?;
-                whole_or_all(at(4), &a(4)).map(|_| ())
+                whole(at(1), a(1))?;
+                self.find(at(2), a(2), &[Kind::Buffer])?;
+                whole(at(3), a(3))?;
+                whole_or_all(at(4), a(4)).map(|_| ())
             }
             "setIndexBuffer" => {
-                self.find(at(1), &a(1), &[Kind::Buffer])?;
-                one_of(at(2), &["uint16", "uint32"], &a(2))?;
-                whole(at(3), &a(3))?;
-                whole_or_all(at(4), &a(4)).map(|_| ())
+                self.find(at(1), a(1), &[Kind::Buffer])?;
+                one_of(at(2), &["uint16", "uint32"], a(2))?;
+                whole(at(3), a(3))?;
+                whole_or_all(at(4), a(4)).map(|_| ())
             }
-            "setViewport" => (1..=6).try_for_each(|i| finite(at(i), &a(i)).map(|_| ())),
-            "setScissorRect" => (1..=4).try_for_each(|i| whole(at(i), &a(i)).map(|_| ())),
+            "setViewport" => (1..=6).try_for_each(|i| finite(at(i), a(i)).map(|_| ())),
+            "setScissorRect" => (1..=4).try_for_each(|i| whole(at(i), a(i)).map(|_| ())),
             "draw" | "drawIndexed" => {
                 for i in 1..o.len() {
                     if name == "drawIndexed" && i == 4 {
-                        integer(at(i), &a(i))?
+                        integer(at(i), a(i))?
                     } else {
-                        whole(at(i), &a(i))?
+                        whole(at(i), a(i))?
                     };
                 }
                 self.draws += 1;
                 limit(
                     self.draws as f64,
                     DRAWS as f64,
-                    "the number of draws in a frame",
+                    Path::Text("the number of draws in a frame"),
                 )
                 .map(|_| ())
             }
@@ -963,81 +1012,83 @@ impl Checks {
         }
     }
 
-    fn pipeline(&self, d: Rec, at: &str) -> C<()> {
-        let p = |f: &str| format!("{at}.{f}");
+    fn pipeline(&self, d: Rec, at: Path) -> C<()> {
         if !matches!(d.get("layout"), Some(Arg::Str(s)) if s == "auto") {
-            self.find(d.get("layout"), &p("layout"), &[Kind::PipelineLayout])?;
+            self.find(d.get("layout"), at.field("layout"), &[Kind::PipelineLayout])?;
         }
-        let vertex = record(d.get("vertex"), &p("vertex"))?;
-        self.find(vertex.get("module"), &p("vertex.module"), &[Kind::Shader])?;
+        let p = at.field("vertex");
+        let vertex = record(d.get("vertex"), p)?;
+        self.find(vertex.get("module"), p.field("module"), &[Kind::Shader])?;
         if !is_null(vertex.get("entryPoint")) {
-            text(vertex.get("entryPoint"), &p("vertex.entryPoint"))?;
+            text(vertex.get("entryPoint"), p.field("entryPoint"))?;
         }
-        for (i, item) in list(vertex.get("buffers"), &p("vertex.buffers"), None)?
+        let buffers = p.field("buffers");
+        for (i, item) in list(vertex.get("buffers"), buffers, None)?
             .iter()
             .enumerate()
         {
             if is_null(Some(item)) {
                 continue;
             }
-            let path = p(&format!("vertex.buffers[{i}]"));
-            let b = record(Some(item), &path)?;
-            whole(b.get("arrayStride"), &format!("{path}.arrayStride"))?;
+            let path = buffers.index(i);
+            let b = record(Some(item), path)?;
+            whole(b.get("arrayStride"), path.field("arrayStride"))?;
             one_of(
                 b.get("stepMode"),
                 &["vertex", "instance"],
-                &format!("{path}.stepMode"),
+                path.field("stepMode"),
             )?;
-            for (j, attribute) in list(b.get("attributes"), &format!("{path}.attributes"), None)?
+            let attributes = path.field("attributes");
+            for (j, attribute) in list(b.get("attributes"), attributes, None)?
                 .iter()
                 .enumerate()
             {
-                let w = format!("{path}.attributes[{j}]");
-                let t = record(Some(attribute), &w)?;
-                one_of(t.get("format"), VERTEX_FORMATS, &format!("{w}.format"))?;
-                whole(t.get("offset"), &format!("{w}.offset"))?;
-                whole(t.get("shaderLocation"), &format!("{w}.shaderLocation"))?;
+                let w = attributes.index(j);
+                let t = record(Some(attribute), w)?;
+                one_of(t.get("format"), VERTEX_FORMATS, w.field("format"))?;
+                whole(t.get("offset"), w.field("offset"))?;
+                whole(t.get("shaderLocation"), w.field("shaderLocation"))?;
             }
         }
         if !is_null(d.get("fragment")) {
-            let fragment = record(d.get("fragment"), &p("fragment"))?;
-            self.find(
-                fragment.get("module"),
-                &p("fragment.module"),
-                &[Kind::Shader],
-            )?;
+            let p = at.field("fragment");
+            let fragment = record(d.get("fragment"), p)?;
+            self.find(fragment.get("module"), p.field("module"), &[Kind::Shader])?;
             if !is_null(fragment.get("entryPoint")) {
-                text(fragment.get("entryPoint"), &p("fragment.entryPoint"))?;
+                text(fragment.get("entryPoint"), p.field("entryPoint"))?;
             }
-            for (i, item) in list(fragment.get("targets"), &p("fragment.targets"), None)?
+            let targets = p.field("targets");
+            for (i, item) in list(fragment.get("targets"), targets, None)?
                 .iter()
                 .enumerate()
             {
                 if is_null(Some(item)) {
                     continue;
                 }
-                let path = p(&format!("fragment.targets[{i}]"));
-                let t = record(Some(item), &path)?;
-                one_of(t.get("format"), COLOR_FORMATS, &format!("{path}.format"))?;
+                let path = targets.index(i);
+                let t = record(Some(item), path)?;
+                one_of(t.get("format"), COLOR_FORMATS, path.field("format"))?;
                 if !is_null(t.get("blend")) {
-                    let b = record(t.get("blend"), &format!("{path}.blend"))?;
+                    let blend = path.field("blend");
+                    let b = record(t.get("blend"), blend)?;
                     for part in ["color", "alpha"] {
-                        let w = format!("{path}.blend.{part}");
-                        let c = record(b.get(part), &w)?;
+                        let w = blend.field(part);
+                        let c = record(b.get(part), w)?;
                         one_of(
                             c.get("operation"),
                             &["add", "subtract", "reverse-subtract", "min", "max"],
-                            &format!("{w}.operation"),
+                            w.field("operation"),
                         )?;
-                        one_of(c.get("srcFactor"), FACTORS, &format!("{w}.srcFactor"))?;
-                        one_of(c.get("dstFactor"), FACTORS, &format!("{w}.dstFactor"))?;
+                        one_of(c.get("srcFactor"), FACTORS, w.field("srcFactor"))?;
+                        one_of(c.get("dstFactor"), FACTORS, w.field("dstFactor"))?;
                     }
                 }
-                let mask = format!("{path}.writeMask");
-                limit(whole(t.get("writeMask"), &mask)?, 15.0, &mask)?;
+                let mask = path.field("writeMask");
+                limit(whole(t.get("writeMask"), mask)?, 15.0, mask)?;
             }
         }
-        let primitive = record(d.get("primitive"), &p("primitive"))?;
+        let p = at.field("primitive");
+        let primitive = record(d.get("primitive"), p)?;
         one_of(
             primitive.get("topology"),
             &[
@@ -1047,125 +1098,107 @@ impl Checks {
                 "triangle-list",
                 "triangle-strip",
             ],
-            &p("primitive.topology"),
+            p.field("topology"),
         )?;
         if !is_null(primitive.get("stripIndexFormat")) {
             one_of(
                 primitive.get("stripIndexFormat"),
                 &["uint16", "uint32"],
-                &p("primitive.stripIndexFormat"),
+                p.field("stripIndexFormat"),
             )?;
         }
         one_of(
             primitive.get("frontFace"),
             &["ccw", "cw"],
-            &p("primitive.frontFace"),
+            p.field("frontFace"),
         )?;
         one_of(
             primitive.get("cullMode"),
             &["none", "front", "back"],
-            &p("primitive.cullMode"),
+            p.field("cullMode"),
         )?;
         if !is_null(d.get("depthStencil")) {
-            let depth = record(d.get("depthStencil"), &p("depthStencil"))?;
-            one_of(
-                depth.get("format"),
-                DEPTH_FORMATS,
-                &p("depthStencil.format"),
-            )?;
-            boolean(
-                depth.get("depthWriteEnabled"),
-                &p("depthStencil.depthWriteEnabled"),
-            )?;
-            one_of(
-                depth.get("depthCompare"),
-                COMPARE,
-                &p("depthStencil.depthCompare"),
-            )?;
+            let p = at.field("depthStencil");
+            let depth = record(d.get("depthStencil"), p)?;
+            one_of(depth.get("format"), DEPTH_FORMATS, p.field("format"))?;
+            boolean(depth.get("depthWriteEnabled"), p.field("depthWriteEnabled"))?;
+            one_of(depth.get("depthCompare"), COMPARE, p.field("depthCompare"))?;
         }
-        let multisample = record(d.get("multisample"), &p("multisample"))?;
-        samples(multisample.get("count"), &p("multisample.count"))?;
-        whole(multisample.get("mask"), &p("multisample.mask"))?;
+        let p = at.field("multisample");
+        let multisample = record(d.get("multisample"), p)?;
+        samples(multisample.get("count"), p.field("count"))?;
+        whole(multisample.get("mask"), p.field("mask"))?;
         boolean(
             multisample.get("alphaToCoverageEnabled"),
-            &p("multisample.alphaToCoverageEnabled"),
+            p.field("alphaToCoverageEnabled"),
         )?;
         Ok(())
     }
 
     /// A pass's descriptor.
     fn pass(&mut self, v: V) -> C<()> {
-        let at = "\"pass\" argument 1";
+        let at = Path::Arg("pass", 1);
         let d = record(v, at)?;
-        for (i, item) in list(
-            d.get("colorAttachments"),
-            &format!("{at}.colorAttachments"),
-            None,
-        )?
-        .iter()
-        .enumerate()
+        let attachments = at.field("colorAttachments");
+        for (i, item) in list(d.get("colorAttachments"), attachments, None)?
+            .iter()
+            .enumerate()
         {
             if is_null(Some(item)) {
                 continue;
             }
-            let path = format!("{at}.colorAttachments[{i}]");
-            let c = record(Some(item), &path)?;
-            self.find(c.get("view"), &format!("{path}.view"), &[Kind::View])?;
+            let path = attachments.index(i);
+            let c = record(Some(item), path)?;
+            self.find(c.get("view"), path.field("view"), &[Kind::View])?;
             if !is_null(c.get("resolveTarget")) {
                 self.find(
                     c.get("resolveTarget"),
-                    &format!("{path}.resolveTarget"),
+                    path.field("resolveTarget"),
                     &[Kind::View],
                 )?;
             }
-            for (j, part) in list(c.get("clearValue"), &format!("{path}.clearValue"), Some(4))?
+            let clear = path.field("clearValue");
+            for (j, part) in list(c.get("clearValue"), clear, Some(4))?
                 .iter()
                 .enumerate()
             {
-                finite(Some(part), &format!("{path}.clearValue[{j}]"))?;
+                finite(Some(part), clear.index(j))?;
             }
-            one_of(
-                c.get("loadOp"),
-                &["load", "clear"],
-                &format!("{path}.loadOp"),
-            )?;
+            one_of(c.get("loadOp"), &["load", "clear"], path.field("loadOp"))?;
             one_of(
                 c.get("storeOp"),
                 &["store", "discard"],
-                &format!("{path}.storeOp"),
+                path.field("storeOp"),
             )?;
         }
         if !is_null(d.get("depthStencilAttachment")) {
-            let path = format!("{at}.depthStencilAttachment");
-            let depth = record(d.get("depthStencilAttachment"), &path)?;
-            self.find(depth.get("view"), &format!("{path}.view"), &[Kind::View])?;
+            let path = at.field("depthStencilAttachment");
+            let depth = record(d.get("depthStencilAttachment"), path)?;
+            self.find(depth.get("view"), path.field("view"), &[Kind::View])?;
             if !is_null(depth.get("depthClearValue")) {
-                finite(
-                    depth.get("depthClearValue"),
-                    &format!("{path}.depthClearValue"),
-                )?;
+                finite(depth.get("depthClearValue"), path.field("depthClearValue"))?;
             }
             if !is_null(depth.get("depthLoadOp")) {
                 one_of(
                     depth.get("depthLoadOp"),
                     &["load", "clear"],
-                    &format!("{path}.depthLoadOp"),
+                    path.field("depthLoadOp"),
                 )?;
             }
             if !is_null(depth.get("depthStoreOp")) {
                 one_of(
                     depth.get("depthStoreOp"),
                     &["store", "discard"],
-                    &format!("{path}.depthStoreOp"),
+                    path.field("depthStoreOp"),
                 )?;
             }
-            boolean(depth.get("depthReadOnly"), &format!("{path}.depthReadOnly"))?;
+            boolean(depth.get("depthReadOnly"), path.field("depthReadOnly"))?;
         }
         self.passes += 1;
         limit(
             self.passes as f64,
             PASSES as f64,
-            "the number of render passes in a frame",
+            Path::Text("the number of render passes in a frame"),
         )
         .map(|_| ())
     }

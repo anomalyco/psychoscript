@@ -162,6 +162,13 @@ pub struct Gpu {
     all: Option<GpuError>,
     /// The batches' GPU work not known finished, with the canvases each draws into, and whether it was found hung.
     submits: Vec<Tracked>,
+    /// The canvases the batch being applied renders into, and the last batch's that submitted, shared with its
+    /// [`Tracked`] (made again only when they change).
+    keys: Vec<String>,
+    tracked_keys: Arc<[String]>,
+    /// Reused by each pass's color attachments and each `setBindGroup`'s dynamic offsets.
+    colors: Vec<replay::Color>,
+    offsets: Vec<u32>,
     /// Whether the batch being replayed submitted work.
     submitted: bool,
     /// Device losses while the run's GPU work was in flight, and whether work finished since the last.
@@ -347,7 +354,7 @@ fn caught(poll: impl FnOnce() -> Result<wgpu::PollStatus, wgpu::PollError>) -> b
 /// A batch's GPU work being watched for a hang: the canvases it draws into, and whether its hang was found.
 struct Tracked {
     submit: Arc<hang::Submit>,
-    keys: Vec<String>,
+    keys: Arc<[String]>,
     reported: bool,
 }
 
@@ -394,6 +401,10 @@ impl Gpu {
             stopped: HashMap::new(),
             all: None,
             submits: Vec::new(),
+            keys: Vec::new(),
+            tracked_keys: Arc::new([]),
+            colors: Vec::new(),
+            offsets: Vec::new(),
             submitted: false,
             strikes: hang::Strikes::default(),
             hung: None,
@@ -544,27 +555,37 @@ impl Gpu {
         if self.all.is_some() {
             return Ok(());
         }
-        let keys = self.checks.rendered(ops);
-        let present: Vec<&str> = self
-            .canvases
-            .iter()
-            .filter(|t| t.present)
-            .map(|t| t.key.as_str())
-            .collect();
+        let mut keys = std::mem::take(&mut self.keys);
+        self.checks.rendered_into(ops, &mut keys);
+        let canvases = &self.canvases;
+        let checked = self.checks.batch(ops, bytes.len(), &|k| {
+            canvases.iter().any(|t| t.present && t.key == k)
+        });
+        let applied = self.applied(ops, bytes, &keys, checked);
+        self.keys = keys;
+        applied
+    }
+
+    fn applied(
+        &mut self,
+        ops: &[Arg],
+        bytes: &[u8],
+        keys: &[String],
+        checked: Result<(), Failed>,
+    ) -> Result<(), GpuError> {
         // Every canvas it renders into was stopped: none of it replays, its passes into other textures included (a
         // hung canvas's heavy work never runs again).
         let skip = !keys.is_empty() && keys.iter().all(|k| self.stopped.contains_key(k));
-        let checked = self
-            .checks
-            .batch(ops, bytes.len(), &|k| present.contains(&k));
         // A batch that fails at an op stops its canvases, and the ops before it take effect, as separate calls would
         // (what it created and wrote, what it submitted); a pass or encoder open at the failure isn't submitted.
         let (count, checked) = match checked {
             Ok(()) => (ops.len(), Ok(())),
             Err(Failed::Stale) => return Ok(()),
-            Err(Failed::Message(m, None)) => return self.stop(keys, ErrorKind::Program, m),
+            Err(Failed::Message(m, None)) => {
+                return self.stop(keys.to_vec(), ErrorKind::Program, m);
+            }
             Err(Failed::Message(m, Some(count))) => {
-                (count, self.stop(keys.clone(), ErrorKind::Program, m))
+                (count, self.stop(keys.to_vec(), ErrorKind::Program, m))
             }
         };
         if skip {
@@ -573,15 +594,18 @@ impl Gpu {
         self.submitted = false;
         let replayed = self.replay(&ops[..count], bytes).err();
         if self.submitted {
+            if *self.tracked_keys != *keys {
+                self.tracked_keys = keys.into();
+            }
             self.submits.push(Tracked {
                 submit: hang::submitted(&self.queue),
-                keys: keys.clone(),
+                keys: self.tracked_keys.clone(),
                 reported: false,
             });
         }
         let replayed = match replayed {
             None => Ok(()),
-            Some((kind, message)) => self.stop(keys, kind, message),
+            Some((kind, message)) => self.stop(keys.to_vec(), kind, message),
         };
         checked.and(replayed)
     }
