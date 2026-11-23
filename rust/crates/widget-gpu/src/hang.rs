@@ -12,22 +12,26 @@ use std::time::{Duration, Instant};
 
 /// GPU work unfinished this long after its submit hung.
 pub const HANG: Duration = Duration::from_millis(250);
-/// At a device loss, the oldest unfinished submit that had run this long hung (the device's watchdog may have killed
-/// it before a poll saw it past [`HANG`]).
-pub const HANG_AT_LOSS: Duration = Duration::from_millis(250);
-/// The client error a hang stops canvases with.
+/// The client error a hang stops canvases with, and two strikes.
 pub const HANG_MESSAGE: &str = "the GPU work hung; the canvas is stopped";
-/// Work the GPU aborted after executing at least this long hung.
-pub const HANG_ABORTED: Duration = Duration::from_millis(30);
+/// Two device losses this close, each with the run's GPU work in flight, stop every canvas of the run.
+pub const STRIKE_WINDOW: Duration = Duration::from_secs(30);
 
-/// What a host can tell of its GPU's submissions beyond wgpu: whether the GPU aborted one (a
-/// recovery from a hang, its own or another's) and how long it had executed by then.
-pub trait Aborts: Send + Sync {
-    fn aborted(
-        &self,
-        queue: &wgpu::Queue,
-        submission: &wgpu::SubmissionIndex,
-    ) -> Option<std::time::Duration>;
+/// A run's strikes: device losses while its GPU work was in flight. Only the last one's time matters.
+#[derive(Default)]
+pub(crate) struct Strikes {
+    last: Option<Instant>,
+}
+
+impl Strikes {
+    /// A strike at `now`; whether it is the second within [`STRIKE_WINDOW`].
+    pub(crate) fn strike(&mut self, now: Instant) -> bool {
+        let second = self
+            .last
+            .is_some_and(|last| now.saturating_duration_since(last) <= STRIKE_WINDOW);
+        self.last = Some(now);
+        second
+    }
 }
 
 /// A submit: when it was made, whether its work finished, whether it was found hung.
@@ -88,8 +92,8 @@ pub(crate) fn submitted(queue: &wgpu::Queue) -> Arc<Submit> {
     submit
 }
 
-/// Finds `queue`'s hung submit, if any: its oldest unfinished one, unfinished `after` ([`HANG`], or at a loss
-/// [`HANG_AT_LOSS`]) after its submit and after the one before it finished.
+/// Finds `queue`'s hung submit, if any: its oldest unfinished one, unfinished `after` ([`HANG`]) after its submit and
+/// after the one before it finished.
 pub(crate) fn judge(queue: &wgpu::Queue, after: Duration) {
     let mut queues = QUEUES.lock().unwrap_or_else(PoisonError::into_inner);
     let k = key(queue);
@@ -141,11 +145,10 @@ mod tests {
     #[test]
     fn the_thresholds() {
         assert_eq!(
-            (HANG, HANG_AT_LOSS),
-            (Duration::from_millis(250), Duration::from_millis(250))
+            (HANG, STRIKE_WINDOW),
+            (Duration::from_millis(250), Duration::from_secs(30))
         );
         assert_eq!(HANG_MESSAGE, "the GPU work hung; the canvas is stopped");
-        assert_eq!(HANG_ABORTED, Duration::from_millis(30));
     }
 
     /// Only the oldest unfinished submit on a queue can hang: what waits behind it isn't blamed, and the next one's
@@ -187,33 +190,18 @@ mod tests {
         assert!(late.hung());
     }
 
-    /// At a loss, the oldest unfinished submit hung once it had run 250 ms, from when the one before it finished;
-    /// what waits behind it isn't blamed.
+    /// Two strikes within 30 s stop the run; a first one, or one after a longer gap, doesn't.
     #[test]
-    fn at_a_loss_a_quarter_second_is_a_hang() {
+    fn two_strikes_within_30_s() {
         let t0 = Instant::now();
-        let ms = |n: u64| t0 + Duration::from_millis(n);
-        let (first, second) = (submit(ms(0)), submit(ms(100)));
-        let mut q = Queue {
-            submits: [first.clone(), second.clone()].into(),
-            since: ms(0),
-        };
-        assert!(!q.judge(ms(249), HANG_AT_LOSS));
-        assert!(!first.hung());
-        assert!(!q.judge(ms(250), HANG_AT_LOSS));
-        assert!(first.hung() && !second.hung());
-        // A submit that started running only when the one before finished, 200 ms before the loss: not hung.
-        let (done, running) = (submit(ms(0)), submit(ms(10)));
-        let mut q = Queue {
-            submits: [done.clone(), running.clone()].into(),
-            since: ms(0),
-        };
-        assert!(!q.judge(ms(800), HANG_AT_LOSS));
-        done.forget();
-        assert!(!q.judge(ms(900), HANG_AT_LOSS));
-        assert!(!q.judge(ms(1100), HANG_AT_LOSS));
-        assert!(!running.hung());
-        assert!(!q.judge(ms(1150), HANG_AT_LOSS));
-        assert!(running.hung());
+        let s = |n: u64| t0 + Duration::from_secs(n);
+        let mut strikes = Strikes::default();
+        assert!(!strikes.strike(s(0)));
+        // 31 s later: it starts again from this one.
+        assert!(!strikes.strike(s(31)));
+        assert!(strikes.strike(s(61)));
+        let mut strikes = Strikes::default();
+        assert!(!strikes.strike(s(100)));
+        assert!(strikes.strike(s(130)));
     }
 }

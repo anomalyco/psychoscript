@@ -276,15 +276,16 @@ impl Shorthand {
         self.gpu.error(KEY).or(self.stopped.as_ref())
     }
 
-    /// Tells which submissions the GPU aborted ([`Gpu::set_aborts`]): a frame aborted after [`crate::HANG_ABORTED`]
-    /// hung.
-    pub fn set_aborts(&mut self, aborts: Option<Arc<dyn crate::Aborts>>) {
-        self.gpu.set_aborts(aborts);
+    /// The device is lost ([`Gpu::lost`]): call it as soon as the host knows, before [`Shorthand::reset`]. A frame in
+    /// flight at the loss is a strike; the second within [`crate::STRIKE_WINDOW`] stops the shader with
+    /// [`crate::HANG_MESSAGE`] and its placeholder.
+    pub fn lost(&mut self) {
+        self.lost_at(Instant::now());
     }
 
-    /// The device is lost ([`Gpu::lost`]): call it as soon as the host knows, before [`Shorthand::reset`].
-    pub fn lost(&mut self) {
-        self.gpu.lost();
+    /// [`Shorthand::lost`], the loss at `now` (a test's clock).
+    pub fn lost_at(&mut self, now: Instant) {
+        self.gpu.lost_at(now);
         self.frames.drawing = None;
     }
 

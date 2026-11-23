@@ -343,10 +343,9 @@ impl Gpu {
                 None
             }
             "submit" => {
-                let submission = self
-                    .queue
+                self.queue
                     .submit(run.encoder.take().map(wgpu::CommandEncoder::finish));
-                self.submissions.push(submission);
+                self.submitted = true;
                 for c in run.written.drain(..) {
                     self.canvases[c].version += 1;
                 }

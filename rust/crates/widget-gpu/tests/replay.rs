@@ -1558,238 +1558,174 @@ fn a_batch_that_hangs_stops_its_canvases() {
     assert!(gpu.error("b").is_some());
 }
 
-/// A fake of the host's [`widget_gpu::Aborts`]: the n-th submission asked about (in submit order, which it checks)
-/// was aborted after `times[n]`, or not at all.
-struct FakeAborts {
-    times: Vec<Option<std::time::Duration>>,
-    asked: std::sync::Mutex<Vec<u64>>,
-}
-
-impl FakeAborts {
-    fn new(ms: &[Option<u64>]) -> std::sync::Arc<FakeAborts> {
-        let times = ms
-            .iter()
-            .map(|t| t.map(std::time::Duration::from_millis))
-            .collect();
-        std::sync::Arc::new(FakeAborts {
-            times,
-            asked: Default::default(),
-        })
-    }
-}
-
-impl widget_gpu::Aborts for FakeAborts {
-    fn aborted(
-        &self,
-        _queue: &wgpu::Queue,
-        submission: &wgpu::SubmissionIndex,
-    ) -> Option<std::time::Duration> {
-        let index: u64 = format!("{submission:?}")
-            .chars()
-            .filter(char::is_ascii_digit)
-            .collect::<String>()
-            .parse()
-            .unwrap();
-        let mut asked = self.asked.lock().unwrap();
-        let at = match asked.iter().position(|i| *i == index) {
-            Some(at) => at,
-            None => {
-                assert!(
-                    asked.last().is_none_or(|l| *l < index),
-                    "asked out of submit order"
-                );
-                asked.push(index);
-                asked.len() - 1
-            }
-        };
-        self.times.get(at).copied().flatten()
-    }
-}
-
-/// With the host's [`widget_gpu::Aborts`], work the GPU aborted after executing [`widget_gpu::HANG_ABORTED`] hung, as
-/// Metal tells of a hang's recovery: the culprit (50 ms) stops its canvases; work queued behind it (0 ms) and innocent
-/// work alongside (20 ms) don't. Without it, only the time rules tell.
-#[test]
-fn aborted_work_is_a_hang() {
-    let _gpu = shared();
-    let (device, queue) = common::device();
-    let module = "@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
-    return vec4f(f32((i << 1u) & 2u) * 2.0 - 1.0, f32(i & 2u) * 2.0 - 1.0, 0.0, 1.0);
-}
-@fragment fn fs() -> @location(0) vec4f { return vec4f(0.0, 1.0, 0.0, 1.0); }";
-    let gpu = |aborts: Option<std::sync::Arc<FakeAborts>>| {
-        let mut gpu = Gpu::new(device.clone(), queue.clone(), RGBA).unwrap();
-        for k in ["a", "b", "c"] {
-            gpu.resize(k, 8, 8);
-        }
-        gpu.set_aborts(aborts.map(|a| a as std::sync::Arc<dyn widget_gpu::Aborts>));
-        let mut b = Batch::default();
-        for (h, k) in [(1, "a"), (3, "b"), (5, "c")] {
-            b.op(json!(["context", h, k, "rgba8unorm", "opaque"]))
-                .op(json!(["view", h + 1, h, {}]));
-        }
-        b.op(json!(["shader", 7, module]));
-        b.op(
-            json!(["renderPipeline", 8, { "layout": "auto", "vertex": { "module": 7 },
-            "fragment": { "module": 7, "targets": [{ "format": "rgba8unorm" }] } }]),
-        );
-        b.op(json!(["texture", 9, 8, 8, 1, "rgba8unorm", 16, 1, 1]))
-            .op(json!(["view", 10, 9, {}]));
-        gpu.apply(&b.ops, &[]).unwrap();
-        gpu
-    };
-    let draw = |gpu: &mut Gpu, view: u32| {
-        let mut b = Batch::default();
-        pass_into(&mut b, view, [0.0; 4]);
-        b.op(json!(["setPipeline", 8]))
-            .op(json!(["draw", 3, 1, 0, 0]))
-            .op(json!(["end"]))
-            .op(json!(["submit"]));
-        gpu.apply(&b.ops, &[]).unwrap();
-    };
-    let idle = || device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-
-    // The culprit into `a`, queued work into `b`, innocent work into `c`.
-    let aborts = FakeAborts::new(&[Some(50), Some(0), Some(20)]);
-    let mut g = gpu(Some(aborts.clone()));
-    for view in [2, 4, 6] {
-        draw(&mut g, view);
-    }
-    idle();
-    let e = g.poll().unwrap_err();
-    assert_eq!(
-        (e.kind, e.message.as_str()),
-        (ErrorKind::Client, HANG_MESSAGE)
-    );
-    assert_eq!(e.canvases, Stops::Canvases(vec!["a".into()]));
-    assert_eq!((g.error("b"), g.error("c")), (None, None));
-    assert_eq!(aborts.asked.lock().unwrap().len(), 3);
-    assert_eq!(g.poll(), Ok(()));
-    // Kept across a device loss.
-    g.reset(device.clone(), queue.clone()).unwrap();
-    assert_eq!(g.poll(), Ok(()));
-    assert_eq!(g.error("a").map(|e| e.message.as_str()), Some(HANG_MESSAGE));
-
-    // Without `Aborts`, the same work isn't a hang.
-    let mut g = gpu(None);
-    for view in [2, 4, 6] {
-        draw(&mut g, view);
-    }
-    idle();
-    assert_eq!(g.poll(), Ok(()));
-
-    // Aborted work drawing into no canvas: every canvas.
-    let mut g = gpu(Some(FakeAborts::new(&[Some(53)])));
-    draw(&mut g, 10);
-    idle();
-    assert_eq!(g.poll().unwrap_err().canvases, Stops::All);
-
-    // At a loss, every submit is asked, finished or not.
-    let mut g = gpu(Some(FakeAborts::new(&[Some(50)])));
-    draw(&mut g, 2);
-    g.lost();
-    assert_eq!(
-        g.poll().unwrap_err().canvases,
-        Stops::Canvases(vec!["a".into()])
-    );
-    idle();
-
-    // A shader frame the GPU aborted: the hang's placeholder, not the 50 ms rule's last frame.
-    let mut s = Shorthand::new(device.clone(), queue.clone(), RGBA, PLASMA).unwrap();
-    s.set_aborts(Some(FakeAborts::new(&[Some(50)])));
-    let u = Uniforms {
-        scale: 1.0,
-        ..Default::default()
-    };
-    s.render(W, H, &u).unwrap();
-    idle();
-    s.poll();
-    let e = s.error().expect("a hang");
-    assert_eq!(
-        (e.kind, e.message.as_str(), s.too_slow()),
-        (ErrorKind::Client, HANG_MESSAGE, false)
-    );
-}
-
-/// What a stopped canvas draws isn't replayed: after a hang stops `a` (told by `Aborts`), a batch's pass into `a`
-/// isn't drawn while its pass into `b` is, and a batch rendering only into `a` (an offscreen pass with it) isn't
-/// submitted at all; likewise for a canvas an error stopped.
+/// What a stopped canvas draws isn't replayed: after an error stops `a`, a batch's pass into `a` isn't drawn while its
+/// pass into `b` is, and a batch rendering only into `a` isn't replayed at all, its offscreen pass included: `b`,
+/// sampling that offscreen texture afterwards, finds it as it was.
 #[test]
 fn a_stopped_canvas_draws_no_more() {
     let _gpu = shared();
     let (device, queue) = common::device();
-    let aborts = FakeAborts::new(&[Some(50)]);
     let mut gpu = Gpu::new(device.clone(), queue.clone(), RGBA).unwrap();
-    gpu.set_aborts(Some(aborts.clone()));
-    gpu.resize("a", 8, 8);
-    gpu.resize("b", 8, 8);
-    let module = "@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
-    return vec4f(f32((i << 1u) & 2u) * 2.0 - 1.0, f32(i & 2u) * 2.0 - 1.0, 0.0, 1.0);
-}
-@fragment fn fs() -> @location(0) vec4f { return vec4f(0.0, 1.0, 0.0, 1.0); }";
+    gpu.resize("a", W, H);
+    gpu.resize("b", W, H);
     let mut b = Batch::default();
     b.op(json!(["context", 1, "a", "rgba8unorm", "opaque"]))
         .op(json!(["view", 2, 1, {}]));
     b.op(json!(["context", 3, "b", "rgba8unorm", "opaque"]))
         .op(json!(["view", 4, 3, {}]));
-    b.op(json!(["shader", 5, module]));
-    b.op(
-        json!(["renderPipeline", 6, { "layout": "auto", "vertex": { "module": 5 },
-        "fragment": { "module": 5, "targets": [{ "format": "rgba8unorm" }] } }]),
-    );
-    b.op(json!(["texture", 7, 8, 8, 1, "rgba8unorm", 16, 1, 1]))
-        .op(json!(["view", 8, 7, {}]));
+    // An offscreen texture, and a quad on `b` that samples it.
+    b.op(json!(["texture", 5, 4, 4, 1, "rgba8unorm", 16 | 4, 1, 1]))
+        .op(json!(["view", 6, 5, {}]));
+    b.op(json!(["shader", 7, QUAD]));
+    b.op(json!(["renderPipeline", 8, { "layout": "auto", "vertex": { "module": 7, "entryPoint": "vs" },
+        "fragment": { "module": 7, "entryPoint": "fs", "targets": [{ "format": "rgba8unorm" }] },
+        "primitive": { "topology": "triangle-strip" } }]));
+    b.op(json!(["autoLayout", 9, 8, 0]))
+        .op(json!(["sampler", 10, {}]));
+    b.op(json!(["bindGroup", 11, { "layout": 9, "entries": [
+        { "binding": 0, "resource": { "view": 6 } }, { "binding": 1, "resource": { "sampler": 10 } }] }]));
     gpu.apply(&b.ops, &[]).unwrap();
-    let passes = |views: &[u32], draw: bool| {
+    let clears = |views: &[(u32, [f64; 4])]| {
         let mut b = Batch::default();
-        for &view in views {
-            pass_into(&mut b, view, [0.0; 4]);
-            if draw {
-                b.op(json!(["setPipeline", 6]));
-            }
-            b.op(json!(["draw", 3, 1, 0, 0])).op(json!(["end"]));
+        for &(view, clear) in views {
+            pass_into(&mut b, view, clear);
+            b.op(json!(["end"]));
         }
         b.op(json!(["submit"]));
         b
     };
-    let idle = || device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    let sample = |gpu: &mut Gpu| {
+        let mut b = Batch::default();
+        pass_into(&mut b, 4, [0.0, 0.0, 0.0, 1.0]);
+        b.op(json!(["setPipeline", 8]))
+            .op(json!(["setBindGroup", 0, 11, []]));
+        b.op(json!(["draw", 4, 1, 0, 0]))
+            .op(json!(["end"]))
+            .op(json!(["submit"]));
+        gpu.apply(&b.ops, &[]).unwrap();
+        common::read(&device, &queue, gpu.canvas("b").unwrap().texture)[(32 * W + 32) as usize]
+    };
     let version = |gpu: &Gpu, k: &str| gpu.canvas(k).map_or(0, |c| c.version);
-    let asked = || aborts.asked.lock().unwrap().len();
 
-    // A hang stops `a`.
-    gpu.apply(&passes(&[2], true).ops, &[]).unwrap();
-    idle();
-    assert_eq!(
-        gpu.poll().unwrap_err().canvases,
-        Stops::Canvases(vec!["a".into()])
-    );
-    let (a, b) = (version(&gpu, "a"), version(&gpu, "b"));
+    // A draw without a pipeline into `a`: a validation error stops `a`.
+    let mut bad = Batch::default();
+    pass_into(&mut bad, 2, [0.0; 4]);
+    bad.op(json!(["draw", 3, 1, 0, 0]))
+        .op(json!(["end"]))
+        .op(json!(["submit"]));
+    let e = gpu.apply(&bad.ops, &[]).unwrap_err();
+    assert_eq!(e.canvases, Stops::Canvases(vec!["a".into()]));
+    let a = version(&gpu, "a");
     // A batch into both: `b` draws, `a` doesn't.
-    gpu.apply(&passes(&[2, 4], true).ops, &[]).unwrap();
-    idle();
+    gpu.apply(
+        &clears(&[(2, [1.0, 0.0, 0.0, 1.0]), (4, [0.0, 1.0, 0.0, 1.0])]).ops,
+        &[],
+    )
+    .unwrap();
+    assert_eq!((version(&gpu, "a"), version(&gpu, "b")), (a, 1));
+    // A batch into `a` alone, through an offscreen pass first: not replayed, the texture stays transparent.
+    gpu.apply(
+        &clears(&[(6, [1.0, 0.0, 0.0, 1.0]), (2, [1.0, 0.0, 0.0, 1.0])]).ops,
+        &[],
+    )
+    .unwrap();
+    assert_eq!(version(&gpu, "a"), a);
+    assert_eq!(sample(&mut gpu), [0, 0, 0, 0]);
+    // The offscreen pass alone renders into no canvas: it replays, and `b` samples it red.
+    gpu.apply(&clears(&[(6, [1.0, 0.0, 0.0, 1.0])]).ops, &[])
+        .unwrap();
+    assert_eq!(sample(&mut gpu), RED);
+}
+
+/// Strikes (`widgets-gpu.md`, Strikes): a device loss while the run's GPU work is in flight is a strike, and the
+/// second within 30 s stops every canvas for the rest of the run, with the hang's message, across resets and
+/// snapshots. A first strike changes nothing visible; a loss with no work in flight is no strike.
+#[test]
+fn two_losses_with_work_in_flight_stop_the_run() {
+    let _gpu = shared();
+    let (device, queue) = common::device();
+    let mut gpu = Gpu::new(device.clone(), queue.clone(), RGBA).unwrap();
+    gpu.resize("a", 8, 8);
+    gpu.resize("b", 8, 8);
+    let t0 = std::time::Instant::now();
+    let s = |n: u64| t0 + std::time::Duration::from_secs(n);
+    // A context for `a`, its view and a pass into it, from handle `h`; the work is in flight (not seen finished).
+    let draw = |gpu: &mut Gpu, h: u32| {
+        let mut b = Batch::default();
+        b.op(json!(["context", h, "a", "rgba8unorm", "opaque"]))
+            .op(json!(["view", h + 1, h, {}]));
+        pass_into(&mut b, h + 1, [0.0; 4]);
+        b.op(json!(["end"])).op(json!(["submit"]));
+        gpu.apply(&b.ops, &[]).unwrap();
+    };
+    let loss = |gpu: &mut Gpu, at: u64| {
+        gpu.lost_at(s(at));
+        gpu.reset(device.clone(), queue.clone()).unwrap();
+    };
+    // A loss with no work in flight: no strike.
+    draw(&mut gpu, 1);
+    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
     assert_eq!(gpu.poll(), Ok(()));
-    assert_eq!((version(&gpu, "a"), version(&gpu, "b")), (a, b + 1));
-    let submitted = asked();
-    assert_eq!(submitted, 2);
-    // A batch into `a` alone, through an offscreen pass first: not submitted at all.
-    gpu.apply(&passes(&[8, 2], true).ops, &[]).unwrap();
-    idle();
-    assert_eq!(gpu.poll(), Ok(()));
-    assert_eq!((asked(), version(&gpu, "a")), (submitted, a));
-    // An error stops `b` (a draw without a pipeline); then a batch into `b` alone isn't submitted either.
+    loss(&mut gpu, 0);
+    // A first strike: nothing visible.
+    draw(&mut gpu, 3);
+    loss(&mut gpu, 1);
+    assert_eq!((gpu.poll(), gpu.error("a")), (Ok(()), None));
+    // The second, 31 s later: too late, it counts as a first again.
+    draw(&mut gpu, 5);
+    loss(&mut gpu, 32);
+    assert_eq!((gpu.poll(), gpu.error("a")), (Ok(()), None));
+    // The next within 30 s: every canvas stops, for good.
+    draw(&mut gpu, 7);
+    loss(&mut gpu, 50);
+    let e = gpu.poll().unwrap_err();
     assert_eq!(
-        gpu.apply(&passes(&[4], false).ops, &[])
-            .unwrap_err()
-            .canvases,
-        Stops::Canvases(vec!["b".into()])
+        (e.kind, e.message.as_str(), &e.canvases),
+        (ErrorKind::Client, HANG_MESSAGE, &Stops::All)
     );
-    idle();
-    let _ = gpu.poll();
-    let submitted = asked();
-    gpu.apply(&passes(&[8, 4], true).ops, &[]).unwrap();
-    idle();
+    assert_eq!(gpu.error("b"), Some(&e));
+    assert_eq!(
+        gpu.saved_stops().all,
+        Some(SavedStop {
+            kind: ErrorKind::Client,
+            message: HANG_MESSAGE.into()
+        })
+    );
+    loss(&mut gpu, 60);
     assert_eq!(gpu.poll(), Ok(()));
-    assert_eq!(asked(), submitted);
+    assert_eq!(
+        gpu.error("a").map(|e| e.message.as_str()),
+        Some(HANG_MESSAGE)
+    );
+    // A run restored from a snapshot stays stopped.
+    let mut restored = Gpu::new(device.clone(), queue.clone(), RGBA).unwrap();
+    restored.restore_stops(gpu.saved_stops());
+    assert_eq!(restored.error("a"), Some(&e));
+}
+
+/// A shader with a frame in flight at a loss gets a strike; the second within 30 s stops it with the hang's
+/// placeholder.
+#[test]
+fn a_shader_struck_twice_stops() {
+    let _gpu = shared();
+    let (device, queue) = common::device();
+    let mut s = Shorthand::new(device.clone(), queue.clone(), RGBA, PLASMA).unwrap();
+    let t0 = std::time::Instant::now();
+    let u = Uniforms {
+        scale: 1.0,
+        ..Default::default()
+    };
+    for (at, stopped) in [(0, false), (10, true)] {
+        s.render(W, H, &u).unwrap();
+        s.lost_at(t0 + std::time::Duration::from_secs(at));
+        s.reset(device.clone(), queue.clone()).unwrap();
+        s.poll();
+        assert_eq!(
+            s.error().map(|e| e.message.as_str()),
+            stopped.then_some(HANG_MESSAGE)
+        );
+    }
+    assert!(!s.too_slow());
 }
 
 /// A shader drawn again after a device loss: its handles are new ones on the new device.
