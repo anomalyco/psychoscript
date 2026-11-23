@@ -22,7 +22,7 @@ widget-gpu = ["widget-wire", "dep:widget-gpu", "dep:wgpu"]
 cli = ["uniffi/cli"]
 # Rust-only hooks for this crate's tests (`gpu_lose_device`, `gpu_fake_aborts`, `LiveRun::gpu_stats`, the posted
 # batches' recording, ...): never in a release build. The tests turn it on (the dev-dependency below).
-test-hooks = ["widget-wire?/test-hooks"]
+test-hooks = ["widget-wire?/test-hooks", "widget-gpu?/test-hooks"]
 
 [[bin]]
 name = "uniffi-bindgen"

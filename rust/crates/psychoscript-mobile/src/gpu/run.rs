@@ -513,9 +513,15 @@ impl widget_wire::GpuHost for Host {
                 gpu.end_frame();
                 // A test's loss with the frame's work in flight: nothing polled since its last batch.
                 #[cfg(feature = "test-hooks")]
-                if super::LOSE_AT_FRAME_END.swap(false, Ordering::SeqCst) {
-                    gpu.lost();
-                    super::gpu_lose_device();
+                match super::LOSE_AT_FRAME_END.swap(0, Ordering::SeqCst) {
+                    0 => {}
+                    with => {
+                        if with == 2 {
+                            gpu.work_finished();
+                        }
+                        gpu.lost();
+                        super::gpu_lose_device();
+                    }
                 }
             }
             (None, None) => {}
@@ -562,7 +568,7 @@ impl device::Loss for RunGpu {
     fn tick(&self) {
         // A test's loss at the next frame end is to find that frame's work not seen finished.
         #[cfg(feature = "test-hooks")]
-        if super::LOSE_AT_FRAME_END.load(Ordering::SeqCst) {
+        if super::LOSE_AT_FRAME_END.load(Ordering::SeqCst) != 0 {
             return;
         }
         let mut st = match self.state.try_lock() {
