@@ -138,6 +138,121 @@ fn a_wait_that_never_ends_ends_at_the_wall_clock_backstop() {
     }
 }
 
+fn sliced(ms: u64, clock: Clock) -> Limits {
+    Limits {
+        slice_ms: Some(ms),
+        clock,
+        ..Limits::default()
+    }
+}
+
+fn sliced_out(o: &psychoscript::Outcome) -> bool {
+    matches!(&o.result, Err(d) if d.kind == DiagnosticKind::SliceExceeded)
+}
+
+/// A runtime whose `tick()` is an async host call that settles at once; `nap(ms)` a synchronous one that sleeps,
+/// `burn(ms)` one that spins, `spend(ms)` one that spins until it has used that much CPU time, and `block(ms)` one that
+/// the program blocks on while it sleeps.
+fn ticking(limits: Limits) -> Runtime {
+    let ms = |args: &[HostValue]| args.first().and_then(HostValue::as_f64).unwrap_or(0.0) as u64;
+    Runtime::make().limits(limits).globals(move |_| {
+        [
+            (
+                "tick",
+                HostFunction::new_async(|_, _| async { Ok(HostValue::Number(1.0)) }),
+            ),
+            (
+                "nap",
+                HostFunction::new(move |args, _| {
+                    thread::sleep(Duration::from_millis(ms(&args)));
+                    HostValue::Undefined
+                }),
+            ),
+            (
+                "burn",
+                HostFunction::new(move |args, _| {
+                    let until = Instant::now() + Duration::from_millis(ms(&args));
+                    while Instant::now() < until {
+                        std::hint::spin_loop();
+                    }
+                    HostValue::Undefined
+                }),
+            ),
+            (
+                "spend",
+                HostFunction::new(move |args, _| {
+                    let clock = thread_clock::ThreadClock::current();
+                    let until = clock.now() + Duration::from_millis(ms(&args));
+                    while clock.now() < until {
+                        std::hint::spin_loop();
+                    }
+                    HostValue::Undefined
+                }),
+            ),
+            (
+                "block",
+                HostFunction::new(move |args, _| {
+                    let ms = ms(&args);
+                    Returned::Block(Box::pin(async move {
+                        thread::sleep(Duration::from_millis(ms));
+                        Ok(HostValue::Undefined)
+                    }))
+                }),
+            ),
+        ]
+    })
+}
+
+#[test]
+fn a_loop_that_never_awaits_stops_at_the_slice() {
+    for clock in [Clock::Wall, Clock::ThreadCpu] {
+        let start = Instant::now();
+        let o = ticking(sliced(50, clock)).execute("await tick(); while (true) {}");
+        let took = start.elapsed();
+        assert!(sliced_out(&o), "{clock:?}: {:?}", o.result);
+        assert_eq!(
+            o.result.unwrap_err().message_lossy(),
+            "The program ran longer than 50ms without awaiting."
+        );
+        assert!(
+            took >= Duration::from_millis(50) && took < Duration::from_secs(2),
+            "{clock:?}: {took:?}"
+        );
+    }
+    // Promise jobs don't wait on the host: a loop of them is one stretch.
+    let o = ticking(sliced(50, Clock::Wall)).execute("while (true) await null");
+    assert!(sliced_out(&o), "{:?}", o.result);
+}
+
+#[test]
+fn a_program_that_awaits_the_host_often_runs_past_the_slice() {
+    // Fifty stretches of 10 ms, half a second in all, under a 50 ms slice.
+    let code = "for (let i = 0; i < 50; i++) { const t = Date.now(); while (Date.now() - t < 10) {} await tick() } return 1";
+    for clock in [Clock::Wall, Clock::ThreadCpu] {
+        let start = Instant::now();
+        let o = ticking(sliced(50, clock)).execute(code);
+        assert_eq!(o.result.unwrap(), json!(1), "{clock:?}");
+        assert!(start.elapsed() >= Duration::from_millis(400));
+    }
+}
+
+#[test]
+fn host_calls_are_not_counted_in_the_slice() {
+    // 300 ms in host calls without awaiting, under a 50 ms slice: sleeping, spinning and blocking.
+    for (clock, code) in [
+        (Clock::Wall, "nap(100); nap(100); nap(100); return 1"),
+        (
+            Clock::ThreadCpu,
+            "burn(100); burn(100); burn(100); return 1",
+        ),
+        (Clock::Wall, "burn(100); burn(100); burn(100); return 1"),
+        (Clock::Wall, "block(100); block(100); block(100); return 1"),
+    ] {
+        let o = ticking(sliced(50, clock)).execute(code);
+        assert_eq!(o.result.unwrap(), json!(1), "{clock:?}: {code}");
+    }
+}
+
 /// Runs `code` on another thread and suspends it once it waits on a host call: the saved state.
 fn suspend_waiting(rt: &Runtime, code: &str) -> psychoscript::Snapshot {
     let program = rt.program(code, &ProgramOptions::new());
@@ -171,6 +286,14 @@ fn a_suspended_run_keeps_its_clock() {
     let code = "let n = 0; for (let i = 0; i < 1000; i++) n += i; await wait(); return n";
     let state = suspend_waiting(&waiting(limits(50, Clock::ThreadCpu)), code);
     assert_eq!(state.0["header"]["limits"]["clock"], json!("threadCpu"));
+    let slice = suspend_waiting(
+        &waiting(Limits {
+            slice_ms: Some(50),
+            ..limits(1000, Clock::ThreadCpu)
+        }),
+        code,
+    );
+    assert_eq!(slice.0["header"]["limits"]["sliceMs"], json!(50));
     // A runtime without limits resumes it with its own: the wait ends at the backstop, ten times the timeout.
     let start = Instant::now();
     let o = waiting(Limits::default())
@@ -251,6 +374,15 @@ fn a_run_starved_by_a_cpu_hog_is_not_timed_out() {
         let per = (clock.now() - before).as_secs_f64() / probe as f64;
         let n = ((0.08 / per) as u64).max(1000);
         let code = program(n);
+        // Two stretches of half that, awaiting the host in between. The first calls the host when its CPU time is
+        // measured, after an eighth, and the call spends 70 ms of CPU time.
+        let part = |k: u64| format!("for (let i = 0; i < {k}; i++) s = (s + i * 7) % 1000003;");
+        let stretches = format!(
+            "let s = 0; {} spend(70); {} await tick(); {} return s",
+            part(n / 8),
+            part(n * 3 / 8),
+            part(n / 2)
+        );
         // The spinners, for a few seconds at most.
         let stop = Arc::new(AtomicBool::new(false));
         let hogs: Vec<_> = (0..spinners)
@@ -258,7 +390,7 @@ fn a_run_starved_by_a_cpu_hog_is_not_timed_out() {
                 let stop = stop.clone();
                 thread::spawn(move || {
                     place();
-                    let until = Instant::now() + Duration::from_secs(4);
+                    let until = Instant::now() + Duration::from_secs(8);
                     while !stop.load(Ordering::Relaxed) && Instant::now() < until {
                         std::hint::spin_loop();
                     }
@@ -275,6 +407,10 @@ fn a_run_starved_by_a_cpu_hog_is_not_timed_out() {
             .limits(limits(400, Clock::ThreadCpu))
             .execute(&code);
         let took = start.elapsed();
+        // The same for a 100 ms slice: each stretch's wall time is over it, its own CPU time isn't, and with the host
+        // call's it would be.
+        let wall_slice = ticking(sliced(100, Clock::Wall)).execute(&stretches);
+        let cpu_slice = ticking(sliced(100, Clock::ThreadCpu)).execute(&stretches);
         stop.store(true, Ordering::Relaxed);
         for h in hogs {
             h.join().unwrap();
@@ -288,6 +424,12 @@ fn a_run_starved_by_a_cpu_hog_is_not_timed_out() {
             timed_out(&wall),
             "the hog didn't starve the run: {:?}",
             wall.result
+        );
+        assert!(cpu_slice.result.is_ok(), "{:?}", cpu_slice.result);
+        assert!(
+            sliced_out(&wall_slice),
+            "the hog didn't starve the run: {:?}",
+            wall_slice.result
         );
         eprintln!(
             "{spinners} spinners: a run of {n} iterations, about 80 ms of CPU time, took {took:?}"

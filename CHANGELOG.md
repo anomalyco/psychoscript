@@ -6,7 +6,9 @@
   CPU time of the threads running the program, so a loaded machine doesn't time out a well-behaved program; waits on
   host calls count on the wall clock, up to ten times the timeout. A saved run keeps its clock. The new
   `crates/thread-clock` (`ThreadClock::current`, `now`) reads a thread's CPU time on Linux, Android, Apple platforms
-  and Windows, and the wall clock elsewhere. The reference is unchanged.
+  and Windows, and the wall clock elsewhere. `Limits::slice_ms` bounds how long a run computes without awaiting the
+  host, on the same clock and without its synchronous host calls; a run past it stops with `SliceExceeded`. The
+  reference is unchanged.
 - Typed arrays are opt-in: `Runtime.make({ typedArrays: true })` (Rust: `Runtime::typed_arrays(true)`). Without it, the
   default, programs and host functions behave as before they were added (0.2.1): no `ArrayBuffer`, `Uint16Array`,
   `Uint32Array`, `Int32Array`, `Float32Array` or `Float64Array`, a host function returning one fails at the call, and

@@ -51,6 +51,7 @@ let mesh = HostFunction::new(|_, _| HostValue::TypedArray(TypedArray::from_f32(&
 | a host typed array or `ArrayBuffer` (a view of the program's bytes) | `HostValue::TypedArray(TypedArray)` |
 | `limits.maxValueDepth` (at most 256) | `Limits::max_value_depth` (at most `MAX_VALUE_DEPTH_LIMIT`) |
 | `limits.timeoutMs` (wall clock) | `Limits::timeout_ms`, on `Limits::clock`: `Clock::Wall` (the default) or `Clock::ThreadCpu` (Rust only) |
+| (none) | `Limits::slice_ms`: the longest a run may compute without awaiting the host, on `Limits::clock` (Rust only) |
 | `typedArrays: true` | `Runtime::typed_arrays(true)` |
 | `Host.functionMarker` (under `translate: { functions: "mark" }`) | `HostValue::FunctionMarker`, `Data::FunctionMarker` |
 
@@ -113,6 +114,8 @@ Known differences:
   the CPU time of the threads while they run the program (`cpu.rs`), so a loaded machine never times out a program
   that is only waiting for a core; waits on host calls count on the wall clock, up to ten times the timeout. The check
   reads the thread's clock only when the wall time since its last reading could have used up the budget.
+  `Limits::slice_ms` bounds each stretch between awaits of the host the same way, leaving out synchronous host calls,
+  and stops the run with `SliceExceeded`, so a host needn't watch the run from outside.
 - Layout: `crates/psychoscript` (compiler on `oxc_parser`, VM, standard library, host functions, snapshots),
   `crates/thread-clock` (a thread's CPU time, read on it or from another thread, for hosts too), `conformance/`
   (generators and recordings), `bench/`, `test262/`.

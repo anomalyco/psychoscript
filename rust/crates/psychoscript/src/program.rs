@@ -366,6 +366,7 @@ impl<'a> Program<'a> {
                     if let Some(c) = &mut r.vm.cpu {
                         c.start(r.active_before);
                     }
+                    r.vm.slice_restart();
                     if round_trips(&self.shared) {
                         r.vm.start_roundtrip(r.round_trip_every);
                     }

@@ -397,6 +397,9 @@ pub fn capture(vm: &Vm, c: &Capture) -> Result<Snapshot, Refusal> {
     if limits.clock == crate::Clock::ThreadCpu {
         header["limits"]["clock"] = json!("threadCpu");
     }
+    if let Some(ms) = limits.slice_ms {
+        header["limits"]["sliceMs"] = json!(ms);
+    }
     if let Some(n) = limits.max_value_depth {
         header["limits"]["maxValueDepth"] = json!(n);
     }
@@ -2120,6 +2123,7 @@ pub fn header(snapshot: &Snapshot) -> R<Restored> {
             timeout_ms: opt("timeoutMs")?,
             max_output_bytes: opt("maxOutputBytes")?.map(|n| n as usize),
             max_heap_bytes: limits.get("maxHeapBytes").and_then(J::as_u64),
+            slice_ms: limits.get("sliceMs").and_then(J::as_u64),
             clock: match limits.get("clock").and_then(J::as_str) {
                 Some("threadCpu") => crate::Clock::ThreadCpu,
                 _ => crate::Clock::Wall,

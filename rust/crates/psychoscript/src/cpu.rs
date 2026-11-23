@@ -10,6 +10,20 @@ use std::time::{Duration, Instant};
 
 use thread_clock::ThreadClock;
 
+/// `Limits::slice_ms`: the stretch in progress. `wall` is where it began on the wall clock, moved on by the host work
+/// since, so its elapsed time is the stretch's own. Under `Clock::ThreadCpu`, `from` is the run's CPU time
+/// (`CpuMeter::used`) where it is measured from, likewise moved on by host work; it is first read once the stretch has
+/// run `SLICE_SLACK` of the slice, and `wall` then restarts from it. As a thread uses no more CPU time than passes,
+/// the CPU time since `from` is at most `wall`'s elapsed time, and the clock is read only once that reaches the slice.
+pub(crate) struct Slice {
+    pub(crate) from: Option<Duration>,
+    pub(crate) wall: Instant,
+}
+
+/// The part of the slice a stretch runs before its CPU time is measured (so that the many short ones never read the
+/// thread's clock); what it used meanwhile isn't counted, so a stretch may run up to that much past the slice.
+pub(crate) const SLICE_SLACK: u32 = 16;
+
 /// How many times the timeout a run may spend waiting on host calls, on the wall clock.
 pub(crate) const WAIT_BACKSTOP: u32 = 10;
 
