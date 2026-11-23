@@ -134,6 +134,7 @@ export const uint8ArrayGlobal = <R>(ctx: Interpreter<R>) => {
   const search = (value: Value) => (typeof value === "number" ? value : NaN)
   defineAccessor(proto, "length", (thisValue) => self(thisValue, "length").bytes.length)
   defineAccessor(proto, "byteLength", (thisValue) => self(thisValue, "byteLength").bytes.byteLength)
+  defineAccessor(proto, "byteOffset", (thisValue) => self(thisValue, "byteOffset").bytes.byteOffset)
   methods(builtins, proto, [
     ["at", 1, (thisValue, args) => self(thisValue, "at").bytes.at(optNumber(args[0]) ?? 0)],
     [
