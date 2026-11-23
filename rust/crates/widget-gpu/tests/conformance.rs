@@ -46,7 +46,8 @@ fn ops(v: &Value) -> Vec<Arg> {
 fn raw(source: &str) -> Vec<Posted> {
     let out: Arc<Mutex<Vec<String>>> = Arc::default();
     let sink = out.clone();
-    let runtime = Runtime::make().globals(move |_| {
+    // As a widget run has it (psychoscript-mobile): typed arrays on, for a batch's `ArrayBuffer`.
+    let runtime = Runtime::make().typed_arrays(true).globals(move |_| {
         let sink = sink.clone();
         [(
             "__record",

@@ -378,6 +378,8 @@ pub(crate) struct Control {
     encoded: Option<Mutex<Box<dyn EncodePosts>>>,
     /// The encoder's boundary depth.
     max_value_depth: Option<usize>,
+    /// Whether the encoder's runs have typed arrays.
+    typed_arrays: bool,
     /// When the timer asks for the encoder's held-back posts next.
     due_at: Mutex<Option<Instant>>,
     /// A program error that ended the run at once (a view the encoder refused).
@@ -418,6 +420,7 @@ impl Control {
             input_name,
             transport,
             max_value_depth: encoder.as_ref().and_then(|e| e.0.max_value_depth()),
+            typed_arrays: encoder.as_ref().is_some_and(|e| e.0.typed_arrays()),
             encoded: encoder.map(|e| Mutex::new(e.0.live())),
             ended: Mutex::new(None),
             due_at: Mutex::new(None),
@@ -598,6 +601,7 @@ impl Control {
         Runtime::make()
             .limits(limits)
             .translate(translate)
+            .typed_arrays(self.typed_arrays)
             .globals(move |run| {
                 let text: Arc<str> = match &input {
                     Some(text) => {

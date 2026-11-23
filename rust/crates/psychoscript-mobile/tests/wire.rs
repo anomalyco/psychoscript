@@ -1162,18 +1162,59 @@ fn step_output_values_with_to_json_read_as_their_json_does() {
         let (bin, json) = both_ways(state);
         assert_eq!(bin, json, "{state}");
     }
+    // Widget runs have typed arrays (other runs don't): one in the result fails the step as it would cross as data.
     let state = "{ bytes: new Float32Array([1.5]) }";
-    let json = program(format!(
-        "return {{ state: {state}, view: {{ type: \"divider\" }} }}"
-    ))
-    .run("{}".into(), RunOptions::default())
-    .unwrap_err();
     let bin = run_bytes(
         &format!("__widget_emit({{ type: \"divider\" }})\nreturn {{ state: {state} }}"),
         RunOptions::default(),
     )
     .unwrap_err();
-    assert_eq!(bin, json);
+    let PsychoScriptError::Runtime {
+        kind, reason, line, ..
+    } = bin
+    else {
+        panic!("{bin:?}")
+    };
+    assert_eq!((kind.as_str(), line), ("InvalidDataValue", None));
+    assert!(
+        reason.starts_with("TypeError: A Float32Array cannot cross to the host as data"),
+        "{reason}"
+    );
+}
+
+/// Typed arrays besides `Uint8Array` (psychoscript's `typed_arrays`) are on for runs with the widget encoder, step and
+/// live, for a GPU batch's `ArrayBuffer`; other runs keep the default, off.
+#[test]
+fn widget_runs_have_typed_arrays_and_others_dont() {
+    const KINDS: &str =
+        "[typeof ArrayBuffer, typeof Float32Array, typeof Uint32Array, typeof Uint8Array]";
+    let on = json!(["function", "function", "function", "function"]);
+    let off = json!(["undefined", "undefined", "undefined", "function"]);
+    let plain = program(format!("return {KINDS}"))
+        .run("{}".into(), RunOptions::default())
+        .unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&plain).unwrap(), off);
+    let step = run_bytes(
+        &format!("__widget_emit({{ type: \"divider\" }})\nreturn {{ state: {KINDS} }}"),
+        RunOptions::default(),
+    )
+    .unwrap();
+    let Output::Step(step) = decode_output(&step).unwrap() else {
+        panic!()
+    };
+    assert_eq!(step.state, on);
+    let (run, rx) = start_native(
+        &format!("__host.post({{ type: \"send\", value: {KINDS} }})\nawait __host.receive()"),
+        LiveOptions::default(),
+    );
+    assert_eq!(
+        posts(&rx),
+        [Post::Send {
+            value: on,
+            wake: true
+        }]
+    );
+    run.stop();
 }
 
 /// A view `levels` levels deep, columns down to a select (whose options' labels are the deepest values a valid view

@@ -62,7 +62,10 @@ nothing of the format. `ValueEncoder.widget()` (feature `widget-wire`, on by def
 format (opencode `specs/v2/widgets-binary.md`, crate `widget-wire`) for a native host of widget protocol 2
 (`widgets.md`, Native hosts): it builds the view tree (ids, keys, handlers) itself while it encodes, from the view as
 the program built it. Runs with an encoder pass program functions to the host as markers (psychoscript
-`translate: { functions: "mark" }`).
+`translate: { functions: "mark" }`). Runs with the widget encoder (steps and live runs) also have psychoscript's typed
+arrays (`typedArrays: true`: `ArrayBuffer`, `Float32Array`, `Uint16Array`, `Uint32Array`, `Int32Array`,
+`Float64Array`), for a GPU batch's bytes; other runs keep psychoscript's default, without them (only `Uint8Array`).
+A snapshot resumes only with the same setting, so restore a widget run with the widget encoder.
 
 - **Checked before running.** `runBytes` and `startLive` with an encoder first let it check the program's first line;
   a refused program doesn't run, and the call fails with `Runtime` of the encoder's kind. The widget encoder runs only

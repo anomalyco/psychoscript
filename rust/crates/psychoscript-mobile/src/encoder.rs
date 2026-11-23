@@ -23,6 +23,11 @@ pub trait EncodeValues: Send + Sync {
     fn max_value_depth(&self) -> Option<usize> {
         None
     }
+    /// Whether runs with this encoder have the typed arrays besides `Uint8Array` (the language's `typed_arrays`, off
+    /// by default). A snapshot resumes only with the same setting.
+    fn typed_arrays(&self) -> bool {
+        false
+    }
     /// What one `run_bytes` keeps between its emit calls and its result, for a run with this input.
     fn step(&self, input: &HostValue) -> Box<dyn EncodeStep>;
     /// What a live run keeps between its posts.
@@ -214,6 +219,10 @@ mod widget {
         }
         fn max_value_depth(&self) -> Option<usize> {
             Some(widget_wire::MAX_VALUE_DEPTH)
+        }
+        // A GPU batch's bytes are an `ArrayBuffer` (`widgets-gpu.md`).
+        fn typed_arrays(&self) -> bool {
+            true
         }
         fn step(&self, input: &HostValue) -> Box<dyn EncodeStep> {
             let draw = input.get("phase").and_then(HostValue::as_str) == Some("draw");
