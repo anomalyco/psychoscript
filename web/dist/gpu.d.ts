@@ -65,7 +65,7 @@ export declare class GpuReplay {
     private get;
     /** The context's canvas, configured: it may have been rendered anew since. Throws SKIP for a stopped canvas. */
     private context;
-    /** A texture by handle, for a copy or a write: a canvas's texture (usage RENDER_ATTACHMENT) can be neither. */
+    /** A texture by handle, for a copy or a write: never a canvas's (the host checks refuse it). */
     private texture;
     /** A view by handle: a canvas's stands for its current texture, or its kept one while it has one. */
     private view;

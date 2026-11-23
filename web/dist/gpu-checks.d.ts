@@ -32,9 +32,9 @@ export declare const canvasSize: (width: number, height: number) => readonly [nu
 /**
  * The checks of a widget's batches, in order. `canvases` gives the keys of the GPU canvases in the last rendered view.
  * A batch gives its first error, or none, and the rest of it goes unchecked. The error stops the canvases the batch
- * renders into (a pass's color attachment or its resolve target is a view of their texture), or every GPU canvas of the widget when it renders
- * into none; then later batches go unchecked. An error stopping only canvases already stopped isn't given again. A
- * batch whose first error names a handle from before a device loss is dropped without one.
+ * renders into (a pass's color attachment or its resolve target is a view of their texture), or every GPU canvas of the
+ * widget when it renders into none; then later batches go unchecked. An error stopping only canvases already stopped
+ * isn't given again. A batch whose first error names a handle from before a device loss is dropped without one.
  */
 export declare function gpuChecks(canvases: () => ReadonlySet<string>): {
     /** Checks a batch. */

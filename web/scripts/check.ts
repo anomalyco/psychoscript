@@ -1242,6 +1242,15 @@ for (const query of ["?only=shader-broken"]) {
   )
   check(invalid.text.includes("over the scene"), "gpu: the rest of the widget keeps working (the layer over the canvas)", invalid.text)
   await done(page)
+  await mount(page, gpu.written)
+  const written = await state(page)
+  const message = `gpu op 1: "writeTexture" argument 1 uses canvas "scene"'s texture, which can only be rendered into`
+  check(
+    written.reports.length === 1 && written.reports[0]!.message === message && written.alt === "A GPU scene\n" + message,
+    "gpu: a write into a canvas's texture is a host check, the spec's message; the canvas shows it",
+    { reports: written.reports, alt: written.alt },
+  )
+  await done(page)
 
   // opencode's example widget templates (test/fixtures/gpu/templates), running on.
   await copies()

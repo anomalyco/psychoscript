@@ -291,3 +291,6 @@ export const midFrame = `async function main() {
   for (let n = 0; n < 60; n++) await widget.frame()
   await widget.sleep(100000)
 }`
+
+/** A write into the canvas's texture: a host check (it can only be rendered into). */
+export const written = frame("", `device.queue.writeTexture({ texture: context.getCurrentTexture() }, new Uint8Array(4), { bytesPerRow: 4 }, [1, 1])`, 1)

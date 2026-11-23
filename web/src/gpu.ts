@@ -286,12 +286,9 @@ export class GpuReplay {
     return o.ctx
   }
 
-  /** A texture by handle, for a copy or a write: a canvas's texture (usage RENDER_ATTACHMENT) can be neither. */
-  private texture(h: unknown, device: GPUDevice): GPUTexture {
-    const o = this.get<"texture" | "context">(h)
-    if (o.kind === "texture") return o.gpu
-    this.context(o, device)
-    throw new Error(`the texture of GPU canvas "${o.key}" has usage RENDER_ATTACHMENT only: it can't be copied to or from`)
+  /** A texture by handle, for a copy or a write: never a canvas's (the host checks refuse it). */
+  private texture(h: unknown): GPUTexture {
+    return this.get<"texture">(h).gpu
   }
 
   /** A view by handle: a canvas's stands for its current texture, or its kept one while it has one. */
@@ -458,7 +455,7 @@ export class GpuReplay {
         return
       case "writeTexture":
         device.queue.writeTexture(
-          { texture: this.texture(a, device), mipLevel: num(b), origin: xyz(c) },
+          { texture: this.texture(a), mipLevel: num(b), origin: xyz(c) },
           bytes.subarray(num(d), num(d) + num(e)),
           { offset: 0, bytesPerRow: num(f), rowsPerImage: whole(g) },
           extent(h),
@@ -470,14 +467,14 @@ export class GpuReplay {
       case "copyBufferToTexture":
         this.encode(device).copyBufferToTexture(
           { buffer: this.get<"buffer">(a).gpu, offset: num(b), bytesPerRow: num(c), rowsPerImage: whole(d) },
-          { texture: this.texture(e, device), mipLevel: num(f), origin: xyz(g) },
+          { texture: this.texture(e), mipLevel: num(f), origin: xyz(g) },
           extent(h),
         )
         return
       case "copyTextureToTexture":
         this.encode(device).copyTextureToTexture(
-          { texture: this.texture(a, device), mipLevel: num(b), origin: xyz(c) },
-          { texture: this.texture(d, device), mipLevel: num(e), origin: xyz(f) },
+          { texture: this.texture(a), mipLevel: num(b), origin: xyz(c) },
+          { texture: this.texture(d), mipLevel: num(e), origin: xyz(f) },
           extent(g),
         )
         return

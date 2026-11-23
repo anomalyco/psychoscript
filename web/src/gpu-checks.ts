@@ -1,6 +1,6 @@
 // GPU batch checks a host makes without a GPU (specs/v2/widgets-gpu.md, Host checks): every op's shape, the handles
 // it names, and the limits; the page replays what passes (gpu.ts). Opencode's `packages/widget/src/gpu.ts` at widgets
-// 8d5400dd4, the reference, with three changes for this host: a batch's bytes come as a `Uint8Array` (a view of what
+// ddac5fcaa, the reference, with three changes for this host: a batch's bytes come as a `Uint8Array` (a view of what
 // the worker transferred), an error gives the op it stopped at (`at`, the ops before it replay), and `scoped` applies
 // the canvases rule to an error the replay found (a WebGPU validation error).
 
@@ -223,9 +223,9 @@ const IN_PASS = new Set([
 /**
  * The checks of a widget's batches, in order. `canvases` gives the keys of the GPU canvases in the last rendered view.
  * A batch gives its first error, or none, and the rest of it goes unchecked. The error stops the canvases the batch
- * renders into (a pass's color attachment or its resolve target is a view of their texture), or every GPU canvas of the widget when it renders
- * into none; then later batches go unchecked. An error stopping only canvases already stopped isn't given again. A
- * batch whose first error names a handle from before a device loss is dropped without one.
+ * renders into (a pass's color attachment or its resolve target is a view of their texture), or every GPU canvas of the
+ * widget when it renders into none; then later batches go unchecked. An error stopping only canvases already stopped
+ * isn't given again. A batch whose first error names a handle from before a device loss is dropped without one.
  */
 export function gpuChecks(canvases: () => ReadonlySet<string>) {
   const handles = new Map<number, Handle>()
@@ -240,6 +240,15 @@ export function gpuChecks(canvases: () => ReadonlySet<string>) {
     if (!kinds.includes(found.kind)) fail(`handle ${h} is a ${found.kind}, not a ${kinds.join(" or ")}`)
     if (found.destroyed) fail(`handle ${h} was destroyed`)
     return found
+  }
+  // A canvas's texture has usage RENDER_ATTACHMENT alone: no copy, write or binding may use it.
+  const notCanvas = (found: Handle | undefined, path: string) => {
+    if (found?.kind === "context") fail(`${path} uses canvas "${found.key}"'s texture, which can only be rendered into`)
+  }
+  // A texture a copy or a write takes.
+  const copied = (value: unknown, path: string) => {
+    notCanvas(handles.get(whole(value, path)), path)
+    return find(value, path, "texture")
   }
   const create = (value: unknown, path: string, made: Handle) => {
     const h = whole(value, path)
@@ -378,7 +387,8 @@ export function gpuChecks(canvases: () => ReadonlySet<string>) {
             whole(r.offset, `${at}.resource.offset`)
             wholeOrAll(r.size, `${at}.resource.size`)
           } else if ("sampler" in r) find(r.sampler, `${at}.resource.sampler`, "sampler")
-          else if ("view" in r) find(r.view, `${at}.resource.view`, "view")
+          else if ("view" in r)
+            notCanvas(handles.get(find(r.view, `${at}.resource.view`, "view").texture!), `${at}.resource.view`)
           else fail(`${at}.resource must be a buffer binding, a sampler or a view`)
         })
         return create(o[1], a(1), { kind: "bindGroup" })
@@ -392,7 +402,7 @@ export function gpuChecks(canvases: () => ReadonlySet<string>) {
         whole(o[2], a(2))
         return range(whole(o[3], a(3)), whole(o[4], a(4)), bytes)
       case "writeTexture":
-        find(o[1], a(1), "texture")
+        copied(o[1], a(1))
         whole(o[2], a(2))
         triple(o[3], a(3))
         range(whole(o[4], a(4)), whole(o[5], a(5)), bytes)
@@ -410,15 +420,15 @@ export function gpuChecks(canvases: () => ReadonlySet<string>) {
         whole(o[2], a(2))
         whole(o[3], a(3))
         nullable(o[4], (value) => whole(value, a(4)))
-        find(o[5], a(5), "texture")
+        copied(o[5], a(5))
         whole(o[6], a(6))
         triple(o[7], a(7))
         return triple(o[8], a(8))
       case "copyTextureToTexture":
-        find(o[1], a(1), "texture")
+        copied(o[1], a(1))
         whole(o[2], a(2))
         triple(o[3], a(3))
-        find(o[4], a(4), "texture")
+        copied(o[4], a(4))
         whole(o[5], a(5))
         triple(o[6], a(6))
         return triple(o[7], a(7))
