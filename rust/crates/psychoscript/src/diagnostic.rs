@@ -32,10 +32,9 @@ pub enum Clock {
     #[default]
     Wall,
     /// The CPU time of the threads while they run the program, across resumes: a loaded machine, which keeps a thread
-    /// waiting for a core, never times a program out. It includes the host functions the run's thread calls itself,
-    /// not those a run computing on its worker hands back to the thread driving it. Waiting on host calls uses no CPU
-    /// time, so waits count on the wall clock, up to ten times the timeout, which then also ends the run. Where a
-    /// platform has no thread CPU clock (wasm), it is the wall clock.
+    /// waiting for a core, never times a program out. Host work isn't counted: synchronous host calls are left out,
+    /// and waiting on host calls uses no CPU time, so waits count on the wall clock, up to ten times the timeout,
+    /// which then also ends the run. Where a platform has no thread CPU clock (wasm), it is the wall clock.
     ThreadCpu,
 }
 

@@ -1207,25 +1207,23 @@ impl Vm {
         }
     }
 
-    /// With `Limits::slice_ms`, host work starts: where the stretch's clocks are, to leave it out.
-    pub(crate) fn host_span(&mut self) -> Option<(Option<Duration>, Instant)> {
-        let s = self.slice.as_deref()?;
-        let used = match (s.from, self.cpu.as_deref_mut()) {
-            (Some(_), Some(c)) => Some(c.used()),
-            _ => None,
-        };
-        Some((used, Instant::now()))
+    /// A synchronous host call starts, which neither the CPU time (`Clock::ThreadCpu`) nor a stretch under
+    /// `Limits::slice_ms` counts: with a slice, when it started on the wall clock.
+    pub(crate) fn host_span(&mut self) -> Option<Instant> {
+        if let Some(c) = self.cpu.as_deref_mut() {
+            c.pause();
+        }
+        self.slice.is_some().then(Instant::now)
     }
 
-    /// The host work that began at `span` ends: the stretch doesn't count it.
-    pub(crate) fn end_host_span(&mut self, span: Option<(Option<Duration>, Instant)>) {
-        let (Some((used, at)), Some(s)) = (span, self.slice.as_deref_mut()) else {
-            return;
-        };
-        if let (Some(used), Some(from), Some(c)) = (used, &mut s.from, self.cpu.as_deref_mut()) {
-            *from += c.used().saturating_sub(used);
+    /// The host call that began at `span` ends.
+    pub(crate) fn end_host_span(&mut self, span: Option<Instant>) {
+        if let Some(c) = self.cpu.as_deref_mut() {
+            c.resume();
         }
-        s.wall += at.elapsed();
+        if let (Some(at), Some(s)) = (span, self.slice.as_deref_mut()) {
+            s.wall += at.elapsed();
+        }
     }
 
     // ---------- calls ----------

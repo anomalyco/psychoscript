@@ -112,10 +112,12 @@ Known differences:
   measurements between the first and the last fall differs, as the pacing counts allocations each its own way.
 - **Time:** `Limits::timeout_ms` counts wall-clock time by default. With `Limits::clock: Clock::ThreadCpu` it counts
   the CPU time of the threads while they run the program (`cpu.rs`), so a loaded machine never times out a program
-  that is only waiting for a core; waits on host calls count on the wall clock, up to ten times the timeout. The check
-  reads the thread's clock only when the wall time since its last reading could have used up the budget.
-  `Limits::slice_ms` bounds each stretch between awaits of the host the same way, leaving out synchronous host calls,
-  and stops the run with `SliceExceeded`, so a host needn't watch the run from outside.
+  that is only waiting for a core. Host work isn't counted: synchronous host calls are left out (the thread's clock
+  is read as each starts and ends), and waits on host calls count on the wall clock, up to ten times the timeout. The
+  check reads the thread's clock only when the wall time since its last reading could have used up the budget.
+  `Limits::slice_ms` bounds each stretch between awaits of the host the same way, also leaving out host calls, and
+  stops the run with `SliceExceeded`, so a host needn't watch the run from outside. Under `ThreadCpu` a stretch's CPU
+  time is measured from when it has run a sixteenth of the slice, so it may run up to that much past it.
 - Layout: `crates/psychoscript` (compiler on `oxc_parser`, VM, standard library, host functions, snapshots),
   `crates/thread-clock` (a thread's CPU time, read on it or from another thread, for hosts too), `conformance/`
   (generators and recordings), `bench/`, `test262/`.

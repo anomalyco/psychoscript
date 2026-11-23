@@ -907,7 +907,7 @@ fn call_host(vm: &mut Vm, f: &Callee, args: &[Value], target: Target, callee: Va
     let call_id = vm.host.next_call();
     vm.host.enter_sync(call_id, target.label.clone());
     let call = vm.host.call(call_id);
-    // Host work, which the stretch under `Limits::slice_ms` doesn't count.
+    // Host work, which neither the CPU time nor the stretch under `Limits::slice_ms` counts.
     let span = vm.host_span();
     let returned = match home_of(vm) {
         None => body(host_args, &call),

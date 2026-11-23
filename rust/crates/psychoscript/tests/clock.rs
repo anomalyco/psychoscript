@@ -252,6 +252,26 @@ fn a_program_that_awaits_the_host_often_runs_past_the_slice() {
 }
 
 #[test]
+fn host_calls_are_not_counted_in_the_cpu_time() {
+    let _quiet = quiet();
+    // 400 ms of CPU time in host calls, then a loop that never ends, under a 200 ms timeout: the run stops once the
+    // loop alone has used 200 ms.
+    let clock = thread_clock::ThreadClock::current();
+    let before = clock.now();
+    let o =
+        ticking(limits(200, Clock::ThreadCpu)).execute("spend(200); spend(200); while (true) {}");
+    let used = clock.now() - before;
+    assert!(timed_out(&o), "{:?}", o.result);
+    assert!(
+        used >= Duration::from_millis(600) && used < Duration::from_millis(1000),
+        "{used:?}"
+    );
+    // Without the loop, it completes.
+    let o = ticking(limits(200, Clock::ThreadCpu)).execute("spend(200); spend(200); return 1");
+    assert_eq!(o.result.unwrap(), json!(1));
+}
+
+#[test]
 fn host_calls_are_not_counted_in_the_slice() {
     let _quiet = quiet();
     // 300 ms in host calls without awaiting, under a 50 ms slice: sleeping, spinning and blocking.

@@ -1,7 +1,7 @@
 //! The run's clock under `Clock::ThreadCpu`: the CPU time of the threads while they run it, so a busy machine, which
 //! leaves a thread waiting for a core, never counts against the program. Each stretch of the run on a thread (a poll,
 //! a stretch on its worker) reads that thread's clock as it starts and ends; what the thread does in between, for
-//! other tasks, is not the run's.
+//! other tasks, is not the run's. Nor is a synchronous host call's: the clock is read as it starts and ends too.
 //!
 //! Waiting on host calls takes no CPU time, so waits count on the wall clock instead, against a backstop of
 //! `WAIT_BACKSTOP` times the timeout: a wait that never ends still ends the run.
@@ -12,7 +12,7 @@ use thread_clock::ThreadClock;
 
 /// `Limits::slice_ms`: the stretch in progress. `wall` is where it began on the wall clock, moved on by the host work
 /// since, so its elapsed time is the stretch's own. Under `Clock::ThreadCpu`, `from` is the run's CPU time
-/// (`CpuMeter::used`) where it is measured from, likewise moved on by host work; it is first read once the stretch has
+/// (`CpuMeter::used`, which leaves host work out) where it is measured from; it is first read once the stretch has
 /// run `SLICE_SLACK` of the slice, and `wall` then restarts from it. As a thread uses no more CPU time than passes,
 /// the CPU time since `from` is at most `wall`'s elapsed time, and the clock is read only once that reaches the slice.
 pub(crate) struct Slice {
@@ -75,6 +75,18 @@ impl CpuMeter {
         self.mark = None;
         if waiting {
             self.wait_since = Some(Instant::now());
+        }
+    }
+
+    /// A synchronous host call starts: the time the stretch used until now is the run's.
+    pub(crate) fn pause(&mut self) {
+        self.fold();
+    }
+
+    /// The host call ends: what the thread used meanwhile isn't the run's.
+    pub(crate) fn resume(&mut self) {
+        if let Some((clock, cpu, wall)) = &mut self.mark {
+            (*cpu, *wall) = (clock.now(), Instant::now());
         }
     }
 
