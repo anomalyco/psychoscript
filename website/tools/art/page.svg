@@ -1,0 +1,215 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1536" viewBox="0 0 1024 1536">
+  <!--
+    site/art/page.png: a perfectly ordinary encyclopedia article, for the lens to
+    break into the picture with (liquid.js, pageMap). Rasterise with
+    `resvg tools/art/page.svg site/art/page.png`.
+    The article column starts at x = 176; the phone layout shows the page from there.
+  -->
+  <defs>
+    <style>
+      .sans { font-family: Helvetica, Arial, sans-serif; }
+      .serif { font-family: Georgia, 'Times New Roman', serif; }
+      .body { font-size: 19px; fill: #202122; }
+      .small { font-size: 13px; fill: #54595d; }
+      .side { font-size: 13.5px; fill: #3366cc; }
+      .sideHead { font-size: 12px; fill: #54595d; }
+      .link { fill: #3366cc; }
+      .ref { font-size: 12px; fill: #3366cc; }
+      .h2 { font-size: 27px; fill: #000; }
+      .edit { font-size: 13px; fill: #3366cc; }
+      .row { font-size: 14px; fill: #202122; }
+      .rowHead { font-size: 14px; fill: #202122; font-weight: bold; }
+    </style>
+    <linearGradient id="tab" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" />
+      <stop offset="1" stop-color="#e8f2f8" />
+    </linearGradient>
+    <linearGradient id="sideRule" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#c8ccd1" stop-opacity="0" />
+      <stop offset="0.25" stop-color="#c8ccd1" />
+      <stop offset="1" stop-color="#c8ccd1" stop-opacity="0" />
+    </linearGradient>
+  </defs>
+
+  <rect width="1024" height="1536" fill="#f6f6f6" />
+
+  <!-- The article's sheet, with the thin blue line round it. -->
+  <rect x="176" y="80" width="860" height="1470" fill="#ffffff" stroke="#a7d7f9" stroke-width="1" />
+
+  <!-- Who you are, top right. -->
+  <g class="sans" font-size="12.5">
+    <text x="668" y="24"><tspan fill="#72777d">Not logged in</tspan><tspan fill="#3366cc" dx="14">Talk</tspan><tspan fill="#3366cc" dx="14">Contributions</tspan><tspan fill="#3366cc" dx="14">Create account</tspan><tspan fill="#3366cc" dx="14">Log in</tspan></text>
+  </g>
+
+  <!-- The emblem: a square. -->
+  <rect x="56" y="22" width="64" height="64" fill="#c8ccd1" />
+  <rect x="62" y="28" width="52" height="52" fill="none" stroke="#ffffff" stroke-width="1.5" />
+  <text class="serif" x="88" y="70" text-anchor="middle" font-size="44" fill="#ffffff">N</text>
+  <text class="serif" x="88" y="116" text-anchor="middle" font-size="23" fill="#202122" letter-spacing="0.5">N<tspan font-size="18.5">ORMALPEDI</tspan>A</text>
+  <text class="serif" x="88" y="134" text-anchor="middle" font-size="11.5" fill="#202122">The Compliant Encyclopedia</text>
+
+  <!-- Tabs along the top of the sheet. -->
+  <g class="sans" font-size="13">
+    <rect x="190" y="50" width="66" height="31" fill="#ffffff" stroke="#a7d7f9" />
+    <rect x="191" y="79" width="64" height="3" fill="#ffffff" />
+    <text x="223" y="71" text-anchor="middle" fill="#202122">Article</text>
+    <rect x="256" y="50" width="52" height="30" fill="url(#tab)" stroke="#a7d7f9" />
+    <text x="282" y="71" text-anchor="middle" fill="#3366cc">Talk</text>
+
+    <rect x="560" y="50" width="52" height="31" fill="#ffffff" stroke="#a7d7f9" />
+    <rect x="561" y="79" width="50" height="3" fill="#ffffff" />
+    <text x="586" y="71" text-anchor="middle" fill="#202122">Read</text>
+    <rect x="612" y="50" width="48" height="30" fill="url(#tab)" stroke="#a7d7f9" />
+    <text x="636" y="71" text-anchor="middle" fill="#3366cc">Edit</text>
+    <rect x="660" y="50" width="96" height="30" fill="url(#tab)" stroke="#a7d7f9" />
+    <text x="708" y="71" text-anchor="middle" fill="#3366cc">View history</text>
+
+    <rect x="776" y="47" width="228" height="26" fill="#ffffff" stroke="#a2a9b1" />
+    <text x="786" y="65" fill="#72777d">Search Normalpedia</text>
+    <circle cx="986" cy="59" r="5" fill="none" stroke="#54595d" stroke-width="1.6" />
+    <line x1="989.5" y1="63" x2="994" y2="68" stroke="#54595d" stroke-width="1.8" />
+  </g>
+
+  <!-- The side column. -->
+  <g class="sans">
+    <text class="side" x="18" y="178">Main page</text>
+    <text class="side" x="18" y="200">Contents</text>
+    <text class="side" x="18" y="222">Scheduled events</text>
+    <text class="side" x="18" y="244">Predictable article</text>
+    <text class="side" x="18" y="266">About Normalpedia</text>
+    <text class="side" x="18" y="288">Contact us</text>
+
+    <text class="sideHead" x="14" y="326">Contribute</text>
+    <rect x="8" y="332" width="160" height="1" fill="url(#sideRule)" />
+    <text class="side" x="18" y="354">Help</text>
+    <text class="side" x="18" y="376">Learn to comply</text>
+    <text class="side" x="18" y="398">Community portal</text>
+    <text class="side" x="18" y="420">No recent changes</text>
+    <text class="side" x="18" y="442">Upload file</text>
+
+    <text class="sideHead" x="14" y="480">Tools</text>
+    <rect x="8" y="486" width="160" height="1" fill="url(#sideRule)" />
+    <text class="side" x="18" y="508">What links here</text>
+    <text class="side" x="18" y="530">Related changes</text>
+    <text class="side" x="18" y="552">Special pages</text>
+    <text class="side" x="18" y="574">Permanent link</text>
+    <text class="side" x="18" y="596">Page information</text>
+    <text class="side" x="18" y="618">Cite this page</text>
+
+    <text class="sideHead" x="14" y="656">Print/export</text>
+    <rect x="8" y="662" width="160" height="1" fill="url(#sideRule)" />
+    <text class="side" x="18" y="684">Download as PDF</text>
+    <text class="side" x="18" y="706">Printable version</text>
+    <text class="side" x="18" y="728">Greyscale version</text>
+
+    <text class="sideHead" x="14" y="766">Languages</text>
+    <rect x="8" y="772" width="160" height="1" fill="url(#sideRule)" />
+    <text class="side" x="18" y="794">Dansk</text>
+    <text class="side" x="18" y="816">Deutsch</text>
+    <text class="side" x="18" y="838">Español</text>
+    <text class="side" x="18" y="860">Français</text>
+    <text class="side" x="18" y="882">Italiano</text>
+    <text class="side" x="18" y="904">Nederlands</text>
+    <text class="side" x="18" y="926">Norsk</text>
+    <text class="side" x="18" y="948">Polski</text>
+    <text class="side" x="18" y="970">Português</text>
+    <text class="side" x="18" y="992">Suomi</text>
+    <text class="side" x="18" y="1014">Svenska</text>
+    <text class="sideHead" x="18" y="1040">Edit links</text>
+  </g>
+
+  <!-- The article. -->
+  <text class="serif" x="200" y="134" font-size="46" fill="#000">Normal</text>
+  <rect x="200" y="148" width="800" height="1" fill="#a2a9b1" />
+  <text class="sans small" x="200" y="170">From Normalpedia, the compliant encyclopedia</text>
+  <text class="sans" x="224" y="200" font-size="15.5" font-style="italic" fill="#202122">This article is about the usual state of affairs. For other uses, see <tspan class="link">Normal (disambiguation)</tspan>.</text>
+
+  <g class="sans body">
+    <text x="200" y="242"><tspan font-weight="bold">Normal</tspan> (from Latin <tspan font-style="italic">normalis</tspan>, “made according to a</text>
+    <text x="200" y="269">carpenter’s square”) is the condition of being usual,</text>
+    <text x="200" y="296">typical, or expected. A thing is said to be normal when</text>
+    <text x="200" y="323">it conforms to a <tspan class="link">standard</tspan> and gives no cause for</text>
+    <text x="200" y="350">remark.<tspan class="ref" dy="-6">[1]</tspan></text>
+
+    <text x="200" y="392">Most things are normal most of the time.<tspan class="ref" dy="-6">[2]</tspan><tspan dy="6"> A normal</tspan></text>
+    <text x="200" y="419">day begins in the <tspan class="link">morning</tspan> and ends in the <tspan class="link">evening</tspan>,</text>
+    <text x="200" y="446">in that order. Colours remain the colours they were,</text>
+    <text x="200" y="473">objects stay where they were put, and <tspan class="link">the Sun</tspan> does</text>
+    <text x="200" y="500">not have a face.<tspan class="ref" dy="-6">[</tspan><tspan class="ref" font-style="italic">citation needed</tspan><tspan class="ref">]</tspan></text>
+  </g>
+
+  <!-- Contents. -->
+  <rect x="200.500" y="530.500" width="226" height="184" fill="#f8f9fa" stroke="#a2a9b1" />
+  <g class="sans" font-size="14.5">
+    <text x="313" y="556" text-anchor="middle"><tspan font-weight="bold" fill="#202122">Contents</tspan><tspan font-size="12.5" fill="#202122" dx="6">[</tspan><tspan font-size="12.5" fill="#3366cc">hide</tspan><tspan font-size="12.5" fill="#202122">]</tspan></text>
+    <text x="214" y="584"><tspan fill="#202122">1</tspan><tspan class="link" dx="8">Characteristics</tspan></text>
+    <text x="214" y="609"><tspan fill="#202122">2</tspan><tspan class="link" dx="8">In the workplace</tspan></text>
+    <text x="214" y="634"><tspan fill="#202122">3</tspan><tspan class="link" dx="8">Deviations</tspan></text>
+    <text x="214" y="659"><tspan fill="#202122">4</tspan><tspan class="link" dx="8">See also</tspan></text>
+    <text x="214" y="684"><tspan fill="#202122">5</tspan><tspan class="link" dx="8">References</tspan></text>
+    <text x="214" y="705" font-size="11.5" fill="#72777d">No further contents are expected.</text>
+  </g>
+
+  <!-- The box of facts. -->
+  <rect x="744.500" y="222.500" width="255" height="420" fill="#f8f9fa" stroke="#a2a9b1" />
+  <g class="sans">
+    <text x="872" y="250" text-anchor="middle" font-size="17.5" font-weight="bold" fill="#202122">Normal</text>
+    <rect x="756" y="264" width="232" height="152" fill="#c8ccd1" />
+    <rect x="756" y="264" width="232" height="96" fill="#d5d8dc" />
+    <rect x="832" y="318" width="80" height="60" fill="#a2a9b1" />
+    <rect x="756.500" y="264.500" width="231" height="151" fill="none" stroke="#a2a9b1" />
+    <text x="872" y="436" text-anchor="middle" font-size="12.5" fill="#202122">A normal rectangle, pictured in grey</text>
+    <rect x="756" y="450" width="232" height="1" fill="#c8ccd1" />
+    <text class="rowHead" x="758" y="476">Type</text><text class="row" x="858" y="476">Condition</text>
+    <text class="rowHead" x="758" y="504">Also called</text><text class="row" x="858" y="504">Usual, typical,</text>
+    <text class="row" x="858" y="523">fine</text>
+    <text class="rowHead" x="758" y="551">Opposite</text><text class="row link" x="858" y="551">Abnormal</text>
+    <text class="rowHead" x="758" y="579">Colour</text><text class="row" x="858" y="579">Grey</text>
+    <text class="rowHead" x="758" y="607">Shape</text><text class="row" x="858" y="607">Rectangular</text>
+    <text class="rowHead" x="758" y="631">Status</text><text class="row" x="858" y="631">Ongoing</text>
+  </g>
+
+  <!-- Characteristics. -->
+  <text class="serif h2" x="200" y="770">Characteristics<tspan class="sans edit" dx="12" fill="#54595d">[</tspan><tspan class="sans edit">edit</tspan><tspan class="sans edit" fill="#54595d">]</tspan></text>
+  <rect x="200" y="781" width="800" height="1" fill="#a2a9b1" />
+  <g class="sans body">
+    <text x="200" y="814">Normal conditions are generally held to include a level <tspan class="link">floor</tspan>, a sky of one colour at a</text>
+    <text x="200" y="841">time, and <tspan class="link">furniture</tspan> that does not walk.<tspan class="ref" dy="-6">[3]</tspan><tspan dy="6"> Under normal conditions a web page remains</tspan></text>
+    <text x="200" y="868">inside its window, and its window remains where it was left. Observers consistently</text>
+    <text x="200" y="895">describe the experience of normality as “fine”.<tspan class="ref" dy="-6">[4]</tspan></text>
+  </g>
+
+  <!-- In the workplace. -->
+  <text class="serif h2" x="200" y="954">In the workplace<tspan class="sans edit" dx="12" fill="#54595d">[</tspan><tspan class="sans edit">edit</tspan><tspan class="sans edit" fill="#54595d">]</tspan></text>
+  <rect x="200" y="965" width="800" height="1" fill="#a2a9b1" />
+  <g class="sans body">
+    <text x="200" y="998">Normality is highly valued in <tspan class="link">offices</tspan>, where it is maintained by means of <tspan class="link">meetings</tspan>,</text>
+    <text x="200" y="1025"><tspan class="link">carpet</tspan> and the colour <tspan class="link">beige</tspan>. A survey of normal meetings found that all of them had</text>
+    <text x="200" y="1052">taken place.<tspan class="ref" dy="-6">[5]</tspan><tspan dy="6"> Employees are encouraged to report anything unusual to a supervisor,</tspan></text>
+    <text x="200" y="1079">who will confirm that it is normal.</text>
+  </g>
+
+  <!-- Deviations. -->
+  <text class="serif h2" x="200" y="1138">Deviations<tspan class="sans edit" dx="12" fill="#54595d">[</tspan><tspan class="sans edit">edit</tspan><tspan class="sans edit" fill="#54595d">]</tspan></text>
+  <rect x="200" y="1149" width="800" height="1" fill="#a2a9b1" />
+  <g class="sans body">
+    <text x="200" y="1182">A departure from the normal is known as an <tspan class="link">abnormality</tspan>, an <tspan class="link">anomaly</tspan> or, informally,</text>
+    <text x="200" y="1209">“a bit much”. Reported deviations include whales above the ground, eyes where planets</text>
+    <text x="200" y="1236">should be, and lettering that will not hold still.<tspan class="ref" dy="-6">[6]</tspan><tspan dy="6"> Readers who encounter a deviation</tspan></text>
+    <text x="200" y="1263">are advised to remain calm, avoid eye contact with the Sun, and refresh the page.</text>
+  </g>
+
+  <!-- See also. -->
+  <text class="serif h2" x="200" y="1322">See also<tspan class="sans edit" dx="12" fill="#54595d">[</tspan><tspan class="sans edit">edit</tspan><tspan class="sans edit" fill="#54595d">]</tspan></text>
+  <rect x="200" y="1333" width="800" height="1" fill="#a2a9b1" />
+  <g class="sans body">
+    <circle cx="222" cy="1360" r="2.4" fill="#202122" /><text class="link" x="234" y="1366">Average</text>
+    <circle cx="222" cy="1387" r="2.4" fill="#202122" /><text class="link" x="234" y="1393">Beige</text>
+    <circle cx="222" cy="1414" r="2.4" fill="#202122" /><text class="link" x="234" y="1420">Business as usual</text>
+    <circle cx="222" cy="1441" r="2.4" fill="#202122" /><text class="link" x="234" y="1447">Tuesday</text>
+  </g>
+
+  <!-- References. -->
+  <text class="serif h2" x="200" y="1506">References<tspan class="sans edit" dx="12" fill="#54595d">[</tspan><tspan class="sans edit">edit</tspan><tspan class="sans edit" fill="#54595d">]</tspan></text>
+  <rect x="200" y="1517" width="800" height="1" fill="#a2a9b1" />
+</svg>
