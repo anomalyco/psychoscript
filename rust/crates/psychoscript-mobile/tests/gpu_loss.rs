@@ -7,7 +7,7 @@
 mod gpu_support;
 
 use gpu_support::*;
-use psychoscript_mobile::{GpuCanvasState, gpu_device, gpu_lose_device};
+use psychoscript_mobile::{GpuCanvasState, Program, gpu_device, gpu_lose_device};
 use serde_json::json;
 use widget_wire::Post;
 
@@ -20,7 +20,7 @@ fn a_lost_device_is_told_to_the_program_and_replaced() {
     r.frames(3);
     r.live("c");
     gpu_lose_device();
-    r.wait(|e| matches!(e, Event::Gpu(None, GpuCanvasState::Lost)).then_some(()));
+    r.wait(|e| matches!(e, Event::Gpu(Some(k), GpuCanvasState::Lost) if k == "c").then_some(()));
     // The prelude resolves `device.lost`; the program says so and asks for a new device.
     let lost = r.wait(|e| match e {
         Event::Posts(p) => p.iter().find_map(|p| match p {
@@ -65,5 +65,31 @@ fn a_lost_device_is_told_to_the_program_and_replaced() {
             .any(|(_, s)| matches!(s, GpuCanvasState::Stopped { .. })),
         "{events:?}"
     );
+    r.run.stop();
+
+    // A canvas an error stopped keeps its placeholder through a loss: only the others are told `Lost`.
+    let p = Program::new(TWO.into(), "__input".into()).unwrap();
+    let mut r = start(&p, json!(null));
+    for k in ["a", "b"] {
+        r.run
+            .deliver(json!({ "type": "canvas", "key": k, "width": 8, "height": 8 }).to_string())
+            .unwrap();
+    }
+    r.frames(3);
+    r.frame_request();
+    r.wait(|e| {
+        matches!(e, Event::Gpu(Some(k), GpuCanvasState::Stopped { .. }) if k == "b").then_some(())
+    });
+    r.live("a");
+    gpu_lose_device();
+    r.wait(|e| matches!(e, Event::Gpu(Some(k), GpuCanvasState::Lost) if k == "a").then_some(()));
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    while let Ok(e) = r.rx.try_recv() {
+        r.seen.push(e);
+    }
+    let lost: Vec<_> = (r.gpu_events().into_iter())
+        .filter(|(_, s)| *s == GpuCanvasState::Lost)
+        .collect();
+    assert!(lost.is_empty(), "{lost:?}");
     r.run.stop();
 }

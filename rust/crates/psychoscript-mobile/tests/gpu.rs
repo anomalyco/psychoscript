@@ -7,8 +7,9 @@
 
 mod gpu_support;
 
+use std::time::Duration;
 #[cfg(any(target_os = "macos", target_os = "android"))]
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use gpu_support::*;
 #[cfg(any(target_os = "macos", target_os = "android"))]
@@ -290,4 +291,121 @@ fn a_shader_canvas_draws_into_a_real_surface() {
     };
     assert_eq!(bad.render(0.0, 1.0, vec![], vec![]), Ok(()));
     assert!(message.contains("line 2"), "{message}");
+}
+
+#[test]
+fn a_snapshot_keeps_the_stops_and_drops_handles_from_before() {
+    let p = Program::new(TWO.into(), "__input".into()).unwrap();
+    let mut r = start(&p, json!(null));
+    for k in ["a", "b"] {
+        r.run
+            .deliver(json!({ "type": "canvas", "key": k, "width": 8, "height": 8 }).to_string())
+            .unwrap();
+    }
+    r.frames(3);
+    r.frame_request();
+    let stop = GpuCanvasState::Stopped {
+        kind: GpuErrorKind::Program,
+        message: "gpu op 1: no handle 999".into(),
+        report: true,
+    };
+    r.wait(|e| matches!(e, Event::Gpu(Some(k), s) if k == "b" && *s == stop).then_some(()));
+    r.live("a");
+    r.run.pause().unwrap();
+    let snapshot = r.run.snapshot().unwrap();
+
+    // Restored: the program loses its device (it sends the message on), `b` is told stopped again (not to report),
+    // the batch naming a handle from before is dropped, and `a` draws again on new handles.
+    let mut r = restore(snapshot);
+    let stopped = GpuCanvasState::Stopped {
+        kind: GpuErrorKind::Program,
+        message: "gpu op 1: no handle 999".into(),
+        report: false,
+    };
+    r.wait(|e| matches!(e, Event::Gpu(Some(k), s) if k == "b" && *s == stopped).then_some(()));
+    let lost = r.wait(|e| match e {
+        Event::Posts(p) => p.iter().find_map(|p| match p {
+            Post::Send { value, .. } => Some(value.clone()),
+            _ => None,
+        }),
+        _ => None,
+    });
+    assert_eq!(lost, json!({ "type": "gpu", "lost": "unknown" }));
+    for k in ["a", "b"] {
+        r.run
+            .deliver(json!({ "type": "canvas", "key": k, "width": 8, "height": 8 }).to_string())
+            .unwrap();
+    }
+    for i in 0..4 {
+        r.run.deliver(frame(i)).unwrap();
+    }
+    r.live("a");
+    let (_, _, p) = r.run.gpu_pixels("a").unwrap();
+    assert!(p.chunks(4).all(|px| px == [255, 0, 0, 255]));
+    // Nothing else: `b` stays stopped, no error is reported.
+    std::thread::sleep(Duration::from_millis(100));
+    while let Ok(e) = r.rx.try_recv() {
+        r.seen.push(e);
+    }
+    let events = r.gpu_events();
+    assert!(
+        events.iter().all(|(k, s)| match s {
+            GpuCanvasState::Live => k.as_deref() == Some("a"),
+            GpuCanvasState::Stopped { report, .. } => !report,
+            _ => false,
+        }),
+        "{events:?}"
+    );
+    r.run.stop();
+}
+
+#[cfg(any(target_os = "macos", target_os = "android"))]
+#[test]
+fn a_surface_not_laid_out_gives_the_program_no_size() {
+    let p = Program::new(
+        "const __widget_protocol = 2\nfor (;;) { const m = await __host.receive(); if (m.type === \"canvas\") __host.post({ type: \"send\", value: m }) }".into(),
+        "__input".into(),
+    )
+    .unwrap();
+    let mut r = start(&p, json!(null));
+    let surface = real::surface(8, 8);
+    let sizes = |r: &mut Run| {
+        std::thread::sleep(Duration::from_millis(100));
+        while let Ok(e) = r.rx.try_recv() {
+            r.seen.push(e);
+        }
+        let sent: Vec<serde_json::Value> = r
+            .seen
+            .drain(..)
+            .filter_map(|e| match e {
+                Event::Posts(p) => Some(p),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|p| match p {
+                Post::Send { value, .. } => Some(value),
+                _ => None,
+            })
+            .collect();
+        sent
+    };
+    r.run
+        .attach_surface("c".into(), surface.surface.clone(), 0, 0);
+    assert_eq!(sizes(&mut r), Vec::<serde_json::Value>::new());
+    r.run
+        .attach_surface("c".into(), surface.surface.clone(), 8, 0);
+    assert_eq!(sizes(&mut r), Vec::<serde_json::Value>::new());
+    r.run
+        .attach_surface("c".into(), surface.surface.clone(), 8, 6);
+    assert_eq!(
+        sizes(&mut r),
+        [json!({ "type": "canvas", "key": "c", "width": 8, "height": 6 })]
+    );
+    // Not laid out again, then the same size: nothing new.
+    r.run
+        .attach_surface("c".into(), surface.surface.clone(), 0, 0);
+    r.run
+        .attach_surface("c".into(), surface.surface.clone(), 8, 6);
+    assert_eq!(sizes(&mut r), Vec::<serde_json::Value>::new());
+    r.run.stop();
 }

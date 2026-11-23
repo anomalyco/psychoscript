@@ -294,7 +294,7 @@ fn every_post_kind_decodes_as_its_json() {
     ["pass", {{ colorAttachments: [{{ view: 1, loadOp: "clear", clearValue: [0, 0, 0, 1], skip: undefined }}], depthStencilAttachment: null }}],
     ["setBindGroup", 0, 20, []],
     ["shader", 7, "@fragment fn fs() -> @location(0) vec4f {{ return vec4f(1.0); }}"],
-    ["flags", true, false, NaN, [undefined, 1]],
+    ["flags", true, false, null, [undefined, 1]],
     ["end"],
   ]
   const expect = (bytes) => Array.from(new Uint8Array(bytes))
@@ -437,6 +437,34 @@ fn invalid_outputs_and_posts_fail_to_encode() {
         matches!(decode_post(bytes), Err(DecodeError::Malformed(_))),
         "{:?}",
         decode_post(bytes)
+    );
+}
+
+/// A GPU op's numbers are read as they are, `NaN` and infinities too (`widgets-gpu.md`, Transport); JSON can't hold
+/// them, so this is the binary alone.
+#[test]
+fn a_gpu_ops_non_finite_numbers_stay_numbers() {
+    let (enc, _) = run(
+        "__emit({ type: 'gpu', ops: [['x', NaN, Infinity, -Infinity, [undefined, NaN], { a: undefined, b: -Infinity }]], bytes: new ArrayBuffer(0) })\nreturn null",
+        encode_post,
+    );
+    let Post::Gpu(b) = decode_post(enc[0].as_ref().unwrap()).unwrap() else {
+        panic!()
+    };
+    let Arg::List(op) = &b.ops[0] else { panic!() };
+    let num = |a: &Arg| match a {
+        Arg::Num(n) => *n,
+        a => panic!("{a:?}"),
+    };
+    assert!(num(&op[1]).is_nan());
+    assert_eq!(
+        (num(&op[2]), num(&op[3])),
+        (f64::INFINITY, f64::NEG_INFINITY)
+    );
+    let Arg::List(l) = &op[4] else { panic!() };
+    assert!(matches!(l[0], Arg::Null) && num(&l[1]).is_nan());
+    assert!(
+        matches!(&op[5], Arg::Obj(o) if o.len() == 1 && o[0].0 == "b" && num(&o[0].1) == f64::NEG_INFINITY)
     );
 }
 

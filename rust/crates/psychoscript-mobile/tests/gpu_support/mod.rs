@@ -77,6 +77,29 @@ pub fn start(program: &Program, data: Value) -> Run {
     }
 }
 
+/// A run continued from `snapshot`, with a new handler.
+pub fn restore(snapshot: Vec<u8>) -> Run {
+    let (tx, rx) = channel();
+    let options = LiveOptions {
+        slice_budget_ms: 60_000,
+        ..Default::default()
+    };
+    let run = LiveRun::restore(
+        snapshot,
+        Box::new(Handler(Mutex::new(tx))),
+        "__input".into(),
+        options,
+        None,
+        Some(ValueEncoder::widget()),
+    )
+    .unwrap();
+    Run {
+        run,
+        rx,
+        seen: Vec::new(),
+    }
+}
+
 pub fn frame(i: usize) -> String {
     json!({ "type": "frame", "frame": { "t": i as f64 / 60.0, "dt": 1.0 / 60.0, "width": 300, "height": 200,
         "scale": 2, "pointer": null, "dark": false } })
@@ -337,3 +360,42 @@ pub mod real {
         }
     }
 }
+
+/// Canvases `a` and `b` cleared red each frame, by hand-made batches (handles the program counts); at frame 1 a batch
+/// into `b` names no pipeline, which stops `b`. On a loss it tells the app (`send`), posts a batch naming a handle from
+/// before, and starts again with new handles.
+pub const TWO: &str = r#"const __widget_protocol = 2
+const { gpu } = __input()
+const post = __host.post
+const none = new ArrayBuffer(0)
+post({ type: "render", node: { type: "column", children: [
+  { type: "canvas", key: "a", gpu: true, height: 10 }, { type: "canvas", key: "b", gpu: true, height: 10 }] } })
+const pass = (view) => ["pass", { colorAttachments: [{ view, resolveTarget: null, clearValue: [1, 0, 0, 1],
+  loadOp: "clear", storeOp: "store" }], depthStencilAttachment: null }]
+const view = (h, of) => ["view", h, of, { dimension: "2d", baseMipLevel: 0, mipLevelCount: 1, baseArrayLayer: 0,
+  arrayLayerCount: 1 }]
+let next = 1
+const setup = () => {
+  const a = next, b = next + 2
+  next += 4
+  post({ type: "gpu", ops: [["context", a, "a", gpu.format, "opaque"], view(a + 1, a),
+    ["context", b, "b", gpu.format, "opaque"], view(b + 1, b)], bytes: none })
+  return [a + 1, b + 1]
+}
+let views = setup()
+let frame = 0
+post({ type: "frame" })
+for (;;) {
+  const m = await __host.receive()
+  if (m.type === "gpu" && m.lost) {
+    post({ type: "gpu", ops: [["destroy", 2]], bytes: none })
+    post({ type: "send", value: m })
+    views = setup()
+    continue
+  }
+  if (m.type !== "frame") continue
+  if (frame === 1) post({ type: "gpu", ops: [pass(views[1]), ["setPipeline", 999], ["end"], ["submit"]], bytes: none })
+  frame++
+  post({ type: "frame", gpu: { ops: [pass(views[0]), ["end"], pass(views[1]), ["end"], ["submit"]], bytes: none } })
+}
+"#;

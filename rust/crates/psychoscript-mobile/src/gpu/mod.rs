@@ -77,6 +77,26 @@ pub fn gpu_fail_devices(after_ms: u64) {
     let _ = after_ms;
 }
 
+/// Has widget runs started from now on keep the GPU batches their programs post (Rust only, for the conformance
+/// fixtures' `batches`: [`crate::LiveRun::gpu_posted`]).
+#[doc(hidden)]
+pub fn gpu_record_batches() {
+    RECORD.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub(crate) static RECORD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Has the live input's `gpu.format` say `format` (Rust only, for the conformance fixtures' `gpu`: a program may
+/// configure either canvas format).
+#[doc(hidden)]
+pub fn gpu_input_format(format: &str) {
+    *FORMAT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(format.to_owned());
+}
+
+pub(crate) static FORMAT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
 /// The device if one is made (see [`GpuDeviceInfo`]); `None` before, or without one.
 pub fn gpu_device() -> Option<GpuDeviceInfo> {
     #[cfg(feature = "widget-gpu")]

@@ -41,14 +41,14 @@ impl Attached {
     pub(crate) fn new(native: Arc<GpuSurface>, width: u32, height: u32) -> Attached {
         Attached {
             native,
-            width: width.max(1),
-            height: height.max(1),
+            width,
+            height,
             surface: None,
         }
     }
 
     pub(crate) fn resize(&mut self, width: u32, height: u32) {
-        (self.width, self.height) = (width.max(1), height.max(1));
+        (self.width, self.height) = (width, height);
     }
 
     /// Presents `frame`: copies it into the surface's next texture (scaled when the sizes differ).
@@ -74,6 +74,10 @@ impl Attached {
     }
 
     fn try_present(&mut self, frame: &Frame, blit: &mut Blit) -> Result<Shown, String> {
+        // Not laid out yet: nothing to show into.
+        if self.width == 0 || self.height == 0 {
+            return Ok(Shown::Hidden);
+        }
         let dev = &frame.dev;
         if self.surface.is_none() {
             // SAFETY: `native` holds the layer or window for as long as `self` holds the surface.

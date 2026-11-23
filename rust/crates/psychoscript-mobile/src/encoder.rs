@@ -97,6 +97,11 @@ pub trait EncodePosts: Send {
     }
     /// The run ended (it won't post again): release what it holds.
     fn ended(&mut self) {}
+    /// See [`crate::LiveRun::gpu_posted`].
+    #[doc(hidden)]
+    fn recorded(&self) -> Vec<String> {
+        Vec::new()
+    }
     /// What a snapshot keeps of it, for [`EncodePosts::load`] in the restored run.
     fn save(&self) -> Data {
         Data::Null
@@ -243,8 +248,10 @@ mod widget {
             Box::new(widget_wire::NativeStep::new(draw))
         }
         fn live(&self, ctx: crate::LiveContext) -> Box<dyn EncodePosts> {
-            #[allow(unused_mut)]
             let mut posts = widget_wire::LivePosts::new();
+            if crate::gpu::RECORD.load(std::sync::atomic::Ordering::SeqCst) {
+                posts.record_batches();
+            }
             #[cfg(feature = "widget-gpu")]
             let gpu = {
                 let gpu = crate::gpu::run::RunGpu::new(ctx);
@@ -330,7 +337,15 @@ mod widget {
             #[cfg(feature = "widget-gpu")]
             self.gpu.ended();
         }
-        /// `{ canvases: [[key, id, wgsl, gpu], ...], gpu: <the program's last GPU handle> }`.
+        fn recorded(&self) -> Vec<String> {
+            self.posts
+                .recorded()
+                .iter()
+                .map(|v| v.to_string())
+                .collect()
+        }
+        /// `{ canvases: [[key, id, wgsl, gpu], ...], gpu: <the program's last GPU handle>, stops: { all: [kind,
+        /// message] | null, canvases: [[key, kind, message], ...] } }` (the canvases errors stopped).
         fn save(&self) -> Data {
             let canvases = Data::Array(
                 self.posts
@@ -348,12 +363,16 @@ mod widget {
                     .collect(),
             );
             #[cfg(feature = "widget-gpu")]
-            let last = self.gpu.last_handle();
+            let (last, stops) = {
+                let (last, stops) = self.gpu.saved();
+                (last, save_stops(&stops))
+            };
             #[cfg(not(feature = "widget-gpu"))]
-            let last = 0;
+            let (last, stops) = (0, Data::Null);
             Data::Object(vec![
                 ("canvases".into(), canvases),
                 ("gpu".into(), Data::Number(last.into())),
+                ("stops".into(), stops),
             ])
         }
         fn load(&mut self, saved: &Data) {
@@ -389,11 +408,78 @@ mod widget {
                     .filter(|c| c.gpu)
                     .map(|c| c.key.clone())
                     .collect(),
+                saved.get("stops").map(load_stops).unwrap_or_default(),
             );
             #[cfg(not(feature = "widget-gpu"))]
             let _ = last;
             self.posts.restore_canvases(canvases);
         }
+    }
+
+    #[cfg(feature = "widget-gpu")]
+    fn save_stops(stops: &widget_gpu::SavedStops) -> Data {
+        let stop = |s: &widget_gpu::SavedStop| {
+            let kind = match s.kind {
+                widget_gpu::ErrorKind::Program => "program",
+                widget_gpu::ErrorKind::Client => "client",
+            };
+            vec![
+                Data::String(kind.into()),
+                Data::String(s.message.as_str().into()),
+            ]
+        };
+        Data::Object(vec![
+            (
+                "all".into(),
+                stops
+                    .all
+                    .as_ref()
+                    .map_or(Data::Null, |s| Data::Array(stop(s))),
+            ),
+            (
+                "canvases".into(),
+                Data::Array(
+                    stops
+                        .canvases
+                        .iter()
+                        .map(|(k, s)| {
+                            let mut f = vec![Data::String(k.as_str().into())];
+                            f.extend(stop(s));
+                            Data::Array(f)
+                        })
+                        .collect(),
+                ),
+            ),
+        ])
+    }
+
+    #[cfg(feature = "widget-gpu")]
+    fn load_stops(d: &Data) -> widget_gpu::SavedStops {
+        let text = |d: &Data| d.as_string().map(|s| s.to_string_lossy().into_owned());
+        let stop = |kind: &Data, message: &Data| {
+            Some(widget_gpu::SavedStop {
+                kind: match text(kind)?.as_str() {
+                    "client" => widget_gpu::ErrorKind::Client,
+                    _ => widget_gpu::ErrorKind::Program,
+                },
+                message: text(message)?,
+            })
+        };
+        let all = match d.get("all") {
+            Some(Data::Array(f)) if f.len() == 2 => stop(&f[0], &f[1]),
+            _ => None,
+        };
+        let canvases = match d.get("canvases") {
+            Some(Data::Array(list)) => list
+                .iter()
+                .filter_map(|c| match c {
+                    Data::Array(f) if f.len() == 3 => Some((text(&f[0])?, stop(&f[1], &f[2])?)),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        widget_gpu::SavedStops { all, canvases }
     }
 
     #[uniffi::export]

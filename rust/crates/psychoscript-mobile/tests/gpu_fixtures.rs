@@ -1,7 +1,7 @@
-//! The GPU conformance fixtures (opencode `packages/widget/test/fixtures/gpu`, widgets 6fefac75b; `fixtures/gpu/
+//! The GPU conformance fixtures (opencode `packages/widget/test/fixtures/gpu`, widgets 3efef1c62; `fixtures/gpu/
 //! fixtures`) as live runs: each program with the preludes, its posts through the real `__host.post` and the widget
-//! encoder, its batches replayed on this machine's device. Each must give the fixture's GPU program errors (message
-//! and canvases) and end as it says. The driver is the spec's (`widgets-gpu.md`, Conformance); a device loss among
+//! encoder, its batches replayed on this machine's device. Each must post the fixture's `batches` (ops, and bytes
+//! from psychoscript's `Math`), give its GPU program errors (message and canvases) and end as it says. The driver is the spec's (`widgets-gpu.md`, Conformance); a device loss among
 //! the inputs is the host's own (`gpu_lose_device`), so this runs in a process of its own. `GPU_FIXTURES` names
 //! another directory of them (on a device the tests are copied to).
 
@@ -12,7 +12,9 @@ mod gpu_support;
 use std::time::Duration;
 
 use gpu_support::*;
-use psychoscript_mobile::{GpuCanvasState, LiveExit, gpu_lose_device};
+use psychoscript_mobile::{
+    GpuCanvasState, LiveExit, gpu_input_format, gpu_lose_device, gpu_record_batches,
+};
 use serde_json::{Value, json};
 use widget_wire::Post;
 
@@ -45,7 +47,38 @@ fn input(r: &Run, i: &Value) {
 }
 
 /// Runs a fixture: its GPU errors (as the fixture writes them) and how it ended.
-fn drive(f: &Value) -> (Vec<Value>, String, String) {
+/// A fixture's numbers as one kind (JSON's integers and floats are the same number), for comparing.
+fn canon(v: &Value) -> Value {
+    match v {
+        Value::Number(n) => json!(n.as_f64().unwrap()),
+        Value::Array(a) => Value::Array(a.iter().map(canon).collect()),
+        Value::Object(o) => Value::Object(o.iter().map(|(k, v)| (k.clone(), canon(v))).collect()),
+        v => v.clone(),
+    }
+}
+
+/// The first batch that differs from the fixture's, readably.
+fn batches_differ(posted: &[Value], expected: &[Value]) -> Option<String> {
+    let n = posted.len().max(expected.len());
+    (0..n).find_map(|i| {
+        let (p, e) = (posted.get(i).map(canon), expected.get(i).map(canon));
+        (p != e).then(|| {
+            let short = |v: Option<Value>| {
+                v.map_or("none".into(), |v| {
+                    v.to_string().chars().take(400).collect::<String>()
+                })
+            };
+            format!(
+                "batch {i} of {n}:\n    posted   {}\n    expected {}",
+                short(p),
+                short(e)
+            )
+        })
+    })
+}
+
+fn drive(f: &Value) -> (Vec<Value>, String, String, Vec<Value>) {
+    gpu_input_format(f["gpu"]["format"].as_str().unwrap());
     let mut r = start(
         &live_program(f["source"].as_str().unwrap()),
         f["data"].clone(),
@@ -126,18 +159,27 @@ fn drive(f: &Value) -> (Vec<Value>, String, String) {
         }
     }
     let events = format!("{:?}", r.seen);
-    (errors, end.unwrap(), events)
+    let posted = (r.run.gpu_posted().iter())
+        .map(|b| serde_json::from_str(b).unwrap())
+        .collect();
+    (errors, end.unwrap(), events, posted)
 }
 
 #[test]
 fn every_gpu_fixture_as_a_live_run() {
+    gpu_record_batches();
     let mut failures = Vec::new();
     let mut ran = 0;
     for f in fixtures() {
         let name = f["name"].as_str().unwrap();
         let started = std::time::Instant::now();
-        let (errors, end, events) = drive(&f);
+        let (errors, end, events, posted) = drive(&f);
         let took = started.elapsed();
+        // The batches as posted: the same ops and, from psychoscript's `Math`, the same bytes.
+        let expected = f.get("batches").and_then(Value::as_array);
+        if let Some(d) = expected.and_then(|e| batches_differ(&posted, e)) {
+            failures.push(format!("{name}: {d}"));
+        }
         ran += 1;
         if errors.as_slice() != f["errors"].as_array().unwrap().as_slice() || end != f["end"] {
             failures.push(format!(
@@ -147,9 +189,16 @@ fn every_gpu_fixture_as_a_live_run() {
                 events.chars().take(600).collect::<String>()
             ));
         } else {
-            eprintln!("{name}: ok ({} errors, {end})", errors.len());
+            let compared = f
+                .get("batches")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len);
+            eprintln!(
+                "{name}: ok ({} errors, {end}, {compared} batches the same)",
+                errors.len()
+            );
         }
     }
-    assert_eq!(ran, 45);
+    assert_eq!(ran, 49);
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
 }

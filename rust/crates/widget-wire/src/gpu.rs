@@ -50,15 +50,16 @@ fn too_deep() -> String {
     format!("a GPU op nests deeper than {MAX_ARG_DEPTH} levels")
 }
 
-/// An argument as `JSON.stringify` would give it: `undefined` and functions left out of objects and `null` in lists,
-/// non-finite numbers `null`.
+/// An argument as JSON reads it: `undefined` and functions left out of objects and `null` in lists, but numbers as
+/// they are, `NaN` and infinities too (`widgets-gpu.md`, Transport).
 fn put_arg(out: &mut Vec<u8>, a: &HostValue, depth: usize) -> Result<(), String> {
     if depth > MAX_ARG_DEPTH {
         return Err(too_deep());
     }
     match a {
         HostValue::Bool(b) => out.push(if *b { 2 } else { 1 }),
-        HostValue::Number(n) if n.is_finite() => {
+        // Every number as it is, `NaN` and infinities too (`widgets-gpu.md`, Transport).
+        HostValue::Number(n) => {
             out.push(3);
             out.extend_from_slice(&n.to_le_bytes());
         }
@@ -85,7 +86,7 @@ fn put_arg(out: &mut Vec<u8>, a: &HostValue, depth: usize) -> Result<(), String>
                 put_arg(out, v, depth + 1)?;
             }
         }
-        HostValue::Null | HostValue::Undefined | HostValue::Number(_) => out.push(0),
+        HostValue::Null | HostValue::Undefined => out.push(0),
         other => put_json(out, &other.to_json().unwrap_or(Value::Null), depth)?,
     }
     Ok(())
@@ -172,15 +173,16 @@ pub(crate) fn encode(batch: &HostValue, out: &mut Vec<u8>) -> Result<(), String>
     })
 }
 
-/// An argument as JSON reads it (`JSON.stringify`: `undefined` and functions left out of objects and `null` in
-/// lists, non-finite numbers `null`, other kinds as their JSON); past [`MAX_ARG_DEPTH`], `null`, which no op takes.
+/// An argument as JSON reads it (`undefined` and functions left out of objects and `null` in lists, other kinds as
+/// their JSON), but numbers as they are, `NaN` and infinities too (`widgets-gpu.md`, Transport); past
+/// [`MAX_ARG_DEPTH`], `null`, which no op takes.
 fn arg(a: &HostValue, depth: usize) -> Arg {
     if depth > MAX_ARG_DEPTH {
         return Arg::Null;
     }
     match a {
         HostValue::Bool(b) => Arg::Bool(*b),
-        HostValue::Number(n) if n.is_finite() => Arg::Num(*n),
+        HostValue::Number(n) => Arg::Num(*n),
         HostValue::String(s) => Arg::Str(s.to_string_lossy().into_owned()),
         HostValue::Array(items) => Arg::List(
             items
@@ -198,7 +200,7 @@ fn arg(a: &HostValue, depth: usize) -> Arg {
                 .map(|(k, v)| (k.to_string_lossy().into_owned(), arg(v, depth + 1)))
                 .collect(),
         ),
-        HostValue::Null | HostValue::Undefined | HostValue::Number(_) => Arg::Null,
+        HostValue::Null | HostValue::Undefined => Arg::Null,
         other => Arg::from_json(&other.to_json().unwrap_or(Value::Null)),
     }
 }
@@ -279,4 +281,59 @@ pub(crate) fn decode(c: &mut Cursor) -> Result<Batch, Malformed> {
     }
     let bytes = c.take(len)?.to_vec();
     Ok(Batch { ops, bytes })
+}
+
+/// A batch as the GPU conformance fixtures write a posted one (`widgets-gpu.md`, Conformance): `{ frame, ops, bytes }`,
+/// `ops` as posted (numbers JSON can't hold as `{ "$num": "NaN" }` and the like), `bytes` base64, or `null` when not an
+/// `ArrayBuffer`. Without a batch: a frame request that carries none, `{ frame: true, ops: [], bytes: "" }`.
+pub(crate) fn recorded(frame: bool, batch: Option<&HostValue>) -> Value {
+    let Some(batch) = batch else {
+        return serde_json::json!({ "frame": frame, "ops": [], "bytes": "" });
+    };
+    let ops = batch.get("ops").map_or(Arg::Null, |o| arg(o, 1));
+    let bytes = match batch.get("bytes") {
+        Some(HostValue::TypedArray(t)) if t.kind() == psychoscript::TypedKind::ArrayBuffer => {
+            Value::String(t.with_bytes(base64))
+        }
+        _ => Value::Null,
+    };
+    serde_json::json!({ "frame": frame, "ops": arg_json(&ops), "bytes": bytes })
+}
+
+fn arg_json(a: &Arg) -> Value {
+    match a {
+        Arg::Null => Value::Null,
+        Arg::Bool(b) => Value::Bool(*b),
+        Arg::Num(n) => match serde_json::Number::from_f64(*n) {
+            Some(n) => Value::Number(n),
+            None => {
+                let name = match () {
+                    _ if n.is_nan() => "NaN",
+                    _ if *n > 0.0 => "Infinity",
+                    _ => "-Infinity",
+                };
+                serde_json::json!({ "$num": name })
+            }
+        },
+        Arg::Str(s) => Value::String(s.clone()),
+        Arg::List(l) => Value::Array(l.iter().map(arg_json).collect()),
+        Arg::Obj(o) => Value::Object(o.iter().map(|(k, v)| (k.clone(), arg_json(v))).collect()),
+    }
+}
+
+fn base64(b: &[u8]) -> String {
+    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(b.len().div_ceil(3) * 4);
+    for c in b.chunks(3) {
+        let n = (c[0] as u32) << 16
+            | (*c.get(1).unwrap_or(&0) as u32) << 8
+            | *c.get(2).unwrap_or(&0) as u32;
+        for i in 0..4 {
+            match i <= c.len() {
+                true => out.push(ABC[(n >> (18 - 6 * i) & 63) as usize] as char),
+                false => out.push('='),
+            }
+        }
+    }
+    out
 }

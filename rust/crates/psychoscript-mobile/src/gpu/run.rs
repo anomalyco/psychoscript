@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use psychoscript::HostValue;
-use widget_gpu::{Arg, ErrorKind, Gpu, GpuError, Stops};
+use widget_gpu::{Arg, ErrorKind, Gpu, GpuError, SavedStop, SavedStops, Stops};
 
 use super::device::{self, Dev};
 use super::present::{Frame, Surfaces};
@@ -41,6 +41,8 @@ struct State {
     held: Option<Vec<Held>>,
     /// The program was told it has a GPU while the device was still being made.
     waiting: bool,
+    /// A restored run's greatest handle and stopped canvases, for its GPU once the device is there.
+    restore: Option<(u64, SavedStops)>,
 }
 
 /// A widget run's GPU.
@@ -126,57 +128,122 @@ impl RunGpu {
             }
         }
         let available = st.gpu.is_some() || st.waiting;
-        let format = match &st.gpu {
+        let mut format = match &st.gpu {
             Some(gpu) => gpu.preferred_format(),
             None => device::format().unwrap_or("rgba8unorm"),
-        };
+        }
+        .to_owned();
+        if let Some(f) = lock(&super::FORMAT).clone() {
+            format = f;
+        }
         drop(st);
         if !available {
             self.tell(None, GpuCanvasState::Unavailable);
         }
         HostValue::Object(vec![
             ("available".into(), HostValue::Bool(available)),
-            ("format".into(), HostValue::String(format.into())),
+            ("format".into(), HostValue::String(format.as_str().into())),
         ])
     }
 
-    /// The greatest handle the program made, for a snapshot.
-    pub(crate) fn last_handle(&self) -> u64 {
-        lock(&self.state).gpu.as_ref().map_or(0, Gpu::last_handle)
+    /// The greatest handle the program made and the canvases errors stopped, for a snapshot.
+    pub(crate) fn saved(&self) -> (u64, SavedStops) {
+        let st = lock(&self.state);
+        match (&st.gpu, &st.restore) {
+            (Some(gpu), _) => (gpu.last_handle(), gpu.saved_stops()),
+            (None, Some(restore)) => restore.clone(),
+            (None, None) => (0, SavedStops::default()),
+        }
     }
 
-    /// A run restored from a snapshot whose program made handles up to `last` and drew `keys`: a new device for it,
-    /// which to the program is a device loss.
-    pub(crate) fn restored(&self, last: u64, keys: Vec<String>) {
+    /// A run restored from a snapshot whose program made handles up to `last`, drew `keys` and had the canvases
+    /// `stops` stopped (`widgets-gpu.md`, Errors and device loss): to the program a device loss, told before it runs
+    /// on; handles from before are dropped quietly, the stopped canvases stay stopped and aren't reported again. It
+    /// doesn't wait for the device: while it is being made, what the program posts waits for it.
+    pub(crate) fn restored(&self, last: u64, keys: Vec<String>, stops: SavedStops) {
         let mut st = lock(&self.state);
         for k in &keys {
             st.sizes.entry(k.clone()).or_insert((0, 0));
         }
-        if last == 0 || self.start(&mut st).is_err() {
-            st.keys = keys;
-            return;
-        }
-        let gpu = st.gpu.as_mut().expect("started");
-        gpu.restored(last);
-        for k in &keys {
-            gpu.resize(k, 0, 0);
-        }
         st.keys = keys;
+        st.restore = Some((last, stops));
+        let started = match device::ready() {
+            Some(Ok(_)) => self.start(&mut st).is_ok(),
+            Some(Err(_)) => false,
+            None => {
+                st.waiting = true;
+                st.held = Some(Vec::new());
+                true
+            }
+        };
+        let told = match st.gpu.is_some() {
+            true => self.restore_in(&mut st),
+            false => Vec::new(),
+        };
         drop(st);
         self.ctx.deliver(lost_message("unknown", ""));
+        if !started {
+            return self.tell(None, GpuCanvasState::Unavailable);
+        }
+        self.tell_restored(told);
+    }
+
+    /// Gives the run's new GPU what a snapshot kept: the canvases it had the program draw, the handles from before,
+    /// and the stops, which the app is told of again (not to report).
+    fn restore_in(&self, st: &mut State) -> Vec<(Option<String>, SavedStop)> {
+        let (Some(gpu), Some((last, stops))) = (st.gpu.as_mut(), st.restore.take()) else {
+            return Vec::new();
+        };
+        gpu.restored(last);
+        let mut told: Vec<(Option<String>, SavedStop)> = stops
+            .canvases
+            .iter()
+            .map(|(k, s)| (Some(k.clone()), s.clone()))
+            .collect();
+        if let Some(all) = &stops.all {
+            told.insert(0, (None, all.clone()));
+        }
+        gpu.restore_stops(stops);
+        for k in &st.keys {
+            let (w, h) = st.sizes.get(k).copied().unwrap_or((0, 0));
+            gpu.resize(k, w, h);
+        }
+        told
+    }
+
+    fn tell_restored(&self, told: Vec<(Option<String>, SavedStop)>) {
+        for (key, stop) in told {
+            let kind = match stop.kind {
+                ErrorKind::Program => GpuErrorKind::Program,
+                ErrorKind::Client => GpuErrorKind::Client,
+            };
+            let state = GpuCanvasState::Stopped {
+                kind,
+                message: stop.message,
+                report: false,
+            };
+            self.tell(key.as_deref(), state);
+        }
     }
 
     /// What waits on the run's thread: a device loss and its new device, a surface that failed.
     pub(crate) fn due(&self) {
         if let Some((reason, message)) = lock(&self.loss).take() {
             let mut st = lock(&self.state);
-            if st.gpu.is_some() {
+            if let Some(gpu) = &st.gpu {
+                // A canvas an error stopped keeps its placeholder (stopped stays stopped).
+                let lost: Vec<String> = (st.keys.iter())
+                    .filter(|k| gpu.error(k).is_none())
+                    .cloned()
+                    .collect();
                 st.held.get_or_insert_with(Vec::new);
                 st.versions.clear();
                 drop(st);
                 self.surfaces.clear();
                 self.ctx.deliver(lost_message(&reason, &message));
-                self.tell(None, GpuCanvasState::Lost);
+                for k in lost {
+                    self.tell(Some(&k), GpuCanvasState::Lost);
+                }
             }
         }
         if self.replaced.swap(false, Ordering::SeqCst) {
@@ -227,13 +294,16 @@ impl RunGpu {
             Err(e) => {
                 st.gpu = None;
                 // No device after all: as without a GPU from now on. A program told it had one (the first device
-                // was still being made) loses it, as on a device loss; after a loss it was told already.
-                if first {
+                // was still being made) loses it, as on a device loss; after a loss, or restored, it was told already.
+                if first && st.restore.take().is_none() {
                     self.ctx.deliver(lost_message("unknown", &e.message));
                 }
                 return self.tell(None, GpuCanvasState::Unavailable);
             }
         }
+        // A restored run's handles and stops, before what it posted replays.
+        let told = self.restore_in(st);
+        self.tell_restored(told);
         for h in held {
             match h {
                 Held::Batch(ops, bytes) => self.batch_in(st, &ops, &bytes),
@@ -270,9 +340,8 @@ impl RunGpu {
             if let Some(dev) = &st.dev {
                 let _ = dev.device.poll(wgpu::PollType::Poll);
             }
+            // Posted before the program learned of the loss: dropped quietly.
             if lock(&self.loss).is_some() {
-                let held = Held::Batch(ops.to_vec(), bytes.to_vec());
-                st.held.get_or_insert_with(Vec::new).push(held);
                 return;
             }
             self.stopped(&e);
@@ -434,8 +503,10 @@ impl device::Loss for RunGpu {
 
 impl LiveSurfaces for RunGpu {
     fn attach(&self, key: String, surface: Arc<GpuSurface>, width: u32, height: u32) {
+        // A surface not laid out yet (0 × 0): attached, but the program's size waits for a real one.
         let size = widget_gpu::clamp_size(width.max(1), height.max(1));
-        let changed = lock(&self.sent).insert(key.clone(), size) != Some(size);
+        let changed =
+            width > 0 && height > 0 && lock(&self.sent).insert(key.clone(), size) != Some(size);
         if changed {
             self.ctx.deliver(HostValue::Object(vec![
                 ("type".into(), HostValue::String("canvas".into())),

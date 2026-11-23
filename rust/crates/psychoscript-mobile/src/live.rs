@@ -173,6 +173,17 @@ impl LiveRun {
         self.control.surfaces.as_ref().map(|s| s.stats())
     }
 
+    /// The GPU batches the program posted, as the conformance fixtures write them (`{ frame, ops, bytes }` JSON), when
+    /// the run started after [`crate::gpu_record_batches`].
+    #[doc(hidden)]
+    pub fn gpu_posted(&self) -> Vec<String> {
+        self.control
+            .encoded
+            .as_ref()
+            .map(|e| lock(e).recorded())
+            .unwrap_or_default()
+    }
+
     /// The newest image of the GPU canvas `key`: its width, height and RGBA8 pixels, row by row (it waits for the
     /// GPU).
     #[doc(hidden)]

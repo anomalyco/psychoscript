@@ -63,7 +63,8 @@ fn a_device_that_cant_be_made() {
     // A shader canvas: made at once, `render` returns the client error once.
     #[cfg(any(target_os = "macos", target_os = "android"))]
     {
-        let surface = real::surface(8, 8).surface;
+        let real = real::surface(8, 8);
+        let surface = real.surface.clone();
         let canvas = ShaderCanvas::new(
             "fn shade(frag: vec2f) -> vec4f { return vec4f(1.0); }".into(),
             surface,

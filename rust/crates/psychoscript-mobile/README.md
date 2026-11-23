@@ -365,15 +365,19 @@ WebGPU, shader translation and presenting are this crate's.
   `available: true` (where the platform has a GPU); if it then can't be made, the canvases go `unavailable` and the
   program gets `{ type: "gpu", lost: "unknown", message }`, as on a device loss (its device and handles are gone, and
   what it posts is dropped). Once it is known there is none, runs get `available: false`. After a device loss the
-  crate makes a new device, tells the program (`{ type: "gpu", lost }`) and replays on it; a run restored from a
-  snapshot is told the same.
+  crate makes a new device, tells the program (`{ type: "gpu", lost }`) and replays on it; what the program posted
+  before it learned of the loss is dropped quietly. A run restored from a snapshot is a device loss too: the program
+  gets `{ type: "gpu", lost: "unknown" }` before it runs on, batches naming handles from before are dropped, and the
+  canvases an error stopped stay stopped (the app is told again, with `report` false); with no device, every canvas
+  is `unavailable`.
 - **Surfaces:** `GpuSurface.metal(layer)` (Swift, a `CAMetalLayer`, retained while the surface lives; Rust/FFI
   `GpuSurface.metalLayer(pointer:)`), `PsychoScriptGpu.surface(surface)` (Kotlin, an `android.view.Surface`, e.g.
   `SurfaceHolder.surface` in `surfaceCreated`; it holds the `ANativeWindow` until the `GpuSurface` is dropped).
 - **`liveRun.attachSurface(key, surface, width, height)`:** the `gpu: true` canvas `key` (from the decoded view) is
   presented into `surface`, `width` × `height` physical pixels (its view's size × scale). The program gets that size,
   clamped to 4096 a side with the aspect kept, before its next frame; a clamped canvas is scaled to the surface. Call
-  it again with the new size when the view's size changes (or with a new surface).
+  it again with the new size when the view's size changes (or with a new surface). A surface not laid out yet (a side
+  0) is attached, but the program gets its size only once both sides are positive.
 - **`liveRun.detachSurface(key)`:** before the surface goes (Android `surfaceDestroyed`, an iOS view leaving its
   window): once it returns (it waits for a present in progress, at most a frame), the surface is never touched again.
 - **`handler.onGpuCanvas(key, state)`:** `key` the canvas, or `nil` for every GPU canvas of the run (now and later).
@@ -384,7 +388,8 @@ WebGPU, shader translation and presenting are this crate's.
   - `stopped(kind, message, report)`: an error stopped it for the rest of the run, with `message`. `report` once per
     error (`kind` `program`: report it, phase `gpu`); `kind` `client` (a driver failure, out of GPU memory, a surface
     that failed): log it;
-  - `lost`: the device was lost; `live` again when the program draws on the new one.
+  - `lost`: the device was lost; `live` again when the program draws on the new one. A canvas an error stopped isn't
+    told `lost`: it stays stopped.
 - **Threading:** batches replay on the run's thread, with the program's bytes in place (no copy, nothing crosses to
   Swift or Kotlin); a thread of the run's own presents (one copy of the canvas into the surface's next texture, or a
   scaled draw), so a slow, hidden or detached surface never holds up the run. Presents beyond the surface's rate are
