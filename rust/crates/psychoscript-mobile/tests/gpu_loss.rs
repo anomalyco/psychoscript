@@ -97,3 +97,30 @@ fn a_lost_device_is_told_to_the_program_and_replaced() {
     assert!(lost.is_empty(), "{lost:?}");
     r.run.stop();
 }
+
+/// A `wgsl` canvas draws on through a device loss (`Shorthand::reset` on the new device), telling nothing.
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
+#[test]
+fn a_shader_canvas_draws_on_after_a_loss() {
+    use psychoscript_mobile::ShaderCanvas;
+    use std::time::{Duration, Instant};
+    let surface = real::surface(64, 64);
+    let canvas = ShaderCanvas::new(
+        "fn shade(frag: vec2f) -> vec4f { return vec4f(1.0, 0.0, 0.0, 1.0); }".into(),
+        surface.surface.clone(),
+        64,
+        64,
+    );
+    let frames = |n: u64| {
+        let until = Instant::now() + Duration::from_secs(60);
+        while canvas.presents() < n {
+            assert_eq!(canvas.render(0.0, 1.0, vec![], vec![]), Ok(()));
+            assert!(Instant::now() < until, "{} presented", canvas.presents());
+            std::thread::sleep(Duration::from_millis(16));
+        }
+    };
+    frames(3);
+    gpu_lose_device();
+    let before = canvas.presents();
+    frames(before + 3);
+}

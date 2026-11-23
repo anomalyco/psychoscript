@@ -418,7 +418,7 @@ WebGPU, shader translation and presenting are this crate's.
   on its last frame (`widgets-gpu.md`): `render` returns `.client` with reason `the shader took over 50 ms a frame,
   three frames in a row` once; log it and keep the surface (its last frame), not the placeholder. A frame the GPU hung
   on (Heavy GPU work, above) returns `.client` with `the GPU work hung; the canvas is stopped`: log it, show the
-  placeholder. A device loss recompiles the shader on the new device. `resize(width:, height:)` takes effect at the
+  placeholder. After a device loss it draws again on the new device. `resize(width:, height:)` takes effect at the
   next frame. Drop it before its surface goes: once dropped, it never touches the surface again (a present in progress finishes first).
 
 ```swift

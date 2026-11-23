@@ -1,4 +1,4 @@
-//! The GPU conformance fixtures (opencode `packages/widget/test/fixtures/gpu`, widgets 3efef1c62; `fixtures/gpu/
+//! The GPU conformance fixtures (opencode `packages/widget/test/fixtures/gpu`, widgets 2aaf246ec; `fixtures/gpu/
 //! fixtures`) as live runs: each program with the preludes, its posts through the real `__host.post` and the widget
 //! encoder, its batches replayed on this machine's device. Each must post the fixture's `batches` (ops, and bytes
 //! from psychoscript's `Math`), give its GPU program errors (message and canvases) and end as it says. The driver is the spec's (`widgets-gpu.md`, Conformance); a device loss among
@@ -243,6 +243,6 @@ fn every_gpu_fixture_as_a_live_run() {
             );
         }
     }
-    assert_eq!(ran, 49);
+    assert_eq!(ran, 50);
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
 }

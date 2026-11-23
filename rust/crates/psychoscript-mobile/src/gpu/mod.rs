@@ -56,6 +56,9 @@ impl GpuStats {
 pub fn gpu_lose_device() {
     #[cfg(feature = "widget-gpu")]
     if let Some(d) = device::current() {
+        // No replay between the destroy and the poll that tells of it: `destroy` invalidates every resource at
+        // once, which a driver's loss doesn't (wgpu reports replay on a lost device as no error).
+        let submits = device::submits();
         d.device.destroy();
         // wgpu tells of a destroyed device at a poll that finds its queue empty (a wait for the last submission
         // may not); a driver's loss as it finds it.
@@ -66,6 +69,7 @@ pub fn gpu_lose_device() {
             }
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
+        drop(submits);
     }
 }
 

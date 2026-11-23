@@ -297,11 +297,12 @@ mod imp {
                 }
                 dev = now;
                 (drawing, drawn, shown) = (None, 0, (0, (0, 0)));
-                // Compiled again (`Shorthand::reset` makes handles a loss made old).
-                shorthand = match compile(&dev, wgsl) {
-                    Ok(shorthand) => shorthand,
-                    Err(e) => return fail(s, e),
-                };
+                let submits = device::submits();
+                let reset = shorthand.reset(dev.device.clone(), dev.queue.clone());
+                drop(submits);
+                if let Err(e) = reset {
+                    return fail(s, e.into());
+                }
             }
             if let Some(u) = u {
                 let uniforms = Uniforms {
