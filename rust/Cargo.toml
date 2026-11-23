@@ -10,9 +10,9 @@ license = "MIT"
 lto = "thin"
 codegen-units = 1
 
-# wgpu-hal as Rune vendors it (`vendor/wgpu-hal`: 30.0.1 plus `vendor/wgpu-hal.patch`): on Metal a GPU that stops a
-# queue's work loses the device (rune #1561; stock wgpu-hal counts the work finished and tells nothing), until wgpu
-# ships it (gfx-rs/wgpu#10875). Its other changes are DX12's and GL's, built for neither iOS nor Android; Vulkan's code
+# wgpu-hal as Rune vendors it (`vendor/wgpu-hal`: 30.0.1 plus `vendor/wgpu-hal.patch`): on Metal any command buffer
+# that fails loses the device, as in Dawn (rune #1561, #1657; stock wgpu-hal counts the failed work finished and tells
+# nothing), until wgpu ships it (gfx-rs/wgpu#10875). Its other changes are DX12's and GL's, built for neither iOS nor Android; Vulkan's code
 # is 30.0.2's. Bump with Rune's when wgpu is bumped.
 [patch.crates-io]
-wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "4c4abf5d6d2b47892b3b01c519341b943f5cebcf" }
+wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "9a915b1face3445afd025059eabc190977db6f24" }
