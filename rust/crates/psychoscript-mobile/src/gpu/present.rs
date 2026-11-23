@@ -34,9 +34,14 @@ pub(crate) struct Attached {
 struct Made {
     // Dropped before `Attached::native`, which it presents into.
     surface: wgpu::Surface<'static>,
-    /// The configuration, the device generation it is for, and the size asked for (larger than the configuration's
-    /// when the device's textures are smaller).
-    config: Option<(wgpu::SurfaceConfiguration, u64, (u32, u32))>,
+    /// The configuration, the device generation it is for, the size asked for (larger than the configuration's when
+    /// the device's textures are smaller), and the canvas's alpha it is for.
+    config: Option<(
+        wgpu::SurfaceConfiguration,
+        u64,
+        (u32, u32),
+        widget_gpu::AlphaMode,
+    )>,
 }
 
 impl Attached {
@@ -98,11 +103,16 @@ impl Attached {
         }
         let made = self.surface.as_mut().expect("made");
         let size = frame.texture.size();
-        let configured = made.config.as_ref().is_some_and(|(c, generation, asked)| {
-            *generation == dev.generation
-                && *asked == (self.width, self.height)
-                && c.alpha_mode == alpha_mode(&made.surface, dev, frame.alpha)
-        });
+        // Without asking the surface's capabilities: Android's loader queries the window's buffer formats each time,
+        // milliseconds a call on a Pixel.
+        let configured = made
+            .config
+            .as_ref()
+            .is_some_and(|(_, generation, asked, alpha)| {
+                *generation == dev.generation
+                    && *asked == (self.width, self.height)
+                    && *alpha == frame.alpha
+            });
         if !configured {
             let config = configure(&made.surface, dev, self.width, self.height, frame.alpha)?;
             // Checked before going on: a surface left unconfigured can't give a texture.
@@ -116,7 +126,7 @@ impl Attached {
                 if made
                     .config
                     .as_ref()
-                    .is_some_and(|(_, g, _)| *g != dev.generation)
+                    .is_some_and(|(_, g, ..)| *g != dev.generation)
                 {
                     self.surface = None;
                     return self.try_present(frame, blit);
@@ -133,7 +143,12 @@ impl Attached {
             if let Some(layer) = self.native.layer() {
                 drawable_timeout(layer);
             }
-            made.config = Some((config, dev.generation, (self.width, self.height)));
+            made.config = Some((
+                config,
+                dev.generation,
+                (self.width, self.height),
+                frame.alpha,
+            ));
         }
         let (config, ..) = made.config.as_ref().expect("configured");
         let target = match made.surface.get_current_texture() {
@@ -196,12 +211,10 @@ pub(crate) enum Shown {
 }
 
 fn alpha_mode(
-    surface: &wgpu::Surface<'_>,
-    dev: &Dev,
+    modes: &[wgpu::CompositeAlphaMode],
     alpha: widget_gpu::AlphaMode,
 ) -> wgpu::CompositeAlphaMode {
     use wgpu::CompositeAlphaMode as M;
-    let modes = surface.get_capabilities(&dev.adapter).alpha_modes;
     let want: &[M] = match alpha {
         widget_gpu::AlphaMode::Opaque => &[M::Opaque, M::Inherit, M::Auto],
         // A `CAMetalLayer` that isn't opaque composites premultiplied colors (wgpu calls it post-multiplied).
@@ -257,7 +270,7 @@ fn configure(
         height,
         present_mode: wgpu::PresentMode::Fifo,
         desired_maximum_frame_latency: 2,
-        alpha_mode: alpha_mode(surface, dev, alpha),
+        alpha_mode: alpha_mode(&caps.alpha_modes, alpha),
         view_formats: Vec::new(),
     })
 }
