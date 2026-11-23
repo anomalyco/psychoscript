@@ -54,14 +54,30 @@ fn input(r: &mut Run, i: &Value) {
                 }
                 gpu_lose_device();
             }
-            let (key, state) = r.wait(|e| match e {
-                Event::Gpu(
-                    k,
-                    s @ (GpuCanvasState::Lost { .. } | GpuCanvasState::Stopped { .. }),
-                ) => Some((k.clone(), s.clone())),
-                _ => None,
-            });
-            r.seen.push(Event::Gpu(key, state));
+            // This loss's event, not an earlier one's: each loss tells one (the fixtures with losses have one
+            // canvas). An `inFlight` one may have come before this input, or come late: lost at the end of a frame
+            // replayed on a device still being made (a slow one, a phone's).
+            let n = LOSSES.get() + 1;
+            LOSSES.set(n);
+            let told = |seen: &[Event]| {
+                (seen.iter())
+                    .filter(|e| {
+                        matches!(
+                            e,
+                            Event::Gpu(
+                                _,
+                                GpuCanvasState::Lost { .. } | GpuCanvasState::Stopped { .. }
+                            )
+                        )
+                    })
+                    .count()
+            };
+            while told(&r.seen) < n {
+                match r.rx.recv_timeout(Duration::from_secs(30)) {
+                    Ok(e) => r.seen.push(e),
+                    Err(_) => panic!("loss {n} was never told, after {:?}", r.seen),
+                }
+            }
         }
         _ => r.run.deliver(i.to_string()).unwrap(),
     }
@@ -125,8 +141,21 @@ fn errors_of(seen: &[Event]) -> Vec<Value> {
     errors
 }
 
+thread_local! {
+    /// The device losses `drive` gave the run in progress.
+    static LOSSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn drive(f: &Value) -> (Vec<Value>, String, String, Vec<Value>) {
     gpu_input_format(f["gpu"]["format"].as_str().unwrap());
+    LOSSES.set(0);
+    let losses =
+        (f["inputs"].as_array().into_iter().flatten()).any(|i| i["input"]["lost"].is_string());
+    assert!(
+        !losses || f["canvases"].as_array().unwrap().len() == 1,
+        "{}: a loss tells each canvas; the driver counts one a loss",
+        f["name"]
+    );
     let mut r = start(
         &live_program(f["source"].as_str().unwrap()),
         f["data"].clone(),

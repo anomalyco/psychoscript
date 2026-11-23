@@ -338,6 +338,8 @@ impl RunGpu {
                 Held::EndFrame => {
                     if let Some(g) = st.gpu.as_mut() {
                         g.end_frame();
+                        #[cfg(feature = "test-hooks")]
+                        lose_at_frame_end(g);
                     }
                 }
                 Held::Canvases(keys) => canvases_in(st, &keys),
@@ -457,6 +459,22 @@ fn lost_message(reason: &str, message: &str) -> HostValue {
     HostValue::Object(m)
 }
 
+/// A test's loss at a frame's end, its work in flight (nothing polled since its last batch): also a frame held for
+/// the new device, at its end as it replays.
+#[cfg(feature = "test-hooks")]
+fn lose_at_frame_end(gpu: &mut Gpu) {
+    match super::LOSE_AT_FRAME_END.swap(0, Ordering::SeqCst) {
+        0 => {}
+        with => {
+            if with == 2 {
+                gpu.work_finished();
+            }
+            gpu.lost();
+            super::gpu_lose_device();
+        }
+    }
+}
+
 fn canvases_in(st: &mut State, keys: &[String]) {
     let Some(gpu) = st.gpu.as_mut() else {
         st.keys = keys.to_vec();
@@ -523,18 +541,8 @@ impl widget_wire::GpuHost for Host {
             (Some(held), _) => held.push(Held::EndFrame),
             (None, Some(gpu)) => {
                 gpu.end_frame();
-                // A test's loss with the frame's work in flight: nothing polled since its last batch.
                 #[cfg(feature = "test-hooks")]
-                match super::LOSE_AT_FRAME_END.swap(0, Ordering::SeqCst) {
-                    0 => {}
-                    with => {
-                        if with == 2 {
-                            gpu.work_finished();
-                        }
-                        gpu.lost();
-                        super::gpu_lose_device();
-                    }
-                }
+                lose_at_frame_end(gpu);
             }
             (None, None) => {}
         }

@@ -101,6 +101,16 @@ impl Attached {
                 config: None,
             });
         }
+        // A surface configured on a lost device: a new one over the same layer or window, the old one (its swapchain)
+        // gone first. A window takes one swapchain at a time, and a lost device's present may keep its texture out,
+        // which no configure on the new device gets past.
+        if (self.surface.as_ref())
+            .and_then(|m| m.config.as_ref())
+            .is_some_and(|(_, g, ..)| *g != dev.generation)
+        {
+            self.surface = None;
+            return self.try_present(frame, blit);
+        }
         let made = self.surface.as_mut().expect("made");
         let size = frame.texture.size();
         // Without asking the surface's capabilities: Android's loader queries the window's buffer formats each time,
@@ -115,21 +125,20 @@ impl Attached {
             });
         if !configured {
             let config = configure(&made.surface, dev, self.width, self.height, frame.alpha)?;
-            // Checked before going on: a surface left unconfigured can't give a texture.
-            let scope = dev.device.push_error_scope(wgpu::ErrorFilter::Validation);
+            // Checked before going on: a surface left unconfigured can't give a texture. Any kind of error: a window
+            // the driver refuses is no validation error.
+            let validation = dev.device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let memory = dev.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+            let internal = dev.device.push_error_scope(wgpu::ErrorFilter::Internal);
             let submits = device::submits();
             made.surface.configure(&dev.device, &config);
             drop(submits);
-            if let Some(e) = device::block(scope.pop()) {
-                // A device lost in the middle of a present keeps that present's texture out, which no configure on
-                // the new device gets past: once, a new surface over the same layer or window.
-                if made
-                    .config
-                    .as_ref()
-                    .is_some_and(|(_, g, ..)| *g != dev.generation)
-                {
+            let errors = [internal.pop(), memory.pop(), validation.pop()].map(device::block);
+            if let Some(e) = errors.into_iter().flatten().next() {
+                // Its device lost meanwhile: the new device's image makes it anew.
+                if lost(dev) {
                     self.surface = None;
-                    return self.try_present(frame, blit);
+                    return Ok(Shown::Hidden);
                 }
                 return Err(format!(
                     "the surface can't be configured ({}×{} {:?}, {:?}, {:?}): {e}",
@@ -151,7 +160,23 @@ impl Attached {
             ));
         }
         let (config, ..) = made.config.as_ref().expect("configured");
-        let target = match made.surface.get_current_texture() {
+        // wgpu panics where the surface isn't configured (`Error in Surface::get_current_texture_view`): its device
+        // was lost as it was configured, which no error scope tells. That, or `Validation` on a lost device, is a
+        // stale present: nothing to show until the new device's image, which configures the surface on it.
+        let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            made.surface.get_current_texture()
+        }));
+        let got = match got {
+            Ok(got) => got,
+            Err(_) if lost(dev) => return Ok(Shown::Hidden),
+            Err(panic) => {
+                let message = (panic.downcast_ref::<String>().map(String::as_str))
+                    .or_else(|| panic.downcast_ref::<&str>().copied())
+                    .unwrap_or("");
+                return Err(format!("the surface's texture can't be had: {message}"));
+            }
+        };
+        let target = match got {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             wgpu::CurrentSurfaceTexture::Timeout => return Ok(Shown::Timeout),
@@ -166,6 +191,7 @@ impl Attached {
                 self.surface = None;
                 return Err("the surface was lost".into());
             }
+            wgpu::CurrentSurfaceTexture::Validation if lost(dev) => return Ok(Shown::Hidden),
             wgpu::CurrentSurfaceTexture::Validation => {
                 return Err("the surface's texture can't be had".into());
             }
@@ -209,6 +235,12 @@ pub(crate) enum Shown {
     Hidden,
     /// Its configuration is stale (made anew), or the surface was lost (made again).
     Outdated,
+}
+
+/// Whether `dev` was lost: replaced already, or polling it finds it lost.
+fn lost(dev: &Dev) -> bool {
+    device::current().is_none_or(|d| d.generation != dev.generation)
+        || !device::poll(&dev.device, false)
 }
 
 fn alpha_mode(
