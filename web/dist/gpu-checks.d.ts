@@ -9,7 +9,7 @@ export interface Checked {
     /** The ops before this one passed and may replay; none without it. */
     readonly at?: number;
     readonly keys: ReadonlyArray<string>;
-    /** Every canvas stopped already, or the batch's: don't replay it. */
+    /** Every canvas stopped already, or the batch's, or it is from before a device loss: don't replay it. */
     readonly skip: boolean;
 }
 export declare const GPU_LIMITS: {
@@ -25,16 +25,24 @@ export declare const GPU_LIMITS: {
     layers: number;
 };
 /**
+ * A GPU canvas's backing size for its physical size (widgets-gpu.md, Canvas size): within the texture dimension limit,
+ * its aspect ratio kept; over it, the larger side is the limit and the other ⌊side × limit / larger⌋, at least 1.
+ */
+export declare const canvasSize: (width: number, height: number) => readonly [number, number];
+/**
  * The checks of a widget's batches, in order. `canvases` gives the keys of the GPU canvases in the last rendered view.
  * A batch gives its first error, or none, and the rest of it goes unchecked. The error stops the canvases the batch
- * renders into (a pass's color attachment is a view of their texture), or every GPU canvas of the widget when it renders
- * into none; then later batches go unchecked. An error stopping only canvases already stopped isn't given again.
+ * renders into (a pass's color attachment or its resolve target is a view of their texture), or every GPU canvas of the widget when it renders
+ * into none; then later batches go unchecked. An error stopping only canvases already stopped isn't given again. A
+ * batch whose first error names a handle from before a device loss is dropped without one.
  */
 export declare function gpuChecks(canvases: () => ReadonlySet<string>): {
-    /** Checks a batch; `frame`: it came with a frame request, which ends the frame its limits count. */
-    batch: (value: unknown, frame: boolean) => Checked;
+    /** Checks a batch. */
+    batch: (value: unknown) => Checked;
+    /** A frame request, with or without a batch: it ends the frame the per-frame limits count. */
+    frame: () => void;
     /** An error the replay found in a batch that renders into `keys`. */
     scoped: (message: string, keys: ReadonlyArray<string>) => GpuError | undefined;
-    /** The device is lost: every handle is gone. */
+    /** The device is lost: every handle is gone; new ones keep counting up. */
     lost: () => void;
 };

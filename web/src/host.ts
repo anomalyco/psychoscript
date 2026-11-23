@@ -736,13 +736,15 @@ class Widget implements MountedWidget {
         return
       }
       case "frame":
-        // A frame request may carry the GPU batch recorded before it (widgets-gpu.md, Transport): replayed first.
-        if (p.gpu !== undefined) this.gpuBatch(p.gpu, true)
+        // A frame request may carry the GPU batch recorded before it (widgets-gpu.md, Transport): replayed first; then
+        // the frame's counts start again. One while a frame is pending changes nothing but its batch.
+        if (p.gpu !== undefined) this.gpuBatch(p.gpu)
+        if (!this.live.frameWanted) this.gpu?.frame()
         this.live.frameWanted = true
         this.host.ticker.add(this.liveTick)
         return
       case "gpu":
-        if (p.batch !== undefined) this.gpuBatch(p.batch, false)
+        if (p.batch !== undefined) this.gpuBatch(p.batch)
         return
       case "submit":
         this.finish("submitted", p.value ?? null)
@@ -787,11 +789,11 @@ class Widget implements MountedWidget {
     this.view = node
     reconcile(this.ctx, this.viewEl, [node])
     if (this.gpuUnavailable) for (const s of surfaces(this.viewEl)) if (s instanceof WebGpuCanvasView) s.placeholder()
-    // A stopped GPU canvas rendered anew (a new element) still shows its error.
+    // A stopped GPU canvas rendered anew (a new element) still shows its placeholder: with its error, or, lost, alone.
     if (this.gpu)
       for (const key of Object.keys(this.gpuKeys)) {
-        const message = this.gpu.stoppedBy(key)
-        if (message !== undefined) this.gpuCanvas(key)?.placeholder(message)
+        const message = this.gpu.placeholderFor(key)
+        if (message !== undefined) this.gpuCanvas(key)?.placeholder(message ?? undefined)
       }
     this.updateExpand()
     this.input.refresh()
@@ -1118,8 +1120,8 @@ class Widget implements MountedWidget {
     return id === undefined ? undefined : surfaces(this.viewEl).find((s): s is WebGpuCanvasView => s instanceof WebGpuCanvasView && s.id === id)
   }
 
-  /** A batch as posted (`frame`: in a frame request), for the checks and the replay. */
-  private gpuBatch(batch: unknown, frame: boolean) {
+  /** A batch as posted, for the checks and the replay. */
+  private gpuBatch(batch: unknown) {
     this.gpu ??= new GpuReplay({
       canvas: (key) => this.gpuCanvas(key),
       keys: () => new Set(Object.keys(this.gpuKeys)),
@@ -1132,12 +1134,12 @@ class Widget implements MountedWidget {
         for (const s of surfaces(this.viewEl)) if (s instanceof WebGpuCanvasView) s.placeholder()
       },
     })
-    this.gpu.batch(batch, frame)
+    this.gpu.batch(batch)
   }
 
   /**
-   * Before a frame, the first one too: `{ type: "canvas", key, width, height }` (physical pixels) for each GPU canvas
-   * whose size changed.
+   * Before a frame, the first one too: `{ type: "canvas", key, width, height }` (physical pixels clamped to the texture
+   * limit: the canvas's backing size) for each GPU canvas whose size changed.
    */
   private gpuSizes() {
     for (const key of Object.keys(this.gpuKeys)) {

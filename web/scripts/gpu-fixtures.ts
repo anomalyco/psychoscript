@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// The GPU conformance fixtures (opencode `packages/widget/test/fixtures/gpu/*.json`, widgets b18aa923d; copies in
+// The GPU conformance fixtures (opencode `packages/widget/test/fixtures/gpu/*.json`, widgets 7111a0325; copies in
 // rust/crates/psychoscript-web/tests/fixtures/gpu): each program runs on this host's WebAssembly (the worker's
 // `LiveRun`, from wasm/) under the fixtures' driver, and must post the same batches (ops, and bytes byte for byte),
 // give the same program errors from the host checks (src/gpu-checks.ts, which the page runs before replaying), and
@@ -9,7 +9,7 @@
 
 import path from "node:path"
 import { initSync, Program } from "../wasm/psychoscript_web.js"
-import { gpuChecks } from "../src/gpu-checks.ts"
+import { canvasSize, gpuChecks } from "../src/gpu-checks.ts"
 
 const root = path.resolve(import.meta.dir, "..")
 const dir = path.resolve(root, "../rust/crates/psychoscript-web/tests/fixtures")
@@ -23,7 +23,7 @@ interface Fixture {
   source: string
   data?: unknown
   canvases: Array<{ key: string; width: number; height: number }>
-  inputs?: Array<{ frame: number; input: unknown }>
+  inputs?: Array<{ frame: number; after?: boolean; input: { type: string; key?: string; width?: number; height?: number; lost?: string } }>
   gpu: { available: boolean; format: string }
   batches?: Array<{ frame: boolean; ops: unknown; bytes: string }>
   errors: Array<{ message: string; canvases: string[] | "all" }>
@@ -51,9 +51,18 @@ async function run(f: Fixture) {
       const m = e.message
       if (e.type !== "post" || !m) continue
       if (m.type === "render") keys = new Set(Object.keys((m.gpu as object) ?? {}))
+      // A frame request ends a frame: recorded (`frame: true`, without a batch as no ops and no bytes) and the
+      // per-frame counts start again. One while a frame is pending isn't one: its batch, if any, is a plain batch.
+      const frame = m.type === "frame" && !requested
       if (m.type === "frame") requested = true
       const value = m.type === "frame" ? m.gpu : m.type === "gpu" ? m.batch : undefined
-      if (value === undefined) continue
+      if (value === undefined) {
+        if (frame) {
+          batches.push({ frame: true, ops: [], bytes: "" })
+          checks.frame()
+        }
+        continue
+      }
       const batch = value as { ops?: unknown; bytes?: unknown }
       if (batch && typeof batch === "object" && Array.isArray(batch.bytes)) {
         bytes ??= live.takeBytes()
@@ -61,9 +70,10 @@ async function run(f: Fixture) {
         batch.bytes = bytes.subarray(offset, offset + length)
       }
       if (batch && typeof batch === "object" && batch.bytes instanceof Uint8Array)
-        batches.push({ frame: m.type === "frame", ops: batch.ops, bytes: Buffer.from(batch.bytes).toString("base64") })
-      const checked = checks.batch(value, m.type === "frame")
+        batches.push({ frame, ops: batch.ops, bytes: Buffer.from(batch.bytes).toString("base64") })
+      const checked = checks.batch(value)
       if (checked.error) errors.push({ message: checked.error.message, canvases: checked.error.canvases })
+      if (frame) checks.frame()
     }
   }
   /** Runs until the program waits on the host; the ms until its next timer, or -1. */
@@ -87,13 +97,26 @@ async function run(f: Fixture) {
       if (timer >= 0) await Bun.sleep(Math.min(timer, 1000 / 60) + 1)
     }
   }
-  for (const c of f.canvases) deliver({ type: "canvas", key: c.key, width: c.width, height: c.height })
+  // As the page sends them: a canvas's size clamped to the texture limit; a device loss lost by the checks first.
+  const input = (given: { type: string; key?: string; width?: number; height?: number; lost?: string }) => {
+    if (given.type === "canvas") {
+      const [width, height] = canvasSize(given.width!, given.height!)
+      return deliver({ type: "canvas", key: given.key, width, height })
+    }
+    if (given.type === "gpu" && given.lost !== undefined) checks.lost()
+    deliver(given)
+  }
+  for (const c of f.canvases) input({ type: "canvas", ...c })
   for (let i = 0; i < FRAMES; i++) {
     await settle()
     if (ended || !requested) break
-    for (const { input } of (f.inputs ?? []).filter((entry) => entry.frame === i)) deliver(input)
+    const send = (after: boolean) => {
+      for (const entry of (f.inputs ?? []).filter((entry) => entry.frame === i && !!entry.after === after)) input(entry.input)
+    }
+    send(false)
     requested = false
     deliver({ type: "frame", frame: frame(i) })
+    send(true)
   }
   await settle()
   if (!ended) {

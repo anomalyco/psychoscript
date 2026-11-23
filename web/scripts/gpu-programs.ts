@@ -113,3 +113,129 @@ export const invalid = `async function main() {
   widget.render(ui.column([${scene}, ui.button("still here", { onPress: () => widget.render(ui.text("pressed")) })]))
   await widget.sleep(100000)
 }`
+
+/** Two GPU canvases, "a" and "b", 64 x 64 side by side, the device and their contexts. */
+const two = (body: string) => `async function main(data) {
+  widget.render(ui.row([ui.canvas({ key: "a", gpu: true, width: 64, height: 64, alt: "A" }), ui.canvas({ key: "b", gpu: true, width: 64, height: 64, alt: "B" })]))
+  let device = await widget.gpu.requestDevice()
+  const format = widget.gpu.getPreferredCanvasFormat()
+  const ctx = {}
+  const configure = () => {
+    for (const k of ["a", "b"]) {
+      ctx[k] = widget.gpu.getContext(k)
+      ctx[k].configure({ device, format, alphaMode: "opaque" })
+    }
+  }
+  configure()
+  const gone = () => {
+    const buffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.VERTEX })
+    buffer.destroy()
+    return buffer
+  }
+  // A pass into canvas k cleared to color; with a destroyed vertex buffer set, a host-check error.
+  const pass = (encoder, k, color, broken) => {
+    const buffer = broken ? gone() : null
+    const p = encoder.beginRenderPass({ colorAttachments: [{ view: ctx[k].getCurrentTexture().createView(), clearValue: color, loadOp: "clear", storeOp: "store" }] })
+    if (buffer) p.setVertexBuffer(0, buffer)
+    p.end()
+  }
+  const submit = (f) => {
+    const encoder = device.createCommandEncoder()
+    f(encoder)
+    device.queue.submit([encoder.finish()])
+  }
+  ${body}
+  await widget.sleep(100000)
+}`
+
+/**
+ * One batch a frame into both canvases (a red, b green) until frame 3, whose batch makes a view of a but renders only
+ * into b, and fails: b stops, a draws on (yellow; b's passes skipped). Frame 8's batch renders into both and fails in
+ * a's pass: only a stops, b keeps its first error. `data.until`: the last frame.
+ */
+export const isolated = two(`for (let n = 0; n <= data.until; n++) {
+    await widget.frame()
+    submit((e) => {
+      if (n < 3) {
+        pass(e, "a", [1, 0, 0, 1])
+        pass(e, "b", [0, 1, 0, 1])
+      } else if (n === 3) {
+        pass(e, "b", [0, 0, 1, 1])
+        ctx.a.getCurrentTexture().createView()
+        pass(e, "b", [0, 0, 1, 1], true)
+      } else {
+        pass(e, "a", [1, 1, 0, 1], n === 8)
+        pass(e, "b", [0, 1, 1, 1])
+      }
+    })
+  }`)
+
+/**
+ * a is drawn through a resolve target (a 4x multisampled pass resolved into it), b directly, in batches of their own;
+ * frame 2's batch for a fails: only a stops, b draws on (blue from frame 3).
+ */
+export const resolved = two(`let msaa
+  for (let n = 0; n < 8; n++) {
+    await widget.frame()
+    const target = ctx.a.getCurrentTexture()
+    msaa ??= device.createTexture({ size: [target.width, target.height], sampleCount: 4, format, usage: GPUTextureUsage.RENDER_ATTACHMENT })
+    submit((e) => {
+      const buffer = n === 2 ? gone() : null
+      const p = e.beginRenderPass({ colorAttachments: [{ view: msaa.createView(), resolveTarget: target.createView(), clearValue: [1, 0, 0, 1], loadOp: "clear", storeOp: "store" }] })
+      if (buffer) p.setVertexBuffer(0, buffer)
+      p.end()
+    })
+    await widget.sleep(1)
+    submit((e) => pass(e, "b", n < 3 ? [0, 1, 0, 1] : [0, 0, 1, 1]))
+  }`)
+
+/**
+ * a and b in batches of their own; frame 2's batch for a fails (a stops). Then it waits for the device's loss, asks
+ * for a new device, configures both again and draws both blue: only b, which the loss stopped, starts again.
+ */
+export const restarted = two(`for (let n = 0; n < 5; n++) {
+    await widget.frame()
+    submit((e) => pass(e, "a", [1, 0, 0, 1], n === 2))
+    await widget.sleep(1)
+    submit((e) => pass(e, "b", [0, 1, 0, 1]))
+  }
+  widget.render(ui.column([ui.row([ui.canvas({ key: "a", gpu: true, width: 64, height: 64, alt: "A" }), ui.canvas({ key: "b", gpu: true, width: 64, height: 64, alt: "B" })]), ui.text("waiting")]))
+  await device.lost
+  device = await widget.gpu.requestDevice()
+  configure()
+  widget.render(ui.column([ui.row([ui.canvas({ key: "a", gpu: true, width: 64, height: 64, alt: "A" }), ui.canvas({ key: "b", gpu: true, width: 64, height: 64, alt: "B" })]), ui.text("restarted")]))
+  for (let n = 0; n < 5; n++) {
+    await widget.frame()
+    submit((e) => pass(e, "a", [0, 0, 1, 1]))
+    await widget.sleep(1)
+    submit((e) => pass(e, "b", [0, 0, 1, 1]))
+  }`)
+
+/** a red for three frames, then frames with no GPU work: the last image stays. */
+export const kept = two(`for (let n = 0; n < 3; n++) {
+    await widget.frame()
+    submit((e) => pass(e, "a", [1, 0, 0, 1]))
+  }
+  for (let n = 0; n < 60; n++) await widget.frame()`)
+
+/** A GPU canvas whose physical width is over 4096: the program shows the size it was given, and a texture that size. */
+export const clamped = `async function main() {
+  widget.render(ui.canvas({ key: "big", gpu: true, height: 200, alt: "big" }))
+  const device = await widget.gpu.requestDevice()
+  const format = widget.gpu.getPreferredCanvasFormat()
+  const context = widget.gpu.getContext("big")
+  context.configure({ device, format, alphaMode: "opaque" })
+  for (let n = 0; n < 4; n++) {
+    await widget.frame()
+    const depth = device.createTexture({ size: [context.width, context.height], format: "depth24plus", usage: GPUTextureUsage.RENDER_ATTACHMENT })
+    const encoder = device.createCommandEncoder()
+    encoder.beginRenderPass({
+      colorAttachments: [{ view: context.getCurrentTexture().createView(), clearValue: [0, 1, 0, 1], loadOp: "clear", storeOp: "store" }],
+      depthStencilAttachment: { view: depth.createView(), depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store" },
+    }).end()
+    device.queue.submit([encoder.finish()])
+    depth.destroy()
+    widget.render(ui.column([ui.canvas({ key: "big", gpu: true, height: 200, alt: "big" }), ui.text(context.width + "x" + context.height)]))
+  }
+  await widget.sleep(100000)
+}`

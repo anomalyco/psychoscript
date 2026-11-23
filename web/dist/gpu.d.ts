@@ -43,24 +43,30 @@ export declare class GpuReplay {
     /** The stopped canvases' errors by key, and the error that stopped every one: a canvas rendered anew stays stopped. */
     private readonly stopped;
     private all;
+    /** The canvases the device's loss stopped, by key, until the program configures them on a new device. */
+    private readonly lostKeys;
     constructor(host: GpuHost);
     /** Checks `batch` now, in order, and replays what passes after the batches before it. */
-    batch(batch: unknown, frame: boolean): void;
+    batch(batch: unknown): void;
     /** A program error: reported once; its canvases (or every one) stop and show their placeholder with it. */
     private fail;
     private start;
     private adopt;
     private replay;
     private get;
-    /** The context's canvas, configured: it may have been rendered anew since. */
+    /** The context's canvas, configured: it may have been rendered anew since. Throws SKIP for a stopped canvas. */
     private context;
     /** A texture by handle: a context's stands for its canvas's current texture. */
     private texture;
     private view;
     private encode;
     private op;
+    /** A frame request, with a batch (checked first) or without: the per-frame counts start again. */
+    frame(): void;
     /** The error a stopped canvas shows, or undefined while it draws. */
-    stoppedBy(key: string): string | undefined;
+    private stoppedBy;
+    /** What a GPU canvas shows instead of drawing: an error's message, `null` (lost, the placeholder alone), or undefined. */
+    placeholderFor(key: string): string | null | undefined;
     /** The widget stopped: its device and everything on it go. */
     destroy(): void;
 }

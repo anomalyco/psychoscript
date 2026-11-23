@@ -296,11 +296,11 @@ declare class Widget implements MountedWidget {
     private gpuKeys;
     /** The GPU canvas with this key in the last rendered view. */
     private gpuCanvas;
-    /** A batch as posted (`frame`: in a frame request), for the checks and the replay. */
+    /** A batch as posted, for the checks and the replay. */
     private gpuBatch;
     /**
-     * Before a frame, the first one too: `{ type: "canvas", key, width, height }` (physical pixels) for each GPU canvas
-     * whose size changed.
+     * Before a frame, the first one too: `{ type: "canvas", key, width, height }` (physical pixels clamped to the texture
+     * limit: the canvas's backing size) for each GPU canvas whose size changed.
      */
     private gpuSizes;
     private liveTick;

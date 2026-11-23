@@ -3,6 +3,7 @@
 
 import type { Command, Images } from "./canvas.js"
 import type { GpuCanvas } from "./gpu.js"
+import { canvasSize } from "./gpu-checks.js"
 import { paint } from "./canvas.js"
 import { markdown } from "./markdown.js"
 import type { Frame, Rect, ViewNode, WidgetEvent } from "./protocol.js"
@@ -873,10 +874,14 @@ abstract class SurfaceBase {
     this.width = width
     this.height = height
     this.scale = scale
-    this.canvas.width = Math.round(width * scale)
-    this.canvas.height = Math.round(height * scale)
+    ;[this.canvas.width, this.canvas.height] = this.backing(Math.round(width * scale), Math.round(height * scale))
     this.resized()
     return true
+  }
+
+  /** The canvas's backing size for its physical size. */
+  protected backing(width: number, height: number): readonly [number, number] {
+    return [width, height]
   }
 
   /** Measures now; whether the surface has a size to draw at. */
@@ -1233,6 +1238,11 @@ export class WebGpuCanvasView extends SurfaceBase implements GpuCanvas {
   update(n: ViewNode) {
     this.node = n
     if (this.layout(n)) this.measure()
+  }
+
+  /** Clamped to the texture limit, its aspect kept (widgets-gpu.md, Canvas size); the box scales it. */
+  protected override backing(width: number, height: number) {
+    return canvasSize(width, height)
   }
 
   /** What the placeholder shows, while it shows: `null` without a message. */

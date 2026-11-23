@@ -2,7 +2,9 @@
 // replayed here on the browser's WebGPU, on the page's thread where the canvases are. One device per widget; its
 // resources stand in an array by handle. Each batch first passes the host checks (gpu-checks.ts: the ops' shapes,
 // handles and limits, with the spec's messages); WebGPU validates what replays (an error scope per batch). An error is
-// a program error in phase `gpu` that stops the canvases the batch renders into, else every one, once.
+// a program error in phase `gpu` that stops the canvases the batch renders into, else every one, once. A canvas an
+// error stopped stays stopped for the run; one a device loss stopped starts again when the program configures it on a
+// new device.
 
 import { type Checked, gpuChecks, type GpuError } from "./gpu-checks.js"
 
@@ -68,6 +70,9 @@ const extent = (v: unknown): GPUExtent3DDict => {
   const [width, height, depthOrArrayLayers] = v as [number, number, number]
   return { width, height, depthOrArrayLayers }
 }
+/** Thrown for an op on a stopped canvas: the op is ignored (a pass, up to its `end`); the rest of the batch replays. */
+const SKIP = Symbol("stopped canvas")
+
 const whole = (v: unknown): number | undefined => (v === -1 || v === null ? undefined : (v as number))
 
 /** A normalised descriptor as WebGPU takes it: members that are `null` (absent, in the transport) left out. */
@@ -93,17 +98,19 @@ export class GpuReplay {
   /** The stopped canvases' errors by key, and the error that stopped every one: a canvas rendered anew stays stopped. */
   private readonly stopped = new Map<string, string>()
   private all: string | undefined
+  /** The canvases the device's loss stopped, by key, until the program configures them on a new device. */
+  private readonly lostKeys = new Set<string>()
 
   constructor(private readonly host: GpuHost) {
     this.checks = gpuChecks(() => host.keys())
   }
 
   /** Checks `batch` now, in order, and replays what passes after the batches before it. */
-  batch(batch: unknown, frame: boolean) {
+  batch(batch: unknown) {
     if (this.closed || this.unavailable) return
-    const checked = this.checks.batch(batch, frame)
+    const checked = this.checks.batch(batch)
     if (checked.error) this.fail(checked.error)
-    // Ignored: every canvas it renders into stopped, or it failed before its first op.
+    // Ignored: every canvas it renders into stopped, it is from before a device loss, or it failed before its first op.
     if (checked.skip || (checked.error && checked.at === undefined)) return
     const b = batch as Batch
     if (this.device && this.waiting.length === 0) return this.replay(this.device, b, checked)
@@ -161,11 +168,12 @@ export class GpuReplay {
     void device.lost.then((info) => {
       if (this.closed || this.device !== device) return
       // Every handle is gone; the program may ask for a device again and make its resources anew (new handles). Until
-      // it configures a canvas again, the canvas shows its placeholder.
-      for (const o of this.objects) {
-        if (o?.kind !== "context") continue
-        o.ctx?.unconfigure()
-        o.view?.placeholder()
+      // it configures a canvas again, the canvas shows its placeholder; one an error stopped stays stopped.
+      for (const o of this.objects) if (o?.kind === "context") o.ctx?.unconfigure()
+      for (const key of this.host.keys()) {
+        if (this.stoppedBy(key) !== undefined) continue
+        this.lostKeys.add(key)
+        this.host.canvas(key)?.placeholder()
       }
       this.device = undefined
       this.objects = []
@@ -183,7 +191,21 @@ export class GpuReplay {
     device.pushErrorScope("out-of-memory")
     device.pushErrorScope("validation")
     try {
-      for (let i = 0; i < count; i++) this.op(device, batch.ops[i]!, batch.bytes)
+      // Ops on stopped canvases are ignored (a pass into one up to its end); the batch's other canvases draw.
+      let skipping = false
+      for (let i = 0; i < count; i++) {
+        const op = batch.ops[i]!
+        if (skipping) {
+          skipping = op[0] !== "end"
+          continue
+        }
+        try {
+          this.op(device, op, batch.bytes)
+        } catch (e) {
+          if (e !== SKIP) throw e
+          skipping = op[0] === "pass"
+        }
+      }
     } catch (e) {
       // A WebGPU call that throws (a value it refuses) is the program's too, in WebGPU's words.
       const error = this.checks.scoped(String((e as Error)?.message ?? e), checked.keys)
@@ -212,8 +234,9 @@ export class GpuReplay {
     return this.objects[h as number] as Obj & { kind: K }
   }
 
-  /** The context's canvas, configured: it may have been rendered anew since. */
+  /** The context's canvas, configured: it may have been rendered anew since. Throws SKIP for a stopped canvas. */
   private context(o: Context, device: GPUDevice): GPUCanvasContext {
+    if (this.stoppedBy(o.key) !== undefined) throw SKIP
     const view = this.host.canvas(o.key)
     if (!view) throw new Error(`no GPU canvas with key "${o.key}" on the page`)
     if (o.view !== view || !o.ctx) {
@@ -228,6 +251,7 @@ export class GpuReplay {
         usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
       })
       view.shown()
+      this.lostKeys.delete(o.key)
       o.view = view
       o.ctx = ctx
     }
@@ -412,9 +436,19 @@ export class GpuReplay {
     }
   }
 
+  /** A frame request, with a batch (checked first) or without: the per-frame counts start again. */
+  frame() {
+    this.checks.frame()
+  }
+
   /** The error a stopped canvas shows, or undefined while it draws. */
-  stoppedBy(key: string): string | undefined {
+  private stoppedBy(key: string): string | undefined {
     return this.stopped.get(key) ?? this.all
+  }
+
+  /** What a GPU canvas shows instead of drawing: an error's message, `null` (lost, the placeholder alone), or undefined. */
+  placeholderFor(key: string): string | null | undefined {
+    return this.stoppedBy(key) ?? (this.lostKeys.has(key) ? null : undefined)
   }
 
   /** The widget stopped: its device and everything on it go. */

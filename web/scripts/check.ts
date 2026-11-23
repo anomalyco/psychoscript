@@ -29,8 +29,8 @@ const shot = async (target: Page | Locator, name: string, fullPage = false) => {
   else await target.screenshot({ path })
 }
 
-async function open(query: string, viewport = { width: 1280, height: 900 }): Promise<{ page: Page; errors: string[] }> {
-  const page = await browser.newPage({ viewport })
+async function open(query: string, viewport = { width: 1280, height: 900 }, deviceScaleFactor = 1): Promise<{ page: Page; errors: string[] }> {
+  const page = await browser.newPage({ viewport, deviceScaleFactor })
   const errors: string[] = []
   page.on("pageerror", (e) => errors.push(e.message))
   page.on("console", (m) => {
@@ -1124,12 +1124,12 @@ for (const query of ["?only=shader-broken"]) {
 {
   const gpu = await import("./gpu-programs.ts")
   /** Mounts a live program at the top-left of the page for `ms`; its GPU canvas's rect and what it shows. */
-  const mount = async (page: Page, source: string, ms = 1500, data: unknown = null) =>
+  const mount = async (page: Page, source: string, ms = 1500, data: unknown = null, width = 320) =>
     page.evaluate(
-      async ([source, ms, data]) => {
+      async ([source, ms, data, width]) => {
         const d = (window as unknown as { __demo: { host: { mount(el: HTMLElement, o: object): { destroy(): void } }; program(source: string, mode: string): string } }).__demo
         const slot = document.createElement("div")
-        slot.style.cssText = "position:fixed;left:0;top:0;width:320px;z-index:9999;background:#fff"
+        slot.style.cssText = `position:fixed;left:0;top:0;width:${width}px;z-index:9999;background:#fff`
         document.body.prepend(slot)
         const g = { reports: [] as { phase: string; message: string }[], clientErrors: [] as string[], gpuMs: [] as number[], slot, w: undefined as unknown }
         g.w = d.host.mount(slot, {
@@ -1143,7 +1143,7 @@ for (const query of ["?only=shader-broken"]) {
         ;(window as unknown as { __gpu: unknown }).__gpu = g
         await new Promise((r) => setTimeout(r, ms as number))
       },
-      [source, ms, data] as const,
+      [source, ms, data, width] as const,
     )
   const state = (page: Page) =>
     page.evaluate(() => {
@@ -1289,8 +1289,110 @@ for (const query of ["?only=shader-broken"]) {
   const released = await until(/Click to look around/)
   check(/Click to look around/.test(released) && (await state(page)).reports.length === 0, "gpu template maze: Esc lets the pointer go; no program errors", released)
   await done(page)
+  /** Each GPU canvas in order: its rect, the text its placeholder shows ("" while it draws), and its backing size. */
+  const canvases = (page: Page) =>
+    page.evaluate(() => {
+      const g = (window as unknown as { __gpu: { slot: HTMLElement; reports: { phase: string; message: string }[] } }).__gpu
+      const root = g.slot.querySelector(".psychoscript-widget")!.shadowRoot!
+      return {
+        reports: g.reports.map((r) => r.message),
+        text: [...root.querySelectorAll(".pw-text")].map((t) => t.textContent ?? ""),
+        canvases: [...root.querySelectorAll('.pw-surface[data-kind="webgpu"]')].map((s) => {
+          const r = s.querySelector("canvas")!.getBoundingClientRect()
+          const c = s.querySelector("canvas")!
+          return { rect: { x: r.x, y: r.y, width: r.width, height: r.height }, alt: s.querySelector(".pw-alt")?.textContent ?? "", size: [c.width, c.height] }
+        }),
+      }
+    })
+  const centre = async (page: Page, rect: { x: number; y: number; width: number; height: number }) => (await pixels(page, rect, [[0.5, 0.5]])).px[0]
+
+  // Several canvases in one batch: the error stops only the canvases the batch renders into; a stopped one's passes
+  // are skipped while the others in the batch draw.
+  await mount(page, gpu.isolated, 1500, { until: 7 })
+  let two = await canvases(page)
+  let a = await centre(page, two.canvases[0]!.rect)
+  check(
+    two.reports.length === 1 && two.reports[0]!.includes("was destroyed") && two.canvases[0]!.alt === "" && near(a, [255, 255, 0]) && two.canvases[1]!.alt.startsWith("B\n" + two.reports[0]),
+    "gpu: a batch that makes a view of a but renders only into b stops b alone; a, in the same batches after, draws on",
+    { ...two, a },
+  )
+  await done(page)
+  await mount(page, gpu.isolated, 1500, { until: 12 })
+  two = await canvases(page)
+  check(
+    two.reports.length === 2 && two.canvases[0]!.alt.startsWith("A\n" + two.reports[1]) && two.canvases[1]!.alt.startsWith("B\n" + two.reports[0]) && two.reports.every((r) => /^gpu op \d+: handle \d+ was destroyed$/.test(r)),
+    "gpu: an error in a batch into a and b (b stopped) stops a, reported once; b keeps its first error",
+    two,
+  )
+  await done(page)
+  await mount(page, gpu.resolved)
+  two = await canvases(page)
+  const b = await centre(page, two.canvases[1]!.rect)
+  check(
+    two.reports.length === 1 && two.canvases[0]!.alt.startsWith("A\n") && two.canvases[1]!.alt === "" && near(b, [0, 0, 255]),
+    "gpu: a canvas drawn through a pass's resolve target is rendered into: its batch's error stops it alone, not every canvas",
+    { ...two, b },
+  )
+  await done(page)
+  await mount(page, gpu.kept, 2000)
+  two = await canvases(page)
+  a = await centre(page, two.canvases[0]!.rect)
+  check(two.reports.length === 0 && near(a, [255, 0, 0]), "gpu: frames with no pass into a canvas keep its last image", { ...two, a })
+  await done(page)
+
   check(errors.length === 0, "gpu: no page errors", errors)
   await page.close()
+
+  // A device loss after an error: the new device restarts the canvas the loss stopped (b), never the one an error
+  // stopped (a).
+  {
+    const page = await browser.newPage({ viewport: { width: 800, height: 600 } })
+    const errors: string[] = []
+    page.on("pageerror", (e) => errors.push(e.message))
+    await page.addInitScript(() => {
+      const w = window as unknown as { __devices: GPUDevice[] }
+      w.__devices = []
+      const request = GPUAdapter.prototype.requestDevice
+      GPUAdapter.prototype.requestDevice = async function (this: GPUAdapter, d?: GPUDeviceDescriptor) {
+        const device = await request.call(this, d)
+        w.__devices.push(device)
+        return device
+      }
+    })
+    await page.goto(base + "?only=confirm")
+    await mount(page, gpu.restarted, 1500)
+    const before = await canvases(page)
+    await page.evaluate(() => (window as unknown as { __devices: GPUDevice[] }).__devices.at(-1)!.destroy())
+    await page.waitForTimeout(1500)
+    const after = await canvases(page)
+    const b = await centre(page, after.canvases[1]!.rect)
+    const devices = await page.evaluate(() => (window as unknown as { __devices: GPUDevice[] }).__devices.length)
+    check(
+      before.text.includes("waiting") && after.text.includes("restarted") && devices === 2 && after.reports.length === 1 &&
+        after.canvases[0]!.alt.startsWith("A\n" + after.reports[0]) && after.canvases[1]!.alt === "" && near(b, [0, 0, 255]),
+      "gpu: after a loss, a new device restarts the canvas the loss stopped (b draws), never the one an error stopped (a)",
+      { before, after, b, devices },
+    )
+    await done(page)
+    check(errors.length === 0, "gpu (restart): no page errors", errors)
+    await page.close()
+  }
+
+  // Canvas size: 1500 x 200 at scale 3 is 4500 x 600 physical, clamped to 4096 x 546; a texture that size fits.
+  {
+    const { page, errors } = await open("?only=confirm", { width: 1600, height: 500 }, 3)
+    await mount(page, gpu.clamped, 2500, null, 1500)
+    const big = await canvases(page)
+    const px = await centre(page, big.canvases[0]!.rect)
+    check(
+      big.reports.length === 0 && big.canvases[0]!.size.join("x") === "4096x546" && big.text.includes("4096x546") && near(px, [0, 255, 0]),
+      "gpu: a canvas over 4096 physical px is clamped with its aspect kept (4500 x 600 -> 4096 x 546), the program told so; a texture its size fits",
+      { ...big, px },
+    )
+    await done(page)
+    check(errors.length === 0, "gpu (clamp): no page errors", errors)
+    await page.close()
+  }
 }
 {
   // No WebGPU: the canvas shows its placeholder, the program runs on, nothing is reported.

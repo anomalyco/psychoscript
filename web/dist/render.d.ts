@@ -96,6 +96,8 @@ declare abstract class SurfaceBase {
     /** No width or height yet (laid out away, or changing size): never drawn or rendered then (widgets.md, Canvas). */
     zero: boolean;
     protected measure(): boolean;
+    /** The canvas's backing size for its physical size. */
+    protected backing(width: number, height: number): readonly [number, number];
     /** Measures now; whether the surface has a size to draw at. */
     sized(): boolean;
     frame(dt: number): Frame;
@@ -168,6 +170,8 @@ export declare class WebGpuCanvasView extends SurfaceBase implements GpuCanvas {
     private poster;
     constructor(ctx: RenderContext, node: ViewNode);
     update(n: ViewNode): void;
+    /** Clamped to the texture limit, its aspect kept (widgets-gpu.md, Canvas size); the box scales it. */
+    protected backing(width: number, height: number): readonly [number, number];
     /** What the placeholder shows, while it shows: `null` without a message. */
     private showing;
     /** `poster`, else `alt`, else "GPU canvas not supported"; with a program error's message under it. */

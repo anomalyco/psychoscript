@@ -101,12 +101,17 @@ Behavior, per the contract:
   a batch never overtakes a waiting render or draw), are checked and then replayed on the page's thread on the
   browser's WebGPU: one device per widget, resources by handle, a context's canvas found by its key among the GPU
   canvases of the last render, sized before it is configured. The checks are the spec's Host checks with their exact
-  messages (`src/gpu-checks.ts`, a port of opencode's reference); WebGPU validates what replays (an error scope per
-  batch). An error is a program error in phase `gpu` that stops the canvases the batch renders into, else every GPU
-  canvas, each reported once: a stopped canvas shows its placeholder with the error and later batches for it are
-  ignored; the program and the rest of the widget run on. Before each frame (the first too) the program gets
-  `{ type: "canvas", key, width, height }` (physical pixels) for each GPU canvas whose size changed; a lost device sends
-  `{ type: "gpu", lost, message }`. Without WebGPU the canvas shows `poster`, else `alt`, else "GPU canvas not
+  messages (`src/gpu-checks.ts`, a port of opencode's reference; the per-frame counts start again at every frame
+  request, one without a batch too); WebGPU validates what replays (an error scope per batch, in the browser's words).
+  An error is a program error in phase `gpu` that stops the canvases the batch renders into (a pass's color attachment
+  `view` or `resolveTarget`), else every GPU canvas, each reported once: a stopped canvas shows its placeholder with the
+  error for the rest of the run, also rendered anew and after a device loss; its ops in later batches are skipped while
+  the batch's other canvases draw. The program and the rest of the widget run on. Before each frame (the first too)
+  the program gets `{ type: "canvas", key, width, height }` for each GPU canvas whose size changed: its physical size
+  clamped to 4096 with its aspect kept, the canvas's backing size, which its box scales. A lost device sends
+  `{ type: "gpu", lost, message }` and its canvases show the placeholder; a new device restarts those, never one an
+  error stopped; a batch from before the program learned of the loss is dropped quietly. A frame with no pass into a
+  canvas keeps its last image (WebGPU's `getCurrentTexture` gives a cleared one per presented frame). Without WebGPU the canvas shows `poster`, else `alt`, else "GPU canvas not
   supported" (a client error, not reported). Why the page's thread: the canvases, their sizes, placeholders, full
   screen and pointer are there already; batches cross from the worker as transferred bytes, and WebGPU calls only
   record commands, so the GPU's work stays asynchronous.
