@@ -18,7 +18,6 @@
     "$262 host API": "\\$262"
   },
   "features": [
-    "BigInt",
     "Proxy",
     "proxy-missing-checks",
     "Reflect",

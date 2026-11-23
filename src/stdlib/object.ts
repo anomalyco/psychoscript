@@ -98,6 +98,7 @@ const classTag = (value: Value): string => {
   if (value instanceof Obj) return value.tag
   if (typeof value === "string") return "String"
   if (typeof value === "number") return "Number"
+  if (typeof value === "bigint") return "BigInt"
   if (typeof value === "boolean") return "Boolean"
   return "Object"
 }

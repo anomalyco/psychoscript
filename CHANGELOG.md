@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- BigInt: literals, arithmetic, `BigInt()`, `BigInt.asIntN`/`asUintN`, the prototype methods, and Buffer's 64-bit
+  `readBigInt64*`/`writeBigInt64*` methods. A BigInt is capped at
+  2^20 bits and cannot cross to the host; `JSON.stringify` throws on one unless the program defines
+  `BigInt.prototype.toJSON`. Snapshots keep BigInts.
+
 ## 0.2.1
 
 - `psychoscript/effect`: a plain function the host gives the program (inside a host function's result, such as a

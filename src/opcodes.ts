@@ -314,7 +314,7 @@ export type ImportSite = {
   readonly imported?: string
 }
 
-export type ConstValue = string | number | TemplateSite | RegExpSite | ErrorSite | ImportSite
+export type ConstValue = string | number | bigint | TemplateSite | RegExpSite | ErrorSite | ImportSite
 
 /** Packs one instruction word: `op:8 | a:8 | bx:16`. Throws if any field does not fit its width. */
 export const packWord = (op: OpCode, a = 0, bx = 0): number => {

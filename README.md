@@ -270,12 +270,12 @@ program. There is no separate memory or step-count limit: bound runs with `timeo
 Modern strict-mode JavaScript: `let`/`const`, destructuring, spread, arrow, async and generator functions (including
 async generators and `for await`), classes (fields, static members, getters and setters, `extends`, `super`), object
 literal getters and setters, labels, `try`/`finally`, top-level `await` and `return`, and `import`/`require` of host
-globals by module name. Built-ins: `Object`, `Array`, `String`, `Number`, `Math`, `JSON`, `Date`, `RegExp`, `Map`,
+globals by module name. Built-ins: `Object`, `Array`, `String`, `Number`, `BigInt`, `Math`, `JSON`, `Date`, `RegExp`, `Map`,
 `Set`, `Promise`, `Iterator` helpers, errors, `URL`, `URLSearchParams`, `Headers`, `TextEncoder`/`TextDecoder`,
 `atob`/`btoa`, `structuredClone`, `crypto.randomUUID`/`getRandomValues`, `Uint8Array`, Node's `Buffer`, and `console`.
 
 Not supported: private members (`#x`), static blocks, `new` on plain functions, `Proxy`/`Reflect`, `Symbol()` (only
-`Symbol.iterator` and `Symbol.asyncIterator` exist), BigInt, typed arrays other than `Uint8Array` (and
+`Symbol.iterator` and `Symbol.asyncIterator` exist), typed arrays other than `Uint8Array` (and
 `ArrayBuffer`/`DataView`), `WeakRef`/`FinalizationRegistry`, sloppy mode, `eval`, `export`, and TypeScript syntax.
 Unsupported syntax fails before the program runs, with a hint.
 
