@@ -15,6 +15,30 @@ pub struct Limits {
     /// [`MAX_VALUE_DEPTH_LIMIT`](crate::MAX_VALUE_DEPTH_LIMIT), as the copies recurse on the native stack once a
     /// level. A value nested deeper fails with a `TypeError` (a `RangeError` for the result and `JSON.stringify`).
     pub max_value_depth: Option<usize>,
+    /// What `timeout_ms` and `slice_ms` count; [`Clock::Wall`] by default.
+    pub clock: Clock,
+    /// The longest a run may compute without awaiting the host: from its start or resume, or from when a host call it
+    /// awaited delivers its outcome, to the next. Promise jobs don't end it, and synchronous host calls in between don't
+    /// count. A run past it stops with [`DiagnosticKind::SliceExceeded`]. Under [`Clock::ThreadCpu`] a stretch's CPU
+    /// time is measured once it has run a sixteenth of the slice, so it may run up to that much past it, and its host
+    /// calls are left out as for the timeout: with them, it may use ten times the slice. `None` (the default) is no
+    /// limit.
+    pub slice_ms: Option<u64>,
+}
+
+/// What a run's `timeout_ms` and `slice_ms` count.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Clock {
+    /// Wall-clock time while the run is active, across resumes.
+    #[default]
+    Wall,
+    /// The CPU time of the threads while they run the program, across resumes: a loaded machine, which keeps a thread
+    /// waiting for a core, never times a program out. Host work isn't counted. Synchronous host calls are left out by
+    /// their wall-clock duration, which can only count too little: one that sleeps or waits for a core is left out in
+    /// full, and can take the program's CPU time around it along. So the CPU time with host calls may reach ten times
+    /// the timeout. Waiting on host calls uses no CPU time, so waits count on the wall clock, up to ten times the
+    /// timeout. Either also ends the run. Where a platform has no thread CPU clock (wasm), it is the wall clock.
+    ThreadCpu,
 }
 
 /// A diagnostic's kind: the language's own, or one a host function's failure names ([`Failure`](crate::Failure)),
@@ -25,6 +49,8 @@ pub enum DiagnosticKind {
     UnsupportedSyntax,
     InvalidDataValue,
     TimeoutExceeded,
+    /// The run computed longer than `slice_ms` without awaiting the host.
+    SliceExceeded,
     /// The run's reachable heap went over `max_heap_bytes`.
     MemoryLimitExceeded,
     ExecutionFailure,
@@ -42,6 +68,7 @@ impl DiagnosticKind {
             DiagnosticKind::UnsupportedSyntax => "UnsupportedSyntax",
             DiagnosticKind::InvalidDataValue => "InvalidDataValue",
             DiagnosticKind::TimeoutExceeded => "TimeoutExceeded",
+            DiagnosticKind::SliceExceeded => "SliceExceeded",
             DiagnosticKind::MemoryLimitExceeded => "MemoryLimitExceeded",
             DiagnosticKind::ExecutionFailure => "ExecutionFailure",
             DiagnosticKind::Truncated => "Truncated",
@@ -56,6 +83,7 @@ impl DiagnosticKind {
             "UnsupportedSyntax" => DiagnosticKind::UnsupportedSyntax,
             "InvalidDataValue" => DiagnosticKind::InvalidDataValue,
             "TimeoutExceeded" => DiagnosticKind::TimeoutExceeded,
+            "SliceExceeded" => DiagnosticKind::SliceExceeded,
             "MemoryLimitExceeded" => DiagnosticKind::MemoryLimitExceeded,
             "ExecutionFailure" => DiagnosticKind::ExecutionFailure,
             "Truncated" => DiagnosticKind::Truncated,

@@ -303,6 +303,22 @@ impl<'a> Program<'a> {
     }
 
     fn advance(&mut self, cx: &mut Context<'_>) -> Poll<Result<RunOutcome, Interrupted>> {
+        // Under `Clock::ThreadCpu`, a poll with the run at hand is a stretch of it on this thread (see `cpu.rs`).
+        if let State::Running(r) = &mut self.state
+            && let Some(c) = &mut r.vm.cpu
+        {
+            c.enter();
+        }
+        let poll = self.poll_run(cx);
+        if let State::Running(r) = &mut self.state
+            && let Some(c) = &mut r.vm.cpu
+        {
+            c.leave(poll.is_pending());
+        }
+        poll
+    }
+
+    fn poll_run(&mut self, cx: &mut Context<'_>) -> Poll<Result<RunOutcome, Interrupted>> {
         let probe = 0u8;
         if let State::Failed(_) = self.state {
             let State::Failed(outcome) = std::mem::replace(&mut self.state, State::Done) else {
@@ -320,7 +336,12 @@ impl<'a> Program<'a> {
                     unreachable!("a run is only away on its worker")
                 };
                 match worker.poll(cx) {
-                    Poll::Ready(r) => self.state = State::Running(r),
+                    Poll::Ready(mut r) => {
+                        if let Some(c) = &mut r.vm.cpu {
+                            c.enter();
+                        }
+                        self.state = State::Running(r);
+                    }
                     Poll::Pending => return Poll::Pending,
                 }
             }
@@ -342,6 +363,10 @@ impl<'a> Program<'a> {
                     r.vm.start = Instant::now()
                         .checked_sub(r.active_before)
                         .unwrap_or_else(Instant::now);
+                    if let Some(c) = &mut r.vm.cpu {
+                        c.start(r.active_before);
+                    }
+                    r.vm.slice_restart();
                     if round_trips(&self.shared) {
                         r.vm.start_roundtrip(r.round_trip_every);
                     }
@@ -360,9 +385,13 @@ impl<'a> Program<'a> {
                 let away = std::mem::take(&mut self.move_away);
                 if let Some(worker) = self.worker.as_ref().filter(|_| away) {
                     r.vm.host.offload().at = None;
-                    let State::Running(r) = std::mem::replace(&mut self.state, State::Away) else {
+                    let State::Running(mut r) = std::mem::replace(&mut self.state, State::Away)
+                    else {
                         unreachable!()
                     };
+                    if let Some(c) = &mut r.vm.cpu {
+                        c.leave(false);
+                    }
                     worker.compute(r);
                     continue;
                 }
@@ -450,14 +479,27 @@ impl<'a> Program<'a> {
             if self.shared.requested.load(Ordering::Relaxed) {
                 continue;
             }
-            if !r.timer_armed
-                && let Some(ms) = r.vm.limits.timeout_ms
-            {
-                r.timer_armed = true;
-                exec::wake_at(
-                    r.vm.start + Duration::from_millis(ms),
-                    &r.vm.host.tasks.parent_waker(),
-                );
+            if let Some(ms) = r.vm.limits.timeout_ms {
+                match &mut r.vm.cpu {
+                    None if !r.timer_armed => {
+                        r.timer_armed = true;
+                        exec::wake_at(
+                            r.vm.start + Duration::from_millis(ms),
+                            &r.vm.host.tasks.parent_waker(),
+                        );
+                    }
+                    // Waits count on the wall clock: wake the run where this one would pass the backstop, unless a
+                    // timer armed for an earlier wait is still to fire, which wakes it sooner.
+                    Some(c) => {
+                        let now = Instant::now();
+                        if c.armed.is_none_or(|at| at <= now) {
+                            let at = now + c.wait_left(Duration::from_millis(ms));
+                            c.armed = Some(at);
+                            exec::wake_at(at, &r.vm.host.tasks.parent_waker());
+                        }
+                    }
+                    None => {}
+                }
             }
             // A task may have finished between the poll and handing over the waker.
             if r.vm.host.tasks.has_ready() {
@@ -494,8 +536,8 @@ impl<'a> Program<'a> {
             r.skip -= 1;
             return None;
         }
-        let start = r.vm.start;
-        let active_ms = start.elapsed().max(r.active_before).as_millis() as u64;
+        let used = r.vm.time_used();
+        let active_ms = used.max(r.active_before).as_millis() as u64;
         let captured = snapshot::capture(
             &r.vm,
             &snapshot::Capture {
@@ -565,7 +607,7 @@ impl<'a> Program<'a> {
                         fresh.vm.host.shared = self.shared.clone();
                         // A round trip is not a pause: the run's clock keeps its start, which the header would
                         // round to whole milliseconds.
-                        fresh.active_before = start.elapsed();
+                        fresh.active_before = used;
                         // Twice as long each time, so a long loop takes a few round trips, not thousands.
                         fresh.round_trip_every =
                             r.round_trip_every.saturating_mul(2).min(ROUNDTRIP_MAX);

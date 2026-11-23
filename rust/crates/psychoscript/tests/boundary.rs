@@ -506,6 +506,7 @@ fn results_and_logs_keep_unpaired_surrogates_as_the_reference_does() {
                 .map(|n| n as usize),
             max_heap_bytes: None,
             max_value_depth: None,
+            ..Limits::default()
         });
         let code = case["code"].as_str().unwrap();
         let mut options = psychoscript::ProgramOptions::new();

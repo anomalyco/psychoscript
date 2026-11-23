@@ -40,6 +40,7 @@ fn check(name: &str, code: &str, expected: &Json, future: bool) -> Result<(), St
         max_value_depth: expected["limits"]["max_value_depth"]
             .as_u64()
             .map(|n| n as usize),
+        ..Limits::default()
     };
     let translate = Translate {
         functions: match expected["translate"]["functions"].as_str() {

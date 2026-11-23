@@ -907,6 +907,8 @@ fn call_host(vm: &mut Vm, f: &Callee, args: &[Value], target: Target, callee: Va
     let call_id = vm.host.next_call();
     vm.host.enter_sync(call_id, target.label.clone());
     let call = vm.host.call(call_id);
+    // Host work, which neither the CPU time nor the stretch under `Limits::slice_ms` counts.
+    let span = vm.host_span();
     let returned = match home_of(vm) {
         None => body(host_args, &call),
         Some(home) => {
@@ -924,6 +926,7 @@ fn call_host(vm: &mut Vm, f: &Callee, args: &[Value], target: Target, callee: Va
         }
         returned => returned,
     };
+    vm.end_host_span(span);
     vm.host.leave_sync();
     take_back(vm);
     let r = sync_result(vm, f, returned, target, call_id);
@@ -1023,10 +1026,12 @@ fn take_back(vm: &mut Vm) {
 /// complete with waits in the inbox. The run's timeout stops the wait; the call then fails as the run times out. While
 /// the run is on its worker, the wait and the other calls' polls happen where the run is driven.
 fn block(vm: &mut Vm, work: BoxFuture<'static, HostResult>) -> HostResult {
-    let deadline = vm
-        .limits
-        .timeout_ms
-        .map(|ms| vm.start + std::time::Duration::from_millis(ms));
+    // Under `Clock::ThreadCpu`, the wait counts on the wall clock, against the backstop (see `cpu.rs`).
+    let deadline = vm.limits.timeout_ms.map(|ms| match &vm.cpu {
+        None => vm.start + std::time::Duration::from_millis(ms),
+        Some(c) => std::time::Instant::now() + c.wait_left(std::time::Duration::from_millis(ms)),
+    });
+    let began = std::time::Instant::now();
     let (settled, done) = match home_of(vm) {
         None => wait(&mut vm.host.tasks, work, deadline),
         Some(home) => {
@@ -1041,6 +1046,9 @@ fn block(vm: &mut Vm, work: BoxFuture<'static, HostResult>) -> HostResult {
             waited
         }
     };
+    if let Some(c) = &mut vm.cpu {
+        c.waited(began.elapsed());
+    }
     for (p, s) in settled {
         vm.host.settled(p);
         vm.inbox.push_back((p, s));

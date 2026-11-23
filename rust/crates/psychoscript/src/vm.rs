@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rustc_hash::FxHashMap;
 
@@ -347,6 +347,10 @@ pub struct Vm {
     /// them their bytes for its duration, any other call gets copies (see `call_host`). While a call's result crosses
     /// back, the ones it lent, so a handle it returns is the same buffer again. Last, away from the hot fields.
     pub(crate) lends: Vec<(Id, crate::host_function::SharedBytes)>,
+    /// Under `Clock::ThreadCpu`, the run's clock, from its start (see `cpu.rs`).
+    pub(crate) cpu: Option<Box<crate::cpu::CpuMeter>>,
+    /// With `Limits::slice_ms`, the stretch in progress, from the run's start.
+    pub(crate) slice: Option<Box<crate::cpu::Slice>>,
 }
 
 impl Vm {
@@ -452,6 +456,8 @@ impl Vm {
             heap_meter: None,
             lazy_builtins: Vec::new(),
             lends: Vec::new(),
+            cpu: None,
+            slice: None,
         }
     }
 
@@ -1105,12 +1111,39 @@ impl Vm {
         self.rebudget();
     }
 
+    /// Under `Clock::ThreadCpu`, whether the run is over a timeout of `ms` (see `cpu.rs`).
+    #[cold]
+    #[inline(never)]
+    fn cpu_over(&mut self, ms: u64) -> bool {
+        self.cpu
+            .as_mut()
+            .is_some_and(|c| c.over(Duration::from_millis(ms)))
+    }
+
+    /// Under `Clock::ThreadCpu`, the run's clock, idle until its first stretch.
+    pub(crate) fn start_cpu_meter(&mut self) {
+        if self.limits.clock == crate::Clock::ThreadCpu {
+            self.cpu = Some(Box::new(crate::cpu::CpuMeter::new()));
+        }
+    }
+
+    /// The time the run used, of the clock its timeout counts.
+    pub(crate) fn time_used(&mut self) -> Duration {
+        match &mut self.cpu {
+            Some(c) => c.used(),
+            None => self.start.elapsed(),
+        }
+    }
+
     pub fn check_time(&mut self) -> Result<(), Value> {
         if self.fatal.is_some() {
             return Err(Value::Undef);
         }
         if let Some(ms) = self.limits.timeout_ms
-            && self.start.elapsed().as_millis() as u64 >= ms
+            && match self.cpu.is_some() {
+                false => self.start.elapsed().as_millis() as u64 >= ms,
+                true => self.cpu_over(ms),
+            }
         {
             self.fatal = Some((
                 DiagnosticKind::TimeoutExceeded,
@@ -1118,7 +1151,87 @@ impl Vm {
             ));
             return Err(Value::Undef);
         }
+        if self.slice.is_some() && self.slice_over() {
+            let ms = self.limits.slice_ms.unwrap_or_default();
+            self.fatal = Some((
+                DiagnosticKind::SliceExceeded,
+                format!("The program ran longer than {ms}ms without awaiting."),
+            ));
+            return Err(Value::Undef);
+        }
         Ok(())
+    }
+
+    /// With `Limits::slice_ms`, whether the stretch in progress is over it.
+    #[cold]
+    #[inline(never)]
+    fn slice_over(&mut self) -> bool {
+        let Some(ms) = self.limits.slice_ms else {
+            return false;
+        };
+        let limit = Duration::from_millis(ms);
+        let (Some(s), cpu) = (self.slice.as_deref_mut(), self.cpu.as_deref_mut()) else {
+            return false;
+        };
+        let Some(c) = cpu else {
+            return s.wall.elapsed() >= limit;
+        };
+        let backstop = limit * crate::cpu::WAIT_BACKSTOP;
+        match s.from {
+            None => {
+                if s.wall.elapsed() >= limit / crate::cpu::SLICE_SLACK {
+                    s.from = Some(c.read());
+                    s.wall = Instant::now() + limit;
+                }
+                false
+            }
+            Some((used0, total0)) => {
+                let now = Instant::now();
+                if now < s.wall {
+                    return false;
+                }
+                let (used, total) = c.read();
+                let (used, total) = (used.saturating_sub(used0), total.saturating_sub(total0));
+                if used >= limit || total >= backstop {
+                    return true;
+                }
+                s.wall = now + (limit - used).min(backstop - total);
+                false
+            }
+        }
+    }
+
+    /// With `Limits::slice_ms`, a stretch starts: the run starts, or a host call it awaited delivers its outcome.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn slice_restart(&mut self) {
+        if self.limits.slice_ms.is_none() {
+            return;
+        }
+        let wall = Instant::now();
+        match self.slice.as_deref_mut() {
+            Some(s) => (s.from, s.wall) = (None, wall),
+            None => self.slice = Some(Box::new(crate::cpu::Slice { from: None, wall })),
+        }
+    }
+
+    /// A synchronous host call starts, which neither the CPU time (`Clock::ThreadCpu`) nor a stretch under
+    /// `Limits::slice_ms` counts: when it started on the wall clock, as each leaves out its wall-clock duration.
+    pub(crate) fn host_span(&mut self) -> Option<Instant> {
+        (self.cpu.is_some() || self.slice.is_some()).then(Instant::now)
+    }
+
+    /// The host call that began at `span` ends.
+    pub(crate) fn end_host_span(&mut self, span: Option<Instant>) {
+        let Some(at) = span else {
+            return;
+        };
+        let wall = at.elapsed();
+        match (self.cpu.as_deref_mut(), self.slice.as_deref_mut()) {
+            (Some(c), _) => c.host(wall),
+            (None, Some(s)) => s.wall += wall,
+            (None, None) => {}
+        }
     }
 
     // ---------- calls ----------
@@ -4571,6 +4684,10 @@ impl Vm {
             }
             if let Some((p, outcome)) = self.inbox.pop_front() {
                 self.check_time()?;
+                // Nothing else could run: the program awaited this call, and a new stretch starts with its outcome.
+                if self.slice.is_some() {
+                    self.slice_restart();
+                }
                 crate::host::settle(self, p, outcome);
                 continue;
             }

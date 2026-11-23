@@ -359,6 +359,7 @@ fn runtime(entry: &Json, state: &State) -> Runtime {
         max_value_depth: entry["limits"]["maxValueDepth"]
             .as_u64()
             .map(|n| n as usize),
+        ..Limits::default()
     };
     let state = state.clone();
     Runtime::make()

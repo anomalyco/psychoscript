@@ -429,6 +429,7 @@ fn a_resumed_run_keeps_its_limits_and_counts_time_across_resumes() {
             timeout_ms: None,
             max_heap_bytes: None,
             max_value_depth: None,
+            ..Limits::default()
         });
     let state = suspend_mid_loop(&rt, &gate, &code);
     assert_eq!(

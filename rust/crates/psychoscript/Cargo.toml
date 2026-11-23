@@ -37,6 +37,8 @@ oxc_syntax = "0.159"
 regress = { version = "0.12.0", default-features = false, features = ["std", "utf16"] }
 rustc-hash = "2"
 serde_json = { version = "1", features = ["preserve_order"] }
+# A thread's CPU time, for `Clock::ThreadCpu`: the one crate here with `unsafe`, each block one OS call.
+thread-clock = { path = "../thread-clock" }
 tz-rs = "0.7"
 unicode-normalization = "0.1"
 url = "2.5"
@@ -44,3 +46,8 @@ url = "2.5"
 # The crate's own tests read `Run::heap_stats` (tests/gc.rs), so they build it with `gc-stats`; normal builds don't.
 [dev-dependencies]
 psychoscript = { path = ".", features = ["gc-stats"] }
+thread-clock = { path = "../thread-clock" }
+
+# Pinning threads to one core, for the CPU-time budget's starvation test (tests/clock.rs).
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libc = "0.2"

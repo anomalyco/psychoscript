@@ -178,6 +178,7 @@ pub fn start(
     let globals = setup.globals_for(&run);
     let host = RunHost::new(globals, setup.modules.clone(), setup.translate, run);
     let mut vm = Vm::new(host, setup.limits, atoms);
+    vm.start_cpu_meter();
     vm.realm.std.typed_arrays = setup.typed_arrays;
     vm.setup();
     crate::builtins::ensure_globals(&mut vm, &program.globals);
@@ -227,6 +228,7 @@ pub fn start_for_resume(
     }
     let host = RunHost::new(globals, setup.modules.clone(), setup.translate, run);
     let mut vm = Vm::new(host, restored.limits, atoms);
+    vm.start_cpu_meter();
     vm.realm.std.typed_arrays = setup.typed_arrays;
     vm.setup();
     crate::builtins::ensure_globals(&mut vm, &program.globals);
