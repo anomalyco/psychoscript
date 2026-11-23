@@ -7,6 +7,10 @@ rust="$here/../rust"
 out="$here/wasm"
 target="${CARGO_TARGET_DIR:-$rust/target}"
 mkdir -p "$out"
+# Source paths in panic messages, made the same on every machine: the build is reproducible, and no build machine's
+# directories end up in the module.
+registry="${CARGO_HOME:-$HOME/.cargo}/registry/src"
+export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$registry=/cargo/registry/src --remap-path-prefix=$(cd "$here/.." && pwd)=/psychoscript"
 
 build() { # features out-name
   (cd "$rust" && cargo build --locked --release -p psychoscript-web --target wasm32-unknown-unknown $1)
