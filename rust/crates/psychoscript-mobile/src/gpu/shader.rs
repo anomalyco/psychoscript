@@ -29,6 +29,8 @@ struct State {
     /// What stopped the canvas, and whether `render` returned it.
     error: Option<GpuFailure>,
     told: bool,
+    /// Stopped for being too slow: its last frame stays, presented again at a new size.
+    slow: bool,
     stop: bool,
 }
 
@@ -92,6 +94,9 @@ impl ShaderCanvas {
     /// thread; frames that come faster than the surface takes them are skipped for the newest. Returns, once, what
     /// stopped the canvas for good: `Program` for a WGSL error (its line and column the template's: report it, phase
     /// `gpu`), `Client` without a GPU (log it); either way show the placeholder (`poster`, else `alt`, else the error).
+    /// A shader over 50 ms a frame three frames in a row returns `Client` (reason `the shader took over 50 ms a frame,
+    /// three frames in a row`): log it and
+    /// keep the surface, which keeps its last frame.
     pub fn render(
         &self,
         time: f32,
@@ -111,17 +116,17 @@ impl ShaderCanvas {
             *to = *from;
         }
         let mut st = lock(&self.shared.state);
-        if let Some(e) = st.error.clone() {
-            if st.told {
-                return Ok(());
-            }
-            st.told = true;
-            return Err(e);
+        let stopped = match &st.error {
+            Some(e) if !st.told => Some(e.clone()),
+            _ => None,
+        };
+        st.told |= stopped.is_some();
+        if st.error.is_none() || st.slow {
+            st.frame = Some(u);
+            drop(st);
+            self.shared.wake.notify_one();
         }
-        st.frame = Some(u);
-        drop(st);
-        self.shared.wake.notify_one();
-        Ok(())
+        stopped.map_or(Ok(()), Err)
     }
 }
 
@@ -148,9 +153,18 @@ mod imp {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use widget_gpu::{Shorthand, Uniforms, clamp_size};
+    use widget_gpu::{SLOW_MESSAGE, Shorthand, Uniforms, clamp_size};
 
-    use super::super::device::{self, Dev};
+    use super::super::device::{self, Dev, Watch};
+
+    /// A GPU hang that stopped the shader (`widgets-gpu.md`; a client error, the placeholder shows).
+    fn hung(shorthand: &Shorthand) -> Option<GpuFailure> {
+        (!shorthand.too_slow())
+            .then(|| shorthand.error().cloned())
+            .flatten()
+            .map(Into::into)
+    }
+
     pub(super) use super::super::present::Attached;
     use super::super::present::Blit;
     use super::super::present::Frame;
@@ -202,7 +216,11 @@ mod imp {
 
     fn compile(dev: &Dev, wgsl: &str) -> Result<Shorthand, GpuFailure> {
         let submits = device::submits();
-        let made = Shorthand::new(dev.device.clone(), dev.queue.clone(), dev.format, wgsl);
+        let made =
+            Shorthand::new(dev.device.clone(), dev.queue.clone(), dev.format, wgsl).map(|mut s| {
+                s.set_aborts(device::aborts());
+                s
+            });
         drop(submits);
         Ok(made?)
     }
@@ -218,49 +236,120 @@ mod imp {
             Err(e) => return fail(s, e),
         };
         let mut blit = Blit::default();
+        // The canvas's version last drawn, and last presented (at what size).
+        let mut drawn = 0;
+        let mut shown = (0, (0, 0));
+        // The frame the GPU is on: presented once it is done (a present never waits behind it, and the shader is looked
+        // at while it draws, for the slow rule).
+        let mut drawing: Option<Arc<Watch>> = None;
+        let mut slow = false;
         loop {
-            // The newest frame, at the newest size.
+            // The newest frame, at the newest size; while the GPU is on one, every 2 ms without.
             let (u, size) = {
                 let mut st = lock(&s.state);
                 loop {
                     if st.stop {
                         return;
                     }
+                    if st.frame.is_none() && drawing.is_some() {
+                        st = (s.wake.wait_timeout(st, Duration::from_millis(2)))
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .0;
+                        if st.stop {
+                            return;
+                        }
+                        break (st.frame.take(), st.size);
+                    }
                     if let Some(u) = st.frame.take() {
-                        break (u, st.size);
+                        break (Some(u), st.size);
                     }
                     st = s.wake.wait(st).unwrap_or_else(PoisonError::into_inner);
                 }
             };
+            if drawing.as_ref().is_some_and(|w| w.done(&dev)) {
+                drawing = None;
+            }
+            if u.is_none() {
+                // No frame from the app: the one the GPU is on is still watched (the hang rule).
+                shorthand.poll();
+                if let Some(e) = hung(&shorthand) {
+                    return fail(s, e);
+                }
+                if drawing.is_some() {
+                    continue;
+                }
+            }
             // After a device loss, the same shader on the new device; no frames until there is one.
             let Some(now) = device::current() else {
                 continue;
             };
             if now.generation != dev.generation {
+                // A frame the GPU hung on (`Shorthand::lost`: running 250 ms at the loss, or aborted after 30 ms)
+                // would hang every new device: it stops, a client error, and as its frame is lost the placeholder
+                // shows.
+                shorthand.lost();
+                if let Some(e) = hung(&shorthand) {
+                    return fail(s, e);
+                }
+                // One stopped for being too slow stays stopped.
+                if slow {
+                    return;
+                }
                 dev = now;
+                (drawing, drawn, shown) = (None, 0, (0, (0, 0)));
+                // Compiled again (`Shorthand::reset` makes handles a loss made old).
+                shorthand = match compile(&dev, wgsl) {
+                    Ok(shorthand) => shorthand,
+                    Err(e) => return fail(s, e),
+                };
+            }
+            if let Some(u) = u {
+                let uniforms = Uniforms {
+                    time: u.time,
+                    scale: u.scale,
+                    pointer: u.pointer,
+                    values: u.values,
+                };
+                let (w, h) = clamp_size(size.0, size.1);
                 let submits = device::submits();
-                let reset = shorthand.reset(dev.device.clone(), dev.queue.clone());
+                let rendered = shorthand.render(w, h, &uniforms);
+                // `render` draws nothing while the last frame is still drawing.
+                let new = shorthand
+                    .canvas()
+                    .map(|c| c.version)
+                    .filter(|v| *v != drawn);
+                if let Some(v) = new {
+                    drawn = v;
+                    drawing = Some(device::watch(&dev));
+                }
                 drop(submits);
-                if let Err(e) = reset {
+                if let Err(e) = rendered {
                     return fail(s, e.into());
                 }
+                if let Some(e) = hung(&shorthand) {
+                    return fail(s, e);
+                }
+                // Over 50 ms a frame, three frames in a row (`widgets-gpu.md`): it stops, its last frame stays on
+                // the surface (not the placeholder), and the app is told once, a client error (logged, not
+                // reported).
+                if shorthand.too_slow() && !slow {
+                    slow = true;
+                    let mut st = lock(&s.state);
+                    st.error = Some(GpuFailure::client(SLOW_MESSAGE));
+                    st.slow = true;
+                }
             }
-            let uniforms = Uniforms {
-                time: u.time,
-                scale: u.scale,
-                pointer: u.pointer,
-                values: u.values,
-            };
-            let (w, h) = clamp_size(size.0, size.1);
-            let submits = device::submits();
-            let drawn = shorthand.render(w, h, &uniforms);
-            drop(submits);
-            if let Err(e) = drawn {
-                return fail(s, e.into());
+            if drawing.is_some() {
+                continue;
             }
-            let Some(c) = shorthand.canvas() else {
+            // A new image (or, stopped for being too slow, the last one at a new size).
+            let Some(c) = shorthand
+                .canvas()
+                .filter(|c| c.version != shown.0 || (slow && size != shown.1))
+            else {
                 continue;
             };
+            let version = c.version;
             let frame = Frame {
                 texture: c.texture.clone(),
                 alpha: c.alpha,
@@ -271,8 +360,10 @@ mod imp {
             a.resize(size.0, size.1);
             match a.present(&frame, &mut blit) {
                 Ok(super::super::present::Shown::Yes) => {
+                    shown = (version, size);
                     s.presents.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 }
+                // No texture in time: the next frame tries again.
                 Ok(_) => {}
                 Err(why) => {
                     *attached = None;

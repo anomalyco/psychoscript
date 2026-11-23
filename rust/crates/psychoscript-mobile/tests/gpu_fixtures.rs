@@ -9,7 +9,7 @@
 
 mod gpu_support;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpu_support::*;
 use psychoscript_mobile::{
@@ -32,8 +32,9 @@ fn fixtures() -> Vec<Value> {
     list
 }
 
-/// What the host gives the program for an input: a canvas size clamped, a device loss of its own.
-fn input(r: &Run, i: &Value) {
+/// What the host gives the program for an input: a canvas size clamped, a device loss of its own (the host has
+/// told the program of it, then the app, before the driver goes on: the spec's driver loses the device first).
+fn input(r: &mut Run, i: &Value) {
     match i["type"].as_str() {
         Some("canvas") => {
             let size = |k: &str| i[k].as_u64().unwrap() as u32;
@@ -41,12 +42,18 @@ fn input(r: &Run, i: &Value) {
             let m = json!({ "type": "canvas", "key": i["key"], "width": w, "height": h });
             r.run.deliver(m.to_string()).unwrap();
         }
-        Some("gpu") if i.get("lost").is_some() => gpu_lose_device(),
+        Some("gpu") if i.get("lost").is_some() => {
+            gpu_lose_device();
+            let lost = r.wait(|e| match e {
+                Event::Gpu(k, GpuCanvasState::Lost) => Some(k.clone()),
+                _ => None,
+            });
+            r.seen.push(Event::Gpu(lost, GpuCanvasState::Lost));
+        }
         _ => r.run.deliver(i.to_string()).unwrap(),
     }
 }
 
-/// Runs a fixture: its GPU errors (as the fixture writes them) and how it ended.
 /// A fixture's numbers as one kind (JSON's integers and floats are the same number), for comparing.
 fn canon(v: &Value) -> Value {
     match v {
@@ -77,67 +84,11 @@ fn batches_differ(posted: &[Value], expected: &[Value]) -> Option<String> {
     })
 }
 
-fn drive(f: &Value) -> (Vec<Value>, String, String, Vec<Value>) {
-    gpu_input_format(f["gpu"]["format"].as_str().unwrap());
-    let mut r = start(
-        &live_program(f["source"].as_str().unwrap()),
-        f["data"].clone(),
-    );
-    for c in f["canvases"].as_array().unwrap() {
-        input(
-            &r,
-            &json!({ "type": "canvas", "key": c["key"], "width": c["width"], "height": c["height"] }),
-        );
-    }
-    let inputs = f["inputs"].as_array().cloned().unwrap_or_default();
-    let now = |frame: usize, after: bool| {
-        inputs
-            .iter()
-            .filter(move |i| i["frame"] == frame && (i["after"] == true) == after)
-            .map(|i| i["input"].clone())
-            .collect::<Vec<_>>()
-    };
-    let mut end = None;
-    let mut frame = 0;
-    while end.is_none() {
-        // A frame request, the run's end, or nothing for a while: it settled (it stays open, `stop`).
-        let next = loop {
-            if let Some(i) = r.seen.iter().position(|e| {
-                matches!(e, Event::Posts(p) if p.contains(&Post::Frame))
-                    || matches!(e, Event::Exit(_))
-            }) {
-                break Some(r.seen.remove(i));
-            }
-            match r.rx.recv_timeout(Duration::from_secs(1)) {
-                Ok(e) => r.seen.push(e),
-                Err(_) => break None,
-            }
-        };
-        match next {
-            Some(Event::Exit(LiveExit::Finished { .. })) => end = Some("return".to_owned()),
-            Some(Event::Exit(LiveExit::Failed { error })) => {
-                end = Some(format!("error: {error:?}"))
-            }
-            Some(Event::Exit(LiveExit::Stopped)) => end = Some("stopped".to_owned()),
-            Some(_) if frame < 10 => {
-                for i in now(frame, false) {
-                    input(&r, &i);
-                }
-                r.run.deliver(gpu_support::frame(frame)).unwrap();
-                for i in now(frame, true) {
-                    input(&r, &i);
-                }
-                frame += 1;
-            }
-            _ => {
-                r.run.stop();
-                end = Some("stop".to_owned());
-            }
-        }
-    }
-    // Each error once: for every canvas (`None`), or for each canvas it stops, the first one to report.
+/// The GPU errors a run told, as the fixtures write them: each once, for every canvas (`None`), or for each canvas it
+/// stops, the first one to report.
+fn errors_of(seen: &[Event]) -> Vec<Value> {
     let mut errors: Vec<Value> = Vec::new();
-    for e in &r.seen {
+    for e in seen {
         let Event::Gpu(
             key,
             GpuCanvasState::Stopped {
@@ -158,6 +109,99 @@ fn drive(f: &Value) -> (Vec<Value>, String, String, Vec<Value>) {
                 .push(json!(k)),
         }
     }
+    errors
+}
+
+fn drive(f: &Value) -> (Vec<Value>, String, String, Vec<Value>) {
+    gpu_input_format(f["gpu"]["format"].as_str().unwrap());
+    let mut r = start(
+        &live_program(f["source"].as_str().unwrap()),
+        f["data"].clone(),
+    );
+    for c in f["canvases"].as_array().unwrap() {
+        input(
+            &mut r,
+            &json!({ "type": "canvas", "key": c["key"], "width": c["width"], "height": c["height"] }),
+        );
+    }
+    let inputs = f["inputs"].as_array().cloned().unwrap_or_default();
+    let now = |frame: usize, after: bool| {
+        inputs
+            .iter()
+            .filter(move |i| i["frame"] == frame && (i["after"] == true) == after)
+            .map(|i| i["input"].clone())
+            .collect::<Vec<_>>()
+    };
+    // What the run will do, from the fixture: its frame requests (`frame: true` entries, answered up to 10), its
+    // batches and errors. A run that stays open (`stop`) is stopped once it has done all of it. Every wait is on
+    // events, capped generously: nothing here counts on the machine's speed.
+    let batches = f["batches"].as_array();
+    let requests = batches.map_or(10, |b| {
+        b.iter().filter(|b| b["frame"] == true).count().min(10)
+    });
+    let stays_open = f["end"] == "stop";
+    let cap = Instant::now() + Duration::from_secs(120);
+    let mut end = None;
+    let mut frame = 0;
+    while end.is_none() {
+        if stays_open && frame >= requests {
+            let (posted, errors) = (
+                batches.map_or(0, Vec::len),
+                f["errors"].as_array().unwrap().len(),
+            );
+            while r.run.gpu_posted().len() < posted || errors_of(&r.seen).len() < errors {
+                if Instant::now() > cap {
+                    break;
+                }
+                if let Ok(e) = r.rx.recv_timeout(Duration::from_millis(10)) {
+                    r.seen.push(e);
+                }
+            }
+            r.run.stop();
+            end = Some("stop".to_owned());
+            break;
+        }
+        // A frame request or the run's end.
+        let next = loop {
+            if let Some(i) = r.seen.iter().position(|e| {
+                matches!(e, Event::Posts(p) if p.contains(&Post::Frame))
+                    || matches!(e, Event::Exit(_))
+            }) {
+                break Some(r.seen.remove(i));
+            }
+            let left = cap.saturating_duration_since(Instant::now());
+            match r.rx.recv_timeout(left) {
+                Ok(e) => r.seen.push(e),
+                Err(_) => break None,
+            }
+        };
+        match next {
+            Some(Event::Exit(LiveExit::Finished { .. })) => end = Some("return".to_owned()),
+            Some(Event::Exit(LiveExit::Failed { error })) => {
+                end = Some(format!("error: {error:?}"))
+            }
+            Some(Event::Exit(LiveExit::Stopped)) => end = Some("stopped".to_owned()),
+            Some(_) if frame < 10 => {
+                for i in now(frame, false) {
+                    input(&mut r, &i);
+                }
+                r.run.deliver(gpu_support::frame(frame)).unwrap();
+                for i in now(frame, true) {
+                    input(&mut r, &i);
+                }
+                frame += 1;
+            }
+            Some(_) => {
+                r.run.stop();
+                end = Some("stop".to_owned());
+            }
+            None => {
+                r.run.stop();
+                end = Some("timed out".to_owned());
+            }
+        }
+    }
+    let errors = errors_of(&r.seen);
     let events = format!("{:?}", r.seen);
     let posted = (r.run.gpu_posted().iter())
         .map(|b| serde_json::from_str(b).unwrap())

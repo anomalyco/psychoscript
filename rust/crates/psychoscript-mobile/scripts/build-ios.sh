@@ -59,7 +59,7 @@ public extension GpuFailure {
     /// The failure's message.
     var reason: String {
         switch self {
-        case let .Program(message), let .Client(message): return message
+        case let .Program(reason), let .Client(reason): return reason
         }
     }
 }

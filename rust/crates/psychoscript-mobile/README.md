@@ -360,7 +360,10 @@ WebGPU, shader translation and presenting are this crate's.
 - **The device:** one per app, shared by every widget run, made when first needed (a live run with
   `ValueEncoder.widget()`, or the first `ShaderCanvas`), never for steps, on a thread of its own: a live run's
   `__input()` doesn't wait for it, and what the program posts meanwhile replays once it is there. Metal on iOS; Vulkan
-  1.1 or newer on Android 15 and 16 (API 35, 36), else none. The program's input gets `gpu: { available, format }`
+  1.1 or newer on Android 15 and 16 (API 35, 36), else none. On the iOS Simulator only, whose GPU is under some of the
+  spec's limits (`max_inter_stage_shader_variables` 15), the device has the Simulator's where they fall short (said once
+  on stderr), and a program over them gets wgpu's validation error there; real devices have the spec's. The program's
+  input gets `gpu: { available, format }`
   (`format` `bgra8unorm` on iOS, `rgba8unorm` on Android). While the device is still being made, that is
   `available: true` (where the platform has a GPU); if it then can't be made, the canvases go `unavailable` and the
   program gets `{ type: "gpu", lost: "unknown", message }`, as on a device loss (its device and handles are gone, and
@@ -386,8 +389,8 @@ WebGPU, shader translation and presenting are this crate's.
   - `live`: it has an image;
   - `unavailable`: no GPU here (a client error, nothing to report);
   - `stopped(kind, message, report)`: an error stopped it for the rest of the run, with `message`. `report` once per
-    error (`kind` `program`: report it, phase `gpu`); `kind` `client` (a driver failure, out of GPU memory, a surface
-    that failed): log it;
+    error (`kind` `program`: report it, phase `gpu`); `kind` `client` (a driver failure, out of GPU memory, a GPU hang
+    or timeout, below, a surface that failed or was lost: attach a new one): log it;
   - `lost`: the device was lost; `live` again when the program draws on the new one. A canvas an error stopped isn't
     told `lost`: it stays stopped.
 - **Threading:** batches replay on the run's thread, with the program's bytes in place (no copy, nothing crosses to
@@ -395,14 +398,28 @@ WebGPU, shader translation and presenting are this crate's.
   scaled draw), so a slow, hidden or detached surface never holds up the run. Presents beyond the surface's rate are
   skipped. `attachSurface` never blocks (a new size or surface applies at the next present); `detachSurface` waits
   only for a present in progress.
+- **Heavy GPU work** (`widgets-gpu.md`, GPU hang): a run's batch replays once the GPU is done with its last one, so a
+  program whose frames take the GPU longer than the display's waits for it on its own thread, and never queues up GPU
+  work. Work still unfinished 250 ms after its submit stops the canvases it draws into: `stopped(client, "the GPU work
+  hung; the canvas is stopped")`. Apple's GPUs stop work themselves sooner (after 0.05 to 0.6 s on an M5 Max) and fail
+  what follows it on the queue: with Rune's wgpu-hal (the workspace's `[patch.crates-io]`; stock wgpu-hal counts such
+  work finished and tells nothing) that loses the device, every run gets `lost` and draws again on a new one, and work
+  the GPU aborted after running 30 ms or more is the hang, stopped as above, so a widget hangs the GPU once at most. The
+  app's thread never waits on any of it. On the iOS Simulator only, such a timeout can bring down the Simulator's
+  Metal host, which then kills the app (`OS_REASON_METAL`, "Connection to SimMetalHost ... lost"), or leave other Metal
+  work of the process stuck.
 - **`ShaderCanvas(wgsl:, surface:, width:, height:)`:** the `wgsl` shorthand, in steps and live widgets (`widgets.md`,
   GPU canvases). It returns at once (create it on the UI thread). `render(time:, scale:, pointer:, values:)` on the
   display link at the canvas's `fps` only records the frame (a few µs); a thread of the canvas's own waits for the
   device, compiles the shader, and draws and presents the newest frame (frames faster than the surface are skipped).
-  Nothing is drawn or reported before the device is ready. `render` returns, once, what stopped the canvas for good:
-  `GpuFailure.program` for a WGSL error (its line the template's: report it, phase `gpu`), `.client` without a GPU
-  (log it); show the placeholder then. `resize(width:, height:)` takes effect at the next frame. Drop it before its
-  surface goes: once dropped, it never touches the surface again (a present in progress finishes first).
+  Nothing is drawn or reported before the device is ready. `render` returns, once, what stopped the canvas for good,
+  its `reason` the message: `GpuFailure.program` for a WGSL error (its line the template's: report it, phase `gpu`),
+  `.client` without a GPU (log it); show the placeholder then. A shader over 50 ms a frame three frames in a row stops
+  on its last frame (`widgets-gpu.md`): `render` returns `.client` with reason `the shader took over 50 ms a frame,
+  three frames in a row` once; log it and keep the surface (its last frame), not the placeholder. A frame the GPU hung
+  on (Heavy GPU work, above) returns `.client` with `the GPU work hung; the canvas is stopped`: log it, show the
+  placeholder. A device loss recompiles the shader on the new device. `resize(width:, height:)` takes effect at the
+  next frame. Drop it before its surface goes: once dropped, it never touches the surface again (a present in progress finishes first).
 
 ```swift
 let surface = try GpuSurface.metal(metalView.layer as! CAMetalLayer)

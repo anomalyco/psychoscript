@@ -83,10 +83,14 @@ fn a_lost_device_is_told_to_the_program_and_replaced() {
     r.live("a");
     gpu_lose_device();
     r.wait(|e| matches!(e, Event::Gpu(Some(k), GpuCanvasState::Lost) if k == "a").then_some(()));
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    while let Ok(e) = r.rx.try_recv() {
-        r.seen.push(e);
-    }
+    // The program's `send` of the loss comes after every state the host told for it.
+    r.wait(|e| match e {
+        Event::Posts(p) => p
+            .iter()
+            .any(|p| matches!(p, Post::Send { value, .. } if value["type"] == "gpu"))
+            .then_some(()),
+        _ => None,
+    });
     let lost: Vec<_> = (r.gpu_events().into_iter())
         .filter(|(_, s)| *s == GpuCanvasState::Lost)
         .collect();

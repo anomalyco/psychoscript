@@ -3,9 +3,10 @@
 //! thread of its own ([`prepare`]), and made again after a loss.
 
 use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::task::{Context, Poll, Waker};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// A device and what it was made with.
 pub(crate) struct Dev {
@@ -27,6 +28,8 @@ pub(crate) trait Loss: Send + Sync {
     fn lost(&self, reason: &str, message: &str);
     /// A device is ready, the first or one after a loss (or none could be made: [`current`] says).
     fn replaced(&self);
+    /// About once a display frame, on a thread that never submits: looks for GPU hangs.
+    fn tick(&self);
 }
 
 enum State {
@@ -140,6 +143,25 @@ pub(crate) fn subscribe(listener: Weak<dyn Loss>) {
     let mut list = lock(&shared().listeners);
     list.retain(|l| l.strong_count() > 0);
     list.push(listener);
+    if list.len() == 1 {
+        // A thread ticks the listeners while there are any.
+        let _ = std::thread::Builder::new()
+            .name("psychoscript-gpu-hangs".into())
+            .spawn(|| {
+                loop {
+                    std::thread::sleep(Duration::from_millis(16));
+                    let mut list = lock(&shared().listeners);
+                    list.retain(|l| l.strong_count() > 0);
+                    if list.is_empty() {
+                        return;
+                    }
+                    drop(list);
+                    for l in listeners() {
+                        l.tick();
+                    }
+                }
+            });
+    }
 }
 
 fn listeners() -> Vec<Arc<dyn Loss>> {
@@ -181,7 +203,7 @@ fn android_api() -> Option<u32> {
     let n = unsafe { __system_property_get(c"ro.build.version.sdk".as_ptr(), value.as_mut_ptr()) };
     let bytes: Vec<u8> = value[..n.max(0) as usize]
         .iter()
-        .map(|c| *c as u8)
+        .map(|c| c.to_ne_bytes()[0])
         .collect();
     std::str::from_utf8(&bytes).ok()?.trim().parse().ok()
 }
@@ -245,6 +267,7 @@ fn make() -> Result<Dev, String> {
             .max(widget_gpu::device_limits().max_texture_dimension_2d),
         ..widget_gpu::device_limits()
     };
+    let required_limits = simulator_limits(required_limits, &adapter);
     let (device, queue) = block(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("widgets"),
         required_limits,
@@ -268,6 +291,34 @@ fn make() -> Result<Dev, String> {
         generation,
         made_ms: started.elapsed().as_secs_f64() * 1000.0,
     })
+}
+
+/// The iOS Simulator's GPU is under some of the spec's limits (`max_inter_stage_shader_variables` 15): there, the
+/// adapter's where they fall short (a program over them gets wgpu's validation error), told once. Real devices get
+/// the spec's (decided as the crate is built).
+#[cfg(all(target_os = "ios", target_abi = "sim"))]
+fn simulator_limits(spec: wgpu::Limits, adapter: &wgpu::Adapter) -> wgpu::Limits {
+    let has = adapter.limits();
+    let mut low = Vec::new();
+    spec.check_limits_with_fail_fn(&has, false, |name, wanted, allowed| {
+        low.push(format!("{name} {allowed} (the spec's {wanted})"))
+    });
+    if !low.is_empty() {
+        static TOLD: std::sync::Once = std::sync::Once::new();
+        TOLD.call_once(|| {
+            eprintln!(
+                "psychoscript-mobile: the iOS Simulator's GPU is under the GPU canvas limits, which are lowered to it here \
+                 only: {}",
+                low.join(", ")
+            )
+        });
+    }
+    spec.or_worse_values_from(&has)
+}
+
+#[cfg(not(all(target_os = "ios", target_abi = "sim")))]
+fn simulator_limits(spec: wgpu::Limits, _adapter: &wgpu::Adapter) -> wgpu::Limits {
+    spec
 }
 
 #[cfg(any(target_os = "android", target_os = "linux"))]
@@ -306,4 +357,127 @@ fn lost(generation: u64, reason: wgpu::DeviceLostReason, message: String) {
         l.lost(reason, &message);
     }
     spawn_make();
+}
+
+/// Polls `device` (`wait`: until its queue is empty); false when it is lost. wgpu panics in `Device::poll` on a lost
+/// device (`Error in Device::poll: ...`): that panic is the loss, not the app's crash. Any other panic goes on.
+pub(crate) fn poll(device: &wgpu::Device, wait: bool) -> bool {
+    let kind = match wait {
+        true => wgpu::PollType::wait_indefinitely(),
+        false => wgpu::PollType::Poll,
+    };
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| device.poll(kind))) {
+        Ok(_) => true,
+        Err(panic) => {
+            let message = (panic.downcast_ref::<String>().map(String::as_str))
+                .or_else(|| panic.downcast_ref::<&str>().copied())
+                .unwrap_or("");
+            if message.starts_with("Error in Device::poll") {
+                return false;
+            }
+            std::panic::resume_unwind(panic)
+        }
+    }
+}
+
+/// Each watched submit's GPU time in ms, when recorded (Rust only, for tests: [`super::gpu_submit_times`]).
+pub(crate) static TIMES: Mutex<Option<Vec<f64>>> = Mutex::new(None);
+
+/// The end on the GPU of what was submitted so far ([`watch`]).
+pub(crate) struct Watch {
+    done: AtomicBool,
+}
+
+impl Watch {
+    /// Whether the GPU is done with it, looked at now (`dev` its device).
+    pub(crate) fn done(&self, dev: &Dev) -> bool {
+        // A lost device finishes nothing more: done (the loss is told).
+        !poll(&dev.device, false) || self.done.load(Ordering::Acquire)
+    }
+}
+
+/// Watches what was submitted to `dev` so far.
+pub(crate) fn watch(dev: &Dev) -> Arc<Watch> {
+    let watch = Arc::new(Watch {
+        done: AtomicBool::new(false),
+    });
+    let (at, w) = (Instant::now(), watch.clone());
+    dev.queue.on_submitted_work_done(move || {
+        if let Some(times) = lock(&TIMES).as_mut() {
+            times.push(at.elapsed().as_secs_f64() * 1e3);
+        }
+        w.done.store(true, Ordering::Release);
+    });
+    watch
+}
+
+/// What a widget's GPU tells of submissions the GPU aborted (`widgets-gpu.md`, GPU hang): on Metal, rune's wgpu-hal
+/// does (`Queue::aborted`, the workspace's `[patch.crates-io]`); elsewhere nothing, and the time rules tell a hang.
+pub(crate) fn aborts() -> Option<Arc<dyn widget_gpu::Aborts>> {
+    if let Some(after) = *lock(&FAKE_ABORTS) {
+        return Some(Arc::new(FakeAborts(after)));
+    }
+    #[cfg(any(target_os = "ios", target_os = "macos"))]
+    return Some(Arc::new(MetalAborts));
+    #[cfg(not(any(target_os = "ios", target_os = "macos")))]
+    None
+}
+
+/// Every submission aborted after this long, for the GPUs made from now on (Rust only, for tests:
+/// [`super::gpu_fake_aborts`]): the hang rules without a real hang.
+pub(crate) static FAKE_ABORTS: Mutex<Option<Duration>> = Mutex::new(None);
+
+struct FakeAborts(Duration);
+
+impl widget_gpu::Aborts for FakeAborts {
+    fn aborted(&self, _: &wgpu::Queue, _: &wgpu::SubmissionIndex) -> Option<Duration> {
+        Some(self.0)
+    }
+}
+
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+struct MetalAborts;
+
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+impl widget_gpu::Aborts for MetalAborts {
+    fn aborted(&self, queue: &wgpu::Queue, submission: &wgpu::SubmissionIndex) -> Option<Duration> {
+        let value = submission_value(submission)?;
+        // SAFETY: the hal queue is only read.
+        let hal = unsafe { queue.as_hal::<wgpu::hal::api::Metal>() }?;
+        hal.aborted(value)
+    }
+}
+
+/// A submission's index, the fence value wgpu-hal signals for it. wgpu keeps it private; its `Debug` shows it
+/// (`SubmissionIndex { index: 7 }`), which a test pins.
+#[cfg_attr(not(any(target_os = "ios", target_os = "macos")), allow(dead_code))]
+fn submission_value(submission: &wgpu::SubmissionIndex) -> Option<u64> {
+    format!("{submission:?}")
+        .strip_prefix("SubmissionIndex { index: ")?
+        .strip_suffix(" }")?
+        .parse()
+        .ok()
+}
+
+/// Waits (on a run's thread) until the GPU is done with `watch`, `dev` is lost or `stop` says.
+pub(crate) fn settle(dev: &Dev, watch: &Watch, stop: impl Fn() -> bool) {
+    while !watch.done(dev) && current().is_some_and(|d| d.generation == dev.generation) && !stop() {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The submission index is read from wgpu's `Debug` of it ([`super::submission_value`]): a wgpu that shows it
+    /// otherwise fails here.
+    #[test]
+    fn a_submission_index_reads_from_its_debug() {
+        let Ok(dev) = super::get() else {
+            return eprintln!("no GPU here");
+        };
+        let first = super::submission_value(&dev.queue.submit([]));
+        let next = super::submission_value(&dev.queue.submit([]));
+        assert!(first.is_some(), "{:?}", dev.queue.submit([]));
+        assert_eq!(next, first.map(|v| v + 1));
+    }
 }

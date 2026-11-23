@@ -8,10 +8,10 @@ mod gpu_support;
 
 use gpu_support::*;
 use psychoscript_mobile::{GpuCanvasState, Program, gpu_fail_devices};
-#[cfg(any(target_os = "macos", target_os = "android"))]
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
 use psychoscript_mobile::{GpuFailure, ShaderCanvas};
 use serde_json::json;
-#[cfg(any(target_os = "macos", target_os = "android"))]
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
 use std::time::{Duration, Instant};
 use widget_wire::Post;
 
@@ -61,7 +61,7 @@ fn a_device_that_cant_be_made() {
     r.run.stop();
 
     // A shader canvas: made at once, `render` returns the client error once.
-    #[cfg(any(target_os = "macos", target_os = "android"))]
+    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
     {
         let real = real::surface(8, 8);
         let surface = real.surface.clone();

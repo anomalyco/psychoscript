@@ -57,9 +57,55 @@ pub fn gpu_lose_device() {
     #[cfg(feature = "widget-gpu")]
     if let Some(d) = device::current() {
         d.device.destroy();
-        // wgpu tells of a destroyed device once its queue is empty, at a poll; a driver's loss as it finds it.
-        let _ = d.device.poll(wgpu::PollType::wait_indefinitely());
+        // wgpu tells of a destroyed device at a poll that finds its queue empty (a wait for the last submission
+        // may not); a driver's loss as it finds it.
+        device::poll(&d.device, true);
+        for _ in 0..100 {
+            if !device::poll(&d.device, false) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     }
+}
+
+/// Waits until the GPU is done with everything submitted to the shared device (Rust only, for tests).
+#[doc(hidden)]
+pub fn gpu_wait_idle() {
+    #[cfg(feature = "widget-gpu")]
+    if let Some(d) = device::current() {
+        device::poll(&d.device, true);
+    }
+}
+
+/// The GPU time (from submit to completion, as the host sees it: what the hang rule measures) of each submit since the
+/// last call, in ms; the first call starts recording (Rust only, for tests).
+#[doc(hidden)]
+pub fn gpu_submit_times() -> Vec<f64> {
+    #[cfg(feature = "widget-gpu")]
+    return std::mem::take(
+        device::TIMES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_or_insert_with(Vec::new),
+    );
+    #[cfg(not(feature = "widget-gpu"))]
+    Vec::new()
+}
+
+/// Has the GPU tell every submission of the widget GPUs made from now on aborted after `after_ms` (none: as it is), so
+/// the hang rules are tested without a real hang (Rust only, for tests).
+#[doc(hidden)]
+pub fn gpu_fake_aborts(after_ms: Option<u64>) {
+    #[cfg(feature = "widget-gpu")]
+    {
+        *device::FAKE_ABORTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            after_ms.map(std::time::Duration::from_millis);
+    }
+    #[cfg(not(feature = "widget-gpu"))]
+    let _ = after_ms;
 }
 
 /// Has every device made from now on fail, `after_ms` into making it (Rust only, for tests of a GPU that turns out
@@ -143,18 +189,17 @@ pub enum GpuCanvasState {
 /// A GPU failure of [`GpuSurface`] or [`ShaderCanvas`].
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Error)]
 pub enum GpuFailure {
-    /// The widget template's (a WGSL error, phase `gpu`): report it.
-    Program { message: String },
+    /// The widget template's (a WGSL error, phase `gpu`): report it. (`reason`, not `message`: a Kotlin exception has
+    /// a `message` of its own.)
+    Program { reason: String },
     /// The client's (no GPU, not a surface): show the placeholder, log it.
-    Client { message: String },
+    Client { reason: String },
 }
 
 impl std::fmt::Display for GpuFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            GpuFailure::Program { message } | GpuFailure::Client { message } => {
-                f.write_str(message)
-            }
+            GpuFailure::Program { reason } | GpuFailure::Client { reason } => f.write_str(reason),
         }
     }
 }
@@ -162,9 +207,9 @@ impl std::fmt::Display for GpuFailure {
 impl std::error::Error for GpuFailure {}
 
 impl GpuFailure {
-    pub(crate) fn client(message: impl Into<String>) -> GpuFailure {
+    pub(crate) fn client(reason: impl Into<String>) -> GpuFailure {
         GpuFailure::Client {
-            message: message.into(),
+            reason: reason.into(),
         }
     }
 }
@@ -173,8 +218,8 @@ impl GpuFailure {
 impl From<widget_gpu::GpuError> for GpuFailure {
     fn from(e: widget_gpu::GpuError) -> Self {
         match e.kind {
-            widget_gpu::ErrorKind::Program => GpuFailure::Program { message: e.message },
-            widget_gpu::ErrorKind::Client => GpuFailure::Client { message: e.message },
+            widget_gpu::ErrorKind::Program => GpuFailure::Program { reason: e.message },
+            widget_gpu::ErrorKind::Client => GpuFailure::Client { reason: e.message },
         }
     }
 }

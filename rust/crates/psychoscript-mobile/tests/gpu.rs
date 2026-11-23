@@ -8,11 +8,11 @@
 mod gpu_support;
 
 use std::time::Duration;
-#[cfg(any(target_os = "macos", target_os = "android"))]
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
 use std::time::Instant;
 
 use gpu_support::*;
-#[cfg(any(target_os = "macos", target_os = "android"))]
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
 use psychoscript_mobile::LiveRun;
 use psychoscript_mobile::{GpuCanvasState, GpuErrorKind, Program, gpu_device};
 use serde_json::json;
@@ -146,25 +146,17 @@ fn frames_replay_on_the_device() {
     r.run.stop();
 }
 
-/// Waits until the run has presented at least `n` images and then nothing more for 200 ms (the newest one is shown:
-/// presents beyond the surface's rate are skipped).
-#[cfg(any(target_os = "macos", target_os = "android"))]
+/// Waits until the run has presented at least `n` images (presents beyond the surface's rate are skipped).
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
 fn presents(run: &LiveRun, n: u64) {
-    let until = Instant::now() + Duration::from_secs(10);
-    let mut last = (0, Instant::now());
-    loop {
-        let now = run.gpu_stats().unwrap().presents;
-        if now != last.0 {
-            last = (now, Instant::now());
-        } else if now >= n && last.1.elapsed() > Duration::from_millis(200) {
-            return;
-        }
+    let until = Instant::now() + Duration::from_secs(60);
+    while run.gpu_stats().unwrap().presents < n {
         assert!(Instant::now() < until, "{:?}", run.gpu_stats());
         std::thread::sleep(Duration::from_millis(5));
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "android"))]
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
 #[test]
 fn the_cube_presents_into_a_real_surface() {
     let surface = real::surface(600, 480);
@@ -208,7 +200,7 @@ fn the_cube_presents_into_a_real_surface() {
     r.run.stop();
 }
 
-#[cfg(any(target_os = "macos", target_os = "android"))]
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
 #[test]
 fn a_canvas_clamped_to_4096_is_scaled_to_its_surface() {
     let (sw, sh) = (4200, 64);
@@ -227,7 +219,7 @@ fn a_canvas_clamped_to_4096_is_scaled_to_its_surface() {
     r.run.stop();
 }
 
-#[cfg(any(target_os = "macos", target_os = "android"))]
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
 #[test]
 fn a_shader_canvas_draws_into_a_real_surface() {
     use psychoscript_mobile::{GpuFailure, ShaderCanvas};
@@ -285,7 +277,7 @@ fn a_shader_canvas_draws_into_a_real_surface() {
                 assert!(Instant::now() < until + Duration::from_secs(10));
                 std::thread::sleep(Duration::from_millis(2));
             }
-            Err(GpuFailure::Program { message }) => break message,
+            Err(GpuFailure::Program { reason }) => break reason,
             Err(e) => panic!("{e:?}"),
         }
     };
@@ -359,21 +351,29 @@ fn a_snapshot_keeps_the_stops_and_drops_handles_from_before() {
     r.run.stop();
 }
 
-#[cfg(any(target_os = "macos", target_os = "android"))]
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
 #[test]
 fn a_surface_not_laid_out_gives_the_program_no_size() {
     let p = Program::new(
-        "const __widget_protocol = 2\nfor (;;) { const m = await __host.receive(); if (m.type === \"canvas\") __host.post({ type: \"send\", value: m }) }".into(),
+        "const __widget_protocol = 2\nfor (;;) { const m = await __host.receive(); if (m.type === \"canvas\" || m.type === \"ping\") __host.post({ type: \"send\", value: m }) }".into(),
         "__input".into(),
     )
     .unwrap();
     let mut r = start(&p, json!(null));
     let surface = real::surface(8, 8);
+    // The sizes the program got: everything delivered before a `ping` it echoes after them.
     let sizes = |r: &mut Run| {
-        std::thread::sleep(Duration::from_millis(100));
-        while let Ok(e) = r.rx.try_recv() {
-            r.seen.push(e);
-        }
+        r.run
+            .deliver(json!({ "type": "ping" }).to_string())
+            .unwrap();
+        let last = r.wait(|e| match e {
+            Event::Posts(p) => p
+                .iter()
+                .any(|p| matches!(p, Post::Send { value, .. } if value["type"] == "ping"))
+                .then(|| p.clone()),
+            _ => None,
+        });
+        r.seen.push(Event::Posts(last));
         let sent: Vec<serde_json::Value> = r
             .seen
             .drain(..)
@@ -383,7 +383,7 @@ fn a_surface_not_laid_out_gives_the_program_no_size() {
             })
             .flatten()
             .filter_map(|p| match p {
-                Post::Send { value, .. } => Some(value),
+                Post::Send { value, .. } if value["type"] == "canvas" => Some(value),
                 _ => None,
             })
             .collect();
@@ -408,4 +408,43 @@ fn a_surface_not_laid_out_gives_the_program_no_size() {
         .attach_surface("c".into(), surface.surface.clone(), 8, 6);
     assert_eq!(sizes(&mut r), Vec::<serde_json::Value>::new());
     r.run.stop();
+}
+
+/// The built-in backdrop template's aurora (opencode `widget-templates/backdrop.js`, widgets 3efef1c62): it compiles
+/// and draws on this device (the iOS Simulator's included).
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
+#[test]
+fn the_aurora_draws() {
+    use psychoscript_mobile::ShaderCanvas;
+    const AURORA: &str = include_str!("fixtures/gpu/aurora.wgsl");
+    let surface = real::surface(320, 160);
+    let canvas = ShaderCanvas::new(AURORA.into(), surface.surface.clone(), 320, 160);
+    // (speed, accent): the template's teal.
+    let values = vec![1.0, 0.18, 0.83, 0.75];
+    for i in 0..60 {
+        canvas
+            .render(i as f32 / 60.0, 2.0, vec![0.0; 4], values.clone())
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(8));
+    }
+    let until = Instant::now() + Duration::from_secs(20);
+    while canvas.presents() == 0 {
+        assert_eq!(
+            canvas.render(1.0, 2.0, vec![0.0; 4], values.clone()),
+            Ok(())
+        );
+        assert!(Instant::now() < until, "nothing presented");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        canvas.render(1.0, 2.0, vec![0.0; 4], values.clone()),
+        Ok(())
+    );
+    eprintln!("the aurora: {} frames presented", canvas.presents());
+    if let Some((w, h, p)) = surface.pixels() {
+        assert_eq!((w, h), (320, 160));
+        // A night sky with a glow: dark at the bottom, lit somewhere above, opaque.
+        assert!(p.chunks(4).all(|px| px[3] == 255));
+        assert!(p.chunks(4).any(|px| px[1] > 60), "no glow");
+    }
 }

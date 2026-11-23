@@ -32,7 +32,8 @@ pub use fetch::{
 };
 pub use gpu::{
     GpuCanvasState, GpuDeviceInfo, GpuErrorKind, GpuFailure, GpuStats, GpuSurface, ShaderCanvas,
-    gpu_device, gpu_fail_devices, gpu_input_format, gpu_lose_device, gpu_record_batches,
+    gpu_device, gpu_fail_devices, gpu_fake_aborts, gpu_input_format, gpu_lose_device,
+    gpu_record_batches, gpu_submit_times, gpu_wait_idle,
 };
 pub use live::{LiveContext, LiveExit, LiveHandler, LiveOptions, LiveRun, LiveSurfaces};
 pub use program::{Program, RunOptions, RunSession};

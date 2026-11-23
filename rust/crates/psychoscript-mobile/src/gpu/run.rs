@@ -2,7 +2,7 @@
 //! them (`widget_wire::GpuHost`), its canvases presented into the app's surfaces, the live input's `gpu`, canvas
 //! sizes, and device loss. All but [`RunGpu::attach`] and the loss callbacks run on the run's thread.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -43,6 +43,8 @@ struct State {
     waiting: bool,
     /// A restored run's greatest handle and stopped canvases, for its GPU once the device is there.
     restore: Option<(u64, SavedStops)>,
+    /// The batches the GPU may still be on, oldest first.
+    flights: VecDeque<Arc<device::Watch>>,
 }
 
 /// A widget run's GPU.
@@ -54,6 +56,8 @@ pub(crate) struct RunGpu {
     sent: Mutex<HashMap<String, (u32, u32)>>,
     loss: Mutex<Option<(String, String)>>,
     replaced: AtomicBool,
+    /// GPU hangs found ([`device::Loss::tick`]), to tell on the run's thread.
+    hangs: Mutex<Vec<GpuError>>,
 }
 
 impl RunGpu {
@@ -67,6 +71,7 @@ impl RunGpu {
             sent: Mutex::default(),
             loss: Mutex::new(None),
             replaced: AtomicBool::new(false),
+            hangs: Mutex::default(),
         });
         let weak: std::sync::Weak<dyn device::Loss> =
             Arc::downgrade(&(run.clone() as Arc<dyn device::Loss>));
@@ -102,8 +107,9 @@ impl RunGpu {
     /// The device, and the run's [`Gpu`] on it, or why there is none.
     fn start(&self, st: &mut State) -> Result<(), String> {
         let dev = device::get()?;
-        let gpu =
+        let mut gpu =
             Gpu::new(dev.device.clone(), dev.queue.clone(), dev.format).map_err(|e| e.message)?;
+        gpu.set_aborts(device::aborts());
         st.gpu = Some(gpu);
         st.dev = Some(dev);
         Ok(())
@@ -230,6 +236,16 @@ impl RunGpu {
     pub(crate) fn due(&self) {
         if let Some((reason, message)) = lock(&self.loss).take() {
             let mut st = lock(&self.state);
+            // The work the loss found hung stops its canvases first (`Gpu::lost`, then `Gpu::poll` has its error).
+            let hung = st.gpu.as_mut().and_then(|gpu| {
+                gpu.lost();
+                gpu.poll().err()
+            });
+            if let Some(e) = hung {
+                drop(st);
+                self.stopped(&e);
+                st = lock(&self.state);
+            }
             if let Some(gpu) = &st.gpu {
                 // A canvas an error stopped keeps its placeholder (stopped stays stopped).
                 let lost: Vec<String> = (st.keys.iter())
@@ -238,6 +254,7 @@ impl RunGpu {
                     .collect();
                 st.held.get_or_insert_with(Vec::new);
                 st.versions.clear();
+                st.flights.clear();
                 drop(st);
                 self.surfaces.clear();
                 self.ctx.deliver(lost_message(&reason, &message));
@@ -245,6 +262,10 @@ impl RunGpu {
                     self.tell(Some(&k), GpuCanvasState::Lost);
                 }
             }
+        }
+        let hangs = std::mem::take(&mut *lock(&self.hangs));
+        for e in hangs {
+            self.stopped(&e);
         }
         if self.replaced.swap(false, Ordering::SeqCst) {
             self.replace();
@@ -274,7 +295,8 @@ impl RunGpu {
                 .reset(dev.device.clone(), dev.queue.clone())
                 .map(|()| dev),
             (Some(dev), None) => {
-                Gpu::new(dev.device.clone(), dev.queue.clone(), dev.format).map(|gpu| {
+                Gpu::new(dev.device.clone(), dev.queue.clone(), dev.format).map(|mut gpu| {
+                    gpu.set_aborts(device::aborts());
                     st.gpu = Some(gpu);
                     dev
                 })
@@ -338,7 +360,7 @@ impl RunGpu {
             // wgpu tells of a loss as the device is next used: an error then is the loss's, not the program's, and
             // the batch waits for the new device.
             if let Some(dev) = &st.dev {
-                let _ = dev.device.poll(wgpu::PollType::Poll);
+                device::poll(&dev.device, false);
             }
             // Posted before the program learned of the loss: dropped quietly.
             if lock(&self.loss).is_some() {
@@ -346,7 +368,19 @@ impl RunGpu {
             }
             self.stopped(&e);
         }
+        if let Some(dev) = &st.dev {
+            st.flights.push_back(device::watch(dev));
+        }
         self.present(st);
+    }
+
+    /// The run's last batch, when the GPU is still on it.
+    fn in_flight(st: &mut State) -> Option<(Arc<Dev>, Arc<device::Watch>)> {
+        let dev = st.dev.clone()?;
+        while st.flights.front().is_some_and(|w| w.done(&dev)) {
+            st.flights.pop_front();
+        }
+        Some((dev, st.flights.back()?.clone()))
     }
 
     /// Hands each canvas whose texture a pass wrote to its surface.
@@ -445,6 +479,14 @@ struct Host(Arc<RunGpu>);
 
 impl widget_wire::GpuHost for Host {
     fn batch(&mut self, ops: &[Arg], bytes: &[u8]) {
+        // A batch replays once the GPU is done with the run's last one: a program whose frames take the GPU longer
+        // than the display's waits for it, on the run's thread, never building up GPU work (which holds up every
+        // canvas; a Metal queue then gives up) nor inside a submit (some drivers wait there; `Gpu::poll` looks for a
+        // hang meanwhile; one stops its canvases, and the run waits on behind it, adding nothing).
+        let wait = RunGpu::in_flight(&mut lock(&self.0.state));
+        if let Some((dev, watch)) = wait {
+            device::settle(&dev, &watch, || self.0.ctx.interrupted());
+        }
         let mut st = lock(&self.0.state);
         if let Some(held) = st.held.as_mut() {
             held.push(Held::Batch(ops.to_vec(), bytes.to_vec()));
@@ -491,6 +533,13 @@ impl widget_wire::GpuHost for Host {
 
 impl device::Loss for RunGpu {
     fn lost(&self, reason: &str, message: &str) {
+        // At once (`Gpu::lost`: the work running 250 ms hung), unless the run's thread is replaying, in which wgpu
+        // may be telling of it: that thread does, before the program is told.
+        match self.state.try_lock() {
+            Ok(mut st) => st.gpu.as_mut().map(Gpu::lost),
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner().gpu.as_mut().map(Gpu::lost),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        };
         *lock(&self.loss) = Some((reason.to_owned(), message.to_owned()));
         self.ctx.wake();
     }
@@ -498,6 +547,22 @@ impl device::Loss for RunGpu {
     fn replaced(&self) {
         self.replaced.store(true, Ordering::SeqCst);
         self.ctx.wake();
+    }
+
+    /// A GPU hang (`widgets-gpu.md`): `Gpu::poll`, skipped while the run's thread is replaying (it can't be stuck
+    /// in a submit, at most two batches being on the GPU).
+    fn tick(&self) {
+        let mut st = match self.state.try_lock() {
+            Ok(st) => st,
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return,
+        };
+        let Some(gpu) = st.gpu.as_mut() else { return };
+        if let Err(e) = gpu.poll() {
+            drop(st);
+            lock(&self.hangs).push(e);
+            self.ctx.wake();
+        }
     }
 }
 

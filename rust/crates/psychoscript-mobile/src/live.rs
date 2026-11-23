@@ -94,6 +94,14 @@ impl LiveContext {
         c.wake_receive();
     }
 
+    /// Whether the app paused or stopped the run, or it is gone: a wait on the run's thread ends then (a snapshot
+    /// waits for the posts in progress).
+    pub fn interrupted(&self) -> bool {
+        self.0
+            .upgrade()
+            .is_none_or(|c| c.is_paused() || c.stopping.load(Ordering::SeqCst))
+    }
+
     /// Wakes the run: its encoder's [`EncodePosts::due`] is called soon, on the run's thread.
     pub fn wake(&self) {
         if let Some(c) = self.0.upgrade() {

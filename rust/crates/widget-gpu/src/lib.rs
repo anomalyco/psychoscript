@@ -361,6 +361,12 @@ fn check_device(device: &wgpu::Device, format: wgpu::TextureFormat) -> Result<()
     }
     let mut low = Vec::new();
     device_limits().check_limits_with_fail_fn(&device.limits(), false, |name, _, _| low.push(name));
+    // The iOS Simulator's GPU is under some of them (`max_inter_stage_shader_variables` 15): there a host requests
+    // the adapter's where they fall short, and a program over them gets wgpu's validation error. Real devices keep
+    // the check (decided as the crate is built).
+    if cfg!(all(target_os = "ios", target_abi = "sim")) {
+        low.clear();
+    }
     if !low.is_empty() {
         return Err(client(format!(
             "the device's limits are under the spec's: {}",

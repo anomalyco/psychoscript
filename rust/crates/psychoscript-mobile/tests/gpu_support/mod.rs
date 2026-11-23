@@ -212,19 +212,19 @@ async function main() {
 }"#;
 
 /// A real surface for `w` × `h`: a `CAMetalLayer` on macOS, an `AImageReader`'s window on Android.
-#[cfg(any(target_os = "macos", target_os = "android"))]
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
 pub mod real {
     use std::ffi::c_void;
     use std::sync::Arc;
 
     use psychoscript_mobile::GpuSurface;
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     pub struct Surface {
         pub surface: Arc<GpuSurface>,
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     pub fn surface(_w: u32, _h: u32) -> Surface {
         use std::ffi::c_char;
         #[link(name = "QuartzCore", kind = "framework")]
@@ -253,7 +253,7 @@ pub mod real {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     impl Surface {
         /// A presented image can't be read back from a `CAMetalLayer`.
         pub fn pixels(&self) -> Option<(u32, u32, Vec<u8>)> {

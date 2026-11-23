@@ -80,9 +80,15 @@ impl Attached {
         }
         let dev = &frame.dev;
         if self.surface.is_none() {
-            // SAFETY: `native` holds the layer or window for as long as `self` holds the surface.
-            let surface = unsafe { dev.instance.create_surface_unsafe(self.native.target()) }
-                .map_err(|e| format!("the surface can't be used: {e}"))?;
+            // SAFETY: `native` holds the layer or window for as long as `self` holds the surface. wgpu-hal panics
+            // where Vulkan refuses an Android window (one in use): a failure here, not the presenter's end.
+            let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+                dev.instance.create_surface_unsafe(self.native.target())
+            }));
+            let surface = match made {
+                Ok(made) => made.map_err(|e| format!("the surface can't be used: {e}"))?,
+                Err(_) => return Err("the surface can't be used: the window is in use".into()),
+            };
             self.surface = Some(Made {
                 surface,
                 config: None,
@@ -120,9 +126,11 @@ impl Attached {
                 made.config = None;
                 return Ok(Shown::Outdated);
             }
+            // The window or layer is gone: a new surface on it would fail (Android: in use), so it fails; the app
+            // attaches a new one.
             wgpu::CurrentSurfaceTexture::Lost => {
                 self.surface = None;
-                return Ok(Shown::Outdated);
+                return Err("the surface was lost".into());
             }
             wgpu::CurrentSurfaceTexture::Validation => {
                 return Err("the surface's texture can't be had".into());
@@ -524,7 +532,9 @@ impl Surfaces {
         d.queue.submit([e.finish()]);
         drop(submits);
         buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-        d.device.poll(wgpu::PollType::wait_indefinitely()).ok()?;
+        if !device::poll(&d.device, true) {
+            return None;
+        }
         let data = buffer.slice(..).get_mapped_range().ok()?;
         let bgra = t.format() == wgpu::TextureFormat::Bgra8Unorm;
         let mut out = Vec::with_capacity((w * h * 4) as usize);
