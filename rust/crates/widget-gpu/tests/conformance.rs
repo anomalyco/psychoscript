@@ -110,16 +110,11 @@ fn error_json(e: &GpuError) -> Value {
     })
 }
 
-/// Frame requests that carried no batch, which a fixture's `batches` don't record: (fixture, the index of the batch
-/// they came before). `frame-counts-reset-at-a-bare-frame`'s program posts its first 10 passes before a sleep, then
-/// asks for a frame with nothing pending, then posts 10 more with the next.
-const BARE_FRAMES: &[(&str, usize)] = &[("frame-counts-reset-at-a-bare-frame", 2)];
-
 /// Replays a fixture as its driver runs it: the canvas sizes (clamped) first, then the batches in order. After a
-/// frame request (a batch that rode one, or a bare one), that frame's inputs (`canvas` messages, device losses), then
+/// frame request (a `frame: true` entry: a batch that rode one, or `{ ops: [] }` for one that carried none), that
+/// frame's inputs (`canvas` messages, device losses), then
 /// its inputs marked `after`.
 fn replay(device: &wgpu::Device, queue: &wgpu::Queue, f: &Value) -> (Gpu, Vec<Value>) {
-    let name = f["name"].as_str().unwrap();
     let mut gpu = Gpu::new(
         device.clone(),
         queue.clone(),
@@ -174,10 +169,7 @@ fn replay(device: &wgpu::Device, queue: &wgpu::Queue, f: &Value) -> (Gpu, Vec<Va
         frame += 1;
     };
     let mut errors = Vec::new();
-    for (at, b) in batches.iter().enumerate() {
-        if BARE_FRAMES.contains(&(name, at)) {
-            frame_request(&mut gpu);
-        }
+    for b in &batches {
         if let Err(e) = gpu.apply(&b.ops, &b.bytes) {
             errors.push(error_json(&e));
         }
