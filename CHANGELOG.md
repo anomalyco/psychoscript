@@ -4,8 +4,9 @@
 
 - Rust: `Limits::clock` (`Clock::Wall`, the default, or `Clock::ThreadCpu`): with `ThreadCpu`, `timeout_ms` counts the
   CPU time of the threads running the program, so a loaded machine doesn't time out a well-behaved program. Host work
-  isn't counted: synchronous host calls are left out, and waits on host calls count on the wall clock, up to ten times
-  the timeout. A saved run keeps its clock. The new
+  isn't counted: synchronous host calls are left out by their wall-clock duration, which can only count too little
+  (the CPU time with them may reach ten times the timeout), and waits on host calls count on the wall clock, up to ten
+  times the timeout. A saved run keeps its clock. The new
   `crates/thread-clock` (`ThreadClock::current`, `now`) reads a thread's CPU time on Linux, Android, Apple platforms
   and Windows, and the wall clock elsewhere. `Limits::slice_ms` bounds how long a run computes without awaiting the
   host, on the same clock and without its host calls; a run past it stops with `SliceExceeded`. Under `ThreadCpu` it

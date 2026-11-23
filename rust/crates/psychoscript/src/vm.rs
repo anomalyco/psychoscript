@@ -1173,23 +1173,31 @@ impl Vm {
         let (Some(s), cpu) = (self.slice.as_deref_mut(), self.cpu.as_deref_mut()) else {
             return false;
         };
-        let ran = s.wall.elapsed();
         let Some(c) = cpu else {
-            return ran >= limit;
+            return s.wall.elapsed() >= limit;
         };
+        let backstop = limit * crate::cpu::WAIT_BACKSTOP;
         match s.from {
-            None if ran >= limit / crate::cpu::SLICE_SLACK => {
-                s.from = Some(c.used());
-                s.wall = Instant::now();
+            None => {
+                if s.wall.elapsed() >= limit / crate::cpu::SLICE_SLACK {
+                    s.from = Some(c.read());
+                    s.wall = Instant::now() + limit;
+                }
                 false
             }
-            Some(from) if ran >= limit => {
-                let used = c.used().saturating_sub(from);
+            Some((used0, total0)) => {
                 let now = Instant::now();
-                s.wall = now.checked_sub(used).unwrap_or(now);
-                used >= limit
+                if now < s.wall {
+                    return false;
+                }
+                let (used, total) = c.read();
+                let (used, total) = (used.saturating_sub(used0), total.saturating_sub(total0));
+                if used >= limit || total >= backstop {
+                    return true;
+                }
+                s.wall = now + (limit - used).min(backstop - total);
+                false
             }
-            _ => false,
         }
     }
 
@@ -1208,21 +1216,21 @@ impl Vm {
     }
 
     /// A synchronous host call starts, which neither the CPU time (`Clock::ThreadCpu`) nor a stretch under
-    /// `Limits::slice_ms` counts: with a slice, when it started on the wall clock.
+    /// `Limits::slice_ms` counts: when it started on the wall clock, as each leaves out its wall-clock duration.
     pub(crate) fn host_span(&mut self) -> Option<Instant> {
-        if let Some(c) = self.cpu.as_deref_mut() {
-            c.pause();
-        }
-        self.slice.is_some().then(Instant::now)
+        (self.cpu.is_some() || self.slice.is_some()).then(Instant::now)
     }
 
     /// The host call that began at `span` ends.
     pub(crate) fn end_host_span(&mut self, span: Option<Instant>) {
-        if let Some(c) = self.cpu.as_deref_mut() {
-            c.resume();
-        }
-        if let (Some(at), Some(s)) = (span, self.slice.as_deref_mut()) {
-            s.wall += at.elapsed();
+        let Some(at) = span else {
+            return;
+        };
+        let wall = at.elapsed();
+        match (self.cpu.as_deref_mut(), self.slice.as_deref_mut()) {
+            (Some(c), _) => c.host(wall),
+            (None, Some(s)) => s.wall += wall,
+            (None, None) => {}
         }
     }
 

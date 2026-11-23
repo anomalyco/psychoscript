@@ -272,6 +272,42 @@ fn host_calls_are_not_counted_in_the_cpu_time() {
 }
 
 #[test]
+fn a_host_call_off_the_cpu_is_left_out_in_full_and_the_run_still_ends() {
+    let _quiet = quiet();
+    let clock = thread_clock::ThreadClock::current();
+    // 150 ms of the program's own CPU time, then a host call that sleeps for 500 ms, then a loop that never ends,
+    // under a 200 ms timeout. The host call is left out by its wall time, which can take the program's CPU time in
+    // the same interval between readings with it, so the run stops late, never early.
+    let before = clock.now();
+    let o = ticking(limits(200, Clock::ThreadCpu))
+        .execute("const t = Date.now(); while (Date.now() - t < 150) {} nap(500); while (true) {}");
+    let used = clock.now() - before;
+    assert!(timed_out(&o), "{:?}", o.result);
+    assert!(
+        used >= Duration::from_millis(200) && used < Duration::from_millis(600),
+        "{used:?}"
+    );
+    // Program work and sleeping host calls in turn, under a 30 ms timeout or slice: the host calls' wall time covers
+    // the CPU time of each interval, so the program counts next to nothing. The thread's CPU time with host calls
+    // still ends the run, at ten times the budget.
+    let code = "while (true) { const t = Date.now(); while (Date.now() - t < 1) {} nap(1) }";
+    let over: [(Limits, fn(&psychoscript::Outcome) -> bool); 2] = [
+        (limits(30, Clock::ThreadCpu), timed_out),
+        (sliced(30, Clock::ThreadCpu), sliced_out),
+    ];
+    for (limits, over) in over {
+        let before = clock.now();
+        let o = ticking(limits).execute(code);
+        let used = clock.now() - before;
+        assert!(over(&o), "{:?}", o.result);
+        assert!(
+            used >= Duration::from_millis(30) && used < Duration::from_millis(600),
+            "{used:?}"
+        );
+    }
+}
+
+#[test]
 fn host_calls_are_not_counted_in_the_slice() {
     let _quiet = quiet();
     // 300 ms in host calls without awaiting, under a 50 ms slice: sleeping, spinning and blocking.
@@ -446,9 +482,14 @@ fn a_run_starved_by_a_cpu_hog_is_not_timed_out() {
             .execute(&code);
         let took = start.elapsed();
         // The same for a 100 ms slice: each stretch's wall time is over it, its own CPU time isn't, and with the host
-        // call's it would be.
+        // call's it would be. The host call, waiting for the CPU most of the time, is left out in full; so it is under
+        // a 120 ms timeout, which the program's 80 ms are under and 150 ms with the host call's aren't.
         let wall_slice = ticking(sliced(100, Clock::Wall)).execute(&stretches);
-        let cpu_slice = ticking(sliced(100, Clock::ThreadCpu)).execute(&stretches);
+        let cpu_slice = ticking(Limits {
+            timeout_ms: Some(120),
+            ..sliced(100, Clock::ThreadCpu)
+        })
+        .execute(&stretches);
         stop.store(true, Ordering::Relaxed);
         for h in hogs {
             h.join().unwrap();

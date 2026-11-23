@@ -20,8 +20,9 @@ pub struct Limits {
     /// The longest a run may compute without awaiting the host: from its start or resume, or from when a host call it
     /// awaited delivers its outcome, to the next. Promise jobs don't end it, and synchronous host calls in between don't
     /// count. A run past it stops with [`DiagnosticKind::SliceExceeded`]. Under [`Clock::ThreadCpu`] a stretch's CPU
-    /// time is measured once it has run a sixteenth of the slice, so it may run up to that much past it. `None` (the
-    /// default) is no limit.
+    /// time is measured once it has run a sixteenth of the slice, so it may run up to that much past it, and its host
+    /// calls are left out as for the timeout: with them, it may use ten times the slice. `None` (the default) is no
+    /// limit.
     pub slice_ms: Option<u64>,
 }
 
@@ -32,9 +33,11 @@ pub enum Clock {
     #[default]
     Wall,
     /// The CPU time of the threads while they run the program, across resumes: a loaded machine, which keeps a thread
-    /// waiting for a core, never times a program out. Host work isn't counted: synchronous host calls are left out,
-    /// and waiting on host calls uses no CPU time, so waits count on the wall clock, up to ten times the timeout,
-    /// which then also ends the run. Where a platform has no thread CPU clock (wasm), it is the wall clock.
+    /// waiting for a core, never times a program out. Host work isn't counted. Synchronous host calls are left out by
+    /// their wall-clock duration, which can only count too little: one that sleeps or waits for a core is left out in
+    /// full, and can take the program's CPU time around it along. So the CPU time with host calls may reach ten times
+    /// the timeout. Waiting on host calls uses no CPU time, so waits count on the wall clock, up to ten times the
+    /// timeout. Either also ends the run. Where a platform has no thread CPU clock (wasm), it is the wall clock.
     ThreadCpu,
 }
 
