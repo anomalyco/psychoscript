@@ -11,6 +11,17 @@ const ALIGNMENT: u64 = 256;
 
 const CANVAS_ONLY: &str = "a canvas's texture can only be a render pass attachment";
 
+/// WebGPU's `maxColorAttachments`: a pass's attachments fit in an array (more go in a `Vec`, for wgpu to reject).
+const COLOR_ATTACHMENTS: usize = 8;
+
+/// A pass's color attachment: its view and resolve target (`None` for a canvas that can't be drawn now), and its
+/// operations; `None` for a `null` one.
+pub(crate) type Color = Option<(
+    Option<wgpu::TextureView>,
+    Option<wgpu::TextureView>,
+    wgpu::Operations<wgpu::Color>,
+)>;
+
 /// A batch's command encoding: the commands before the next `submit`, and the canvases its passes wrote.
 #[derive(Default)]
 struct Run {
@@ -52,6 +63,18 @@ fn data<'b>(bytes: &'b [u8], offset: Option<&Arg>, len: Option<&Arg>) -> R<&'b [
         Some(end) if end <= bytes.len() => Ok(&bytes[o..end]),
         _ => fail("bytes outside the batch"),
     }
+}
+
+/// A color attachment as wgpu takes it; `None` for a `null` one or a canvas that can't be drawn now.
+fn attachment(c: &Color) -> Option<wgpu::RenderPassColorAttachment<'_>> {
+    c.as_ref().and_then(|(view, resolve, ops)| {
+        Some(wgpu::RenderPassColorAttachment {
+            view: view.as_ref()?,
+            depth_slice: None,
+            resolve_target: resolve.as_ref(),
+            ops: *ops,
+        })
+    })
 }
 
 fn encoder<'r>(device: &wgpu::Device, run: &'r mut Run) -> &'r mut wgpu::CommandEncoder {
@@ -531,22 +554,24 @@ impl Gpu {
     fn pass(&mut self, ops: &[Arg], i: &mut usize, run: &mut Run) -> R<()> {
         let (_, a) = parts(&ops[*i])?;
         let d = Obj::of(a.first(), "the descriptor")?;
-        let mut written = Vec::new();
+        // The canvases this pass writes, after the batch's earlier passes'.
+        let start = run.written.len();
         let mut drawable = true;
-        let mut colors = Vec::new();
+        let mut colors = std::mem::take(&mut self.colors);
+        colors.clear();
         for c in d.list("colorAttachments")? {
             if matches!(c, Arg::Null) {
                 colors.push(None);
                 continue;
             }
             let c = Obj::of(Some(c), "a color attachment")?;
-            let before = written.len();
-            let view = self.attachment(c.get("view"), &mut written)?;
+            let before = run.written.len();
+            let view = self.attachment(c.get("view"), &mut run.written)?;
             // A canvas's first pass of a frame loads transparent, not the last frame.
-            let fresh = written.len() > before && self.canvases[written[before]].fresh;
+            let fresh = run.written.len() > before && self.canvases[run.written[before]].fresh;
             let resolve = match c.get("resolveTarget") {
                 None => None,
-                r => Some(self.attachment(r, &mut written)?),
+                r => Some(self.attachment(r, &mut run.written)?),
             };
             let clear = c.enumeration("loadOp", false, desc::load_op)?;
             let store = c.enumeration("storeOp", wgpu::StoreOp::Store, desc::store_op)?;
@@ -567,7 +592,7 @@ impl Gpu {
         let depth = match d.obj("depthStencilAttachment")? {
             None => None,
             Some(z) => {
-                let view = self.attachment(z.get("view"), &mut written)?;
+                let view = self.attachment(z.get("view"), &mut run.written)?;
                 drawable &= view.is_some();
                 let load = z.opt_enum("depthLoadOp", desc::load_op)?;
                 let store = z.opt_enum("depthStoreOp", desc::store_op)?;
@@ -591,6 +616,8 @@ impl Gpu {
             }
         };
         if !drawable {
+            run.written.truncate(start);
+            self.colors = colors;
             loop {
                 *i += 1;
                 match ops.get(*i).map(parts) {
@@ -604,41 +631,48 @@ impl Gpu {
                 }
             }
         }
-        let attachments: Vec<_> = colors
-            .iter()
-            .map(|c| {
-                c.as_ref().and_then(|(view, resolve, ops)| {
-                    Some(wgpu::RenderPassColorAttachment {
-                        view: view.as_ref()?,
-                        depth_slice: None,
-                        resolve_target: resolve.as_ref(),
-                        ops: *ops,
-                    })
+        let mut pass = {
+            let mut fixed: [Option<wgpu::RenderPassColorAttachment>; COLOR_ATTACHMENTS] =
+                Default::default();
+            let spilled: Vec<_>;
+            let attachments = if colors.len() <= COLOR_ATTACHMENTS {
+                for (slot, c) in fixed.iter_mut().zip(&colors) {
+                    *slot = attachment(c);
+                }
+                &fixed[..colors.len()]
+            } else {
+                spilled = colors.iter().map(attachment).collect();
+                &spilled[..]
+            };
+            let depth_stencil_attachment = match &depth {
+                Some((Some(view), ops)) => Some(wgpu::RenderPassDepthStencilAttachment {
+                    view,
+                    depth_ops: *ops,
+                    stencil_ops: None,
+                }),
+                _ => None,
+            };
+            // Only the encoder is borrowed (not `encoder(..)`, which takes `run`): the pass's canvases are noted in
+            // `run.written`.
+            run.encoder
+                .get_or_insert_with(|| self.device.create_command_encoder(&Default::default()))
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: None,
+                    color_attachments: attachments,
+                    depth_stencil_attachment,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
                 })
-            })
-            .collect();
-        let depth_stencil_attachment = match &depth {
-            Some((Some(view), ops)) => Some(wgpu::RenderPassDepthStencilAttachment {
-                view,
-                depth_ops: *ops,
-                stencil_ops: None,
-            }),
-            _ => None,
         };
-        let mut pass = encoder(&self.device, run).begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: None,
-            color_attachments: &attachments,
-            depth_stencil_attachment,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
+        self.colors = colors;
         loop {
             *i += 1;
             let Some(op) = ops.get(*i) else {
                 // Cut off by a failing op (the ops before it take effect): the pass and its encoder aren't submitted.
                 drop(pass);
                 run.encoder = None;
+                run.written.truncate(start);
                 return Ok(());
             };
             let (name, a) = parts(op)?;
@@ -647,15 +681,16 @@ impl Gpu {
                 "end" => break,
                 "setPipeline" => pass.set_pipeline(self.pipeline(a.first())?),
                 "setBindGroup" => {
+                    let mut offsets = std::mem::take(&mut self.offsets);
                     let index = n(0, "index")?;
                     let h = handle(a.get(1), "a bind group")?;
                     let Res::BindGroup(group) = self.get(h)? else {
                         return fail(format!("{h} is not a bind group"));
                     };
-                    let offsets = list(a.get(2), "dynamicOffsets")?
-                        .iter()
-                        .map(|o| u32_of(Some(o), "a dynamic offset"))
-                        .collect::<R<Vec<_>>>()?;
+                    offsets.clear();
+                    for o in list(a.get(2), "dynamicOffsets")? {
+                        offsets.push(u32_of(Some(o), "a dynamic offset")?);
+                    }
                     if let Some(o) = offsets
                         .iter()
                         .find(|o| !(**o as u64).is_multiple_of(ALIGNMENT))
@@ -665,6 +700,7 @@ impl Gpu {
                         ));
                     }
                     pass.set_bind_group(index, group, &offsets);
+                    self.offsets = offsets;
                 }
                 "setVertexBuffer" | "setIndexBuffer" => {
                     let vertex = name == "setVertexBuffer";
@@ -736,10 +772,9 @@ impl Gpu {
             }
         }
         drop(pass);
-        for &c in &written {
+        for &c in &run.written[start..] {
             self.canvases[c].fresh = false;
         }
-        run.written.extend(written);
         Ok(())
     }
 }
