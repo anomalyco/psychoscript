@@ -16,7 +16,7 @@ pub fn block<F: Future>(f: F) -> F::Output {
     }
 }
 
-pub fn device() -> (wgpu::Device, wgpu::Queue) {
+pub fn adapter() -> wgpu::Adapter {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: if cfg!(feature = "metal") {
             wgpu::Backends::METAL
@@ -25,8 +25,50 @@ pub fn device() -> (wgpu::Device, wgpu::Queue) {
         },
         ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
-    let adapter = block(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
-        .expect("an adapter");
+    block(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("an adapter")
+}
+
+pub fn device() -> (wgpu::Device, wgpu::Queue) {
+    device_of(adapter())
+}
+
+/// Lets a test hang the GPU on purpose: `WIDGET_GPU_REAL_HANGS=1` runs it on any adapter.
+pub const REAL_HANGS: &str = "WIDGET_GPU_REAL_HANGS";
+
+/// Whether a test that hangs the GPU on purpose may run on this adapter: a software one (lavapipe, llvmpipe), where
+/// a hang only keeps CPU threads busy, or any with the opt-in. On a real GPU it trips the watchdog (macOS's may
+/// blame and lose other apps' work), so there it needs the machine owner's OK first: `Err` says why it's skipped.
+pub fn may_hang(name: &str, device_type: wgpu::DeviceType, opted_in: bool) -> Result<(), String> {
+    let lower = name.to_lowercase();
+    if opted_in
+        || device_type == wgpu::DeviceType::Cpu
+        || lower.contains("llvmpipe")
+        || lower.contains("lavapipe")
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "skipped: it hangs the GPU on purpose, so it runs only on a software adapter (lavapipe or llvmpipe), not \
+         on {name} ({device_type:?}); with the GPU's owner's OK, set {REAL_HANGS}=1 to run it here"
+    ))
+}
+
+/// A device for a test that hangs the GPU on purpose, or `None` (with the note printed) where it may not
+/// ([`may_hang`]). Nothing reaches the GPU before the check.
+pub fn hang_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+    let adapter = adapter();
+    let info = adapter.get_info();
+    let opted_in = std::env::var(REAL_HANGS).is_ok_and(|v| v == "1");
+    match may_hang(&info.name, info.device_type, opted_in) {
+        Ok(()) => Some(device_of(adapter)),
+        Err(note) => {
+            eprintln!("{note}");
+            None
+        }
+    }
+}
+
+fn device_of(adapter: wgpu::Adapter) -> (wgpu::Device, wgpu::Queue) {
     let info = adapter.get_info();
     eprintln!(
         "adapter: {} ({:?}, {:?})",
