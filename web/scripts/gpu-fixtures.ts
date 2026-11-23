@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// The GPU conformance fixtures (opencode `packages/widget/test/fixtures/gpu/*.json`, widgets 1ef86872b; copies in
+// The GPU conformance fixtures (opencode `packages/widget/test/fixtures/gpu/*.json`, widgets 810f458de; copies in
 // rust/crates/psychoscript-web/tests/fixtures/gpu): each program runs on this host's WebAssembly (the worker's
 // `LiveRun`, from wasm/) under the fixtures' driver, and must post the same batches (ops, and bytes byte for byte),
 // give the same program errors from the host checks (src/gpu-checks.ts, which the page runs before replaying), and
@@ -26,7 +26,8 @@ interface Fixture {
   canvases: Array<{ key: string; width: number; height: number }>
   inputs?: Array<{ frame: number; after?: boolean; input: { type: string; key?: string; width?: number; height?: number; lost?: string } }>
   gpu: { available: boolean; format: string }
-  batches?: Array<{ frame: boolean; ops: unknown; bytes: string | null }>
+  // `"from-source"`: too many to record; the run's own are the batches (its errors and end are still compared).
+  batches?: Array<{ frame: boolean; ops: unknown; bytes: string | null }> | "from-source"
   errors: Array<{ message: string; canvases: string[] | "all" }>
   end: string
 }
@@ -168,9 +169,10 @@ for (const file of files) {
   const started = performance.now()
   const got = await run(f)
   const problems: string[] = []
-  if (f.batches) {
-    if (got.batches.length !== f.batches.length) problems.push(`${got.batches.length} batches, want ${f.batches.length}`)
-    f.batches.forEach((want, i) => {
+  if (Array.isArray(f.batches)) {
+    const batches = f.batches
+    if (got.batches.length !== batches.length) problems.push(`${got.batches.length} batches, want ${batches.length}`)
+    batches.forEach((want, i) => {
       const have = got.batches[i]
       if (!have) return
       if (have.frame !== want.frame) problems.push(`batch ${i}: frame ${have.frame}, want ${want.frame}`)
@@ -184,7 +186,7 @@ for (const file of files) {
   if (got.end !== f.end) problems.push(`end ${got.end}, want ${f.end}`)
   const ms = (performance.now() - started).toFixed(0)
   if (problems.length > 0) failed++
-  console.log(`${problems.length === 0 ? "ok  " : "FAIL"} ${f.name} (${f.batches ? `${f.batches.length} batches, ` : ""}${f.errors.length} errors, ${ms} ms)${problems.length ? "\n     " + problems.join("\n     ") : ""}`)
+  console.log(`${problems.length === 0 ? "ok  " : "FAIL"} ${f.name} (${f.batches ? `${Array.isArray(f.batches) ? `${f.batches.length} batches` : `${got.batches.length} batches from source`}, ` : ""}${f.errors.length} errors, ${ms} ms)${problems.length ? "\n     " + problems.join("\n     ") : ""}`)
 }
 
 // Non-finite numbers in ops (widgets-gpu.md, Transport): numbers are read as they are, so NaN and infinities fail the
