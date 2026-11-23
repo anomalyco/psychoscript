@@ -1814,6 +1814,93 @@ fn a_shader_draws_again_after_a_loss() {
     }
 }
 
+/// A batch that fails at an op stops the canvases it renders into first, as the web host does; the ops before the
+/// failure replay then, so its earlier pass into `b` is skipped like any pass into a stopped canvas, and the pass open
+/// at the failure isn't submitted.
+#[test]
+fn the_ops_before_a_failure_take_effect() {
+    let _gpu = shared();
+    let (device, queue) = common::device();
+    let mut gpu = Gpu::new(device.clone(), queue.clone(), RGBA).unwrap();
+    gpu.resize("a", W, H);
+    gpu.resize("b", W, H);
+    let mut b = Batch::default();
+    b.op(json!(["context", 1, "a", "rgba8unorm", "opaque"]))
+        .op(json!(["view", 2, 1, {}]));
+    b.op(json!(["context", 3, "b", "rgba8unorm", "opaque"]))
+        .op(json!(["view", 4, 3, {}]));
+    b.op(json!(["shader", 5, TRIANGLE]));
+    b.op(json!(["renderPipeline", 6, {
+        "layout": "auto",
+        "vertex": { "module": 5, "entryPoint": "vs", "buffers": [{ "arrayStride": 8,
+            "attributes": [{ "format": "float32x2", "offset": 0, "shaderLocation": 0 }] }] },
+        "fragment": { "module": 5, "entryPoint": "fs", "targets": [{ "format": "rgba8unorm" }] },
+    }]));
+    b.op(json!(["buffer", 7, 24, 32 | 8]));
+    b.write(7, 0, &floats(&[0.0, 0.8, -0.8, -0.8, 0.8, -0.8]));
+    pass_into(&mut b, 4, [1.0, 0.0, 0.0, 1.0]);
+    b.op(json!(["end"])).op(json!(["submit"]));
+    // Into `a`, a pass that fails: no handle 99.
+    pass_into(&mut b, 2, [0.0, 0.0, 1.0, 1.0]);
+    b.op(json!(["setPipeline", 99]))
+        .op(json!(["end"]))
+        .op(json!(["submit"]));
+    let e = gpu.apply(&b.ops, &b.bytes).unwrap_err();
+    assert_eq!(e.message, "gpu op 12: no handle 99");
+    assert_eq!(e.canvases, Stops::Canvases(vec!["b".into(), "a".into()]));
+    assert!(gpu.canvas("b").is_none_or(|c| c.version == 0));
+    assert!(gpu.canvas("a").is_none_or(|c| c.version == 0));
+}
+
+/// The same with the failure in a batch that renders into `a` alone: `b`, live, then draws with the buffer and the
+/// pipeline the failed batch made.
+#[test]
+fn a_live_canvas_uses_what_a_failed_batch_made() {
+    let _gpu = shared();
+    let (device, queue) = common::device();
+    let mut gpu = Gpu::new(device.clone(), queue.clone(), RGBA).unwrap();
+    gpu.resize("a", W, H);
+    gpu.resize("b", W, H);
+    let mut b = Batch::default();
+    b.op(json!(["context", 1, "a", "rgba8unorm", "opaque"]))
+        .op(json!(["view", 2, 1, {}]));
+    b.op(json!(["context", 3, "b", "rgba8unorm", "opaque"]))
+        .op(json!(["view", 4, 3, {}]));
+    gpu.apply(&b.ops, &[]).unwrap();
+    let mut b = Batch::default();
+    b.op(json!(["shader", 5, TRIANGLE]));
+    b.op(json!(["renderPipeline", 6, {
+        "layout": "auto",
+        "vertex": { "module": 5, "entryPoint": "vs", "buffers": [{ "arrayStride": 8,
+            "attributes": [{ "format": "float32x2", "offset": 0, "shaderLocation": 0 }] }] },
+        "fragment": { "module": 5, "entryPoint": "fs", "targets": [{ "format": "rgba8unorm" }] },
+    }]));
+    b.op(json!(["buffer", 7, 24, 32 | 8]));
+    b.write(7, 0, &floats(&[0.0, 0.8, -0.8, -0.8, 0.8, -0.8]));
+    pass_into(&mut b, 2, [0.0, 0.0, 1.0, 1.0]);
+    b.op(json!(["setPipeline", 99]))
+        .op(json!(["end"]))
+        .op(json!(["submit"]));
+    let e = gpu.apply(&b.ops, &b.bytes).unwrap_err();
+    assert_eq!(
+        (e.message.as_str(), &e.canvases),
+        ("gpu op 5: no handle 99", &Stops::Canvases(vec!["a".into()]))
+    );
+    assert!(gpu.canvas("a").is_none_or(|c| c.version == 0));
+    // `b` draws the triangle with buffer 7 and pipeline 6.
+    let mut b = Batch::default();
+    pass_into(&mut b, 4, [0.0, 0.0, 1.0, 1.0]);
+    b.op(json!(["setPipeline", 6]))
+        .op(json!(["setVertexBuffer", 0, 7, 0, -1]))
+        .op(json!(["draw", 3, 1, 0, 0]))
+        .op(json!(["end"]))
+        .op(json!(["submit"]));
+    gpu.apply(&b.ops, &[]).unwrap();
+    let p = common::read(&device, &queue, gpu.canvas("b").unwrap().texture);
+    assert_eq!((p[(32 * W + 32) as usize], p[0]), (GREEN, BLUE));
+    assert_eq!(gpu.error("b"), None);
+}
+
 /// Replay cost of a typical frame: 48 ops, 64 KB of writes (`cargo test --release -p widget-gpu -- --ignored`).
 #[test]
 #[ignore]

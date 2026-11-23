@@ -345,7 +345,9 @@ fn texture_bytes(width: f64, height: f64, layers: f64, texel: f64, samples: f64,
 
 /// A batch's first error: its message, and whether it named a handle from before a device loss.
 pub(crate) enum Failed {
-    Message(String),
+    /// The message, and how many ops came before the failure (they take effect, as separate calls would); `None`
+    /// for the batch itself (it doesn't replay).
+    Message(String, Option<usize>),
     Stale,
 }
 
@@ -562,8 +564,8 @@ impl Checks {
             let prefix = at.map_or(String::new(), |i| format!("gpu op {i}: "));
             match e {
                 Invalid::Missing(h) if h >= 1.0 && h <= stale => Failed::Stale,
-                Invalid::Missing(h) => Failed::Message(format!("{prefix}no handle {}", num(h))),
-                Invalid::Msg(m) => Failed::Message(format!("{prefix}{m}")),
+                Invalid::Missing(h) => Failed::Message(format!("{prefix}no handle {}", num(h)), at),
+                Invalid::Msg(m) => Failed::Message(format!("{prefix}{m}"), at),
             }
         };
         limit(ops.len() as f64, OPS as f64, "the number of ops in a batch")
@@ -578,6 +580,7 @@ impl Checks {
         if open {
             return Err(Failed::Message(
                 "a render pass is still open at the end of the batch".into(),
+                Some(ops.len()),
             ));
         }
         Ok(())

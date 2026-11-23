@@ -595,7 +595,11 @@ impl Gpu {
             loop {
                 *i += 1;
                 match ops.get(*i).map(parts) {
-                    None => return fail("a render pass has no \"end\""),
+                    // Cut off by a failing op: what it began isn't submitted.
+                    None => {
+                        run.encoder = None;
+                        return Ok(());
+                    }
                     Some(Ok(("end", _))) => return Ok(()),
                     _ => {}
                 }
@@ -633,7 +637,10 @@ impl Gpu {
         loop {
             *i += 1;
             let Some(op) = ops.get(*i) else {
-                return fail("a render pass has no \"end\"");
+                // Cut off by a failing op (the ops before it take effect): the pass and its encoder aren't submitted.
+                drop(pass);
+                run.encoder = None;
+                return Ok(());
             };
             let (name, a) = parts(op)?;
             let n = |k: usize, what: &str| u32_of(a.get(k), what);

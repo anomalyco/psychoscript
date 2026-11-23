@@ -366,3 +366,22 @@ fn a_lost_device_drops_the_batches_from_before_it() {
     assert_eq!(c.version, 3);
     assert!(gpu.error("scene").is_none());
 }
+
+/// A batch that fails at an op keeps what the ops before it did (`widgets-gpu.md`): buffer 3, made before the failing
+/// op, is there for the later batch into `b`, which draws with it and doesn't stop.
+#[test]
+fn the_ops_before_a_failing_op_take_effect() {
+    let (device, queue) = common::device();
+    let (_, f) = fixtures()
+        .into_iter()
+        .find(|(n, _)| n == "error-keeps-the-ops-before-it")
+        .unwrap();
+    let (gpu, errors) = replay(&device, &queue, &f);
+    assert_eq!(
+        errors,
+        [json!({ "message": "gpu op 5: handle 4 was destroyed", "canvases": ["a"] })]
+    );
+    assert_eq!(gpu.error("b"), None);
+    assert_eq!(gpu.canvas("b").map(|c| c.version), Some(1));
+    assert!(gpu.canvas("a").is_none_or(|c| c.version == 0));
+}
