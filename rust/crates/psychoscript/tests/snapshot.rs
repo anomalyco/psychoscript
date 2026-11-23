@@ -748,6 +748,43 @@ fn program_state_of_every_kind_survives_a_suspend() {
 }
 
 #[test]
+fn bigints_survive_a_suspend_and_stay_one_value_each() {
+    let code = format!(
+        r#"let factorial = 1n
+      const steps = new Map()
+      for (let i = 1n; i <= 30n; i++) {{ factorial *= i; steps.set(i, factorial) }}
+      const big = 2n ** 300n - 1n
+      await step(1)
+      {BUSY}
+      const again = 2n ** 300n - 1n
+      return [String(factorial), String(steps.get(20n)), typeof [...steps.keys()][0], big === again,
+        steps.get(BigInt(30)) === factorial, new Set([big, again, -big]).size, String(-big % 1000n), 18446744073709551616n === 2n ** 64n]"#
+    );
+    let gate = Gate::default();
+    let state = suspend_mid_loop(&stepping(&gate), &gate, &code);
+    let o = done(
+        fresh()
+            .resume_bytes(&psychoscript::to_bytes(&state))
+            .unwrap()
+            .run_resumable()
+            .unwrap(),
+    );
+    assert_eq!(
+        o.result.unwrap(),
+        json!([
+            "265252859812191058636308480000000",
+            "2432902008176640000",
+            "bigint",
+            true,
+            true,
+            2,
+            "-375",
+            true
+        ])
+    );
+}
+
+#[test]
 fn changes_to_built_ins_survive_a_second_suspend() {
     let code = format!(
         r#"Array.prototype.extra = "patched"

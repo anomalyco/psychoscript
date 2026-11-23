@@ -93,6 +93,7 @@ fn to_json_inner(
         Value::Num(n) => json_number(*n),
         Value::Str(s) => Json::String(host_string(vm, *s)),
         Value::Undef | Value::Uninit | Value::Sym(_) => return Ok(None),
+        Value::Big(_) => return Err(crate::builtins::bigint::json_error(vm, true)),
         Value::Obj(id) => {
             let id = *id;
             if vm.heap[id as usize].is_callable() {
@@ -186,6 +187,15 @@ fn key_value(vm: &mut Vm, key: Key) -> Value {
 }
 
 fn apply_to_json(vm: &mut Vm, v: &Value, key: Key, mode: Option<&Mode>) -> Res {
+    if let Value::Big(_) = v {
+        let k = vm.names.to_json;
+        let f = vm.get(v, k)?;
+        if vm.is_callable(&f) {
+            let kv = key_value(vm, key);
+            return vm.call(&f, *v, &[kv]);
+        }
+        return Ok(*v);
+    }
     if let Value::Obj(id) = v
         && !matches!(
             vm.heap[*id as usize].kind,
@@ -412,6 +422,14 @@ fn write_head(
         let msg = format!("Value exceeds the maximum depth of {}.", mode.max);
         return Err(vm.range_error(&msg));
     }
+    // A BigInt's `toJSON` is the program's, which the internal walk calls.
+    if let Value::Big(_) = v {
+        if crate::builtins::bigint::has_to_json(vm) {
+            mode.restart.set(true);
+            return Ok(Written::Done(false));
+        }
+        return Err(crate::builtins::bigint::json_error(vm, false));
+    }
     if let Value::Obj(id) = v
         && mode.revisited(vm, id)
     {
@@ -451,6 +469,7 @@ fn write_head(
         Value::Str(s) => quote_str(vm, out, *s),
         // The reference's walk takes a symbol for an object with no fields.
         Value::Sym(_) => out.push_str("{}"),
+        Value::Big(_) => return Err(crate::builtins::bigint::json_error(vm, false)),
         Value::Undef | Value::Uninit => return Ok(Written::Done(false)),
         Value::Obj(id) => {
             let id = *id;
@@ -927,6 +946,21 @@ fn stringify_walk(
                         }
                     }
                 }
+                if let Value::Big(_) = v {
+                    let k = vm.names.to_json;
+                    match vm.get_stepping_value(&v, k)? {
+                        Got::Value(f) => {
+                            if let Some(step) = call_to_json(vm, fr, out, f)? {
+                                return Ok(step);
+                            }
+                        }
+                        Got::Call(step) => {
+                            flush(vm, fr, out);
+                            fr.set_index(vm, J_PHASE, GOT_TO_JSON);
+                            return Ok(step);
+                        }
+                    }
+                }
                 Stage::Replace
             }
             Stage::Replace => {
@@ -1133,6 +1167,7 @@ fn emit(
         Value::Undef | Value::Uninit => Ok(Stage::After(false)),
         // `$JsonSpecial` of a value that is not an object: an empty object.
         Value::Sym(_) => out_value(vm, fr, out, indent, depth, |_, out| out.push_str("{}")),
+        Value::Big(_) => Err(crate::builtins::bigint::json_error(vm, false)),
         Value::Obj(id) => {
             if vm.heap[id as usize].is_callable() {
                 return Ok(Stage::After(false));
@@ -1635,6 +1670,10 @@ fn format_inner(vm: &mut Vm, out: &mut String, v: &Value, seen: &mut Vec<Id>) {
         Value::Num(n) => write_num(out, *n),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Sym(s) => out.push_str(crate::ops::symbol_text(*s)),
+        Value::Big(id) => {
+            out.push_str(&vm.big_text(*id));
+            out.push('n');
+        }
         Value::Obj(id) => {
             let id = *id;
             if seen.len() > MAX_CONSOLE_DEPTH {

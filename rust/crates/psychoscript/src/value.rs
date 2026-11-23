@@ -20,6 +20,8 @@ pub enum Value {
     Obj(Id),
     /// A well-known symbol; only `Symbol.iterator` exists.
     Sym(u32),
+    /// A BigInt: a `Kind::BigInt` heap object, which programs never see as an object.
+    Big(Id),
     Uninit,
 }
 
@@ -437,7 +439,8 @@ mod tests {
 }
 
 const QNAN: u64 = 0x7ff8_0000_0000_0000;
-const TAGGED: u64 = 0xfff9_0000_0000_0000;
+const TAGGED: u64 = 0xfff8_0000_0000_0000;
+const T_BIG: u64 = 0xfff8;
 const T_UNDEF: u64 = 0xfff9;
 const T_NULL: u64 = 0xfffa;
 const T_BOOL: u64 = 0xfffb;
@@ -512,6 +515,7 @@ impl Slot {
             Value::Str(s) => Slot(T_STR << 48 | s as u64),
             Value::Obj(o) => Slot(T_OBJ << 48 | o as u64),
             Value::Sym(s) => Slot(T_SYM << 48 | s as u64),
+            Value::Big(b) => Slot(T_BIG << 48 | b as u64),
             Value::Uninit => Slot::UNINIT,
         }
     }
@@ -529,6 +533,7 @@ impl Slot {
             T_STR => Value::Str(p),
             T_OBJ => Value::Obj(p),
             T_SYM => Value::Sym(p),
+            T_BIG => Value::Big(p),
             _ => Value::Uninit,
         }
     }
@@ -546,6 +551,7 @@ mod slot_tests {
             Value::Num(1.5),
             Value::Str(7),
             Value::Obj(u32::MAX),
+            Value::Big(3),
         ] {
             assert_eq!(format!("{:?}", Slot::pack(v).get()), format!("{v:?}"));
         }

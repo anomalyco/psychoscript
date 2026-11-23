@@ -770,6 +770,7 @@ fn object_get_prototype_of(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> 
         Value::Str(_) => Value::Obj(vm.realm.string_proto),
         Value::Num(_) => Value::Obj(vm.realm.number_proto),
         Value::Bool(_) => Value::Obj(vm.realm.boolean_proto),
+        Value::Big(_) => Value::Obj(vm.bigint_proto()),
         v => {
             let d = super::describe_value(vm, &v);
             return Err(vm.type_error(&format!(
@@ -822,6 +823,7 @@ pub fn tag_of(vm: &Vm, v: &Value) -> &'static str {
         Value::Str(_) => "String",
         Value::Bool(_) => "Boolean",
         Value::Sym(_) => "Symbol",
+        Value::Big(_) => "BigInt",
         Value::Obj(id) => match &vm.heap[*id as usize].kind {
             Kind::Array(_) => "Array",
             Kind::Arguments(_) => "Arguments",

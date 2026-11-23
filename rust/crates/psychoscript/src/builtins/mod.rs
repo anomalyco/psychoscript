@@ -1,6 +1,7 @@
 //! Native built-ins: prototypes, constructors and global functions, created fresh for every run.
 
 pub(crate) mod array;
+pub mod bigint;
 mod buffer;
 pub mod bytes;
 pub(crate) mod collections;
@@ -40,6 +41,8 @@ pub struct StdProtos {
     pub params: Id,
     pub headers: Id,
     pub array_buffer: Id,
+    /// `BigInt.prototype`, made with its lazy group (`LAZY_BIGINT`).
+    pub bigint: Id,
     /// The prototypes of the typed arrays other than Uint8Array, in `Elem::TYPED` order.
     pub typed: [Id; 5],
     /// The lazily installed groups already set up (see `LAZY`).
@@ -102,12 +105,14 @@ const LAZY: &[LazyGroup] = &[
     ),
     (32, &["URL", "URLSearchParams", "Headers"], web::setup),
     (64, &["crypto", "structuredClone"], web::setup_globals),
+    (LAZY_BIGINT, &["BigInt"], bigint::setup),
 ];
 
 pub const LAZY_REGEXP: u8 = 1;
 pub const LAZY_DATE: u8 = 2;
 pub const LAZY_BYTES: u8 = 4;
 pub const LAZY_WEB: u8 = 32;
+pub const LAZY_BIGINT: u8 = 128;
 
 fn setup_bytes(vm: &mut Vm) {
     bytes::setup(vm);
@@ -172,6 +177,7 @@ pub const GLOBAL_NAMES: &[&str] = &[
     "String",
     "Number",
     "Boolean",
+    "BigInt",
     "Symbol",
     "Math",
     "JSON",

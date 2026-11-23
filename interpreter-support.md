@@ -88,8 +88,8 @@ the ultimate source of truth. Upstream test262 files run verbatim from `test/tes
       site, as in JS, but it is not frozen: `strings[0] = "x"` succeeds here where JS throws.
 - [x] Regular-expression literals.
 - [x] `NaN` and `Infinity` globals.
-- [x] BigInt literals (`1n`, `0xffn`, `1_000n`, and as object keys), with arithmetic inside the program; see
-      [BigInt](#bigint). A BigInt cannot cross to the host.
+- [x] BigInt literals (`1n`, `0xffn`, `1_000n`, and as property names in object literals, classes and patterns),
+      with arithmetic inside the program; see [BigInt](#bigint). A BigInt cannot cross to the host.
 - [ ] Arbitrary Symbol primitive values and symbol-keyed properties. The confined `Symbol.iterator` and
       `Symbol.asyncIterator` keys are available only for the iterator protocols.
 - [x] Getter and setter definitions in object literals (`get x() {}`, `set x(v) {}`, computed and symbol keys), named

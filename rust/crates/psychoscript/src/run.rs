@@ -163,7 +163,7 @@ pub fn start(
     code: Code<'_>,
     options: &ProgramOptions,
 ) -> Result<Box<Running>, Box<Outcome>> {
-    let (code, program, atoms) = match code {
+    let (code, mut program, atoms) = match code {
         Code::Compiled(c) => (c.0.code.clone(), c.0.program.clone(), c.0.atoms.clone()),
         Code::Source(code) => {
             let mut atoms = Strings::new();
@@ -182,6 +182,7 @@ pub fn start(
     vm.setup();
     crate::builtins::ensure_globals(&mut vm, &program.globals);
     host::install(&mut vm, &program.globals);
+    vm.load_bigints(&mut program);
     vm.snapshot_base = crate::snapshot::Base::of(&vm);
     vm.start_heap_meter(false);
     for (k, v) in &options.bindings {
@@ -210,7 +211,7 @@ pub fn start_for_resume(
 ) -> Result<Resumed, crate::snapshot::SnapshotError> {
     let code = restored.code;
     let mut atoms = Strings::new();
-    let program = compile(&code, &mut atoms).map_err(|_| {
+    let mut program = compile(&code, &mut atoms).map_err(|_| {
         crate::snapshot::SnapshotError::new(
             "Source main does not compile in this build, so it can't resume.",
         )
@@ -230,6 +231,7 @@ pub fn start_for_resume(
     vm.setup();
     crate::builtins::ensure_globals(&mut vm, &program.globals);
     host::install(&mut vm, &program.globals);
+    vm.load_bigints(&mut program);
     vm.snapshot_base = crate::snapshot::Base::of(&vm);
     vm.start_heap_meter(true);
     let code: Arc<str> = Arc::from(code);

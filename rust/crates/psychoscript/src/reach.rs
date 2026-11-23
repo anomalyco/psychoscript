@@ -226,7 +226,7 @@ impl<F: FnMut(Ref)> Tracer<'_, F> {
 
     fn val(&mut self, v: &Value) {
         match v {
-            Value::Obj(id) => (self.0)(Ref::Obj(*id)),
+            Value::Obj(id) | Value::Big(id) => (self.0)(Ref::Obj(*id)),
             Value::Str(s) => (self.0)(Ref::Str(*s)),
             _ => {}
         }
@@ -333,7 +333,8 @@ impl<F: FnMut(Ref)> Tracer<'_, F> {
             | Kind::RegExp(_)
             | Kind::Date(_)
             | Kind::TextDecoder(_)
-            | Kind::Headers(_) => {}
+            | Kind::Headers(_)
+            | Kind::BigInt(_) => {}
             Kind::StrIter { s, .. } => self.val(&Value::Str(*s)),
             Kind::Bytes(b) => self.id(b.store),
             // Its prototype slot, traced above, is its `ArrayBuffer`.

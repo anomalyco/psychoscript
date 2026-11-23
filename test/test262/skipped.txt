@@ -2414,7 +2414,6 @@ language/expressions/object/__proto__-duplicate-computed.js  # prototype is defi
 language/expressions/object/__proto__-poisoned-object-prototype.js  # Expected true but got false
 language/expressions/object/__proto__-value-null.js  # Expected SameValue(«object», «null») to be true
 language/expressions/object/__proto__-value-obj.js  # Expected SameValue(«object», «object») to be true
-language/expressions/object/literal-property-name-bigint.js  # unsupported syntax GeneratorMethod
 language/expressions/optional-chaining/optional-call-preserves-this.js  # TypeError: Cannot read properties of undefined (reading '…').
 language/expressions/postfix-decrement/S11.3.2_A2.1_T1.js  # TypeError: Cannot read properties of undefined (reading '…').
 language/expressions/postfix-decrement/S11.3.2_A6_T1.js  # Expected a DummyError but got a TypeError

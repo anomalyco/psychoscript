@@ -1,0 +1,33 @@
+// The BigInt function, BigInt.asIntN and asUintN, and the prototype's methods, with their errors.
+const attempt = (f) => { try { const v = f(); return typeof v === "bigint" ? `${v}n` : v } catch (e) { return e.name + ": " + e.message } }
+const names = (o) => Object.getOwnPropertyNames(o).join()
+return [
+  attempt(() => BigInt(5)), attempt(() => BigInt(-0)), attempt(() => BigInt(true)), attempt(() => BigInt(" 0x1f ")),
+  attempt(() => BigInt("")), attempt(() => BigInt("  ")), attempt(() => BigInt("-12")), attempt(() => BigInt("+12")),
+  attempt(() => BigInt("0b101")), attempt(() => BigInt("0O17")), attempt(() => BigInt("\n 7 \t")),
+  attempt(() => BigInt(Number.MAX_SAFE_INTEGER) + 2n), attempt(() => BigInt(1e21)), attempt(() => BigInt(2 ** 70)),
+  attempt(() => BigInt({ valueOf() { return 7 } })), attempt(() => BigInt({ toString() { return "8" } })),
+  attempt(() => BigInt(1.5)), attempt(() => BigInt(NaN)), attempt(() => BigInt(Infinity)), attempt(() => BigInt("1.5")),
+  attempt(() => BigInt("0x")), attempt(() => BigInt("-0x1")), attempt(() => BigInt("1n")), attempt(() => BigInt("1_0")),
+  attempt(() => BigInt("x".repeat(100))), attempt(() => BigInt(undefined)), attempt(() => BigInt(null)),
+  attempt(() => BigInt(Symbol.iterator)), attempt(() => BigInt()), attempt(() => BigInt(10n)),
+  attempt(() => BigInt.asIntN(8, 255n)), attempt(() => BigInt.asIntN(8, 128n)), attempt(() => BigInt.asIntN(8, -129n)),
+  attempt(() => BigInt.asIntN(0, 5n)), attempt(() => BigInt.asIntN(1, 1n)), attempt(() => BigInt.asIntN(64, 2n ** 63n)),
+  attempt(() => BigInt.asUintN(64, -1n)), attempt(() => BigInt.asUintN(4, 0x1fn)), attempt(() => BigInt.asUintN(0, 5n)),
+  attempt(() => BigInt.asUintN(3, -9n)), attempt(() => BigInt.asUintN(200, 5n)), attempt(() => BigInt.asIntN(undefined, 5n)),
+  attempt(() => BigInt.asIntN("8", "255")), attempt(() => BigInt.asIntN(8, true)), attempt(() => BigInt.asIntN(2.9, 7n)),
+  attempt(() => BigInt.asIntN(-1, 1n)), attempt(() => BigInt.asIntN(2 ** 53, 1n)), attempt(() => BigInt.asIntN(8, 1)),
+  attempt(() => BigInt.asIntN(8, "x")), attempt(() => BigInt.asIntN(1n, 1n)),
+  (255n).toString(16), (255n).toString(), (-255n).toString(2), (35n).toString(36), (10n).toString(undefined),
+  12345678n.toLocaleString(), (-1234n).toLocaleString(), (123n).toLocaleString(), 0n.toLocaleString(),
+  attempt(() => (1n).toString(1)), attempt(() => (1n).toString(37)), attempt(() => (1n).toString(1n)),
+  attempt(() => BigInt.prototype.toString.call(1)), attempt(() => BigInt.prototype.valueOf.call("1")),
+  attempt(() => BigInt.prototype.toLocaleString.call({})), attempt(() => 5n.valueOf() === 5n),
+  Number(2n ** 53n), Number(2n ** 53n + 1n), Number(2n ** 53n + 3n), Number(-(2n ** 1100n)), Number(2n ** 1024n),
+  Number(2n ** 1024n - 2n ** 970n), Number(2n ** 1024n - 2n ** 971n), Number(0n),
+  parseInt("12n"), parseFloat(3n), String(3n), Object.prototype.toString.call(1n), typeof BigInt, BigInt.name,
+  BigInt.length, BigInt.asIntN.length, BigInt.prototype.toString.length, names(BigInt), names(BigInt.prototype),
+  Object.getPrototypeOf(1n) === BigInt.prototype, BigInt.prototype.constructor === BigInt, 1n instanceof BigInt,
+  Object.keys(BigInt.prototype).length, Object.prototype.toString.call(BigInt.prototype), [1n, 2n].join("-"),
+  attempt(() => { BigInt = 1 }),
+]

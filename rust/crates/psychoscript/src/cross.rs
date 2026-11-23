@@ -205,6 +205,9 @@ impl FastWalk {
                 return Ok(Visited::Done(Some(Json::String(s))));
             }
             Value::Sym(_) => return Ok(Visited::Done(Some(Json::Object(serde_json::Map::new())))),
+            // A BigInt crosses only through the program's `toJSON`, which the walk calls.
+            Value::Big(_) if crate::builtins::bigint::has_to_json(vm) => return Ok(Visited::Walk),
+            Value::Big(_) => return Err(crate::builtins::bigint::json_error(vm, true)),
             Value::Obj(id) => *id,
         };
         if vm.heap[id as usize].is_callable() {
@@ -397,7 +400,7 @@ fn plain_scalar(vm: &Vm, v: &Value) -> Option<Json> {
         Value::Bool(b) => Json::Bool(*b),
         Value::Num(n) => crate::convert::json_number(*n),
         Value::Str(s) => Json::String(crate::convert::host_string(vm, *s)),
-        Value::Sym(_) | Value::Obj(_) => Json::Object(serde_json::Map::new()),
+        Value::Sym(_) | Value::Obj(_) | Value::Big(_) => Json::Object(serde_json::Map::new()),
     })
 }
 
@@ -756,7 +759,7 @@ fn run(vm: &mut Vm, c: &mut Cross, mut act: Act, mut root_awaited: bool) -> Resu
                 Act::Value(val)
             }
             Act::Value(val) => {
-                if let Value::Obj(_) = val {
+                if let Value::Obj(_) | Value::Big(_) = val {
                     let tj = vm.names.to_json;
                     let f = vm.get(&val, tj)?;
                     if vm.is_callable(&f) {
@@ -936,6 +939,7 @@ fn classify(vm: &mut Vm, v: &Value, ancestors: &[Value]) -> Result<Class, Value>
         }
         Value::Null | Value::Str(_) | Value::Bool(_) => return Ok(Class::Data),
         Value::Sym(_) => return Ok(Class::Special),
+        Value::Big(_) => return Err(crate::builtins::bigint::json_error(vm, true)),
         Value::Obj(id) => *id,
     };
     if vm.heap[id as usize].is_callable() {

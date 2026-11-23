@@ -64,6 +64,10 @@ impl Vm {
                 let p = self.realm.boolean_proto;
                 Ok(self.get_obj(p, key))
             }
+            Value::Big(_) => {
+                let p = self.bigint_proto();
+                Ok(self.get_obj(p, key))
+            }
             // A symbol has no wrapper prototype in the reference.
             Value::Sym(_) => {
                 Err(self.type_error("Cannot access a property on a non-object value."))
@@ -227,6 +231,11 @@ impl Vm {
             Value::Str(_) => self.realm.string_proto,
             Value::Num(_) => self.realm.number_proto,
             Value::Bool(_) => self.realm.boolean_proto,
+            // Before its group is made, `BigInt.prototype` would have no accessors of its own.
+            Value::Big(_) if self.realm.std.loaded & crate::builtins::LAZY_BIGINT == 0 => {
+                self.realm.object_proto
+            }
+            Value::Big(_) => self.realm.std.bigint,
             _ => return None,
         };
         if !self.accessors_on_chain(proto) {
@@ -397,6 +406,10 @@ impl Vm {
                 self.atoms.intern(&s)
             }
             Value::Sym(s) => *s,
+            Value::Big(id) => {
+                let s = self.big_text(*id);
+                self.atoms.intern(&s)
+            }
             Value::Obj(_) => {
                 // A member's key that fails to convert fails at the key.
                 let p = self
@@ -556,7 +569,7 @@ impl Vm {
                 Err(self.type_error("Only data fields may be assigned."))
             }
             // Only an inherited setter can take a primitive's write, with the primitive as `this`.
-            Value::Str(_) | Value::Num(_) | Value::Bool(_)
+            Value::Str(_) | Value::Num(_) | Value::Bool(_) | Value::Big(_)
                 if self.primitive_accessor(v, key).is_some() =>
             {
                 let pair = self.primitive_accessor(v, key).unwrap_or_default();
@@ -1562,6 +1575,7 @@ impl Vm {
             Value::Bool(b) => *b,
             Value::Num(n) => *n != 0.0 && !n.is_nan(),
             Value::Str(s) => !self.atoms.get(*s).is_empty(),
+            Value::Big(id) => !num_traits::Zero::is_zero(self.big(*id)),
             Value::Obj(_) | Value::Sym(_) => true,
             Value::Undef | Value::Null | Value::Uninit => false,
         }
@@ -1584,6 +1598,7 @@ impl Vm {
             Value::Num(_) => "number",
             Value::Str(_) => "string",
             Value::Sym(_) => "symbol",
+            Value::Big(_) => "bigint",
             Value::Obj(_) => {
                 if self.is_callable(v) {
                     "function"
@@ -1617,6 +1632,9 @@ impl Vm {
             Value::Sym(_) => {
                 return Err(self.type_error("Cannot convert a symbol to a number"));
             }
+            Value::Big(_) => {
+                return Err(self.type_error("Cannot convert a BigInt value to a number."));
+            }
             Value::Obj(id) => {
                 // A namespace is not an object to the reference: it converts without a call, as "[object Object]".
                 if self.is_namespace(*id) || self.is_promise(*id) {
@@ -1646,6 +1664,13 @@ impl Vm {
             Value::Undef | Value::Uninit => return Ok(self.static_id("undefined")),
             // The reference's ToString of a symbol is its host's `String`, which names it.
             Value::Sym(s) => return Ok(self.static_id(symbol_text(*s))),
+            Value::Big(id) => {
+                let s = self.big_text(*id);
+                return Ok(match self.string_val(s) {
+                    Value::Str(s) => s,
+                    _ => self.static_id(""),
+                });
+            }
             Value::Obj(id) => {
                 if self.is_namespace(*id) {
                     return Ok(self.static_id("[object Object]"));
@@ -1674,7 +1699,8 @@ impl Vm {
                 })
             }
             Value::Str(s) => MapKey::Str(self.atoms.intern_id(*s)),
-            Value::Obj(id) => MapKey::Obj(*id),
+            // The interner gives each BigInt value one object.
+            Value::Obj(id) | Value::Big(id) => MapKey::Obj(*id),
             Value::Sym(s) => MapKey::Sym(*s),
         }
     }
@@ -1686,6 +1712,12 @@ impl Vm {
             MapKey::Str(a) => self.atom_val(a),
             _ => k,
         }
+    }
+
+    /// `BigInt.prototype`, made with its group the first time a BigInt's property is read.
+    pub(crate) fn bigint_proto(&mut self) -> Id {
+        crate::builtins::ensure(self, crate::builtins::LAZY_BIGINT);
+        self.realm.std.bigint
     }
 
     pub fn static_id(&mut self, s: &str) -> StrId {
@@ -1743,13 +1775,6 @@ impl Vm {
             self.fuel(1);
         }
         self.primitive_of(v, hint)
-    }
-
-    /// `op_primitive` as a number.
-    #[inline(never)]
-    pub fn op_number(&mut self, v: &Value, other: &Value) -> Result<f64, Value> {
-        let p = self.op_primitive(v, other, Hint::Number)?;
-        self.number_of(&p)
     }
 
     /// `Strings::concat_num`, counted against the strings a run may make.
@@ -1812,6 +1837,9 @@ impl Vm {
             let y = self.string_of(&pb)?;
             return self.concat_ids(x, y);
         }
+        if matches!(pa, Value::Big(_)) || matches!(pb, Value::Big(_)) {
+            return self.big_binary(crate::conversion::code::ADD, &pa, &pb);
+        }
         Ok(Value::Num(self.number_of(&pa)? + self.number_of(&pb)?))
     }
 
@@ -1825,8 +1853,19 @@ impl Vm {
         Ok(match op {
             A::Add => return self.add(a, b),
             A::Sub | A::Mul | A::Div | A::Mod => {
-                let x = self.op_number(&a, &b)?;
-                let y = self.op_number(&b, &a)?;
+                let pa = self.op_primitive(&a, &b, Hint::Number)?;
+                let pb = self.op_primitive(&b, &a, Hint::Number)?;
+                if matches!(pa, Value::Big(_)) || matches!(pb, Value::Big(_)) {
+                    use crate::conversion::code;
+                    let c = match op {
+                        A::Sub => code::SUB,
+                        A::Mul => code::MUL,
+                        A::Div => code::DIV,
+                        _ => code::MOD,
+                    };
+                    return self.big_binary(c, &pa, &pb);
+                }
+                let (x, y) = (self.number_of(&pa)?, self.number_of(&pb)?);
                 Value::Num(match op {
                     A::Sub => x - y,
                     A::Mul => x * y,
@@ -1861,6 +1900,9 @@ impl Vm {
         if let (Value::Str(x), Value::Str(y)) = (&pa, &pb) {
             return Ok(Some(self.atoms.sref(*x).cmp16(self.atoms.sref(*y)).is_lt()));
         }
+        if matches!(pa, Value::Big(_)) || matches!(pb, Value::Big(_)) {
+            return self.big_less_than(&pa, &pb);
+        }
         let x = self.number_of(&pa)?;
         let y = self.number_of(&pb)?;
         if x.is_nan() || y.is_nan() {
@@ -1886,7 +1928,9 @@ impl Vm {
                 let n = Value::Num(*y as u8 as f64);
                 return self.loose_eq(a, &n);
             }
-            (Value::Obj(_), Value::Num(_) | Value::Str(_) | Value::Sym(_)) => {
+            (Value::Big(_), Value::Num(_) | Value::Str(_))
+            | (Value::Num(_) | Value::Str(_), Value::Big(_)) => return self.big_loose_eq(a, b),
+            (Value::Obj(_), Value::Num(_) | Value::Str(_) | Value::Sym(_) | Value::Big(_)) => {
                 let p = self.primitive_of(a, Hint::Default)?;
                 self.fuel(1);
                 if let Value::Obj(_) = p {
@@ -1894,7 +1938,7 @@ impl Vm {
                 }
                 return self.loose_eq(&p, b);
             }
-            (Value::Num(_) | Value::Str(_) | Value::Sym(_), Value::Obj(_)) => {
+            (Value::Num(_) | Value::Str(_) | Value::Sym(_) | Value::Big(_), Value::Obj(_)) => {
                 self.fuel(1);
                 let p = self.primitive_of(b, Hint::Default)?;
                 if let Value::Obj(_) = p {

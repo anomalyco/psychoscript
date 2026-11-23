@@ -248,6 +248,7 @@ fn val(v: &Value) -> J {
         Value::Str(s) => J::from(format!("s{s}")),
         Value::Obj(o) => J::from(format!("o{o}")),
         Value::Sym(s) => J::from(format!("y{s}")),
+        Value::Big(b) => J::from(format!("b{b}")),
         Value::Uninit => J::from("i"),
     }
 }
@@ -443,7 +444,7 @@ impl Enc<'_> {
             "lazyBuiltins": vm.lazy_builtins,
             "std": [std.regexp, std.date, std.uint8, std.buffer, std.text_encoder, std.text_decoder,
                     std.weak_map, std.weak_set, std.iterator_helper, std.uri_error, std.url, std.params,
-                    std.headers, std.loaded, std.array_buffer, std.typed],
+                    std.headers, std.loaded, std.array_buffer, std.typed, std.bigint],
             "host": host,
         }))
     }
@@ -618,6 +619,8 @@ impl Enc<'_> {
             Kind::Date(t) => json!(["d", num(*t)]),
             Kind::Bytes(b) => json!(["y", b.store, b.start, b.len, b.buffer, b.elem.code()]),
             Kind::Storage(data) => json!(["st", bytes_hex(data)]),
+            // Hexadecimal converts in linear time either way; decimal is quadratic for large values.
+            Kind::BigInt(n) => json!(["bi", n.to_str_radix(16)]),
             Kind::TextDecoder(d) => {
                 json!(["td", d.fatal, d.ignore_bom, bytes_hex(&d.queued), d.seen])
             }
@@ -1464,6 +1467,13 @@ impl Dec<'_> {
                     }
                     Value::Obj(o)
                 }
+                t if t.starts_with('b') => {
+                    let b = id(t)?;
+                    if b as usize >= self.heap_len {
+                        return Err(invalid("a BigInt reference is out of range."));
+                    }
+                    Value::Big(b)
+                }
                 t if t.starts_with('y') => {
                     let a = id(t)?;
                     if a > SYM_ASYNC_ITERATOR {
@@ -1937,6 +1947,15 @@ impl Dec<'_> {
                     .ok_or_else(|| invalid("a typed array's kind is unknown."))?,
             })),
             "st" => Kind::Storage(hex_bytes(&string(f(1)?)?)?),
+            "bi" => {
+                let digits = string(f(1)?)?;
+                let magnitude = digits.strip_prefix('-').unwrap_or(&digits);
+                let n = (magnitude.len() as u64 <= crate::builtins::bigint::MAX_BIGINT_BITS / 4)
+                    .then(|| num_bigint::BigInt::parse_bytes(digits.as_bytes(), 16))
+                    .flatten()
+                    .filter(|_| magnitude.bytes().all(|c| c.is_ascii_hexdigit()));
+                Kind::BigInt(n.ok_or_else(|| invalid("a BigInt is malformed."))?)
+            }
             "td" => Kind::TextDecoder(Box::new(crate::builtins::bytes::Decoder {
                 fatal: boolean(f(1)?)?,
                 ignore_bom: boolean(f(2)?)?,
@@ -2275,6 +2294,10 @@ pub fn restore(vm: &mut Vm, snapshot: &Snapshot, program_hash: &str) -> R<()> {
         .ok_or_else(|| invalid("built-in prototypes are missing."))?;
     for (i, t) in typed.iter().enumerate().take(5) {
         realm.typed[i] = u32_(t)?;
+    }
+    realm.bigint = id(16)?;
+    if !vm.intern_restored(base.heap) {
+        return Err(invalid("a BigInt is saved twice."));
     }
 
     restore_host(vm, &dec, field(st, "host")?, base)?;

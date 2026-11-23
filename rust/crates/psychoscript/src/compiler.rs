@@ -155,6 +155,7 @@ pub fn compile(source: &str, atoms: &mut Strings) -> R<Program> {
     Ok(Program {
         protos: c.protos.into_iter().map(Arc::new).collect(),
         consts: c.consts,
+        bigints: c.bigints,
         globals: c.globals,
         templates: c.templates,
         typed_consts: c.typed_consts,
@@ -1082,7 +1083,7 @@ fn in_method(program: &oxc_ast::ast::Program, at: u32) -> bool {
 }
 
 /// The reference's orientation to the supported subset, which unsupported syntax reports and suggests.
-pub const SUPPORTED_SYNTAX: &str = "This is a restricted JavaScript-like language. Supported: plain and async functions, data literals, destructuring, standard control flow, await and Promise, and built-ins such as Array, Object, Math, JSON, Date, RegExp, Map, Set, and URL. Unsupported: private class members, BigInt, and custom Symbols.";
+pub const SUPPORTED_SYNTAX: &str = "This is a restricted JavaScript-like language. Supported: plain and async functions, data literals, destructuring, standard control flow, await and Promise, and built-ins such as Array, Object, Math, JSON, Date, RegExp, Map, Set, and URL. Unsupported: private class members and custom Symbols.";
 
 fn unsupported(what: &str, span: oxc_span::Span) -> CompileError {
     CompileError {
@@ -1179,6 +1180,9 @@ struct Compiler<'a, 's> {
     consts: Vec<Value>,
     str_consts: FxHashMap<String, u32>,
     num_consts: FxHashMap<u64, u32>,
+    /// BigInt literals' constants, by decimal text, made when the program loads (see `Program::bigints`).
+    big_consts: FxHashMap<String, u32>,
+    bigints: Vec<(u32, num_bigint::BigInt)>,
     globals: Vec<Atom>,
     global_of: FxHashMap<Atom, u32>,
     /// Whether an assignment to a typed array's global was compiled (see `Program::typed_consts`).
@@ -1230,6 +1234,8 @@ impl<'a, 's> Compiler<'a, 's> {
             consts: Vec::new(),
             str_consts: FxHashMap::default(),
             num_consts: FxHashMap::default(),
+            big_consts: FxHashMap::default(),
+            bigints: Vec::new(),
             globals: Vec::new(),
             global_of: FxHashMap::default(),
             typed_consts: false,
@@ -1489,6 +1495,25 @@ impl<'a, 's> Compiler<'a, 's> {
                 i
             }
         };
+        self.emit(Op::Const(i));
+    }
+
+    /// A BigInt literal, from its decimal digits; past the size cap, the RangeError where it stands.
+    fn push_bigint(&mut self, digits: &str) {
+        if let Some(i) = self.big_consts.get(digits) {
+            self.emit(Op::Const(*i));
+            return;
+        }
+        let n = num_bigint::BigInt::parse_bytes(digits.as_bytes(), 10).unwrap_or_default();
+        if !crate::builtins::bigint::fits(&n) {
+            let msg = self.str_const(crate::builtins::bigint::TOO_BIG);
+            self.emit(Op::ThrowRange(msg));
+            return;
+        }
+        let i = self.consts.len() as u32;
+        self.consts.push(Value::Undef);
+        self.bigints.push((i, n));
+        self.big_consts.insert(digits.to_owned(), i);
         self.emit(Op::Const(i));
     }
 
@@ -3509,10 +3534,7 @@ impl<'a, 's> Compiler<'a, 's> {
                 self.push_str(&flags);
                 self.emit(Op::RegExp);
             }
-            Expression::BigIntLiteral(_) => {
-                let msg = self.str_const("BigInt literals are not supported.");
-                self.emit(Op::ThrowType(msg));
-            }
+            Expression::BigIntLiteral(b) => self.push_bigint(b.value.as_str()),
             Expression::TaggedTemplateExpression(t) => self.tagged_template(t)?,
             Expression::Super(s) => self.throw_syntax("Super", s.span)?,
             Expression::ImportExpression(i) => match &i.options {
@@ -4211,6 +4233,7 @@ fn static_key(key: &PropertyKey, computed: bool) -> Option<String> {
         PropertyKey::StaticIdentifier(id) if !computed => Some(id.name.as_str().to_owned()),
         PropertyKey::StringLiteral(s) => Some(js_str(&s.value)),
         PropertyKey::NumericLiteral(n) => Some(num_to_string(n.value)),
+        PropertyKey::BigIntLiteral(b) => Some(b.value.as_str().to_owned()),
         _ => None,
     }
 }
@@ -4286,6 +4309,7 @@ fn supported_member(m: &ClassElement) -> bool {
             PropertyKey::StaticIdentifier(_)
                 | PropertyKey::StringLiteral(_)
                 | PropertyKey::NumericLiteral(_)
+                | PropertyKey::BigIntLiteral(_)
         )
 }
 
