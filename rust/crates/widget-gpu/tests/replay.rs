@@ -991,9 +991,99 @@ fn clamping_a_canvas_size() {
     assert_eq!(clamp_size(4096, 4096), (4096, 4096));
     assert_eq!(clamp_size(5120, 2880), (4096, 2304));
     assert_eq!(clamp_size(2880, 5120), (2304, 4096));
-    assert_eq!(clamp_size(100, 9000), (46, 4096));
+    assert_eq!(clamp_size(100, 9000), (45, 4096));
+    assert_eq!(clamp_size(9000, 1000), (4096, 455));
     assert_eq!(clamp_size(100_000, 1), (4096, 1));
     assert_eq!(clamp_size(0, 0), (0, 0));
+}
+
+/// A canvas an error stopped stays stopped for the run: out of the view and back under its key, and after a device
+/// loss, which restarts only the canvases it stopped.
+#[test]
+fn a_canvas_an_error_stopped_stays_stopped() {
+    let (device, queue) = common::device();
+    let mut gpu = Gpu::new(device.clone(), queue.clone(), RGBA).unwrap();
+    gpu.resize("a", 8, 8);
+    gpu.resize("b", 8, 8);
+    let mut b = Batch::default();
+    b.op(json!(["context", 1, "a", "rgba8unorm", "opaque"]))
+        .op(json!(["view", 2, 1, {}]));
+    b.op(json!(["context", 3, "b", "rgba8unorm", "opaque"]))
+        .op(json!(["view", 4, 3, {}]));
+    gpu.apply(&b.ops, &[]).unwrap();
+    let clear = |view: u32, draw: bool| {
+        let mut b = Batch::default();
+        pass_into(&mut b, view, [0.0, 1.0, 0.0, 1.0]);
+        if draw {
+            b.op(json!(["draw", 3, 1, 0, 0]));
+        }
+        b.op(json!(["end"])).op(json!(["submit"]));
+        b
+    };
+    let e = gpu.apply(&clear(2, true).ops, &[]).unwrap_err();
+    assert_eq!(e.canvases, Stops::Canvases(vec!["a".into()]));
+    let version = gpu.canvas("a").map(|c| c.version);
+    gpu.remove("a");
+    gpu.resize("a", 8, 8);
+    assert_eq!(gpu.error("a"), Some(&e));
+    // Its passes are skipped.
+    gpu.apply(&clear(2, false).ops, &[]).unwrap();
+    assert_eq!(gpu.canvas("a").map(|c| c.version), version);
+
+    // A device loss: `b` restarts once the program draws into it again; `a` doesn't.
+    gpu.apply(&clear(4, false).ops, &[]).unwrap();
+    gpu.reset(device.clone(), queue.clone()).unwrap();
+    assert!(gpu.canvas("b").is_none());
+    let mut b = Batch::default();
+    b.op(json!(["context", 5, "a", "rgba8unorm", "opaque"]))
+        .op(json!(["view", 6, 5, {}]));
+    b.op(json!(["context", 7, "b", "rgba8unorm", "opaque"]))
+        .op(json!(["view", 8, 7, {}]));
+    gpu.apply(&b.ops, &[]).unwrap();
+    gpu.apply(&clear(6, false).ops, &[]).unwrap();
+    gpu.apply(&clear(8, false).ops, &[]).unwrap();
+    assert_eq!(gpu.error("a"), Some(&e));
+    assert!(gpu.canvas("a").is_none());
+    assert_eq!(gpu.error("b"), None);
+    assert_eq!(
+        common::read(&device, &queue, gpu.canvas("b").unwrap().texture)[0],
+        GREEN
+    );
+}
+
+/// Only `no handle <h>` with `h` from 1 to the last handle before a loss drops a batch: handle 0, and handles
+/// before any loss, stay program errors.
+#[test]
+fn only_handles_from_before_a_loss_drop_a_batch() {
+    let (device, queue) = common::device();
+    let destroy = |h: u32| Batch {
+        ops: vec![Arg::from_json(&json!(["destroy", h]))],
+        bytes: Vec::new(),
+    };
+    let mut gpu = Gpu::new(device.clone(), queue.clone(), RGBA).unwrap();
+    assert_eq!(
+        gpu.apply(&destroy(1).ops, &[]).unwrap_err().message,
+        "gpu op 0: no handle 1"
+    );
+    let mut gpu = Gpu::new(device.clone(), queue.clone(), RGBA).unwrap();
+    let mut b = Batch::default();
+    b.op(json!(["buffer", 1, 16, 8]))
+        .op(json!(["buffer", 2, 16, 8]));
+    gpu.apply(&b.ops, &[]).unwrap();
+    gpu.reset(device.clone(), queue.clone()).unwrap();
+    assert_eq!(gpu.apply(&destroy(2).ops, &[]), Ok(()));
+    assert_eq!(gpu.apply(&destroy(1).ops, &[]), Ok(()));
+    assert_eq!(
+        gpu.apply(&destroy(0).ops, &[]).unwrap_err().message,
+        "gpu op 0: no handle 0"
+    );
+    let mut gpu = Gpu::new(device.clone(), queue.clone(), RGBA).unwrap();
+    gpu.apply(&b.ops, &[]).unwrap();
+    gpu.reset(device, queue).unwrap();
+    assert_eq!(
+        gpu.apply(&destroy(3).ops, &[]).unwrap_err().message,
+        "gpu op 0: no handle 3"
+    );
 }
 
 /// Replay cost of a typical frame: 48 ops, 64 KB of writes (`cargo test --release -p widget-gpu -- --ignored`).
