@@ -7,6 +7,8 @@
 //!   one that left the view;
 //! - calls [`Gpu::apply`] with each batch's ops and bytes, and [`Gpu::end_frame`] at each frame request, after the
 //!   batch it carries;
+//! - calls [`Gpu::shape_error`] instead for a posted batch its conversion rejects (not an object, ops not a list,
+//!   bytes not an `ArrayBuffer`);
 //! - shows [`Gpu::canvas`]'s texture for each GPU canvas, presenting again when its `version` moves;
 //! - on an `Err`, shows the placeholder with the error on the canvases it stops ([`GpuError::canvases`]) and
 //!   reports it (phase [`PHASE`]) when it is the program's ([`ErrorKind::Program`]), else logs it. [`Gpu::error`]
@@ -429,6 +431,22 @@ impl Gpu {
             None => Ok(()),
             Some((kind, message)) => self.stop(keys, kind, message),
         }
+    }
+
+    /// A posted batch whose shape the host's conversion rejected, with the spec's message (`a batch must be an
+    /// object`, `a batch's ops must be a list`, `a batch's bytes must be an ArrayBuffer`): it stops canvases as
+    /// [`Gpu::apply`]'s errors do. `ops`: the batch's ops when they are a list (they decide which canvases it renders
+    /// into), else `None`, which stops every canvas. Nothing is replayed.
+    pub fn shape_error(
+        &mut self,
+        ops: Option<&[Arg]>,
+        message: impl Into<String>,
+    ) -> Result<(), GpuError> {
+        if self.all.is_some() {
+            return Ok(());
+        }
+        let keys = ops.map(|ops| self.checks.rendered(ops)).unwrap_or_default();
+        self.stop(keys, ErrorKind::Program, message.into())
     }
 
     /// Stops the canvases `keys` (those the batch renders into), or all of them when it renders into none.

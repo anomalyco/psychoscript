@@ -1076,6 +1076,82 @@ fn only_handles_from_before_a_loss_drop_a_batch() {
     );
 }
 
+/// A batch the host's conversion rejected stops canvases as `gpu.ts` does: those its ops render into (contexts and
+/// views made in it or before), or every canvas when its ops aren't a list or render into none.
+#[test]
+fn shape_errors_stop_the_canvases_the_batch_renders_into() {
+    let (device, queue) = common::device();
+    let gpu = || {
+        let mut gpu = Gpu::new(device.clone(), queue.clone(), RGBA).unwrap();
+        gpu.resize("a", 8, 8);
+        gpu.resize("b", 8, 8);
+        gpu
+    };
+    const BYTES: &str = "a batch's bytes must be an ArrayBuffer";
+    let ops = |v: Value| -> Vec<Arg> {
+        let mut b = Batch::default();
+        for op in v.as_array().unwrap() {
+            b.op(op.clone());
+        }
+        b.ops
+    };
+    let contexts = ops(json!([
+        ["context", 1, "a", "rgba8unorm", "opaque"],
+        ["view", 2, 1, {}],
+        ["context", 3, "b", "rgba8unorm", "opaque"],
+        ["view", 4, 3, {}],
+    ]));
+    let into = |view: u32| {
+        ops(
+            json!([["pass", { "colorAttachments": [{ "view": view, "loadOp": "clear", "storeOp": "store" }] }],
+            ["end"], ["submit"]]),
+        )
+    };
+
+    // Ops that aren't a list: every canvas, and later batches are ignored.
+    let mut g = gpu();
+    let e = g
+        .shape_error(None, "a batch's ops must be a list")
+        .unwrap_err();
+    assert_eq!(
+        (e.kind, e.message.as_str(), &e.canvases),
+        (
+            ErrorKind::Program,
+            "a batch's ops must be a list",
+            &Stops::All
+        )
+    );
+    assert_eq!(g.error("a"), Some(&e));
+    assert_eq!(g.apply(&contexts, &[]), Ok(()));
+    assert_eq!(g.shape_error(None, BYTES), Ok(()));
+
+    // Ops that render into nothing: every canvas.
+    let mut g = gpu();
+    assert_eq!(
+        g.shape_error(Some(&contexts), BYTES).unwrap_err().canvases,
+        Stops::All
+    );
+
+    // Ops that render into `a`, through a context and a view made in an earlier batch: `a` alone.
+    let mut g = gpu();
+    g.apply(&contexts, &[]).unwrap();
+    let e = g.shape_error(Some(&into(2)), BYTES).unwrap_err();
+    assert_eq!(e.canvases, Stops::Canvases(vec!["a".into()]));
+    assert_eq!(g.error("b"), None);
+    // `a` again: already stopped, not reported again; `b` still draws.
+    assert_eq!(g.shape_error(Some(&into(2)), BYTES), Ok(()));
+    g.apply(&into(4), &[]).unwrap();
+    assert_eq!(g.canvas("b").unwrap().version, 1);
+
+    // Contexts and views made in the rejected batch count too (their keys, as in `gpu.ts`).
+    let mut g = gpu();
+    let mut both = contexts.clone();
+    both.extend(into(2));
+    both.extend(into(4));
+    let e = g.shape_error(Some(&both), BYTES).unwrap_err();
+    assert_eq!(e.canvases, Stops::Canvases(vec!["a".into(), "b".into()]));
+}
+
 /// Replay cost of a typical frame: 48 ops, 64 KB of writes (`cargo test --release -p widget-gpu -- --ignored`).
 #[test]
 #[ignore]
