@@ -1,6 +1,6 @@
 // GPU batch checks a host makes without a GPU (specs/v2/widgets-gpu.md, Host checks): every op's shape, the handles
 // it names, and the limits; the page replays what passes (gpu.ts). Opencode's `packages/widget/src/gpu.ts` at widgets
-// f8119b8bc, the reference, with three changes for this host: a batch's bytes come as a `Uint8Array` (a view of what
+// 0a6b8ba1b, the reference, with three changes for this host: a batch's bytes come as a `Uint8Array` (a view of what
 // the worker transferred), an error gives the op it stopped at (`at`, the ops before it replay), and `scoped` applies
 // the canvases rule to an error the replay found (a WebGPU validation error).
 
@@ -19,6 +19,11 @@ export interface Checked {
   /** Every canvas stopped already, or the batch's, or it is from before a device loss: don't replay it. */
   readonly skip: boolean
 }
+
+/** The client error a GPU hang stops canvases with (widgets-gpu.md, Errors and device loss). */
+export const GPU_HANG = "the GPU work hung; the canvas is stopped"
+/** Two strikes this close stop a run: device losses while it had GPU work in flight. */
+export const STRIKE_MS = 30_000
 
 export const GPU_LIMITS = {
   ops: 20_000,
@@ -681,6 +686,13 @@ export function gpuChecks(canvases: () => ReadonlySet<string>) {
     },
     /** An error the replay found in a batch that renders into `keys`. */
     scoped: scopedError,
+    /** A GPU hang stops every GPU canvas; later batches go unchecked. Given unless every canvas was stopped already. */
+    hung: (): GpuError | undefined => {
+      if (state.all) return undefined
+      state.all = true
+      const fresh = [...canvases()].filter((key) => !stopped.has(key))
+      return fresh.length > 0 || stopped.size === 0 ? { message: GPU_HANG, canvases: "all" } : undefined
+    },
     /** The device is lost: every handle is gone; new ones keep counting up. */
     lost: () => {
       state.stale = state.last

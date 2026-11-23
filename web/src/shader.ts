@@ -34,9 +34,12 @@ export interface Surface {
   readonly drawing: boolean
   /**
    * Draws a frame with `uniforms`; resolves with how long the GPU took when the backend can tell, else undefined.
-   * `hang`: the frame hung (widgets-gpu.md, GPU hang), on the queue the shaders share.
+   * On the queue the shaders share (widgets-gpu.md, GPU hang): `hang`, the frame hung; `struck`, the shader's own
+   * strike, its frame unfinished when the device was lost.
    */
-  render(uniforms: Float32Array, hang: () => void): Promise<number | undefined> | undefined
+  render(uniforms: Float32Array, hang: () => void, struck: () => void): Promise<number | undefined> | undefined
+  /** Settles when its device is lost: the shader is built again on a new one. */
+  readonly lost: Promise<unknown>
   destroy(): void
 }
 
@@ -134,7 +137,8 @@ async function gpuSurface(g: Gpu, canvas: HTMLCanvasElement, wgsl: string): Prom
     get drawing() {
       return drawing
     },
-    render(uniforms, hang) {
+    lost: g.device.lost,
+    render(uniforms, hang, struck) {
       if (destroyed || canvas.width === 0 || canvas.height === 0) return undefined
       g.device.queue.writeBuffer(buffer, 0, uniforms.buffer, uniforms.byteOffset, uniforms.byteLength)
       const encoder = g.device.createCommandEncoder()
@@ -151,7 +155,7 @@ async function gpuSurface(g: Gpu, canvas: HTMLCanvasElement, wgsl: string): Prom
       g.device.queue.submit([encoder.finish()])
       // One frame drawing at a time: the time is this frame's rather than a queue of them.
       drawing = true
-      return g.watchdog.submitted(hang).then(
+      return g.watchdog.submitted(hang, struck).then(
         () => {
           drawing = false
           return timing ? performance.now() - started : undefined

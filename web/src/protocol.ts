@@ -124,7 +124,6 @@ export const MAX_FPS = 60
 export const SHADER_FRAME_BUDGET_MS = 50
 /** GPU work still unfinished this long after its submit is a hang (widgets-gpu.md, GPU hang): its canvases stop. */
 export const GPU_HANG_MS = 250
-export const GPU_HANG = "the GPU work hung; the canvas is stopped"
 export const MAX_SHADER_BYTES = 16 * 1024
 export const MAX_SHADER_VALUES = 16
 

@@ -12,6 +12,10 @@ export interface Checked {
     /** Every canvas stopped already, or the batch's, or it is from before a device loss: don't replay it. */
     readonly skip: boolean;
 }
+/** The client error a GPU hang stops canvases with (widgets-gpu.md, Errors and device loss). */
+export declare const GPU_HANG = "the GPU work hung; the canvas is stopped";
+/** Two strikes this close stop a run: device losses while it had GPU work in flight. */
+export declare const STRIKE_MS = 30000;
 export declare const GPU_LIMITS: {
     ops: number;
     bytes: number;
@@ -43,6 +47,8 @@ export declare function gpuChecks(canvases: () => ReadonlySet<string>): {
     frame: () => void;
     /** An error the replay found in a batch that renders into `keys`. */
     scoped: (message: string, keys: ReadonlyArray<string>) => GpuError | undefined;
+    /** A GPU hang stops every GPU canvas; later batches go unchecked. Given unless every canvas was stopped already. */
+    hung: () => GpuError | undefined;
     /** The device is lost: every handle is gone; new ones keep counting up. */
     lost: () => void;
 };

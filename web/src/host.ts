@@ -6,8 +6,10 @@ import type { ErrorInfo, Frame, FromWorker, LiveExit, Rect, StepOutput, ToWorker
 import { Input } from "./input.js"
 import { NEWER, OLDER, PROTOCOL, SLICE_BUDGET_MS, protocol } from "./protocol.js"
 import type { RenderContext } from "./render.js"
-import { CanvasView, Ticker, WebGpuCanvasView, destroy as destroyTree, hasSurface, icon, rectIn, reconcile, surfaces } from "./render.js"
+import { CanvasView, GpuCanvasView, Ticker, WebGpuCanvasView, destroy as destroyTree, hasSurface, icon, rectIn, reconcile, surfaces } from "./render.js"
 import { GpuReplay } from "./gpu.js"
+import { GPU_HANG } from "./gpu-checks.js"
+import { Strikes } from "./watchdog.js"
 import { stylesheet } from "./styles.js"
 import type { Resolved, Theme } from "./theme.js"
 import { apply, resolve } from "./theme.js"
@@ -521,6 +523,7 @@ class Widget implements MountedWidget {
       warn: (m) => this.warn(m),
       programError: (phase, e) => this.report(phase, e),
       clientError: (m, cause) => this.clientError(m, cause),
+      gpuStrike: this.gpuStrike,
       ticker: host.ticker,
     }
     if (options.resolveImage) {
@@ -626,6 +629,9 @@ class Widget implements MountedWidget {
         return this.fatal(e, live ? "main" : "init")
       }
       if (live) {
+        // A new run: no strikes yet.
+        this.strikes = new Strikes()
+        this.gpuHung = false
         this.live = { ...this.live, commands: new Map(), frameWanted: false, startedAt: performance.now(), pausedAt: undefined, pausedTotal: 0, running: true }
         this.paused = false
         worker.send({
@@ -789,6 +795,8 @@ class Widget implements MountedWidget {
     this.view = node
     reconcile(this.ctx, this.viewEl, [node])
     if (this.gpuUnavailable) for (const s of surfaces(this.viewEl)) if (s instanceof WebGpuCanvasView) s.placeholder()
+    // A run stopped by its strikes: its shaders rendered anew stay stopped.
+    if (this.gpuHung) for (const s of surfaces(this.viewEl)) if (s instanceof GpuCanvasView) s.stopHung()
     // A stopped GPU canvas rendered anew (a new element) still shows its placeholder: with its error, or, lost, alone.
     if (this.gpu)
       for (const key of Object.keys(this.gpuKeys)) {
@@ -1112,6 +1120,20 @@ class Widget implements MountedWidget {
 
   private gpu: GpuReplay | undefined
   private gpuUnavailable = false
+  /**
+   * The run's strikes (widgets-gpu.md, Strikes): its GPU work unfinished at a device loss, its live device's or the
+   * shaders' shared one, one a loss. The first changes nothing; a second within 30 s stops every GPU canvas of the run
+   * for the rest of it (no new device restarts them), with one client error; later ones report nothing more.
+   */
+  private strikes = new Strikes()
+  private gpuHung = false
+  private readonly gpuStrike = () => {
+    if (this.gpuHung || !this.strikes.strike()) return
+    this.gpuHung = true
+    this.clientError(GPU_HANG)
+    this.gpu?.stopAll()
+    for (const s of surfaces(this.viewEl)) if (s instanceof GpuCanvasView) s.stopHung()
+  }
   private gpuKeys: Record<string, string> = {}
 
   /** The GPU canvas with this key in the last rendered view. */
@@ -1135,6 +1157,7 @@ class Widget implements MountedWidget {
         this.host.ticker.add(once)
       },
       clientError: (message, cause) => this.clientError(message, cause),
+      strike: this.gpuStrike,
       lost: (reason, message) => this.worker?.send({ t: "deliver", wid: this.wid, message: { type: "gpu", lost: reason, message } }),
       unavailable: () => {
         this.gpuUnavailable = true

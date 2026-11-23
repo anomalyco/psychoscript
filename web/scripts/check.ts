@@ -1616,6 +1616,125 @@ for (const query of ["?only=shader-broken"]) {
     await page.close()
   }
 
+  // Strikes (widgets-gpu.md, GPU hang), losses made by the check: the device is destroyed right after a submit whose work
+  // it keeps unfinished. A first strike changes nothing; a second within 30 s stops every GPU canvas of the run.
+  {
+    const page = await browser.newPage({ viewport: { width: 800, height: 600 } })
+    const errors: string[] = []
+    page.on("pageerror", (e) => errors.push(e.message))
+    await page.addInitScript(() => {
+      const w = window as unknown as { __devices: GPUDevice[]; __loseNext: boolean }
+      w.__devices = []
+      w.__loseNext = false
+      const request = GPUAdapter.prototype.requestDevice
+      GPUAdapter.prototype.requestDevice = async function (this: GPUAdapter, d?: GPUDeviceDescriptor) {
+        const device = await request.call(this, d)
+        w.__devices.push(device)
+        return device
+      }
+      const done = GPUQueue.prototype.onSubmittedWorkDone
+      GPUQueue.prototype.onSubmittedWorkDone = function (this: GPUQueue) {
+        if (!w.__loseNext) return Promise.race([done.call(this), new Promise<undefined>((r) => setTimeout(() => r(undefined), 100))])
+        w.__loseNext = false
+        const device = w.__devices.find((d) => d.queue === this)!
+        setTimeout(() => device.destroy())
+        return new Promise<undefined>(() => {})
+      }
+    })
+    await page.goto(base + "?only=confirm")
+    await mount(page, gpu.struck, 1000)
+    const lose = async () => {
+      await page.evaluate(() => ((window as unknown as { __loseNext: boolean }).__loseNext = true))
+      await page.waitForTimeout(1200)
+      return canvases(page)
+    }
+    const first = await lose()
+    const a1 = await centre(page, first.canvases[0]!.rect)
+    const message = "the GPU work hung; the canvas is stopped"
+    check(
+      first.text.includes("devices 2") && first.clientErrors.length === 0 && first.reports.length === 0 &&
+        first.canvases.every((c) => c.alt === "") && near(a1, [0, 0, 255]),
+      "gpu: a first strike (work unfinished at a device loss) changes nothing: the new device restarts the canvases",
+      { ...first, a1 },
+    )
+    const second = await lose()
+    check(
+      second.text.includes("devices 3") && second.clientErrors.length === 1 && second.clientErrors[0] === message &&
+        second.reports.length === 0 && second.canvases[0]!.alt === "A\n" + message && second.canvases[1]!.alt === "B\n" + message,
+      "gpu: a second strike within 30 s stops every GPU canvas of the run (a client error, once); its new device restarts none",
+      second,
+    )
+    await done(page)
+    check(errors.length === 0, "gpu (strikes): no page errors", errors)
+    await page.close()
+  }
+
+  // The wgsl shaders share one device, and strikes are the run's: a loss with S1's frame unfinished (64 px wide) and
+  // one with S2's (96 px) are the run's two strikes, which stop both (counted per shader, neither would stop).
+  {
+    const page = await browser.newPage({ viewport: { width: 800, height: 600 } })
+    const errors: string[] = []
+    page.on("pageerror", (e) => errors.push(e.message))
+    await page.addInitScript(() => {
+      const w = window as unknown as { __devices: GPUDevice[]; __loseNext: number }
+      w.__devices = []
+      w.__loseNext = 0
+      const request = GPUAdapter.prototype.requestDevice
+      GPUAdapter.prototype.requestDevice = async function (this: GPUAdapter, d?: GPUDeviceDescriptor) {
+        const device = await request.call(this, d)
+        w.__devices.push(device)
+        return device
+      }
+      // A shader's frame: its canvas's texture, then its submit, then its onSubmittedWorkDone.
+      let drawing: HTMLCanvasElement | OffscreenCanvas | undefined
+      const current = GPUCanvasContext.prototype.getCurrentTexture
+      GPUCanvasContext.prototype.getCurrentTexture = function (this: GPUCanvasContext) {
+        drawing = this.canvas
+        return current.call(this)
+      }
+      // Done at once (no 50 ms rule here), but the next frame of the shader `__loseNext` px wide: unfinished, then the
+      // device lost.
+      GPUQueue.prototype.onSubmittedWorkDone = function (this: GPUQueue) {
+        if (!w.__loseNext || drawing?.width !== Math.round(w.__loseNext * devicePixelRatio)) return Promise.resolve(undefined)
+        w.__loseNext = 0
+        const device = w.__devices.find((d) => d.queue === this)!
+        setTimeout(() => device.destroy())
+        return new Promise<undefined>(() => {})
+      }
+    })
+    await page.goto(base + "?only=confirm")
+    await mount(page, gpu.shaders, 3000)
+    const shaders = () =>
+      page.evaluate(() => {
+        const g = (window as unknown as { __gpu: { slot: HTMLElement; clientErrors: string[] } }).__gpu
+        const root = g.slot.querySelector(".psychoscript-widget")!.shadowRoot!
+        const surfaces = [...root.querySelectorAll('.pw-surface[data-kind="gpu"]')]
+        return { clientErrors: [...g.clientErrors], shaders: surfaces.map((s) => ({ builds: s.getAttribute("data-builds"), alt: s.querySelector(".pw-alt")?.textContent ?? "" })) }
+      })
+    const lose = async (width: number) => {
+      await page.evaluate((width) => ((window as unknown as { __loseNext: number }).__loseNext = width), width)
+      await page.waitForTimeout(2500)
+      return shaders()
+    }
+    const first = await lose(64)
+    const message = "the GPU work hung; the canvas is stopped"
+    check(
+      first.clientErrors.length === 0 && first.shaders.every((s) => s.builds === "2" && s.alt === ""),
+      "shader: after a loss both shaders are built again on a new device; the run's first strike changes nothing",
+      first,
+    )
+    const second = await lose(96)
+    check(
+      second.clientErrors.length === 1 && second.clientErrors[0] === message &&
+        second.shaders[0]!.alt === "S1\n" + message && second.shaders[1]!.alt === "S2\n" + message,
+      "shader: strikes are the run's: S1's loss then S2's stop both shaders (one client error), neither built again",
+      second,
+    )
+    await done(page)
+    check(errors.length === 0, "shader (strikes): no page errors", errors)
+    await page.close()
+  }
+
   // Canvas size: 1500 x 200 at scale 3 is 4500 x 600 physical, clamped to 4096 x 546; a texture that size fits.
   {
     const { page, errors } = await open("?only=confirm", { width: 1600, height: 500 }, 3)

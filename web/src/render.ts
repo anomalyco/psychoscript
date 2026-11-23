@@ -3,11 +3,11 @@
 
 import type { Command, Images } from "./canvas.js"
 import type { GpuCanvas } from "./gpu.js"
-import { canvasSize } from "./gpu-checks.js"
+import { canvasSize, GPU_HANG } from "./gpu-checks.js"
 import { paint } from "./canvas.js"
 import { markdown } from "./markdown.js"
 import type { Frame, Rect, ViewNode, WidgetEvent } from "./protocol.js"
-import { DRAW_BUDGET_MS, GPU_HANG, MAX_FPS, MAX_SHADER_BYTES, MAX_SHADER_VALUES, OVERRUNS_TO_FREEZE, SHADER_FRAME_BUDGET_MS } from "./protocol.js"
+import { DRAW_BUDGET_MS, MAX_FPS, MAX_SHADER_BYTES, MAX_SHADER_VALUES, OVERRUNS_TO_FREEZE, SHADER_FRAME_BUDGET_MS } from "./protocol.js"
 import type { ShaderError, Surface } from "./shader.js"
 import { UNIFORM_FLOATS, surface } from "./shader.js"
 import type { Resolved } from "./theme.js"
@@ -33,6 +33,8 @@ export interface RenderContext {
   programError(phase: string, error: { message: string; line?: number; column?: number }): void
   /** This host failed (valid WGSL it couldn't run, a surface too slow on this device): logged in dev mode only. */
   clientError(message: string, cause?: unknown): void
+  /** A strike for the run (widgets-gpu.md, Strikes): its GPU work was unfinished at a device loss. The same each time. */
+  gpuStrike(): void
   ticker: Ticker
 }
 
@@ -1084,6 +1086,19 @@ export class GpuCanvasView extends SurfaceBase {
   private stopped = false
   /** A GPU hang stopped it for the rest of the run: a new shader doesn't start it again. */
   private hung = false
+  /** A GPU hang (widgets-gpu.md): a frame that hung stops it for good, whatever the 50 ms rule has counted. */
+  private readonly hang = () => {
+    if (this.destroyed || this.hung) return
+    this.ctx.clientError(GPU_HANG)
+    this.stopHung()
+  }
+
+  /** Stopped for the rest of the run by a GPU hang (its own, or its run's second strike): its placeholder with it. */
+  stopHung() {
+    if (this.destroyed || this.hung) return
+    this.hung = this.stopped = true
+    this.showError(GPU_HANG)
+  }
   private uniforms = new Float32Array(UNIFORM_FLOATS)
   private values = ""
   private lastFrame = 0
@@ -1132,6 +1147,13 @@ export class GpuCanvasView extends SurfaceBase {
     }
     if ("message" in made) return this.fail(made)
     this.surface = made
+    // Its device lost: built again on a new one (the strike, if any, came first), unless it is stopped for good.
+    void made.lost.then(() => {
+      if (this.surface !== made || this.destroyed) return
+      this.surface = undefined
+      made.destroy()
+      if (!this.hung && this.wgsl !== undefined) void this.build(this.wgsl)
+    })
     this.el.dataset.backend = made.backend
     this.el.dataset.builds = String(++this.builds)
     this.dirty = true
@@ -1207,13 +1229,8 @@ export class GpuCanvasView extends SurfaceBase {
     u[5] = p ? p.y * this.scale : 0
     u[6] = p?.down ? 1 : 0
     u[7] = 0
-    // A GPU hang (widgets-gpu.md): a frame that hung stops it for good, whatever the 50 ms rule has counted.
-    const took = s.render(u, () => {
-      if (this.destroyed || this.hung) return
-      this.hung = this.stopped = true
-      this.ctx.clientError(GPU_HANG)
-      this.showError(GPU_HANG)
-    })
+    // The run's strike, not the shader's: the shaders share a device, strikes are the run's (widgets-gpu.md, Strikes).
+    const took = s.render(u, this.hang, this.ctx.gpuStrike)
     void took?.then((ms) => {
       if (ms === undefined || this.stopped) return
       this.slow = ms > SHADER_FRAME_BUDGET_MS ? this.slow + 1 : 0

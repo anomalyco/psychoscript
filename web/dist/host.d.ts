@@ -293,6 +293,14 @@ declare class Widget implements MountedWidget {
     private livePause;
     private gpu;
     private gpuUnavailable;
+    /**
+     * The run's strikes (widgets-gpu.md, Strikes): its GPU work unfinished at a device loss, its live device's or the
+     * shaders' shared one, one a loss. The first changes nothing; a second within 30 s stops every GPU canvas of the run
+     * for the rest of it (no new device restarts them), with one client error; later ones report nothing more.
+     */
+    private strikes;
+    private gpuHung;
+    private readonly gpuStrike;
     private gpuKeys;
     /** The GPU canvas with this key in the last rendered view. */
     private gpuCanvas;

@@ -27,6 +27,8 @@ export interface GpuHost {
     unavailable(): void;
     /** How long a batch's replay took on this thread, in ms (the GPU's work runs after). */
     metric(ms: number): void;
+    /** A strike (widgets-gpu.md, Strikes): the run's work was unfinished at a device loss. The same function each time. */
+    strike(): void;
     /** Runs `f` once in the next display frame, before the canvases present. */
     nextFrame(f: () => void): void;
 }
@@ -93,6 +95,8 @@ export declare class GpuReplay {
     private op;
     /** A frame request, with a batch (checked first) or without: the per-frame counts start again. */
     frame(): void;
+    /** The run's second strike (widgets-gpu.md, Strikes): every GPU canvas stops for the rest of the run. */
+    stopAll(): void;
     /** The error a stopped canvas shows, or undefined while it draws. */
     private stoppedBy;
     /** What a GPU canvas shows instead of drawing: an error's message, `null` (lost, the placeholder alone), or undefined. */

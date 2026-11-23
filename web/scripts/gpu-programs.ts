@@ -315,3 +315,34 @@ export const hung = two(`for (let n = 0; n < 12; n++) {
       pass(e, "b", [0, 0, 1, 1])
     })
   }`)
+
+/**
+ * a and b drawn blue every frame; after each device loss it asks for a new device, configures both again and shows
+ * how many devices it has had: strikes (widgets-gpu.md, GPU hang) decide whether they draw again.
+ */
+export const struck = two(`let lost = false
+  let devices = 1
+  const watch = (d) => d.lost.then(() => { lost = true })
+  watch(device)
+  for (let n = 0; n < 3000; n++) {
+    await widget.frame()
+    if (lost) {
+      lost = false
+      device = await widget.gpu.requestDevice()
+      configure()
+      watch(device)
+      widget.render(ui.column([ui.row([ui.canvas({ key: "a", gpu: true, width: 64, height: 64, alt: "A" }), ui.canvas({ key: "b", gpu: true, width: 64, height: 64, alt: "B" })]), ui.text("devices " + ++devices)]))
+    }
+    submit((e) => {
+      pass(e, "a", [0, 0, 1, 1])
+      pass(e, "b", [0, 0, 1, 1])
+    })
+  }`)
+
+/** Two wgsl shaders on the device the shaders share: S1 64 px wide and red, S2 96 px wide and green. */
+export const shaders = `async function main() {
+  const red = "fn shade(frag: vec2f) -> vec4f { return vec4f(1.0, 0.0, 0.0, 1.0); }"
+  const green = "fn shade(frag: vec2f) -> vec4f { return vec4f(0.0, 1.0, 0.0, 1.0); }"
+  widget.render(ui.row([ui.canvas({ wgsl: red, width: 64, height: 64, fps: 60, alt: "S1" }), ui.canvas({ wgsl: green, width: 96, height: 64, fps: 60, alt: "S2" })]))
+  await widget.sleep(100000)
+}`

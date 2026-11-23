@@ -1,13 +1,16 @@
 // A GPU queue's watchdog (widgets-gpu.md, GPU hang). Submits finish in order, so only the oldest unfinished one is
 // timed, from its submit or, if later, from when the one before it finished: still unfinished `GPU_HANG_MS` after
-// that, it hangs and its owner's `hang` runs; work queued behind it isn't blamed. At a device loss, the oldest
-// unfinished submit hangs if it had been running that long. Nothing waits on the GPU: one `onSubmittedWorkDone` per
-// submit and one timer for the oldest.
+// that, it hangs and its `hang` runs; work queued behind it isn't blamed. At a device loss, each run with work still
+// unfinished gets a strike (`Strikes`). Nothing waits on the GPU: one `onSubmittedWorkDone` per submit and one
+// timer for the oldest. (Chromium settles `device.lost` before the work pending at the loss: unfinished work is seen.)
 
+import { STRIKE_MS } from "./gpu-checks.js"
 import { GPU_HANG_MS } from "./protocol.js"
 
 interface Submit {
   hang: () => void
+  /** Its submitter's strike: called once per loss, however many of its submits were unfinished. */
+  struck: () => void
   start: number
   done: boolean
   hung: boolean
@@ -28,9 +31,12 @@ export class Watchdog {
     private readonly now: () => number = () => performance.now(),
   ) {}
 
-  /** Work was just submitted: `hang` runs if it hangs. Resolves (or rejects) when the work is done. */
-  submitted(hang: () => void): Promise<undefined> {
-    const submit: Submit = { hang, start: this.now(), done: false, hung: false }
+  /**
+   * Work was just submitted: `hang` runs if it hangs, `struck` if it is unfinished when the device is lost (pass the
+   * run's own, the same each time: one strike a run a loss). Resolves (or rejects) when the work is done.
+   */
+  submitted(hang: () => void, struck: () => void): Promise<undefined> {
+    const submit: Submit = { hang, struck, start: this.now(), done: false, hung: false }
     this.submits.push(submit)
     if (this.submits.length === 1) this.arm()
     const done = this.queue.onSubmittedWorkDone()
@@ -42,11 +48,11 @@ export class Watchdog {
     return done
   }
 
-  /** The device was lost: the oldest unfinished submit hangs if it had been running `GPU_HANG_MS`; then none is left. */
+  /** The device was lost: each run with work unfinished gets a strike, once; then none is left. */
   lost() {
-    const oldest = this.submits[0]
-    if (oldest && !oldest.done && !oldest.hung && this.now() - oldest.start >= GPU_HANG_MS) this.blame(oldest)
+    const struck = new Set(this.submits.filter((submit) => !submit.done).map((submit) => submit.struck))
     this.stop()
+    for (const strike of struck) strike()
   }
 
   /** No more timing (the device or the widget is gone). */
@@ -80,5 +86,20 @@ export class Watchdog {
   private blame(submit: Submit) {
     submit.hung = true
     submit.hang()
+  }
+}
+
+/** A run's strikes at device losses (widgets-gpu.md, Strikes): whether one is the second within `STRIKE_MS`. */
+export class Strikes {
+  private last: number | undefined
+
+  constructor(private readonly now: () => number = () => performance.now()) {}
+
+  /** A strike now: true when it is the second within `STRIKE_MS` of the last (the run stops). */
+  strike(): boolean {
+    const now = this.now()
+    const second = this.last !== undefined && now - this.last <= STRIKE_MS
+    this.last = now
+    return second
   }
 }

@@ -31,6 +31,8 @@ export interface RenderContext {
     }): void;
     /** This host failed (valid WGSL it couldn't run, a surface too slow on this device): logged in dev mode only. */
     clientError(message: string, cause?: unknown): void;
+    /** A strike for the run (widgets-gpu.md, Strikes): its GPU work was unfinished at a device loss. The same each time. */
+    gpuStrike(): void;
     ticker: Ticker;
 }
 /** One `requestAnimationFrame` loop for every animated surface on the page, running only while one wants frames. */
@@ -146,6 +148,10 @@ export declare class GpuCanvasView extends SurfaceBase {
     private stopped;
     /** A GPU hang stopped it for the rest of the run: a new shader doesn't start it again. */
     private hung;
+    /** A GPU hang (widgets-gpu.md): a frame that hung stops it for good, whatever the 50 ms rule has counted. */
+    private readonly hang;
+    /** Stopped for the rest of the run by a GPU hang (its own, or its run's second strike): its placeholder with it. */
+    stopHung(): void;
     private uniforms;
     private values;
     private lastFrame;

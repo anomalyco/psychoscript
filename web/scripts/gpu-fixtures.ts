@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// The GPU conformance fixtures (opencode `packages/widget/test/fixtures/gpu/*.json`, widgets 810f458de; copies in
+// The GPU conformance fixtures (opencode `packages/widget/test/fixtures/gpu/*.json`, widgets 0a6b8ba1b; copies in
 // rust/crates/psychoscript-web/tests/fixtures/gpu): each program runs on this host's WebAssembly (the worker's
 // `LiveRun`, from wasm/) under the fixtures' driver, and must post the same batches (ops, and bytes byte for byte),
 // give the same program errors from the host checks (src/gpu-checks.ts, which the page runs before replaying), and
@@ -10,6 +10,7 @@
 import path from "node:path"
 import { initSync, Program } from "../wasm/psychoscript_web.js"
 import { canvasSize, gpuChecks } from "../src/gpu-checks.ts"
+import { Strikes } from "../src/watchdog.ts"
 import { restoreNonFinite } from "../src/protocol.ts"
 
 const root = path.resolve(import.meta.dir, "..")
@@ -24,7 +25,7 @@ interface Fixture {
   source: string
   data?: unknown
   canvases: Array<{ key: string; width: number; height: number }>
-  inputs?: Array<{ frame: number; after?: boolean; input: { type: string; key?: string; width?: number; height?: number; lost?: string } }>
+  inputs?: Array<{ frame: number; after?: boolean; input: { type: string; key?: string; width?: number; height?: number; lost?: string; inFlight?: boolean } }>
   gpu: { available: boolean; format: string }
   // `"from-source"`: too many to record; the run's own are the batches (its errors and end are still compared).
   batches?: Array<{ frame: boolean; ops: unknown; bytes: string | null }> | "from-source"
@@ -127,19 +128,28 @@ async function run(f: Fixture) {
       if (timer >= 0) await Bun.sleep(Math.min(timer, 1000 / 60) + 1)
     }
   }
-  // As the page sends them: a canvas's size clamped to the texture limit; a device loss lost by the checks first.
-  const input = (given: { type: string; key?: string; width?: number; height?: number; lost?: string }) => {
+  // As the page sends them: a canvas's size clamped to the texture limit; a device loss lost by the checks first, a
+  // strike before that when the run had GPU work in flight (`inFlight`, not sent): a second within 30 s stops the run.
+  let now = 0
+  const strikes = new Strikes(() => now)
+  const input = (given: { type: string; key?: string; width?: number; height?: number; lost?: string; inFlight?: boolean }) => {
     if (given.type === "canvas") {
       const [width, height] = canvasSize(given.width!, given.height!)
       return deliver({ type: "canvas", key: given.key, width, height })
     }
-    if (given.type === "gpu" && given.lost !== undefined) checks.lost()
+    if (given.type === "gpu" && given.lost !== undefined) {
+      const hang = given.inFlight === true && strikes.strike() ? checks.hung() : undefined
+      if (hang) errors.push({ message: hang.message, canvases: hang.canvases })
+      checks.lost()
+      return deliver({ type: "gpu", lost: given.lost })
+    }
     deliver(given)
   }
   for (const c of f.canvases) input({ type: "canvas", ...c })
   for (let i = 0; i < FRAMES; i++) {
     await settle()
     if (ended || !requested) break
+    now = (i * 1000) / 60
     const send = (after: boolean) => {
       for (const entry of (f.inputs ?? []).filter((entry) => entry.frame === i && !!entry.after === after)) input(entry.input)
     }

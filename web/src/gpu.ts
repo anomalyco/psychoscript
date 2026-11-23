@@ -14,8 +14,7 @@
 // it is copied to the current texture to present (at most once a display frame, and at the frame request). Only such a
 // canvas's context has COPY_DST; the rest are configured as the program's canvas texture is, RENDER_ATTACHMENT alone.
 
-import { type Checked, gpuChecks, type GpuError } from "./gpu-checks.js"
-import { GPU_HANG } from "./protocol.js"
+import { type Checked, GPU_HANG, gpuChecks, type GpuError } from "./gpu-checks.js"
 import { Watchdog } from "./watchdog.js"
 
 /** A batch as the worker hands it over: the ops, and the bytes they name by `[byteOffset, byteLength]`. */
@@ -53,6 +52,8 @@ export interface GpuHost {
   unavailable(): void
   /** How long a batch's replay took on this thread, in ms (the GPU's work runs after). */
   metric(ms: number): void
+  /** A strike (widgets-gpu.md, Strikes): the run's work was unfinished at a device loss. The same function each time. */
+  strike(): void
   /** Runs `f` once in the next display frame, before the canvases present. */
   nextFrame(f: () => void): void
 }
@@ -214,7 +215,7 @@ export class GpuReplay {
     }
     void device.lost.then((info) => {
       if (this.closed || this.device !== device) return
-      // The oldest unfinished submit, running long enough, hung: its canvases stop before the loss stops the rest.
+      // The run's work unfinished at the loss is a strike; a second stops every canvas before the loss marks the rest.
       watchdog.lost()
       // Every handle is gone; the program may ask for a device again and make its resources anew (new handles). Until
       // it configures a canvas again, the canvas shows its placeholder; one an error stopped stays stopped.
@@ -270,7 +271,7 @@ export class GpuReplay {
     }
     if (this.submitted) {
       const keys = checked.keys
-      this.watchdog!.submitted(() => this.hang(keys))
+      this.watchdog!.submitted(() => this.hang(keys), this.host.strike)
     }
     // Drawn mid-frame: shown at the next display frame (the frame request's batch is shown by the frame's end).
     if (!boundary && !this.presenting && [...this.kept.values()].some((k) => k.dirty)) this.schedulePresent()
@@ -578,6 +579,12 @@ export class GpuReplay {
     this.checks.frame()
     if (this.waiting.length > 0) this.waiting.push(null)
     else this.endFrame()
+  }
+
+  /** The run's second strike (widgets-gpu.md, Strikes): every GPU canvas stops for the rest of the run. */
+  stopAll() {
+    const error = this.checks.hung()
+    if (error) this.stop(error)
   }
 
   /** The error a stopped canvas shows, or undefined while it draws. */
