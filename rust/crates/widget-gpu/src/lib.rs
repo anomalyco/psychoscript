@@ -14,7 +14,8 @@
 //!   reports it (phase [`PHASE`]) when it is the program's ([`ErrorKind::Program`]), else logs it. [`Gpu::error`]
 //!   gives a canvas's;
 //! - calls [`Gpu::poll`] each display frame, to stop the canvases of GPU work that hangs (`widgets-gpu.md`, GPU hang);
-//! - on a device loss, gets a new device, calls [`Gpu::reset`] and sends the program `{ type: "gpu", lost }`.
+//! - on a device loss, calls [`Gpu::lost`] at once, then with a new device [`Gpu::reset`], and sends the program
+//!   `{ type: "gpu", lost }`.
 //!
 //! A batch first gets the host checks (exact messages, as `packages/widget/src/gpu.ts`); one that passes is
 //! replayed, and a WebGPU validation error from that is in wgpu's words. [`Shorthand`] runs a `wgsl` canvas on the
@@ -36,7 +37,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
 use check::{Checks, Failed};
-pub use hang::{HANG, HANG_MESSAGE};
+pub use hang::{HANG, HANG_AT_LOSS, HANG_MESSAGE};
 pub use shorthand::{HEADER, SLOW_FRAME, SLOW_FRAMES, SLOW_MESSAGE, Shorthand, Uniforms};
 pub use widget_wire::Arg;
 
@@ -162,6 +163,8 @@ pub struct Gpu {
     submits: Vec<(Arc<hang::Submit>, Vec<String>, bool)>,
     /// A hang found as the device was lost, for the next [`Gpu::poll`].
     hung: Option<GpuError>,
+    /// The device is lost (until [`Gpu::reset`]).
+    lost: bool,
 }
 
 enum Res {
@@ -315,6 +318,27 @@ fn client(message: String) -> GpuError {
     }
 }
 
+/// Polls `device` without waiting; false when it is lost. wgpu panics in `Device::poll` on a lost device (`Error in
+/// Device::poll: ...`): that panic is the loss, not the host's crash. Any other panic goes on.
+pub(crate) fn poll(device: &wgpu::Device) -> bool {
+    caught(|| device.poll(wgpu::PollType::Poll))
+}
+
+fn caught(poll: impl FnOnce() -> Result<wgpu::PollStatus, wgpu::PollError>) -> bool {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(poll)) {
+        Ok(_) => true,
+        Err(panic) => {
+            let message = (panic.downcast_ref::<String>().map(String::as_str))
+                .or_else(|| panic.downcast_ref::<&str>().copied())
+                .unwrap_or("");
+            if message.starts_with("Error in Device::poll") {
+                return false;
+            }
+            std::panic::resume_unwind(panic)
+        }
+    }
+}
+
 /// Whether a batch submits GPU work.
 fn submits(ops: &[Arg]) -> bool {
     ops.iter().any(|o| match o {
@@ -361,6 +385,7 @@ impl Gpu {
             all: None,
             submits: Vec::new(),
             hung: None,
+            lost: false,
         })
     }
 
@@ -422,19 +447,14 @@ impl Gpu {
 
     /// After a device loss: every handle is gone, replay goes on with `device`; new handles keep counting up. The
     /// canvases the loss stopped (every canvas's texture is dropped) draw again once the program renders into them;
-    /// a canvas an error or a GPU hang stopped stays stopped, work the lost device was hung on included (the next
-    /// [`Gpu::poll`] returns it). A batch the program posted before it learned of the loss is dropped quietly: one
+    /// a canvas an error or a GPU hang stopped stays stopped, the work the device lost was hung on included
+    /// ([`Gpu::lost`], which it calls if the host didn't). A batch the program posted before it learned of the loss is dropped quietly: one
     /// whose first failure is `no handle <h>`, `h` from 1 to the greatest handle made before the loss. Canvas sizes
     /// are kept.
     pub fn reset(&mut self, device: wgpu::Device, queue: wgpu::Queue) -> Result<(), GpuError> {
         check_device(&device, self.format)?;
-        // Work the lost device hung on stops its canvases as the loss doesn't (a watchdog may lose the device).
-        if let Err(e) = self.hangs() {
-            self.hung = Some(e);
-        }
-        for (s, _, _) in self.submits.drain(..) {
-            s.forget();
-        }
+        self.lost();
+        self.lost = false;
         self.device = device;
         self.queue = queue;
         self.res.clear();
@@ -546,18 +566,38 @@ impl Gpu {
         if let Some(e) = self.hung.take() {
             return Err(e);
         }
-        if self.submits.is_empty() {
+        if self.submits.is_empty() || self.lost {
             return Ok(());
         }
-        let _ = self.device.poll(wgpu::PollType::Poll);
-        self.hangs()
+        if !poll(&self.device) {
+            self.lost();
+            return self.hung.take().map_or(Ok(()), Err);
+        }
+        self.hangs(HANG)
     }
 
-    fn hangs(&mut self) -> Result<(), GpuError> {
+    /// The device is lost: call it as soon as the host knows, before [`Gpu::reset`] (which calls it if the host
+    /// didn't, and [`Gpu::poll`] does when it finds the device lost). The oldest unfinished work on the queue that had
+    /// run [`HANG_AT_LOSS`] hung (a watchdog may have killed it): its canvases stop as a GPU hang's do, and the next
+    /// [`Gpu::poll`] returns the error.
+    pub fn lost(&mut self) {
+        if self.lost {
+            return;
+        }
+        self.lost = true;
+        if let Err(e) = self.hangs(HANG_AT_LOSS) {
+            self.hung = Some(e);
+        }
+        for (s, _, _) in self.submits.drain(..) {
+            s.forget();
+        }
+    }
+
+    fn hangs(&mut self, after: std::time::Duration) -> Result<(), GpuError> {
         if self.submits.is_empty() {
             return Ok(());
         }
-        hang::judge(&self.queue);
+        hang::judge(&self.queue, after);
         self.submits.retain(|(s, _, _)| !s.done());
         let mut keys: Vec<String> = Vec::new();
         let (mut found, mut none) = (false, false);
@@ -658,5 +698,23 @@ impl Gpu {
             }
         };
         &mut self.canvases[at]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::caught;
+
+    /// wgpu's panic in `Device::poll` on a lost device is the loss; any other panic goes on.
+    #[test]
+    fn a_poll_panicking_on_a_lost_device_is_the_loss() {
+        assert!(caught(|| Ok(wgpu::PollStatus::QueueEmpty)));
+        assert!(caught(|| Err(wgpu::PollError::Timeout)));
+        assert!(!caught(|| panic!(
+            "Error in Device::poll: Parent device is lost"
+        )));
+        let other = std::panic::catch_unwind(|| caught(|| panic!("something else")));
+        let message = other.unwrap_err().downcast::<&str>().ok().map(|m| *m);
+        assert_eq!(message, Some("something else"));
     }
 }

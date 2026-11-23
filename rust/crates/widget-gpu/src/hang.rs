@@ -11,6 +11,9 @@ use std::time::{Duration, Instant};
 
 /// GPU work unfinished this long after its submit hung.
 pub const HANG: Duration = Duration::from_secs(1);
+/// At a device loss, the oldest unfinished submit that had run this long hung (the device's watchdog may have killed
+/// it before [`HANG`]).
+pub const HANG_AT_LOSS: Duration = Duration::from_millis(250);
 /// The client error a hang stops canvases with.
 pub const HANG_MESSAGE: &str = "the GPU work took over 1 s; the canvas is stopped";
 
@@ -72,20 +75,20 @@ pub(crate) fn submitted(queue: &wgpu::Queue) -> Arc<Submit> {
     submit
 }
 
-/// Finds `queue`'s hung submit, if any: its oldest unfinished one, unfinished [`HANG`] after its submit and after the
-/// one before it finished.
-pub(crate) fn judge(queue: &wgpu::Queue) {
+/// Finds `queue`'s hung submit, if any: its oldest unfinished one, unfinished `after` ([`HANG`], or at a loss
+/// [`HANG_AT_LOSS`]) after its submit and after the one before it finished.
+pub(crate) fn judge(queue: &wgpu::Queue, after: Duration) {
     let mut queues = QUEUES.lock().unwrap_or_else(PoisonError::into_inner);
     let k = key(queue);
     let Some(q) = queues.get_mut(&k) else { return };
-    if q.judge(Instant::now()) {
+    if q.judge(Instant::now(), after) {
         queues.remove(&k);
     }
 }
 
 impl Queue {
     /// Drops the finished submits and marks the oldest left hung when it is; whether none is left.
-    fn judge(&mut self, now: Instant) -> bool {
+    fn judge(&mut self, now: Instant, after: Duration) -> bool {
         let before = self.submits.len();
         while self.submits.front().is_some_and(|s| s.done()) {
             self.submits.pop_front();
@@ -98,7 +101,7 @@ impl Queue {
         match self.submits.front() {
             None => true,
             Some(s) => {
-                if now.duration_since(s.at.max(self.since)) > HANG {
+                if now.duration_since(s.at.max(self.since)) >= after {
                     s.hung.store(true, Ordering::Release);
                 }
                 false
@@ -119,6 +122,8 @@ mod tests {
         })
     }
 
+    const H: Duration = HANG;
+
     /// Only the oldest unfinished submit on a queue can hang: what waits behind it isn't blamed, and the next one's
     /// second counts from when the hung one finished.
     #[test]
@@ -130,31 +135,61 @@ mod tests {
             submits: [&first, &second, &third].map(|s| (*s).clone()).into(),
             since: ms(0),
         };
-        assert!(!q.judge(ms(900)));
+        assert!(!q.judge(ms(900), H));
         assert!(!first.hung());
-        assert!(!q.judge(ms(1001)));
+        assert!(!q.judge(ms(1001), H));
         assert!((first.hung(), second.hung(), third.hung()) == (true, false, false));
         // Long after, still waiting behind it: not hung.
-        assert!(!q.judge(ms(5000)));
+        assert!(!q.judge(ms(5000), H));
         assert!(!second.hung() && !third.hung());
         // The hung one finishes: the next has its own second from then.
         first.forget();
-        assert!(!q.judge(ms(6000)));
+        assert!(!q.judge(ms(6000), H));
         assert!(!second.hung());
-        assert!(!q.judge(ms(6900)));
+        assert!(!q.judge(ms(6900), H));
         assert!(!second.hung());
         second.forget();
         third.forget();
-        assert!(q.judge(ms(7000)));
+        assert!(q.judge(ms(7000), H));
         // A submit made while the queue was idle counts from its own submit.
         let late = submit(ms(9000));
         let mut q = Queue {
             submits: [late.clone()].into(),
             since: ms(0),
         };
-        assert!(!q.judge(ms(9500)));
+        assert!(!q.judge(ms(9500), H));
         assert!(!late.hung());
-        assert!(!q.judge(ms(10_100)));
+        assert!(!q.judge(ms(10_100), H));
         assert!(late.hung());
+    }
+
+    /// At a loss, the oldest unfinished submit hung once it had run 250 ms, from when the one before it finished;
+    /// what waits behind it isn't blamed.
+    #[test]
+    fn at_a_loss_a_quarter_second_is_a_hang() {
+        let t0 = Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let (first, second) = (submit(ms(0)), submit(ms(100)));
+        let mut q = Queue {
+            submits: [first.clone(), second.clone()].into(),
+            since: ms(0),
+        };
+        assert!(!q.judge(ms(249), HANG_AT_LOSS));
+        assert!(!first.hung());
+        assert!(!q.judge(ms(250), HANG_AT_LOSS));
+        assert!(first.hung() && !second.hung());
+        // A submit that started running only when the one before finished, 200 ms before the loss: not hung.
+        let (done, running) = (submit(ms(0)), submit(ms(10)));
+        let mut q = Queue {
+            submits: [done.clone(), running.clone()].into(),
+            since: ms(0),
+        };
+        assert!(!q.judge(ms(800), HANG_AT_LOSS));
+        done.forget();
+        assert!(!q.judge(ms(900), HANG_AT_LOSS));
+        assert!(!q.judge(ms(1100), HANG_AT_LOSS));
+        assert!(!running.hung());
+        assert!(!q.judge(ms(1150), HANG_AT_LOSS));
+        assert!(running.hung());
     }
 }
