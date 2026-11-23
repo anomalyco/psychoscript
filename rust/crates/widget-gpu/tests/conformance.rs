@@ -12,10 +12,11 @@ use psychoscript::{HostFunction, HostValue, Runtime};
 use serde_json::{Value, json};
 use widget_gpu::{Arg, Gpu, GpuError, Stops, clamp_size};
 
+/// A posted batch as a host converts it: `ops` when a list, `bytes` when an `ArrayBuffer`.
 struct Posted {
     frame: bool,
-    ops: Vec<Arg>,
-    bytes: Vec<u8>,
+    ops: Option<Vec<Arg>>,
+    bytes: Option<Vec<u8>>,
 }
 
 fn base64(s: &str) -> Vec<u8> {
@@ -38,8 +39,8 @@ fn base64(s: &str) -> Vec<u8> {
     out
 }
 
-fn ops(v: &Value) -> Vec<Arg> {
-    v.as_array().unwrap().iter().map(Arg::from_json).collect()
+fn ops(v: &Value) -> Option<Vec<Arg>> {
+    Some(v.as_array()?.iter().map(Arg::from_json).collect())
 }
 
 /// A raw fixture's own batches: its source run with a `widget` that records what `__host.post` gets.
@@ -79,7 +80,7 @@ return null"
             Posted {
                 frame: false,
                 ops: ops(&v["ops"]),
-                bytes: vec![0; v["bytes"].as_u64().unwrap() as usize],
+                bytes: Some(vec![0; v["bytes"].as_u64().unwrap() as usize]),
             }
         })
         .collect()
@@ -138,7 +139,7 @@ fn replay(device: &wgpu::Device, queue: &wgpu::Queue, f: &Value) -> (Gpu, Vec<Va
             .map(|b| Posted {
                 frame: b["frame"].as_bool().unwrap(),
                 ops: ops(&b["ops"]),
-                bytes: base64(b["bytes"].as_str().unwrap()),
+                bytes: b["bytes"].as_str().map(base64),
             })
             .collect(),
         None => raw(f["source"].as_str().unwrap()),
@@ -170,7 +171,15 @@ fn replay(device: &wgpu::Device, queue: &wgpu::Queue, f: &Value) -> (Gpu, Vec<Va
     };
     let mut errors = Vec::new();
     for b in &batches {
-        if let Err(e) = gpu.apply(&b.ops, &b.bytes) {
+        // The batch checks a host makes as it converts the posted value, in `gpu.ts`'s order.
+        let r = match (&b.ops, &b.bytes) {
+            (None, _) => gpu.shape_error(None, "a batch's ops must be a list"),
+            (Some(ops), None) => {
+                gpu.shape_error(Some(ops), "a batch's bytes must be an ArrayBuffer")
+            }
+            (Some(ops), Some(bytes)) => gpu.apply(ops, bytes),
+        };
+        if let Err(e) = r {
             errors.push(error_json(&e));
         }
         if b.frame {
@@ -197,8 +206,11 @@ fn every_fixture() {
         }
         // A valid program that renders presents each of its canvases.
         let renders = f["batches"].as_array().is_some_and(|b| {
-            b.iter()
-                .any(|b| b["ops"].as_array().unwrap().iter().any(|o| o[0] == "pass"))
+            b.iter().any(|b| {
+                b["ops"]
+                    .as_array()
+                    .is_some_and(|ops| ops.iter().any(|o| o[0] == "pass"))
+            })
         });
         if expected.is_empty() && renders {
             for c in f["canvases"].as_array().unwrap() {
