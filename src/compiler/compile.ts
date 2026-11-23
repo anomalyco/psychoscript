@@ -42,6 +42,7 @@ import type {
   YieldExpression,
 } from "acorn"
 import { type AstNode, supportedSyntaxMessage } from "../runtime/model.js"
+import { fitsBigIntSize } from "../runtime/limits.js"
 import { nodeId, type Source } from "../runtime/source.js"
 import { Code, CodeBuilder, CodeSizeOverflow, hashOf, type Label } from "../code.js"
 import {
@@ -1068,8 +1069,9 @@ const compileFunctionBody = (
     if (node.regex) {
       const k = builder.constant({ pattern: node.regex.pattern, flags: node.regex.flags })
       builder.emit(Op.REGEXP, 0, k, idx(node), 1)
-    } else if (typeof v === "bigint")
-      emitThrowError({ type: "TypeError", message: "BigInt literals are not supported." }, node)
+    } else if (typeof v === "bigint" && !fitsBigIntSize(v))
+      emitThrowError({ type: "RangeError", message: "Maximum BigInt size exceeded" }, node)
+    else if (typeof v === "bigint") builder.emit(Op.PUSH_CONST, 0, builder.constant(v), idx(node), 1)
     else if (v === null) builder.emit(Op.PUSH_NULL, 0, 0, idx(node), 1)
     else if (typeof v === "boolean") builder.emit(Op.PUSH_BOOL, v ? 1 : 0, 0, idx(node), 1)
     else if (typeof v === "number") builder.emitNumber(v, idx(node))
@@ -1142,9 +1144,7 @@ const compileFunctionBody = (
           emitSetHome(prop.value as Expression, 2)
           builder.emit(Op.DEFINE_ACCESSOR, 1 | setter, 0, idx(prop), -2)
         } else {
-          const bigint = prop.key.type === "Literal" && typeof prop.key.value === "bigint"
-          if (bigint) emitThrowError({ type: "TypeError", message: "BigInt literals are not supported." }, prop.key)
-          const name = bigint ? "" : keyName(prop.key)
+          const name = keyName(prop.key)
           compileNamedExpression(prop.value as Expression, `${prop.kind} ${name}`)
           emitSetHome(prop.value as Expression, 1)
           builder.emit(Op.DEFINE_ACCESSOR, setter, builder.constant(name), idx(prop), -1)
@@ -1157,9 +1157,7 @@ const compileFunctionBody = (
         if (prop.method) emitSetHome(prop.value as Expression, 2)
         builder.emit(Op.DEFINE_FIELD, 1, 0, idx(prop), -2)
       } else {
-        const bigint = prop.key.type === "Literal" && typeof prop.key.value === "bigint"
-        if (bigint) emitThrowError({ type: "TypeError", message: "BigInt literals are not supported." }, prop.key)
-        const name = bigint ? "" : keyName(prop.key)
+        const name = keyName(prop.key)
         compileNamedExpression(prop.value as Expression, name)
         if (prop.method) emitSetHome(prop.value as Expression, 1)
         builder.emit(Op.DEFINE_FIELD, 0, builder.constant(name), idx(prop), -1)

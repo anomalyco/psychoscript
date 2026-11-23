@@ -56,7 +56,7 @@ const encodings = new Set([
 
 const isEncoding = (value: Value) => typeof value === "string" && encodings.has(value.toLowerCase())
 
-// Read and write methods that take only numbers, delegated to the host Buffer as is.
+// Read and write methods that take only numbers (or BigInts, for the 64-bit ones), delegated to the host Buffer as is.
 const numeric = [
   "readUInt8",
   "readUint8",
@@ -81,6 +81,12 @@ const numeric = [
   "readUIntBE",
   "readIntLE",
   "readIntBE",
+  "readBigInt64LE",
+  "readBigInt64BE",
+  "readBigUInt64LE",
+  "readBigUint64LE",
+  "readBigUInt64BE",
+  "readBigUint64BE",
   "writeUInt8",
   "writeUint8",
   "writeInt8",
@@ -104,6 +110,12 @@ const numeric = [
   "writeUIntBE",
   "writeIntLE",
   "writeIntBE",
+  "writeBigInt64LE",
+  "writeBigInt64BE",
+  "writeBigUInt64LE",
+  "writeBigUint64LE",
+  "writeBigUInt64BE",
+  "writeBigUint64BE",
   "swap16",
   "swap32",
   "swap64",
@@ -261,7 +273,13 @@ export const bufferGlobal = <R>(ctx: Interpreter<R>) => {
       const method = (target as unknown as Record<string, (...items: Array<unknown>) => unknown>)[name]!
       const result = attempt(() => method.apply(target, args.map(argument)))
       if (result === target) return thisValue
-      if (typeof result === "number" || typeof result === "boolean" || typeof result === "string") return result
+      if (
+        typeof result === "number" ||
+        typeof result === "bigint" ||
+        typeof result === "boolean" ||
+        typeof result === "string"
+      )
+        return result
       return undefined
     },
   ]

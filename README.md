@@ -295,14 +295,14 @@ promises. Exceeding one throws a `RangeError` in the program. There is no step-c
 Modern strict-mode JavaScript: `let`/`const`, destructuring, spread, arrow, async and generator functions (including
 async generators and `for await`), classes (fields, static members, getters and setters, `extends`, `super`), object
 literal getters and setters, labels, `try`/`finally`, top-level `await` and `return`, and `import`/`require` of host
-globals by module name. Built-ins: `Object`, `Array`, `String`, `Number`, `Math`, `JSON`, `Date`, `RegExp`, `Map`,
+globals by module name. Built-ins: `Object`, `Array`, `String`, `Number`, `BigInt`, `Math`, `JSON`, `Date`, `RegExp`, `Map`,
 `Set`, `Promise`, `Iterator` helpers, errors, `URL`, `URLSearchParams`, `Headers`, `TextEncoder`/`TextDecoder`,
 `atob`/`btoa`, `structuredClone`, `crypto.randomUUID`/`getRandomValues`, `Uint8Array`, Node's `Buffer`, `console`,
 and with `typedArrays: true`, `ArrayBuffer`, `Uint16Array`, `Uint32Array`, `Int32Array`, `Float32Array` and
 `Float64Array`.
 
 Not supported: private members (`#x`), static blocks, `new` on plain functions, `Proxy`/`Reflect`, `Symbol()` (only
-`Symbol.iterator` and `Symbol.asyncIterator` exist), BigInt, `Int8Array`, `Int16Array`, `Uint8ClampedArray`, the
+`Symbol.iterator` and `Symbol.asyncIterator` exist), `Int8Array`, `Int16Array`, `Uint8ClampedArray`, the
 BigInt and Float16 typed arrays, `DataView`, resizable or shared buffers, `WeakRef`/`FinalizationRegistry`, sloppy mode, `eval`, `export`, and TypeScript syntax.
 Unsupported syntax fails before the program runs, with a hint.
 

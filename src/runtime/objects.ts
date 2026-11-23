@@ -979,7 +979,7 @@ export class HostNamespace {
 }
 
 /** Every value a program can hold. Host values never appear here; they are copied in at the boundaries. */
-export type Value = string | number | boolean | null | undefined | symbol | Obj | HostNamespace
+export type Value = string | number | bigint | boolean | null | undefined | symbol | Obj | HostNamespace
 
 /** ToString without consulting program-defined methods. */
 export const coerceToString = (value: Value): string => (value instanceof Obj ? value.toString() : String(value))
@@ -987,6 +987,7 @@ export const coerceToString = (value: Value): string => (value instanceof Obj ? 
 /** ToNumber without consulting program-defined methods; namespace paths are not numbers. */
 export const coerceToNumber = (value: Value): number => {
   if (value instanceof Obj) return value.toNumber()
+  if (typeof value === "bigint") throw typeError("Cannot convert a BigInt value to a number.")
   return value instanceof HostNamespace ? Number.NaN : Number(value)
 }
 
@@ -1188,7 +1189,7 @@ const writeElement = (target: Indexed, name: string | number | symbol, value: Va
   }
   if (at !== undefined) {
     if (target instanceof Bytes) {
-      target.bytes[at] = typeof value === "number" ? value : Number(value)
+      target.bytes[at] = typeof value === "number" ? value : coerceToNumber(value)
       return true
     }
     if (!(at in target.items)) rejectAddition(target, at)
@@ -1199,7 +1200,7 @@ const writeElement = (target: Indexed, name: string | number | symbol, value: Va
     return true
   }
   if (!(target instanceof Arr) || name !== "length") return undefined
-  const length = typeof value === "number" ? value : Number(value)
+  const length = typeof value === "number" ? value : coerceToNumber(value)
   if (!Number.isInteger(length) || length < 0) throw rangeError("Invalid array length")
   // Shrinking deletes elements, which a sealed array forbids.
   if (length < target.items.length && !target.elements.configurable) return false
