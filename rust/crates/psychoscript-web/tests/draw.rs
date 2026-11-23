@@ -40,11 +40,22 @@ fn expected(case: &Value) -> Result<Value, String> {
     })
 }
 
-fn prelude() -> String {
+fn read(name: &str) -> String {
     std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/wire/prelude.js"),
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/wire")
+            .join(name),
     )
     .unwrap()
+}
+
+/// A step program's prelude; a live one's adds the live prelude (opencode `widgets` b18aa923d).
+fn prelude() -> String {
+    read("prelude.js")
+}
+
+fn live_prelude() -> String {
+    format!("{}\n{}", read("prelude.js"), read("prelude-live.js"))
 }
 
 fn parse(text: &str) -> Value {
@@ -72,7 +83,7 @@ fn step(expression: &str) -> Result<Value, String> {
 fn live(expression: &str) -> Result<Value, String> {
     let program = format!(
         "{}\nasync function main() {{\n  widget.render(ui.canvas({{ key: \"c\", height: 1 }}))\n  widget.draw(\"c\", {expression})\n}}\nreturn await __widget_live(__input(), true)",
-        prelude()
+        live_prelude()
     );
     let mut run = Program::new(&program, None)
         .unwrap()

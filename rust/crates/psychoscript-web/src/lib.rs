@@ -6,9 +6,6 @@
 //! [`Program::start_live`] starts a [`LiveRun`] instead, a long-running program with `__host` (`post`, `receive`,
 //! `sleep`, `now`, `fetch`) that the host drives from its event loop with [`LiveRun::pump`].
 //!
-//! With feature `shader`: [`shader::translate`] makes a `shader` node's WGSL a GLSL ES 3.00 fragment shader with naga,
-//! for WebGL2 where WebGPU is missing.
-//!
 //! The native parts are plain Rust (tested natively); `wasm` holds the JavaScript bindings, built for
 //! `wasm32-unknown-unknown` only.
 
@@ -24,8 +21,6 @@ mod json;
 mod live;
 #[cfg(feature = "language")]
 mod program;
-#[cfg(feature = "shader")]
-pub mod shader;
 #[cfg(feature = "language")]
 mod time;
 #[cfg(feature = "language")]

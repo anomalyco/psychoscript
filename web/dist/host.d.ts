@@ -1,7 +1,6 @@
 import { Images } from "./canvas.js";
 import type { ErrorInfo, FromWorker, ToWorker } from "./protocol.js";
 import { Ticker } from "./render.js";
-import type { ShaderError } from "./shader.js";
 import type { Theme } from "./theme.js";
 export interface Capabilities {
     https?: {
@@ -130,8 +129,6 @@ export interface MountedWidget {
 export interface HostOptions {
     /** URL of `psychoscript_web_bg.wasm` (default: next to this module). */
     wasmUrl?: string | URL;
-    /** URL of `psychoscript_web_shader_bg.wasm`, loaded only for WebGL2 shaders (default: next to this module). */
-    shaderWasmUrl?: string | URL;
     /** URL of `worker.js` (default: next to this module); a module worker. */
     workerUrl?: string | URL;
     /** Live programs' slice budget, ms (default 50). */
@@ -154,7 +151,6 @@ declare class WorkerHandle {
     private compiled;
     readonly widgets: Map<number, Widget>;
     private requests;
-    private shaderSent;
     dead: boolean;
     constructor(host: WidgetHost, module: Promise<WebAssembly.Module>);
     send(m: ToWorker): void;
@@ -165,10 +161,6 @@ declare class WorkerHandle {
     acquire(text: string, live: boolean): Program;
     /** Keeps up to 8 programs nobody uses compiled, for widgets that come back (scrolling). */
     release(text: string, live: boolean): void;
-    translate(wgsl: string): Promise<{
-        code: string;
-        block: string;
-    } | ShaderError>;
     private crash;
     terminate(): void;
 }
@@ -177,7 +169,6 @@ export declare class WidgetHost {
     readonly options: HostOptions;
     private ids;
     private module;
-    private shader;
     private stepWorker;
     private liveWorkers;
     readonly ticker: Ticker;
@@ -186,13 +177,11 @@ export declare class WidgetHost {
     private observed;
     private widgets;
     private resolvers;
-    private translations;
     constructor(options?: HostOptions);
     nextId(): number;
     /** Loads and compiles the WebAssembly and starts (and warms) the step worker now rather than at the first mount. */
     preload(): Promise<void>;
     languageModule(): Promise<WebAssembly.Module>;
-    shaderModule(): Promise<WebAssembly.Module>;
     steps(): WorkerHandle;
     live(): WorkerHandle;
     ended(worker: WorkerHandle): void;
@@ -203,10 +192,6 @@ export declare class WidgetHost {
         programs: number;
         widgets: number;
     }[]>;
-    translate(wgsl: string): Promise<{
-        code: string;
-        block: string;
-    } | ShaderError>;
     /** A worker died: its widgets start again, but the one whose program crashed it shows the error. */
     lost(worker: WorkerHandle, message: string, culprit?: number): void;
     mount(el: HTMLElement, options: MountOptions): MountedWidget;
@@ -309,8 +294,14 @@ declare class Widget implements MountedWidget {
     private gpu;
     private gpuUnavailable;
     private gpuKeys;
+    /** The GPU canvas with this key in the last rendered view. */
+    private gpuCanvas;
+    /** A batch as posted (`frame`: in a frame request), for the checks and the replay. */
     private gpuBatch;
-    /** Before a frame: `{ type: "canvas", key, width, height }` (physical pixels) for each GPU canvas whose size changed. */
+    /**
+     * Before a frame, the first one too: `{ type: "canvas", key, width, height }` (physical pixels) for each GPU canvas
+     * whose size changed.
+     */
     private gpuSizes;
     private liveTick;
     private toggleFullscreen;

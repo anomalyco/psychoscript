@@ -3,7 +3,6 @@
 // and `fetch` on this side. The page owns the DOM and the GPU.
 
 import { initSync, LiveRun, Program } from "../wasm/psychoscript_web.js"
-import { initSync as initShader, translateWgsl } from "../wasm/psychoscript_web_shader.js"
 import type { ErrorInfo, FromWorker, LiveExit, StepOutput, ToWorker } from "./protocol.js"
 import { DRAW_TIMEOUT_MS, STEP_TIMEOUT_MS } from "./protocol.js"
 
@@ -43,16 +42,14 @@ const programs = new Map<number, Compiled>()
 const steps = new Map<number, StepSession>()
 const lives = new Map<number, Live>()
 let ready = false
-let shaderReady = false
 let crashed = false
 let memory: WebAssembly.Memory | undefined
 
 function info(e: unknown): ErrorInfo {
   if (e && typeof e === "object" && "message" in e) {
-    const o = e as { type?: string; kind?: string; message: string; line?: number; column?: number; name?: string; program?: boolean; phase?: string }
+    const o = e as { type?: string; kind?: string; message: string; line?: number; column?: number; phase?: string }
     return {
-      type: o.type ?? (o.name === "ShaderError" ? "shader" : "host"),
-      program: o.program,
+      type: o.type ?? "host",
       kind: o.kind,
       message: String(o.message),
       line: o.line,
@@ -346,12 +343,6 @@ function handle(m: ToWorker) {
       }
       post({ t: "ready" })
       return
-    case "shader":
-      if (!shaderReady) {
-        initShader({ module: m.module })
-        shaderReady = true
-      }
-      return
     case "compile": {
       const started = performance.now()
       try {
@@ -407,7 +398,8 @@ function handle(m: ToWorker) {
         return
       }
       try {
-        const run = c.program.startLive(`{"data":${m.data}}`, {
+        const input = `{"data":${m.data}${m.gpu ? `,"gpu":${JSON.stringify(m.gpu)}` : ""}}`
+        const run = c.program.startLive(input, {
           native: true,
           httpsHosts: m.hosts,
           allowLocalNetwork: m.localNetwork === true,
@@ -461,16 +453,6 @@ function handle(m: ToWorker) {
     case "stats":
       post({ t: "stats", req: m.req, wasmBytes: memory?.buffer.byteLength ?? 0, programs: programs.size, widgets: steps.size + lives.size })
       return
-    case "translate": {
-      try {
-        const out = translateWgsl(m.wgsl) as { code: string; block: string }
-        post({ t: "translated", req: m.req, code: out.code, block: out.block })
-      } catch (e) {
-        if (trapped(e)) return
-        post({ t: "translated", req: m.req, error: info(e) })
-      }
-      return
-    }
   }
 }
 

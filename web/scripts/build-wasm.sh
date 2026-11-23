@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Builds the two WebAssembly modules into web/wasm/: psychoscript_web (the language: Program, LiveRun) and
-# psychoscript_web_shader (naga's WGSL -> GLSL ES 3.00, loaded only where WebGPU is missing). Needs the
+# Builds the WebAssembly module into web/wasm/: psychoscript_web (the language: Program, LiveRun). Needs the
 # wasm32-unknown-unknown target, wasm-bindgen-cli at the version in rust/Cargo.lock, and wasm-opt (binaryen).
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
@@ -22,5 +21,4 @@ build() { # features out-name
 }
 
 build "" psychoscript_web
-build "--no-default-features --features shader" psychoscript_web_shader
 ls -l "$out"

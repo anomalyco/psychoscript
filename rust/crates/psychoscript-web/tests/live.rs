@@ -263,11 +263,10 @@ __host.post({ type: "result", interactive, still, caught })
 
 /// A live program on the prelude, started natively with a post rate of `rate` a second.
 fn start_widget(source: &str, rate: u32) -> LiveRun {
-    let prelude = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/wire/prelude.js"),
-    )
-    .unwrap();
-    let program = format!("{prelude}\n{source}\nreturn await __widget_live(__input(), true)");
+    let program = format!(
+        "{}\n{source}\nreturn await __widget_live(__input(), true)",
+        live_prelude()
+    );
     Program::new(&program, None)
         .unwrap()
         .start_live(
@@ -610,8 +609,9 @@ fn an_invalid_draw_command_ends_the_run_in_phase_draw() {
     assert_eq!(posted["commands"].as_array().unwrap().len(), 13);
 }
 
-/// GPU batches (widgets-gpu.md, Transport) go out at once, in a frame request or on their own: their ops as JSON, a
-/// `context` op with its GPU canvas's id appended, and their bytes in the byte outbox, named by `[offset, length]`.
+/// GPU batches (widgets-gpu.md, Transport) go out at once, in a frame request or on their own, as they are for the
+/// client's checks: their ops as JSON and an `ArrayBuffer`'s bytes in the byte outbox, named by `[offset, length]`;
+/// other bytes `null`, a batch that isn't an object whole. A render names its GPU canvases' ids by key.
 #[test]
 fn gpu_batches_carry_their_ops_and_bytes() {
     let mut run = start_widget(
@@ -619,8 +619,10 @@ fn gpu_batches_carry_their_ops_and_bytes() {
   widget.render(ui.column([ui.canvas({ key: "scene", gpu: true, height: 10 }), ui.canvas({ key: "flat", height: 10 })]))
   const data = new Float32Array([1, 2])
   __host.post({ type: "gpu", ops: [["context", 1, "scene", "bgra8unorm", "opaque"], ["buffer", 3, 8, 40], ["writeBuffer", 3, 0, 0, 8]], bytes: data.buffer })
-  try { __host.post({ type: "gpu", ops: [["context", 2, "flat", "bgra8unorm", "opaque"]], bytes: new ArrayBuffer(0) }) } catch (e) { widget.send(e.message) }
   __host.post({ type: "frame", gpu: { ops: [["writeBuffer", 3, 0, 0, 4]], bytes: new Uint32Array([7]).buffer } })
+  __host.post({ type: "gpu", ops: "x", bytes: new Uint8Array(2) })
+  __host.post({ type: "gpu", bytes: new ArrayBuffer(1) })
+  __host.post({ type: "frame", gpu: 5 })
   try { widget.draw("scene", []) } catch (e) { widget.send(e.message) }
   try { __host.post({ type: "gpu", ops: [["shader", 4, () => 1]], bytes: new ArrayBuffer(0) }) } catch (e) { widget.send(e.name) }
 }"#,
@@ -637,8 +639,10 @@ fn gpu_batches_carry_their_ops_and_bytes() {
             break;
         }
     }
-    // A render names its GPU canvases' ids by key.
-    assert_eq!(out[0]["gpu"], json!({ "scene": "0/:scene" }));
+    assert_eq!(
+        out[0]["gpu"],
+        json!({ "scene": out[0]["node"]["children"][0]["id"] })
+    );
     assert_eq!(
         out[1],
         json!({ "type": "gpu", "batch": { "ops": [
@@ -648,29 +652,83 @@ fn gpu_batches_carry_their_ops_and_bytes() {
         ], "bytes": [0, 8] } })
     );
     assert_eq!(
-        out[2]["value"],
-        "No GPU canvas with key \"flat\" in the rendered view"
+        out[2],
+        json!({ "type": "frame", "gpu": { "ops": [["writeBuffer", 3, 0, 0, 4]], "bytes": [8, 4] } })
     );
     assert_eq!(
         out[3],
-        json!({ "type": "frame", "gpu": { "ops": [["writeBuffer", 3, 0, 0, 4]], "bytes": [8, 4] } })
+        json!({ "type": "gpu", "batch": { "ops": "x", "bytes": null } })
     );
-    let floats: Vec<u8> = [1.0f32, 2.0].iter().flat_map(|f| f.to_le_bytes()).collect();
-    assert_eq!(bytes, [floats, 7u32.to_le_bytes().to_vec()].concat());
     assert_eq!(
-        out[4]["value"],
+        out[4],
+        json!({ "type": "gpu", "batch": { "bytes": [12, 1] } })
+    );
+    assert_eq!(out[5], json!({ "type": "frame", "gpu": 5 }));
+    let floats: Vec<u8> = [1.0f32, 2.0].iter().flat_map(|f| f.to_le_bytes()).collect();
+    assert_eq!(
+        bytes,
+        [floats, 7u32.to_le_bytes().to_vec(), vec![0]].concat()
+    );
+    assert_eq!(
+        out[6]["value"],
         "Canvas \"scene\" is drawn by the GPU; it takes no draw commands"
     );
-    assert_eq!(out[5]["value"], "TypeError");
+    assert_eq!(out[7]["value"], "TypeError");
 }
 
-/// A live program on the prelude (opencode widgets 35f0712e3), run natively.
+/// A GPU batch never overtakes a waiting render or draw: it waits behind them (taking no token) and goes out right
+/// after the post before it, with its bytes; a frame request without a batch still goes out at once.
+#[test]
+fn gpu_batches_wait_in_order_behind_waiting_posts() {
+    let mut run = start_widget(
+        r#"async function main() {
+  for (let i = 0; i < 10; i++) widget.render(ui.column([ui.text(String(i)), ui.canvas({ key: "scene", gpu: true, height: 1 })]))
+  __host.post({ type: "gpu", ops: [["context", 1, "scene", "bgra8unorm", "opaque"]], bytes: new Uint8Array([9, 8]).buffer })
+  __host.post({ type: "frame" })
+  __host.post({ type: "frame", gpu: { ops: [["submit"]], bytes: new Uint8Array([7]).buffer } })
+  await widget.sleep(1000)
+}"#,
+        10,
+    );
+    let (mut out, mut bytes) = (Vec::new(), Vec::new());
+    let collect = |run: &mut LiveRun, ms, out: &mut Vec<Value>, bytes: &mut Vec<u8>| {
+        out.extend(run_for(run, ms));
+        bytes.extend(run.take_bytes());
+    };
+    collect(&mut run, 30, &mut out, &mut bytes);
+    let kinds = |out: &[Value]| -> Vec<String> {
+        out.iter()
+            .map(|m| match m["type"].as_str().unwrap() {
+                "render" => format!(
+                    "render {}",
+                    m["node"]["children"][0]["text"].as_str().unwrap()
+                ),
+                other => other.to_owned(),
+            })
+            .collect()
+    };
+    // The burst's 8 renders, and the bare frame request at once; the batches wait behind render 9.
+    assert_eq!(
+        kinds(&out),
+        [
+            "render 0", "render 1", "render 2", "render 3", "render 4", "render 5", "render 6",
+            "render 7", "frame"
+        ]
+    );
+    assert!(out[8].get("gpu").is_none());
+    collect(&mut run, 150, &mut out, &mut bytes);
+    assert_eq!(kinds(&out)[9..], ["render 9", "gpu", "frame"]);
+    assert_eq!(out[10]["batch"]["bytes"], json!([0, 2]));
+    assert_eq!(out[11]["gpu"]["bytes"], json!([2, 1]));
+    assert_eq!(bytes, [9, 8, 7]);
+}
+
+/// A live program on the live prelude (opencode widgets b18aa923d), run natively.
 fn widget(source: &str) -> (Vec<Value>, Option<LiveExit>) {
-    let prelude = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/wire/prelude.js"),
-    )
-    .unwrap();
-    let program = format!("{prelude}\n{source}\nreturn await __widget_live(__input(), true)");
+    let program = format!(
+        "{}\n{source}\nreturn await __widget_live(__input(), true)",
+        live_prelude()
+    );
     let mut run = Program::new(&program, None)
         .unwrap()
         .start_live(
@@ -735,14 +793,23 @@ fn a_function_posted_where_none_may_go_fails_the_run_at_the_call() {
     );
 }
 
-/// The prelude's lines; it ends with a newline, so with the joining one the widget template starts two lines on.
+/// What a live program has before its source (opencode `widgets` b18aa923d): the prelude, a newline, the live
+/// prelude.
+fn live_prelude() -> String {
+    let read = |name: &str| {
+        std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/wire")
+                .join(name),
+        )
+        .unwrap()
+    };
+    format!("{}\n{}", read("prelude.js"), read("prelude-live.js"))
+}
+
+/// The live prelude's lines; it ends with a newline, so with the joining one the widget template starts two lines on.
 fn prelude_lines() -> u32 {
-    std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/wire/prelude.js"),
-    )
-    .unwrap()
-    .lines()
-    .count() as u32
+    live_prelude().lines().count() as u32
 }
 
 #[test]

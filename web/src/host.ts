@@ -7,8 +7,7 @@ import { Input } from "./input.js"
 import { NEWER, OLDER, PROTOCOL, SLICE_BUDGET_MS, protocol } from "./protocol.js"
 import type { RenderContext } from "./render.js"
 import { CanvasView, Ticker, WebGpuCanvasView, destroy as destroyTree, hasSurface, icon, rectIn, reconcile, surfaces } from "./render.js"
-import { type Batch, GpuReplay } from "./gpu.js"
-import type { ShaderError } from "./shader.js"
+import { GpuReplay } from "./gpu.js"
 import { stylesheet } from "./styles.js"
 import type { Resolved, Theme } from "./theme.js"
 import { apply, resolve } from "./theme.js"
@@ -159,8 +158,6 @@ export interface MountedWidget {
 export interface HostOptions {
   /** URL of `psychoscript_web_bg.wasm` (default: next to this module). */
   wasmUrl?: string | URL
-  /** URL of `psychoscript_web_shader_bg.wasm`, loaded only for WebGL2 shaders (default: next to this module). */
-  shaderWasmUrl?: string | URL
   /** URL of `worker.js` (default: next to this module); a module worker. */
   workerUrl?: string | URL
   /** Live programs' slice budget, ms (default 50). */
@@ -183,7 +180,6 @@ class WorkerHandle {
   private compiled = new Map<number, (r: { error?: ErrorInfo; ms: number }) => void>()
   readonly widgets = new Map<number, Widget>()
   private requests = new Map<number, (m: FromWorker) => void>()
-  private shaderSent = false
   dead = false
 
   constructor(
@@ -206,7 +202,6 @@ class WorkerHandle {
           this.compiled.get(m.pid)?.({ error: m.error, ms: m.ms })
           this.compiled.delete(m.pid)
           return
-        case "translated":
         case "stats":
         case "drawn": {
           const f = this.requests.get(m.req)
@@ -270,17 +265,7 @@ class WorkerHandle {
     }
   }
 
-  async translate(wgsl: string): Promise<{ code: string; block: string } | ShaderError> {
-    if (!this.shaderSent) {
-      this.shaderSent = true
-      this.send({ t: "shader", module: await this.host.shaderModule() })
-    }
-    await this.ready
-    const m = await this.request({ t: "translate", req: this.host.nextId(), wgsl })
-    if (m.t !== "translated") return { message: "no answer" }
-    if (m.error) return { message: m.error.message, line: m.error.line, column: m.error.column, program: m.error.program === true }
-    return { code: m.code!, block: m.block! }
-  }
+
 
   private crash(message: string, wid?: number) {
     if (this.dead) return
@@ -305,7 +290,6 @@ class WorkerHandle {
 export class WidgetHost {
   private ids = 0
   private module: Promise<WebAssembly.Module> | undefined
-  private shader: Promise<WebAssembly.Module> | undefined
   private stepWorker: WorkerHandle | undefined
   private liveWorkers = new Set<WorkerHandle>()
   readonly ticker = new Ticker()
@@ -314,7 +298,6 @@ export class WidgetHost {
   private observed = new Map<Element, Widget>()
   private widgets = new Set<Widget>()
   private resolvers = new Set<(src: string) => string | undefined>()
-  private translations = new Map<string, Promise<{ code: string; block: string } | ShaderError>>()
 
   constructor(readonly options: HostOptions = {}) {
     this.images = new Images((src) => defaultImage(src))
@@ -336,11 +319,6 @@ export class WidgetHost {
   languageModule(): Promise<WebAssembly.Module> {
     this.module ??= compile(this.options.wasmUrl ?? new URL("./psychoscript_web_bg.wasm", import.meta.url))
     return this.module
-  }
-
-  shaderModule(): Promise<WebAssembly.Module> {
-    this.shader ??= compile(this.options.shaderWasmUrl ?? new URL("./psychoscript_web_shader_bg.wasm", import.meta.url))
-    return this.shader
   }
 
   steps(): WorkerHandle {
@@ -371,21 +349,10 @@ export class WidgetHost {
     )
   }
 
-  translate(wgsl: string): Promise<{ code: string; block: string } | ShaderError> {
-    let t = this.translations.get(wgsl)
-    if (!t) {
-      t = this.steps().translate(wgsl)
-      this.translations.set(wgsl, t)
-      if (this.translations.size > 32) this.translations.delete(this.translations.keys().next().value!)
-    }
-    return t
-  }
-
   /** A worker died: its widgets start again, but the one whose program crashed it shows the error. */
   lost(worker: WorkerHandle, message: string, culprit?: number) {
     if (worker === this.stepWorker) this.stepWorker = undefined
     this.liveWorkers.delete(worker)
-    this.translations.clear()
     for (const w of [...worker.widgets.values()]) w.crashed(message, w.wid === culprit || worker.widgets.size === 1)
   }
 
@@ -551,7 +518,6 @@ class Widget implements MountedWidget {
       resolveImage: (src) => (options.resolveImage ? options.resolveImage(src) : defaultImage(src)),
       draw: this.mode() === "step" ? (frame) => this.draw(frame) : undefined,
       liveCommands: (id) => this.live.commands.get(id),
-      translate: (wgsl) => host.translate(wgsl),
       warn: (m) => this.warn(m),
       programError: (phase, e) => this.report(phase, e),
       clientError: (m, cause) => this.clientError(m, cause),
@@ -670,6 +636,7 @@ class Widget implements MountedWidget {
           hosts: this.options.capabilities?.https?.hosts,
           localNetwork: this.options.allowLocalNetwork === true,
           sliceBudgetMs: this.host.options.sliceBudgetMs ?? SLICE_BUDGET_MS,
+          gpu: gpuInput(),
         })
         if (!this.visible) this.livePause(true)
       } else worker.send({ t: "open", wid: this.wid, pid: p.pid, data })
@@ -770,12 +737,12 @@ class Widget implements MountedWidget {
       }
       case "frame":
         // A frame request may carry the GPU batch recorded before it (widgets-gpu.md, Transport): replayed first.
-        if (p.gpu) this.gpuBatch(p.gpu)
+        if (p.gpu !== undefined) this.gpuBatch(p.gpu, true)
         this.live.frameWanted = true
         this.host.ticker.add(this.liveTick)
         return
       case "gpu":
-        if (p.batch) this.gpuBatch(p.batch)
+        if (p.batch !== undefined) this.gpuBatch(p.batch, false)
         return
       case "submit":
         this.finish("submitted", p.value ?? null)
@@ -820,6 +787,12 @@ class Widget implements MountedWidget {
     this.view = node
     reconcile(this.ctx, this.viewEl, [node])
     if (this.gpuUnavailable) for (const s of surfaces(this.viewEl)) if (s instanceof WebGpuCanvasView) s.placeholder()
+    // A stopped GPU canvas rendered anew (a new element) still shows its error.
+    if (this.gpu)
+      for (const key of Object.keys(this.gpuKeys)) {
+        const message = this.gpu.stoppedBy(key)
+        if (message !== undefined) this.gpuCanvas(key)?.placeholder(message)
+      }
     this.updateExpand()
     this.input.refresh()
     if (!this.firstView) {
@@ -950,8 +923,10 @@ class Widget implements MountedWidget {
     const source = this.options.source
     if (source !== undefined && program.endsWith(source)) this.offset = lines(program) - lines(source)
     else {
-      // The canonical prelude ends with `__widget_live`: the widget template starts on the line after its closing brace.
-      const at = program.lastIndexOf("async function __widget_live(")
+      // Without `source`: a live program's live prelude ends with `__widget_live`, the step prelude with
+      // `__widget_dispatch`; the widget template starts on the line after its closing brace.
+      const live = program.lastIndexOf("async function __widget_live(")
+      const at = live >= 0 ? live : program.lastIndexOf("function __widget_dispatch(")
       const end = at < 0 ? -1 : program.indexOf("\n}\n", at)
       // program = prelude + "\n" + source: skip that joining newline too.
       const start = end < 0 ? -1 : end + 3 + (program[end + 3] === "\n" ? 1 : 0)
@@ -1137,14 +1112,17 @@ class Widget implements MountedWidget {
   private gpuUnavailable = false
   private gpuKeys: Record<string, string> = {}
 
-  private gpuBatch(b: unknown) {
-    const batch = b as Batch
-    if (!batch || !Array.isArray(batch.ops) || !(batch.bytes instanceof Uint8Array)) return
+  /** The GPU canvas with this key in the last rendered view. */
+  private gpuCanvas(key: string): WebGpuCanvasView | undefined {
+    const id = Object.hasOwn(this.gpuKeys, key) ? this.gpuKeys[key] : undefined
+    return id === undefined ? undefined : surfaces(this.viewEl).find((s): s is WebGpuCanvasView => s instanceof WebGpuCanvasView && s.id === id)
+  }
+
+  /** A batch as posted (`frame`: in a frame request), for the checks and the replay. */
+  private gpuBatch(batch: unknown, frame: boolean) {
     this.gpu ??= new GpuReplay({
-      canvas: (key) => {
-        const id = Object.hasOwn(this.gpuKeys, key) ? this.gpuKeys[key] : undefined
-        return surfaces(this.viewEl).find((s): s is WebGpuCanvasView => s instanceof WebGpuCanvasView && s.id === id)
-      },
+      canvas: (key) => this.gpuCanvas(key),
+      keys: () => new Set(Object.keys(this.gpuKeys)),
       programError: (message) => this.report("gpu", { message }),
       metric: (ms) => this.metric("gpu", ms),
       clientError: (message, cause) => this.clientError(message, cause),
@@ -1154,18 +1132,22 @@ class Widget implements MountedWidget {
         for (const s of surfaces(this.viewEl)) if (s instanceof WebGpuCanvasView) s.placeholder()
       },
     })
-    this.gpu.batch(batch)
+    this.gpu.batch(batch, frame)
   }
 
-  /** Before a frame: `{ type: "canvas", key, width, height }` (physical pixels) for each GPU canvas whose size changed. */
+  /**
+   * Before a frame, the first one too: `{ type: "canvas", key, width, height }` (physical pixels) for each GPU canvas
+   * whose size changed.
+   */
   private gpuSizes() {
-    for (const s of surfaces(this.viewEl)) {
-      if (!(s instanceof WebGpuCanvasView) || s.key === undefined || !s.sized()) continue
+    for (const key of Object.keys(this.gpuKeys)) {
+      const s = this.gpuCanvas(key)
+      if (!s || !s.sized()) continue
       const { width, height } = s.canvas
       const size = `${width}x${height}`
       if (size === s.sent) continue
       s.sent = size
-      this.worker?.send({ t: "deliver", wid: this.wid, message: { type: "canvas", key: s.key, width, height } })
+      this.worker?.send({ t: "deliver", wid: this.wid, message: { type: "canvas", key, width, height } })
     }
   }
 
@@ -1196,7 +1178,6 @@ class Widget implements MountedWidget {
           close: this.closeInRoot(),
         }
     this.gpuSizes()
-    this.gpu?.frame()
     this.worker.send({ t: "deliver", wid: this.wid, message: { type: "frame", frame } })
   }
 
@@ -1296,8 +1277,16 @@ class Widget implements MountedWidget {
  */
 function programError(e: ErrorInfo, phase: string): boolean {
   if (e.type === "timeout" && phase === "draw") return false
-  if (e.type === "shader") return e.program === true
   return ["syntax", "runtime", "timeout", "outputTooLarge", "sliceBudget", "view", "draw"].includes(e.type)
+}
+
+/**
+ * The live input's `gpu` (widgets-gpu.md): this host replays batches where the browser has WebGPU, in its preferred
+ * canvas format.
+ */
+function gpuInput(): { available: boolean; format: string } {
+  const gpu = (navigator as Navigator & { gpu?: GPU }).gpu
+  return gpu ? { available: true, format: gpu.getPreferredCanvasFormat() } : { available: false, format: "rgba8unorm" }
 }
 
 /** Marks the history entry a full-screen widget pushed. */

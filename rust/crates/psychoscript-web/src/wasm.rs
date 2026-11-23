@@ -206,30 +206,3 @@ impl JsLiveRun {
         self.0.exit().map(|e| e.to_json())
     }
 }
-
-/// Translates a `shader` node's WGSL to a GLSL ES 3.00 fragment shader: `{ code, block }`, or throws
-/// `{ message, line?, column?, program }` as an `Error` named `ShaderError` (`program`: the widget template's WGSL is at
-/// fault, a program error; else a client error).
-#[cfg(feature = "shader")]
-#[wasm_bindgen(js_name = translateWgsl)]
-pub fn translate_wgsl(wgsl: &str) -> Result<JsValue, JsValue> {
-    match crate::shader::translate(wgsl) {
-        Ok(t) => {
-            let out: JsValue = js_sys::Object::new().into();
-            set(&out, "code", t.code.into());
-            set(&out, "block", t.block.into());
-            Ok(out)
-        }
-        Err(e) => {
-            let error = js_sys::Error::new(&e.reason);
-            error.set_name("ShaderError");
-            let value: JsValue = error.into();
-            set(&value, "program", e.program.into());
-            if let (Some(l), Some(c)) = (e.line, e.column) {
-                set(&value, "line", l.into());
-                set(&value, "column", c.into());
-            }
-            Err(value)
-        }
-    }
-}

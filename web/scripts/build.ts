@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-// Builds dist/: index.js (the page side), worker.js (the worker, with the wasm-bindgen glue), the two .wasm modules
-// from wasm/ (scripts/build-wasm.sh), and the .d.ts files.
+// Builds dist/: index.js (the page side), worker.js (the worker, with the wasm-bindgen glue), the .wasm module from
+// wasm/ (scripts/build-wasm.sh), and the .d.ts files.
 
 import { $ } from "bun"
 import { cp, rm } from "node:fs/promises"
@@ -22,8 +22,7 @@ if (!built.success) {
   for (const log of built.logs) console.error(log)
   process.exit(1)
 }
-for (const name of ["psychoscript_web_bg.wasm", "psychoscript_web_shader_bg.wasm"])
-  await cp(path.join(root, "wasm", name), path.join(dist, name))
+await cp(path.join(root, "wasm/psychoscript_web_bg.wasm"), path.join(dist, "psychoscript_web_bg.wasm"))
 await $`bun x tsc -p ${path.join(root, "tsconfig.build.json")}`.cwd(root)
 for (const f of await Array.fromAsync(new Bun.Glob("*").scan(dist)))
   console.log(f.padEnd(36), (Bun.file(path.join(dist, f)).size / 1024).toFixed(1).padStart(8), "KB")

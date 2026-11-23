@@ -14,7 +14,6 @@
 //! stretch of compute longer than the slice budget, with no wait on the host in between, stops the run.
 
 use std::collections::{HashMap, VecDeque};
-use std::fmt::Write as _;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,6 +24,7 @@ use std::time::Duration;
 use psychoscript::{
     Compiled, HostError, HostFunction, HostResult, HostString, HostValue, Interrupted, Limits,
     ProgramOptions, RunOutcome, Runtime, Translate, TranslateFunctions, TranslatePromises,
+    TypedKind,
 };
 
 use crate::draw;
@@ -184,13 +184,30 @@ struct Shared {
 /// by the monotonic clock, paused or not. A `render` or `draw` post takes a token and goes out at once when nothing
 /// waits; otherwise it waits, in place of the waiting post of its kind (the render, or the draw for its canvas key),
 /// and the waiting posts go out in order, one per token, as tokens come; all at once when the run ends, unless the
-/// client stopped it.
+/// client stopped it. A post carrying a GPU batch takes no token, but never overtakes a waiting post: it waits behind
+/// them and goes out right after the one before it.
 struct Rate {
     per_second: f64,
     tokens: f64,
     at: Instant,
-    /// The waiting posts' envelopes, oldest first: `None` for the render, else the draw's canvas key.
-    waiting: Vec<(Option<String>, String)>,
+    /// The waiting posts, oldest first.
+    waiting: Vec<(Slot, Post)>,
+}
+
+/// What a waiting post is, for coalescing: a render, a canvas's draw, or a GPU batch in its place in the order.
+#[derive(PartialEq)]
+enum Slot {
+    Render,
+    Draw(String),
+    Batch,
+}
+
+/// A post on its way to the outbox: its envelope, and a GPU batch's bytes, whose `[offset, length]` in the byte outbox
+/// go between `head` and `tail` once it is there.
+struct Post {
+    head: String,
+    bytes: Option<Vec<u8>>,
+    tail: &'static str,
 }
 
 /// The post rate's burst, and the tolerance for its fractional tokens.
@@ -215,7 +232,7 @@ impl Rate {
         true
     }
 
-    /// Ms until the next waiting post may go out, while one waits.
+    /// Ms until the next waiting post may go out, while one waits (a batch never waits at the front).
     fn due(&mut self) -> Option<f64> {
         if self.waiting.is_empty() {
             return None;
@@ -246,8 +263,9 @@ impl Shared {
     fn post(&mut self, message: &HostValue) -> HostResult {
         let mut reply = HostValue::Undefined;
         let mut native = None;
-        // Native `render` and `draw` posts: counted, with what they coalesce by.
+        // Native `render` and `draw` posts: counted, with what they coalesce by; or a GPU batch's post.
         let mut counted = None;
+        let mut batch = None;
         if self.native {
             match message.get("type").and_then(HostValue::as_str) {
                 Some("render") => {
@@ -310,7 +328,7 @@ impl Shared {
                     }
                     out.push('}');
                     native = Some(out);
-                    counted = Some(None);
+                    counted = Some(Slot::Render);
                 }
                 Some("draw") => {
                     let Some(key) = message.get("key").and_then(HostValue::as_str) else {
@@ -360,30 +378,36 @@ impl Shared {
                         serde_json::Value::from(id.as_str())
                     );
                     native = Some(out);
-                    counted = Some(Some(key.to_owned()));
+                    counted = Some(Slot::Draw(key.to_owned()));
                 }
                 // GPU batches (widgets-gpu.md, Transport): in a frame request, or on their own; never counted.
                 Some("frame") => {
-                    if let Some(batch) = message
+                    if let Some(gpu) = message
                         .get("gpu")
                         .filter(|b| !matches!(b, HostValue::Undefined))
                     {
-                        let mut out = String::from(r#"{"type":"frame","gpu":"#);
-                        self.batch(batch, &mut out)?;
-                        out.push('}');
-                        native = Some(out);
+                        let head = r#"{"type":"post","message":{"type":"frame","gpu":"#;
+                        batch = Some(self.batch_post(gpu, head)?);
                     }
                 }
-                Some("gpu") if message.get("ops").is_some() => {
-                    let mut out = String::from(r#"{"type":"gpu","batch":"#);
-                    self.batch(message, &mut out)?;
-                    out.push('}');
-                    native = Some(out);
+                // `{ type: "gpu", ops, bytes }`: the message is the batch (only its `ops` and `bytes` are read).
+                Some("gpu") => {
+                    let head = r#"{"type":"post","message":{"type":"gpu","batch":"#;
+                    batch = Some(self.batch_post(message, head)?);
                 }
                 // An answer goes out after what waits for the rate.
                 Some("submit" | "dismiss") => self.release(),
                 _ => {}
             }
+        }
+        // A GPU batch never overtakes a waiting post (it may name a canvas a waiting render adds).
+        if let Some(post) = batch {
+            if self.rate.waiting.is_empty() {
+                self.send(post);
+            } else {
+                self.rate.waiting.push((Slot::Batch, post));
+            }
+            return Ok(reply);
         }
         let message = match native {
             Some(message) => message,
@@ -397,80 +421,109 @@ impl Shared {
         Ok(reply)
     }
 
-    /// Writes a GPU batch `{ ops, bytes }` as `{"ops":[...],"bytes":[offset,length]}`: its bytes go to the byte outbox,
-    /// read in place. A function in the ops fails the call; so does a `context` op whose key names no GPU canvas in the
-    /// last render.
-    fn batch(&mut self, batch: &HostValue, out: &mut String) -> Result<(), HostValue> {
-        out.push_str(r#"{"ops":["#);
-        let ops: &[Option<HostValue>] = match batch.get("ops") {
-            Some(HostValue::Array(ops)) => ops,
-            _ => &[],
+    /// Puts `post` in the outbox, its batch's bytes in the byte outbox.
+    fn send(&mut self, post: Post) {
+        let Some(bytes) = post.bytes else {
+            return self.push(&post.head);
         };
-        for (i, op) in ops.iter().enumerate() {
-            if i > 0 {
-                out.push(',');
-            }
-            let op = op.as_ref().unwrap_or(&HostValue::Undefined);
-            let written = json::write_checked(op).ok_or_else(|| json::carried(1, POST))?;
-            if let HostValue::Array(items) = op
-                && items
-                    .first()
-                    .and_then(|o| o.as_ref())
-                    .and_then(HostValue::as_str)
-                    == Some("context")
-            {
-                let key = items
-                    .get(2)
-                    .and_then(|k| k.as_ref())
-                    .and_then(HostValue::as_str)
-                    .unwrap_or_default();
-                if !self
-                    .canvases
-                    .get(key)
-                    .is_some_and(|(_, drawn)| *drawn == Drawn::Gpu)
-                {
-                    return Err(error(
-                        "Error",
-                        &format!(r#"No GPU canvas with key "{key}" in the rendered view"#),
-                    ));
+        let start = self.bytes.len();
+        if start == 0 {
+            self.bytes = bytes;
+        } else {
+            self.bytes.extend_from_slice(&bytes);
+        }
+        let envelope = format!(
+            "{}[{start},{}]{}",
+            post.head,
+            self.bytes.len() - start,
+            post.tail
+        );
+        self.push(&envelope);
+    }
+
+    /// A GPU batch's post, its envelope opened by `head`.
+    fn batch_post(&self, batch: &HostValue, head: &str) -> Result<Post, HostValue> {
+        let mut head = head.to_owned();
+        Ok(match self.batch(batch, &mut head)? {
+            Some(bytes) => Post {
+                head,
+                bytes: Some(bytes),
+                tail: "}}}",
+            },
+            None => {
+                head.push_str("}}");
+                Post {
+                    head,
+                    bytes: None,
+                    tail: "",
                 }
             }
-            out.push_str(&written);
+        })
+    }
+
+    /// Writes a GPU batch as it is, for the client's checks (widgets-gpu.md, Host checks): an object as `{"ops":...,
+    /// "bytes":` with its bytes given (an `ArrayBuffer`'s, read in place), their `[offset, length]` and `}` to follow
+    /// once it is in the outbox; else whole, `bytes` `null` when they aren't an `ArrayBuffer`. A function in it fails
+    /// the call.
+    fn batch(&self, batch: &HostValue, out: &mut String) -> Result<Option<Vec<u8>>, HostValue> {
+        let carried = || json::carried(1, POST);
+        let HostValue::Object(_) = batch else {
+            out.push_str(&json::write_checked(batch).ok_or_else(carried)?);
+            return Ok(None);
+        };
+        out.push('{');
+        if let Some(ops) = batch
+            .get("ops")
+            .filter(|o| !matches!(o, HostValue::Undefined))
+        {
+            out.push_str(r#""ops":"#);
+            out.push_str(&json::write_checked(ops).ok_or_else(carried)?);
+            out.push(',');
         }
-        let start = self.bytes.len();
+        out.push_str(r#""bytes":"#);
         match batch.get("bytes") {
-            Some(HostValue::TypedArray(t)) => t.with_bytes(|b| self.bytes.extend_from_slice(b)),
-            Some(HostValue::Bytes(b) | HostValue::Buffer(b)) => self.bytes.extend_from_slice(b),
-            _ => {}
+            Some(HostValue::TypedArray(t)) if t.kind() == TypedKind::ArrayBuffer => {
+                Ok(Some(t.to_vec()))
+            }
+            _ => {
+                out.push_str("null}");
+                Ok(None)
+            }
         }
-        let _ = write!(out, r#"],"bytes":[{start},{}]}}"#, self.bytes.len() - start);
-        Ok(())
     }
 
     /// A `render` (`by` `None`) or a canvas's `draw` under the post rate: out now, or waiting in place of the waiting
     /// post of its kind, else at the end of the queue.
-    fn counted(&mut self, by: Option<String>, envelope: String) {
+    fn counted(&mut self, by: Slot, envelope: String) {
         if self.rate.waiting.is_empty() && self.rate.take() {
             return self.push(&envelope);
         }
+        let post = Post {
+            head: envelope,
+            bytes: None,
+            tail: "",
+        };
         match self.rate.waiting.iter_mut().find(|(k, _)| *k == by) {
-            Some(waiting) => waiting.1 = envelope,
-            None => self.rate.waiting.push((by, envelope)),
+            Some(waiting) => waiting.1 = post,
+            None => self.rate.waiting.push((by, post)),
         }
     }
 
-    /// Sends the waiting posts the bucket has tokens for, in order.
+    /// Sends the waiting posts the bucket has tokens for, in order: a batch at the front takes none.
     fn drain(&mut self) {
-        while !self.rate.waiting.is_empty() && self.rate.take() {
-            let (_, envelope) = self.rate.waiting.remove(0);
-            self.push(&envelope);
+        while let Some((slot, _)) = self.rate.waiting.first() {
+            if *slot != Slot::Batch && !self.rate.take() {
+                break;
+            }
+            let (_, post) = self.rate.waiting.remove(0);
+            self.send(post);
         }
     }
 
     /// Sends every waiting post now, in order.
     fn release(&mut self) {
-        for (_, envelope) in std::mem::take(&mut self.rate.waiting) {
-            self.push(&envelope);
+        for (_, post) in std::mem::take(&mut self.rate.waiting) {
+            self.send(post);
         }
     }
 

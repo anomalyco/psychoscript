@@ -1,13 +1,12 @@
 // The demo: every fixture mounted with the shared host, a theme toggle, and a log of what widgets send back.
-// Query: ?only=<name> (one widget template), ?theme=light, ?gl=1 (WebGL2 shaders even where WebGPU works), ?noask=1 (no
+// Query: ?only=<name> (one widget template), ?theme=light, ?noask=1 (no
 // "Ask agent to fix it", as in an artifact with no agent session), ?nosource=1 (positions found without `source`).
 // The demo plays the server for failures: a report becomes the widget's failure (unsent, as for a built-in), and an
 // ask marks it sent.
-import { WidgetHost, configure, preferWebGL } from "../dist/index.js"
-import { fixtures, prelude } from "./fixtures.js"
+import { WidgetHost, configure } from "../dist/index.js"
+import { fixtures, prelude, preludeLive } from "./fixtures.js"
 
 const params = new URLSearchParams(location.search)
-if (params.has("gl")) preferWebGL(true)
 const host = configure({})
 const only = params.get("only")
 let theme = params.get("theme") === "light" ? "light" : "dark"
@@ -18,6 +17,8 @@ window.__demo = demo
 demo.WidgetHost = WidgetHost
 demo.fixtures = fixtures
 demo.prelude = prelude
+/** The program served for `source` (widgets.md, Prelude and step ABI): a live one has the live prelude too. */
+demo.program = (source, mode) => (mode === "live" ? prelude + "\n" + preludeLive + "\n" + source : prelude + "\n" + source)
 
 const log = (text) => {
   const li = document.createElement("li")
@@ -52,7 +53,7 @@ demo.mount = (name) =>
     slot.className = "slot"
     section.prepend(slot)
     const w = host.mount(slot, {
-      program: prelude + "\n" + f.source,
+      program: demo.program(f.source, f.mode),
       data: f.data,
       mode: f.mode,
       theme,
@@ -81,7 +82,7 @@ for (const [name, f] of Object.entries(fixtures)) {
   slot.append(label)
   section.append(slot)
   const widget = (demo.widgets[name] = host.mount(slot, {
-    program: prelude + "\n" + f.source,
+    program: demo.program(f.source, f.mode),
     source: params.has("nosource") ? undefined : f.source,
     data: f.data,
     mode: f.mode,
@@ -121,15 +122,5 @@ toggle.onclick = () => {
   toggle.textContent = theme === "dark" ? "Light theme" : "Dark theme"
   for (const w of Object.values(demo.widgets)) w.setTheme(theme)
 }
-const gl = document.getElementById("gl")
-if (params.has("gl")) {
-  gl.textContent = "Use WebGPU"
-  const p = new URLSearchParams(params)
-  p.delete("gl")
-  gl.href = "?" + p.toString()
-}
-document.getElementById("backend").textContent = params.has("gl")
-  ? "shaders: WebGL2 (forced)"
-  : "gpu" in navigator
-    ? "shaders: WebGPU when an adapter is available, else WebGL2"
-    : "shaders: WebGL2 (no WebGPU)"
+document.getElementById("backend").textContent =
+  "gpu" in navigator ? "GPU canvases: WebGPU" : "GPU canvases: no WebGPU (placeholders)"

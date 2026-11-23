@@ -26,7 +26,6 @@ export interface RenderContext {
   /** Step mode: run the draw step for `frame`. Live mode: undefined (commands arrive through `liveCommands`). */
   draw?(frame: Frame): Promise<{ commands?: Command[]; error?: string; ms: number }>
   liveCommands(id: string | null): Command[] | undefined
-  translate(wgsl: string): Promise<{ code: string; block: string } | ShaderError>
   /** A program warning that isn't an error (an unknown node type). */
   warn(message: string): void
   /** The widget template's code broke a contract here (WGSL that fails validation or over 16 KB, values without wgsl): reported. */
@@ -1071,7 +1070,7 @@ export class CanvasView extends SurfaceBase {
   }
 }
 
-/** A GPU canvas (a `canvas` with `wgsl`): its WGSL on WebGPU, or WebGL2 through naga. */
+/** A GPU canvas (a `canvas` with `wgsl`): its WGSL on WebGPU; without it, its placeholder. */
 export class GpuCanvasView extends SurfaceBase {
   private surface: Surface | undefined
   private wgsl: string | undefined
@@ -1119,7 +1118,7 @@ export class GpuCanvasView extends SurfaceBase {
   private async build(wgsl: string) {
     if (new TextEncoder().encode(wgsl).length > MAX_SHADER_BYTES)
       return this.fail({ message: `the shader is over ${MAX_SHADER_BYTES / 1024} KB`, program: true })
-    const made = await surface(this.canvas, wgsl, (w) => this.ctx.translate(w))
+    const made = await surface(this.canvas, wgsl)
     if (this.destroyed || wgsl !== this.wgsl) {
       if (!("message" in made)) made.destroy()
       return
@@ -1134,6 +1133,19 @@ export class GpuCanvasView extends SurfaceBase {
 
   private fail(e: ShaderError) {
     this.failed = true
+    // Unavailable is not an error (widgets-gpu.md): `poster`, else `alt`, else "GPU canvas not supported".
+    if (e.unavailable) {
+      this.ctx.clientError(`shader: ${e.message}`, e)
+      const poster = str(this.node.poster)
+      const url = poster ? this.ctx.resolveImage(poster) : undefined
+      if (url) {
+        this.poster ??= h(this.ctx, "img", "pw-poster")
+        this.poster.alt = str(this.node.alt)
+        this.poster.src = url
+        this.el.append(this.poster)
+      } else this.showAlt(str(this.node.alt) || e.message)
+      return
+    }
     // Positions are in the node's WGSL, not the widget template's source: they go into the message.
     const message = e.line ? `${e.message} (WGSL line ${e.line}, column ${e.column})` : e.message
     if (e.program) this.ctx.programError("shader", { message })
@@ -1205,14 +1217,17 @@ export class GpuCanvasView extends SurfaceBase {
  * calls into it; it sizes itself as every canvas does, and shows its placeholder when there is no GPU or it failed.
  */
 export class WebGpuCanvasView extends SurfaceBase implements GpuCanvas {
-  /** The physical size last sent to the program (`{ type: "canvas", key, width, height }`), and its key. */
+  /** The physical size last sent to the program (`{ type: "canvas", key, width, height }`). */
   sent = ""
-  key: string | undefined
   private poster: HTMLImageElement | undefined
 
   constructor(ctx: RenderContext, node: ViewNode) {
     super(ctx, node)
-    if (!(navigator as Navigator & { gpu?: unknown }).gpu) this.placeholder()
+    // No WebGPU (widgets-gpu.md): the placeholder, a client error; the program, told, posts no batches.
+    if (!(navigator as Navigator & { gpu?: unknown }).gpu) {
+      this.placeholder()
+      ctx.clientError("GPU canvas: no WebGPU in this browser")
+    }
   }
 
   update(n: ViewNode) {
@@ -1220,8 +1235,13 @@ export class WebGpuCanvasView extends SurfaceBase implements GpuCanvas {
     if (this.layout(n)) this.measure()
   }
 
+  /** What the placeholder shows, while it shows: `null` without a message. */
+  private showing: string | null | undefined
+
   /** `poster`, else `alt`, else "GPU canvas not supported"; with a program error's message under it. */
   placeholder(message?: string) {
+    if (this.showing === (message ?? null)) return
+    this.showing = message ?? null
     const poster = str(this.node.poster)
     const url = poster ? this.ctx.resolveImage(poster) : undefined
     if (url) {
@@ -1238,6 +1258,7 @@ export class WebGpuCanvasView extends SurfaceBase implements GpuCanvas {
   }
 
   shown() {
+    this.showing = undefined
     this.poster?.remove()
     this.el.querySelector(".pw-alt")?.remove()
   }

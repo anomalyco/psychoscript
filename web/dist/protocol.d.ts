@@ -51,8 +51,6 @@ export interface ErrorInfo {
     /** The phase it belongs to when not the step's or the run's: `view` for a view that breaks a rule of views. */
     phase?: string;
     type: string;
-    /** For `type: "shader"`: the widget template's WGSL is at fault (a program error), not this host. */
-    program?: boolean;
     kind?: string;
     message: string;
     line?: number;
@@ -69,9 +67,6 @@ export type LiveExit = {
 };
 export type ToWorker = {
     t: "init";
-    module: WebAssembly.Module;
-} | {
-    t: "shader";
     module: WebAssembly.Module;
 } | {
     t: "compile";
@@ -106,6 +101,11 @@ export type ToWorker = {
     hosts?: string[];
     localNetwork?: boolean;
     sliceBudgetMs?: number;
+    /** The live input's `gpu` (widgets-gpu.md). */
+    gpu?: {
+        available: boolean;
+        format: string;
+    };
 } | {
     t: "deliver";
     wid: number;
@@ -119,10 +119,6 @@ export type ToWorker = {
 } | {
     t: "stop";
     wid: number;
-} | {
-    t: "translate";
-    req: number;
-    wgsl: string;
 } | {
     t: "stats";
     req: number;
@@ -163,12 +159,6 @@ export type FromWorker = {
     t: "exit";
     wid: number;
     exit: LiveExit;
-} | {
-    t: "translated";
-    req: number;
-    code?: string;
-    block?: string;
-    error?: ErrorInfo;
 } | {
     t: "crash";
     message: string;

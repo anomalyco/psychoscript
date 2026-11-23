@@ -8,8 +8,6 @@ export interface GpuCanvas {
     readonly canvas: HTMLCanvasElement;
     /** Measures it now: whether it has a size to draw at. */
     sized(): boolean;
-    /** The key the program configured it by, for its size messages. */
-    key: string | undefined;
     /** Shows the placeholder: `poster`, else `alt`, else "GPU canvas not supported"; with a program error's message. */
     placeholder(message?: string): void;
     /** Back from the placeholder: the canvas draws again. */
@@ -18,10 +16,12 @@ export interface GpuCanvas {
 export interface GpuHost {
     /** The GPU canvas with this key in the last rendered view. */
     canvas(key: string): GpuCanvas | undefined;
+    /** The keys of the GPU canvases in the last rendered view. */
+    keys(): ReadonlySet<string>;
     /** A program error (phase `gpu`), reported once by the host. */
     programError(message: string): void;
     clientError(message: string, cause?: unknown): void;
-    /** The device was lost: `{ type: "gpu", lost: reason }` to the program. */
+    /** The device was lost: `{ type: "gpu", lost: reason, message }` to the program. */
     lost(reason: string, message: string): void;
     /** No WebGPU, or no device: every GPU canvas shows its placeholder (a client error, logged). */
     unavailable(): void;
@@ -32,36 +32,25 @@ export declare class GpuReplay {
     private readonly host;
     private device;
     private starting;
-    /** Batches waiting for the device, in order. */
+    /** Checked batches waiting for the device, in order. */
     private waiting;
     private unavailable;
     private objects;
-    private live;
-    private memory;
-    private passes;
-    private draws;
-    /** Every canvas stopped by a program error: later batches are ignored. */
-    private stopped;
     private closed;
     private encoder;
     private pass;
-    /** The contexts the batch being replayed drew into, for its errors. */
-    private touched;
+    private readonly checks;
+    /** The stopped canvases' errors by key, and the error that stopped every one: a canvas rendered anew stays stopped. */
+    private readonly stopped;
+    private all;
     constructor(host: GpuHost);
-    /** Replays `batch` in order after the ones before it. */
-    batch(batch: Batch): void;
-    /** A frame went to the program: the per-frame limits start again (between two `widget.frame()`). */
-    frame(): void;
-    /** Every configured canvas: the placeholder shows while the device is missing or lost. */
-    private contexts;
+    /** Checks `batch` now, in order, and replays what passes after the batches before it. */
+    batch(batch: unknown, frame: boolean): void;
+    /** A program error: reported once; its canvases (or every one) stop and show their placeholder with it. */
+    private fail;
     private start;
     private adopt;
     private replay;
-    /** A program error: reported once, and the canvases it concerns (or every one) stop, with the error shown. */
-    private programError;
-    private stop;
-    /** A new handle's slot: a positive integer the prelude hasn't used. */
-    private slot;
     private get;
     /** The context's canvas, configured: it may have been rendered anew since. */
     private context;
@@ -69,9 +58,9 @@ export declare class GpuReplay {
     private texture;
     private view;
     private encode;
-    private inPass;
-    private allocate;
     private op;
+    /** The error a stopped canvas shows, or undefined while it draws. */
+    stoppedBy(key: string): string | undefined;
     /** The widget stopped: its device and everything on it go. */
     destroy(): void;
 }

@@ -2,7 +2,8 @@
 
 The web host for OpenCode widgets (`specs/v2/widgets.md`, `widgets-live.md`, `widgets-fullscreen.md` in opencode): the
 Rust PsychoScript compiled to WebAssembly, run in Web Workers, rendered with plain DOM (no framework), Canvas2D for
-2D `canvas`es, WebGPU (WebGL2 fallback) for GPU canvases (`canvas` with `wgsl`), and `stack` layers. The web counterpart of Rune desktop and the mobile apps.
+2D `canvas`es, the browser's WebGPU for GPU canvases (`canvas` with `wgsl` or `gpu: true`; no WebGL fallback), and
+`stack` layers. The web counterpart of Rune desktop and the mobile apps.
 
 ## Consume it
 
@@ -12,7 +13,6 @@ Rust PsychoScript compiled to WebAssembly, run in Web Workers, rendered with pla
 dist/index.js                         the page side (ESM, 61 KB min, 20 KB gzip) + index.d.ts and friends
 dist/worker.js                        the worker (module worker, 18 KB; includes the wasm-bindgen glue)
 dist/psychoscript_web_bg.wasm         the language (Program, LiveRun)
-dist/psychoscript_web_shader_bg.wasm  naga WGSL -> GLSL ES 3.00, fetched only when a shader needs WebGL2
 ```
 
 Pick one:
@@ -29,7 +29,7 @@ assets with no configuration. Otherwise serve the four files from one directory,
 
 ```ts
 import { configure } from "psychoscript-web"
-configure({ workerUrl: "/assets/pw/worker.js", wasmUrl: "/assets/pw/psychoscript_web_bg.wasm", shaderWasmUrl: "/assets/pw/psychoscript_web_shader_bg.wasm" })
+configure({ workerUrl: "/assets/pw/worker.js", wasmUrl: "/assets/pw/psychoscript_web_bg.wasm" })
 ```
 
 Serve `.wasm` as `application/wasm` (else it falls back to a slower non-streaming compile) and compressed (brotli or
@@ -95,22 +95,27 @@ Behavior, per the contract:
   one over 2,000 commands or with a command that fails the spec's draw command checks (phase `draw`, `draw command
   <i>: …`); the client gets a draw's canvas id and the normalised commands only. Draw steps are checked the same way.
 - `onSubmit`/`onDismiss` fire once; the widget turns read-only right away. `onSend` is throttled to 10 a second.
-- GPU canvas (`canvas` with `gpu: true` and a `key`, live mode; widgets-gpu.md): the program's WebGPU calls, recorded
-  by the prelude into batches (ops and one `ArrayBuffer` of bytes, in a frame request or on their own), are replayed
-  on the page's thread on the browser's WebGPU: one device per widget, resources by handle, the context's canvas found
-  by its key in the last render and sized before it is configured. WebGPU validates (an error scope per batch); the
-  host checks the subset's ops, handles and limits (4096 px textures, 64 MB buffers, 256 MB and 4,096 live handles a
-  widget, 4 MB and 20,000 ops a batch, 16 passes and 10,000 draws a frame, 256 KB of WGSL). A failure is a program
-  error in phase `gpu`: the canvas stops and shows its placeholder with it; the program and the rest of the widget run
-  on. Before each frame the program gets `{ type: "canvas", key, width, height }` (physical pixels) for each GPU canvas
-  whose size changed; a lost device sends `{ type: "gpu", lost, message }`. Without WebGPU, or without a device, the
-  canvas shows `poster`, else `alt`, else "GPU canvas not supported" (a client error, not reported). Why the page's
-  thread: the canvases, their sizes, placeholders, full screen and pointer are there already; batches cross from the
-  worker as transferred bytes, and WebGPU calls only record commands, so the GPU's work stays asynchronous.
+- GPU canvas (`canvas` with `gpu: true` and a `key`, live mode; widgets-gpu.md): the live input tells the program
+  `gpu: { available, format }` (WebGPU in this browser, its preferred canvas format). The program's `widget.gpu` calls,
+  recorded by the live prelude into batches (ops and one `ArrayBuffer` of bytes, in a frame request or on their own;
+  a batch never overtakes a waiting render or draw), are checked and then replayed on the page's thread on the
+  browser's WebGPU: one device per widget, resources by handle, a context's canvas found by its key among the GPU
+  canvases of the last render, sized before it is configured. The checks are the spec's Host checks with their exact
+  messages (`src/gpu-checks.ts`, a port of opencode's reference); WebGPU validates what replays (an error scope per
+  batch). An error is a program error in phase `gpu` that stops the canvases the batch renders into, else every GPU
+  canvas, each reported once: a stopped canvas shows its placeholder with the error and later batches for it are
+  ignored; the program and the rest of the widget run on. Before each frame (the first too) the program gets
+  `{ type: "canvas", key, width, height }` (physical pixels) for each GPU canvas whose size changed; a lost device sends
+  `{ type: "gpu", lost, message }`. Without WebGPU the canvas shows `poster`, else `alt`, else "GPU canvas not
+  supported" (a client error, not reported). Why the page's thread: the canvases, their sizes, placeholders, full
+  screen and pointer are there already; batches cross from the worker as transferred bytes, and WebGPU calls only
+  record commands, so the GPU's work stays asynchronous.
 - `canvas`: Canvas2D, drawn on `requestAnimationFrame` only while `fps > 0` (or `duration` not reached) and
   visible; draw steps run in the worker, at most one in flight; 8 ms / 2,000 commands budget, three overruns in a row
   stop the animation and keep the last frame. A resize repaints the last commands at once, then draws again.
-- GPU canvas (`canvas` with `wgsl`, `values` ≤ 16 floats; `fps` defaults to 60): WGSL straight to WebGPU; without it WebGL2 with naga's GLSL ES 3.00 (the naga module loads only then).
+- GPU canvas (`canvas` with `wgsl`, `values` ≤ 16 floats; `fps` defaults to 60): the WGSL in a fixed full-screen
+  pipeline on WebGPU; without WebGPU it shows `poster`, else `alt`, else "GPU canvas not supported" (a client error,
+  not reported; no WebGL fallback).
   New `values` (a live program re-rendering every frame) update the uniforms only: same element, same pipeline.
   Over 50 ms of GPU time a frame three frames in a row stops it (measured on WebGPU only). A failing shader shows
   `poster` or `alt` with the error.
@@ -146,7 +151,7 @@ Behavior, per the contract:
 The host sorts every error into one of two kinds:
 
 - **Program errors** (the widget template's): a parse error or exception (in `init`, a handler or hook, `draw`, `main`), an
-  invalid view or draw output, WGSL that fails validation (WebGPU's compiler or naga) or is over 16 KB, the 250 ms
+  invalid view or draw output, WGSL that fails validation (WebGPU's compiler) or is over 16 KB, the 250 ms
   step, the 50 ms live slice and the send rate (10/s), a draw post without a string `key`, a view that breaks a rule of views (a
   key not a string, number or boolean; more than 100 levels), a function where none may go (anywhere in a view but a
   node's `onPress`/`onChange`/`onPointer`, in a post or a host call: `TypeError: Argument <n> to <name> contains a
@@ -257,7 +262,6 @@ Access checks.
 | File | Raw | gzip | brotli |
 | --- | --- | --- | --- |
 | `psychoscript_web_bg.wasm` | 9.54 MB | 3.19 MB | 2.21 MB |
-| `psychoscript_web_shader_bg.wasm` (WebGL2 only) | 1.19 MB | 0.44 MB | 0.34 MB |
 | `index.js` + `worker.js` | 79 KB | 26 KB | |
 
 5.7 MB of the language module is data, mostly ICU4X locale data for `toLocale*String`/`Intl.DateTimeFormat`/
@@ -290,17 +294,17 @@ bun install
 bash scripts/build-wasm.sh   # cargo (wasm32-unknown-unknown) + wasm-bindgen 0.2.130 + wasm-opt -> web/wasm/
 bun scripts/build.ts         # -> web/dist/ (index.js, worker.js, .wasm, .d.ts)
 bun scripts/fixtures.ts      # demo/fixtures.js from an opencode checkout's packages/widget
+bun scripts/gpu-fixtures.ts  # the GPU conformance fixtures on wasm/: batches byte for byte, host-check errors, ends
 bun scripts/serve.ts         # http://localhost:4173/demo/ (with the CSP above)
 ```
 
 Checks in a real browser, with the demo server running: `SHOTS=<dir> xvfb-run -a bun scripts/check.ts` (Chromium from
 Playwright's cache, WebGPU through SwiftShader's Vulkan; headless screenshots leave WebGPU canvases blank, so it runs
 headful under Xvfb). It renders every fixture in both themes and checks canvases drew, presses controls and checks the
-submits (confirm, suggestions with carousel, form), chart pointer and tap, backdrop on WebGPU and WebGL2, shader
+submits (confirm, suggestions with carousel, form), chart pointer and tap, backdrop on WebGPU, shader
 pointer events and values-only updates, the minigame, pause/`resumed` out of view, full screen with `fill`, the slice
 budget and Restart, and the fetch rules; then prints timings and memory.
 
 The demo (`demo/`) mounts every built-in (`suggestions`, `form`, `confirm`, `chart`, `backdrop`, `minigame` and the
 17 diagram widget templates, data from opencode's `packages/widget/test/fixtures/diagrams.ts`) plus demo widget templates for fetch,
-a running clock (pause), a runaway loop, a live shader and full screen. `?only=<name>`, `?theme=light`, `?gl=1`
-(WebGL2 even with WebGPU).
+a running clock (pause), a runaway loop, a live shader and full screen. `?only=<name>`, `?theme=light`.

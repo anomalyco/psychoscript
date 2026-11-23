@@ -1,5 +1,5 @@
-// `shader` nodes on the GPU: WGSL straight to WebGPU where the browser has it, else WebGL2 with the WGSL translated to
-// GLSL ES 3.00 by naga in the worker (widgets.md, Shader).
+// Canvases with `wgsl` (widgets.md, GPU canvases): the widget template's WGSL in a fixed full-screen pipeline on the
+// browser's WebGPU, the GPU canvases' path (widgets-gpu.md); without WebGPU, the placeholder (no WebGL fallback).
 
 /** What clients prepend to a widget template's WGSL. */
 export const HEADER =
@@ -13,17 +13,21 @@ const ENTRY =
 /** The uniform block: resolution, time, scale, pointer, values (std140 and WGSL agree: 96 bytes). */
 export const UNIFORM_FLOATS = 24
 
-/** `program`: the widget template's WGSL is at fault (it fails validation), a program error; else this host's (a client error). */
+/**
+ * `program`: the widget template's WGSL is at fault (it fails validation), a program error; else this host's (a client
+ * error). `unavailable`: no WebGPU or no device, where the canvas shows its placeholder.
+ */
 export interface ShaderError {
   message: string
   line?: number
   column?: number
   program?: boolean
+  unavailable?: boolean
 }
 
 /** One shader on one canvas. */
 export interface Surface {
-  readonly backend: "webgpu" | "webgl2"
+  readonly backend: "webgpu"
   /** Draws a frame with `uniforms`; resolves with how long the GPU took when the backend can tell, else undefined. */
   render(uniforms: Float32Array): Promise<number | undefined> | undefined
   destroy(): void
@@ -43,15 +47,8 @@ interface Gpu {
 }
 
 let gpu: Promise<Gpu | undefined> | undefined
-let forceWebGL = false
-
-/** Use WebGL2 even where WebGPU works (tests, or a host that wants it). */
-export function preferWebGL(on: boolean) {
-  forceWebGL = on
-}
 
 export function webgpu(): Promise<Gpu | undefined> {
-  if (forceWebGL) return Promise.resolve(undefined)
   gpu ??= (async () => {
     const nav = navigator as Navigator & { gpu?: GPU }
     if (!nav.gpu) return undefined
@@ -161,92 +158,9 @@ async function gpuSurface(g: Gpu, canvas: HTMLCanvasElement, wgsl: string): Prom
   }
 }
 
-// ---------- WebGL2 ----------
-
-const VERTEX = `#version 300 es
-void main() {
-  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
-  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
-}
-`
-
-function glSurface(canvas: HTMLCanvasElement, translated: { code: string; block: string }): Surface | ShaderError {
-  const gl = canvas.getContext("webgl2", {
-    alpha: true,
-    premultipliedAlpha: true,
-    antialias: false,
-    depth: false,
-    stencil: false,
-    preserveDrawingBuffer: false,
-    powerPreference: "low-power",
-  })
-  if (!gl) return { message: "this browser has neither WebGPU nor WebGL2" }
-  const compile = (type: number, source: string) => {
-    const s = gl.createShader(type)!
-    gl.shaderSource(s, source)
-    gl.compileShader(s)
-    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
-      const log = gl.getShaderInfoLog(s) ?? "compile error"
-      gl.deleteShader(s)
-      throw new Error(log)
-    }
-    return s
-  }
-  let program: WebGLProgram
-  try {
-    const vs = compile(gl.VERTEX_SHADER, VERTEX)
-    const fs = compile(gl.FRAGMENT_SHADER, translated.code)
-    program = gl.createProgram()!
-    gl.attachShader(program, vs)
-    gl.attachShader(program, fs)
-    gl.linkProgram(program)
-    gl.deleteShader(vs)
-    gl.deleteShader(fs)
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program) ?? "link error")
-  } catch (e) {
-    return { message: String((e as Error).message) }
-  }
-  const ubo = gl.createBuffer()
-  gl.bindBuffer(gl.UNIFORM_BUFFER, ubo)
-  gl.bufferData(gl.UNIFORM_BUFFER, UNIFORM_FLOATS * 4, gl.DYNAMIC_DRAW)
-  const index = translated.block ? gl.getUniformBlockIndex(program, translated.block) : gl.INVALID_INDEX
-  if (index !== gl.INVALID_INDEX) gl.uniformBlockBinding(program, index, 0)
-  const vao = gl.createVertexArray()
-  let destroyed = false
-  return {
-    backend: "webgl2",
-    render(uniforms) {
-      if (destroyed || gl.isContextLost()) return undefined
-      gl.viewport(0, 0, canvas.width, canvas.height)
-      gl.clearColor(0, 0, 0, 0)
-      gl.clear(gl.COLOR_BUFFER_BIT)
-      gl.useProgram(program)
-      gl.bindBuffer(gl.UNIFORM_BUFFER, ubo)
-      gl.bufferSubData(gl.UNIFORM_BUFFER, 0, uniforms)
-      gl.bindBufferBase(gl.UNIFORM_BUFFER, 0, ubo)
-      gl.bindVertexArray(vao)
-      gl.drawArrays(gl.TRIANGLES, 0, 3)
-      return undefined
-    },
-    destroy() {
-      destroyed = true
-      gl.deleteProgram(program)
-      gl.deleteBuffer(ubo)
-      gl.deleteVertexArray(vao)
-      gl.getExtension("WEBGL_lose_context")?.loseContext()
-    },
-  }
-}
-
-/** Makes a surface for `wgsl` on `canvas`: WebGPU, else WebGL2 with `translate` (naga in the worker). */
-export async function surface(
-  canvas: HTMLCanvasElement,
-  wgsl: string,
-  translate: (wgsl: string) => Promise<{ code: string; block: string } | ShaderError>,
-): Promise<Surface | ShaderError> {
+/** Makes a surface for `wgsl` on `canvas` on WebGPU; without it, unavailable. */
+export async function surface(canvas: HTMLCanvasElement, wgsl: string): Promise<Surface | ShaderError> {
   const g = await webgpu()
-  if (g) return gpuSurface(g, canvas, wgsl)
-  const translated = await translate(wgsl)
-  if ("message" in translated) return translated
-  return glSurface(canvas, translated)
+  if (!g) return { message: "GPU canvas not supported", unavailable: true }
+  return gpuSurface(g, canvas, wgsl)
 }

@@ -123,7 +123,7 @@ fn fixtures() -> Vec<Fixture> {
     out
 }
 
-/// The prelude a fixture's program starts with (opencode `packages/widget/src/prelude.js` at widgets 35f0712e3).
+/// The prelude a fixture's program starts with (opencode `packages/widget/src/prelude.js` at widgets b18aa923d).
 fn prelude() -> String {
     std::fs::read_to_string(dir().join("prelude.js")).expect("the prelude")
 }

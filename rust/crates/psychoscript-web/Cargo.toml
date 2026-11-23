@@ -12,11 +12,8 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["language"]
-# The language: `Program` and `LiveRun`. The web package builds it without `shader` into `psychoscript_web.wasm`.
+# The language: `Program` and `LiveRun`. The web package builds it into `psychoscript_web.wasm`.
 language = ["dep:psychoscript", "dep:serde", "dep:url", "dep:web-time", "dep:ryu-js"]
-# `translateWgsl`: WGSL to GLSL ES 3.00 with naga, for the WebGL2 fallback. The web package builds it alone
-# (`--no-default-features --features shader`) into `psychoscript_web_shader.wasm`, loaded only without WebGPU.
-shader = ["dep:naga"]
 
 [dependencies]
 psychoscript = { path = "../psychoscript", optional = true }
@@ -25,7 +22,6 @@ serde_json = { version = "1", features = ["preserve_order"] }
 url = { version = "2.5", optional = true }
 # ECMAScript `Number::toString`, for keys and numbers in native view trees (`tree`).
 ryu-js = { version = "1", optional = true }
-naga = { version = "30", default-features = false, features = ["wgsl-in", "glsl-out"], optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"

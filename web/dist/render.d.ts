@@ -1,7 +1,6 @@
 import type { Command, Images } from "./canvas.js";
 import type { GpuCanvas } from "./gpu.js";
 import type { Frame, Rect, ViewNode, WidgetEvent } from "./protocol.js";
-import type { ShaderError } from "./shader.js";
 import type { Resolved } from "./theme.js";
 /** What rendering needs from its widget. */
 export interface RenderContext {
@@ -22,10 +21,6 @@ export interface RenderContext {
         ms: number;
     }>;
     liveCommands(id: string | null): Command[] | undefined;
-    translate(wgsl: string): Promise<{
-        code: string;
-        block: string;
-    } | ShaderError>;
     /** A program warning that isn't an error (an unknown node type). */
     warn(message: string): void;
     /** The widget template's code broke a contract here (WGSL that fails validation or over 16 KB, values without wgsl): reported. */
@@ -140,7 +135,7 @@ export declare class CanvasView extends SurfaceBase {
     wake(): void;
     repaint(): void;
 }
-/** A GPU canvas (a `canvas` with `wgsl`): its WGSL on WebGPU, or WebGL2 through naga. */
+/** A GPU canvas (a `canvas` with `wgsl`): its WGSL on WebGPU; without it, its placeholder. */
 export declare class GpuCanvasView extends SurfaceBase {
     private surface;
     private wgsl;
@@ -168,12 +163,13 @@ export declare class GpuCanvasView extends SurfaceBase {
  * calls into it; it sizes itself as every canvas does, and shows its placeholder when there is no GPU or it failed.
  */
 export declare class WebGpuCanvasView extends SurfaceBase implements GpuCanvas {
-    /** The physical size last sent to the program (`{ type: "canvas", key, width, height }`), and its key. */
+    /** The physical size last sent to the program (`{ type: "canvas", key, width, height }`). */
     sent: string;
-    key: string | undefined;
     private poster;
     constructor(ctx: RenderContext, node: ViewNode);
     update(n: ViewNode): void;
+    /** What the placeholder shows, while it shows: `null` without a message. */
+    private showing;
     /** `poster`, else `alt`, else "GPU canvas not supported"; with a program error's message under it. */
     placeholder(message?: string): void;
     shown(): void;

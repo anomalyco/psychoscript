@@ -51,8 +51,6 @@ export interface ErrorInfo {
   /** The phase it belongs to when not the step's or the run's: `view` for a view that breaks a rule of views. */
   phase?: string
   type: string
-  /** For `type: "shader"`: the widget template's WGSL is at fault (a program error), not this host. */
-  program?: boolean
   kind?: string
   message: string
   line?: number
@@ -66,19 +64,27 @@ export type LiveExit =
 
 export type ToWorker =
   | { t: "init"; module: WebAssembly.Module }
-  | { t: "shader"; module: WebAssembly.Module }
   | { t: "compile"; pid: number; program: string; live: boolean }
   | { t: "release"; pid: number }
   | { t: "open"; wid: number; pid: number; data: string }
   | { t: "event"; wid: number; event: WidgetEvent }
   | { t: "draw"; wid: number; req: number; frame: Frame }
   | { t: "close"; wid: number }
-  | { t: "live"; wid: number; pid: number; data: string; hosts?: string[]; localNetwork?: boolean; sliceBudgetMs?: number }
+  | {
+      t: "live"
+      wid: number
+      pid: number
+      data: string
+      hosts?: string[]
+      localNetwork?: boolean
+      sliceBudgetMs?: number
+      /** The live input's `gpu` (widgets-gpu.md). */
+      gpu?: { available: boolean; format: string }
+    }
   | { t: "deliver"; wid: number; message: unknown }
   | { t: "pause"; wid: number }
   | { t: "resume"; wid: number }
   | { t: "stop"; wid: number }
-  | { t: "translate"; req: number; wgsl: string }
   | { t: "stats"; req: number }
 
 export type FromWorker =
@@ -90,7 +96,6 @@ export type FromWorker =
   /** `phase`: a program error the run survives, else a plain warning. */
   | { t: "warning"; wid: number; message: string; phase?: string }
   | { t: "exit"; wid: number; exit: LiveExit }
-  | { t: "translated"; req: number; code?: string; block?: string; error?: ErrorInfo }
   | { t: "crash"; message: string; wid?: number }
   | { t: "stats"; req: number; wasmBytes: number; programs: number; widgets: number }
 

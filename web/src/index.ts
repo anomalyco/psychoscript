@@ -12,7 +12,6 @@ export type { Capabilities, HostOptions, Labels, MountOptions, MountedWidget, Wi
 export type { Theme, ThemeTokens } from "./theme.js"
 export { DARK, LIGHT } from "./theme.js"
 export type { Frame, ViewNode, WidgetEvent } from "./protocol.js"
-export { preferWebGL } from "./shader.js"
 
 let shared: WidgetHost | undefined
 

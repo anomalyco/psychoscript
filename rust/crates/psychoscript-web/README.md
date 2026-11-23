@@ -28,7 +28,6 @@ class LiveRun {
   pause(): void; resume(): void; stop(): void; isPaused(): boolean; nowMs(): number
   exit(): string | undefined       // { type: "finished", result } | { type: "failed", error } | { type: "stopped" }
 }
-function translateWgsl(wgsl: string): { code: string; block: string }   // feature `shader`; throws ShaderError
 ```
 
 Errors are `Error`s named `PsychoScriptError` with `type` (`syntax`, `runtime`, `timeout`, `outputTooLarge`,
@@ -43,9 +42,11 @@ the same way and gives the commands the program emitted, as JSON reads them (`nu
 `native: true` builds each posted `render`'s tree (`post` returns whether it has handlers) and maps a `draw`'s `key` to
 its canvas's id; its `render` and `draw` posts go out under the post rate (a bucket of 8 refilled at
 `maxPostsPerSecond`, 240; waiting posts coalesce by render and by canvas key, and go out at the run's end unless it is
-stopped); GPU batches (`{ type: "frame", gpu }`, `{ type: "gpu", ops, bytes }`, widgets-gpu.md) go out at once,
-their ops as JSON and their bytes (an `ArrayBuffer`, read in place) in the byte outbox (`takeBytes`), a `context` op
-for a key with no GPU canvas in the last render throwing; a render carries its GPU canvases' ids by key (`gpu`); a
+stopped); GPU batches (`{ type: "frame", gpu }`, `{ type: "gpu", ops, bytes }`, widgets-gpu.md) take no token but
+never overtake a waiting post, and go as they are for the client's host checks: their ops as JSON, an `ArrayBuffer`'s
+bytes (read in place) in the byte outbox (`takeBytes`), other bytes `null`; a render carries its GPU canvases' ids by
+key (`gpu`). Widget runs (`runStep`, `runDraw`, `native` live runs) have typed arrays (`Runtime::typed_arrays`); a
+plain `run` doesn't. A
 `draw` without a string `key`, over 2,000 commands or with an invalid command (type `draw`), ends the run. Draws, live posts and
 `runDraw` alike, are checked and normalised by the spec's draw command checks (`src/draw.rs`; `tests/draw.rs` runs the
 89 shared cases of opencode widgets cb1e19652). A key that isn't a string, number or boolean, or a view over 100 levels, fails with type `view` (a step
@@ -67,7 +68,7 @@ second; the browser carries the request and the final URL after redirects is che
 (`suspend`/`toBytes`) aren't offered: `Suspender::suspend` blocks on a condition variable, which a single-threaded
 host can't do while it is the thread that must reach the safe point.
 
-The native parts are plain Rust and tested natively: `cargo test -p psychoscript-web --features shader`.
+The native parts are plain Rust and tested natively: `cargo test -p psychoscript-web`.
 
 ## Changes in the language crate (`crates/psychoscript`) for the browser
 
@@ -96,7 +97,6 @@ caller's stack fails with "nested too deeply" (no thread with a larger stack).
 | `psychoscript_web_bg.wasm` (language) | 9.54 MB | 3.19 MB | 2.21 MB |
 |   of which code | 3.84 MB | 1.36 MB | 0.93 MB |
 |   of which data | 5.69 MB | 1.83 MB | 1.24 MB |
-| `psychoscript_web_shader_bg.wasm` (naga, only without WebGPU) | 1.19 MB | 0.44 MB | 0.34 MB |
 
 The data is mostly ICU4X's compiled data for every CLDR locale (date/time names and patterns for
 `toLocale*String`/`Intl.DateTimeFormat`, collation for `localeCompare`). Data segments are copied into each
