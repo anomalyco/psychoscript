@@ -124,7 +124,7 @@ describe("RegExp Test262 parity", () => {
       await value(`
         const match = /(?<a>a)(b)?/d.exec("a")
         const stringMatch = "a".match(/a/d)
-        const all = "a a".matchAll(/a/dg)
+        const all = [..."a a".matchAll(/a/dg)]
         const named = /(?<constructor>a)(?<safe>b)/d.exec("ab")
         return [
           /./.hasIndices,
@@ -180,9 +180,9 @@ describe("RegExp Test262 parity", () => {
     expect(
       await value(`
         const matched = "a".match(/(?<a>a)|(?<x>x)/d).indices.groups
-        const all = "a x".matchAll(/(?<a>a)|(?<x>x)/dg)
+        const all = [..."a x".matchAll(/(?<a>a)|(?<x>x)/dg)]
         const namedMatch = "ab".match(/(?<constructor>a)(?<safe>b)/d).indices.groups
-        const namedAll = "ab".matchAll(/(?<constructor>a)(?<safe>b)/dg)[0].indices.groups
+        const namedAll = "ab".matchAll(/(?<constructor>a)(?<safe>b)/dg).next().value.indices.groups
         return [
           matched.a,
           matched.x,

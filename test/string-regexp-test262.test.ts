@@ -652,11 +652,11 @@ run("Test262-adapted matchAll behavior", [
     code: `
       const text = "𠮷a𠮷b𠮷"
       const collect = (regex) => {
-        const matches = text.matchAll(regex)
+        const matches = [...text.matchAll(regex)]
         return matches.map((match) => match[0]).concat(matches.map((match) => match.index))
       }
-      const empty = text.matchAll(/(?:)/gu)
-      const complex = "a𠮷b􏿿c".matchAll(/\\P{ASCII}/gu)
+      const empty = [...text.matchAll(/(?:)/gu)]
+      const complex = [..."a𠮷b􏿿c".matchAll(/\\P{ASCII}/gu)]
       return [
         collect(/𠮷/g),
         collect(/𠮷/gu),
