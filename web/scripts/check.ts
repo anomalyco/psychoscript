@@ -319,6 +319,45 @@ for (const [query, backend] of [["?only=backdrop", "webgpu"]] as const) {
   await page.close()
 }
 
+// ---------- a shader frame unfinished 1 s after its submit: a GPU hang, before the 50 ms rule ----------
+{
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
+  const errors: string[] = []
+  page.on("pageerror", (e) => errors.push(e.message))
+  // Two slow frames (80 ms), then one that takes 1.5 s: the 50 ms rule would stop it when that one finishes.
+  await page.addInitScript(() => {
+    const w = window as unknown as { __gpuSlow: { submits: number; waits: number } }
+    const slow = (w.__gpuSlow = { submits: 0, waits: 0 })
+    const done = GPUQueue.prototype.onSubmittedWorkDone
+    GPUQueue.prototype.onSubmittedWorkDone = function (this: GPUQueue) {
+      const ms = ++slow.waits >= 3 ? 1500 : 80
+      return done.call(this).then(() => new Promise<undefined>((r) => setTimeout(() => r(undefined), ms)))
+    }
+    const submit = GPUQueue.prototype.submit
+    GPUQueue.prototype.submit = function (this: GPUQueue, buffers: Iterable<GPUCommandBuffer>) {
+      slow.submits++
+      return submit.call(this, buffers)
+    }
+  })
+  await page.goto(base + "?only=shader-demo")
+  const w = widget(page, "shader-demo")
+  await w.locator('.pw-surface[data-backend="webgpu"]').waitFor({ timeout: 20000 }).catch(() => {})
+  const message = "the GPU work took over 1 s; the canvas is stopped"
+  await waitLog(page, (l) => l.startsWith("shader-demo client-error"), 8000)
+  // The 1.5 s frame finishes after the hang: nothing more.
+  await page.waitForTimeout(1500)
+  const lines = (await log(page)).filter((l) => l.startsWith("shader-demo client-error"))
+  const slow = await page.evaluate(() => (window as unknown as { __gpuSlow: { submits: number } }).__gpuSlow)
+  const alt = await w.evaluate((el) => el.shadowRoot!.querySelector(".pw-surface .pw-alt")?.textContent ?? "")
+  check(
+    lines.length === 1 && lines[0] === `shader-demo client-error ${message}` && slow.submits === 3 && alt.endsWith(message),
+    "shader: a frame unfinished 1 s after its submit stops it (a GPU hang, its placeholder with the message), before the 50 ms rule",
+    { lines, slow, alt },
+  )
+  check(errors.length === 0, "shader (hang): no page errors", errors)
+  await page.close()
+}
+
 // ---------- shader pointer events, values-only updates ----------
 for (const [query, backend] of [["?only=shader-demo", "webgpu"]] as const) {
   const { page, errors } = await open(query)
@@ -1363,7 +1402,7 @@ for (const query of ["?only=shader-broken"]) {
   const maze = await state(page)
   const r = maze.rect!
   const before = await pixels(page, r, CORNERS)
-  check(maze.reports.length === 0 && lit(before.px[0]) && /Click to look around/.test(await hud()), "gpu template maze: renders, with its HUD over the canvas", { reports: maze.reports, px: before.px, text: maze.text })
+  check(maze.reports.length === 0 && lit(before.px[0]) && /Click or drag to look/.test(await hud()), "gpu template maze: renders, with its HUD over the canvas", { reports: maze.reports, px: before.px, text: maze.text })
   await page.mouse.click(r.x + r.width / 2, r.y + r.height / 2)
   await page.waitForTimeout(300)
   await page.mouse.click(r.x + r.width / 2, r.y + r.height / 2)
@@ -1386,16 +1425,17 @@ for (const query of ["?only=shader-broken"]) {
   check(Buffer.compare(walked.png, turned.png) !== 0, "gpu template maze: relative mouse moves turn the camera (the view changes)")
   await shot(page, "gpu-template-maze")
   await page.keyboard.press("Escape")
-  const released = await until(/Click to look around/)
-  check(/Click to look around/.test(released) && (await state(page)).reports.length === 0, "gpu template maze: Esc lets the pointer go; no program errors", released)
+  const released = await until(/Click or drag to look/)
+  check(/Click or drag to look/.test(released) && (await state(page)).reports.length === 0, "gpu template maze: Esc lets the pointer go; no program errors", released)
   await done(page)
   /** Each GPU canvas in order: its rect, the text its placeholder shows ("" while it draws), and its backing size. */
   const canvases = (page: Page) =>
     page.evaluate(() => {
-      const g = (window as unknown as { __gpu: { slot: HTMLElement; reports: { phase: string; message: string }[] } }).__gpu
+      const g = (window as unknown as { __gpu: { slot: HTMLElement; reports: { phase: string; message: string }[]; clientErrors: string[] } }).__gpu
       const root = g.slot.querySelector(".psychoscript-widget")!.shadowRoot!
       return {
         reports: g.reports.map((r) => r.message),
+        clientErrors: g.clientErrors,
         text: [...root.querySelectorAll(".pw-text")].map((t) => t.textContent ?? ""),
         canvases: [...root.querySelectorAll('.pw-surface[data-kind="webgpu"]')].map((s) => {
           const r = s.querySelector("canvas")!.getBoundingClientRect()
@@ -1498,6 +1538,64 @@ for (const query of ["?only=shader-broken"]) {
     )
     await done(page)
     check(errors.length === 0, "gpu (restart): no page errors", errors)
+    await page.close()
+  }
+
+  // A GPU hang: the first batch drawing a finishes 1.5 s after its submit. At 1 s a stops (a client error, its
+  // placeholder with the message); b draws on; a later device loss restarts b, never a.
+  {
+    const page = await browser.newPage({ viewport: { width: 800, height: 600 } })
+    const errors: string[] = []
+    page.on("pageerror", (e) => errors.push(e.message))
+    await page.addInitScript(() => {
+      const w = window as unknown as { __devices: GPUDevice[] }
+      w.__devices = []
+      const request = GPUAdapter.prototype.requestDevice
+      GPUAdapter.prototype.requestDevice = async function (this: GPUAdapter, d?: GPUDeviceDescriptor) {
+        const device = await request.call(this, d)
+        w.__devices.push(device)
+        return device
+      }
+      // The first canvas drawn is a; the work submitted with its first frame takes 1.5 s.
+      let first: HTMLCanvasElement | OffscreenCanvas | undefined
+      let hang = false
+      const current = GPUCanvasContext.prototype.getCurrentTexture
+      GPUCanvasContext.prototype.getCurrentTexture = function (this: GPUCanvasContext) {
+        first ??= this.canvas
+        if (this.canvas === first && !hang) hang = true
+        return current.call(this)
+      }
+      let hung = false
+      const done = GPUQueue.prototype.onSubmittedWorkDone
+      GPUQueue.prototype.onSubmittedWorkDone = function (this: GPUQueue) {
+        if (!hang || hung) return done.call(this)
+        hung = true
+        return done.call(this).then(() => new Promise<undefined>((r) => setTimeout(() => r(undefined), 1500)))
+      }
+    })
+    await page.goto(base + "?only=confirm")
+    await mount(page, gpu.hung, 1600)
+    const before = await canvases(page)
+    const bDrawn = await centre(page, before.canvases[1]!.rect)
+    await page.evaluate(() => (window as unknown as { __devices: GPUDevice[] }).__devices.at(-1)!.destroy())
+    await page.waitForTimeout(1500)
+    const after = await canvases(page)
+    const b = await centre(page, after.canvases[1]!.rect)
+    const message = "the GPU work took over 1 s; the canvas is stopped"
+    check(
+      before.clientErrors.length === 1 && before.clientErrors[0] === message && before.reports.length === 0 &&
+        before.canvases[0]!.alt === "A\n" + message && before.canvases[1]!.alt === "" && near(bDrawn, [0, 255, 0]),
+      "gpu: a batch unfinished 1 s after its submit stops the canvas it draws into (a client error, its placeholder with the message); the other draws on",
+      { ...before, bDrawn },
+    )
+    check(
+      after.text.includes("restarted") && after.clientErrors.length === 1 && after.reports.length === 0 &&
+        after.canvases[0]!.alt === "A\n" + message && after.canvases[1]!.alt === "" && near(b, [0, 0, 255]),
+      "gpu: a later device loss restarts the other canvas, never the one a GPU hang stopped",
+      { ...after, b },
+    )
+    await done(page)
+    check(errors.length === 0, "gpu (hang): no page errors", errors)
     await page.close()
   }
 

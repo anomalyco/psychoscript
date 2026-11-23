@@ -53,12 +53,22 @@ export declare class GpuReplay {
     /** Whether the batch replaying is a frame request's (it ends the frame), and a present is waiting for a frame. */
     private boundary;
     private presenting;
+    /** Whether the batch replaying submitted work (a GPU hang is timed from it). */
+    private submitted;
     constructor(host: GpuHost);
     /** Checks `batch` now, in order, and replays what passes after the batches before it. `boundary`: the batch of a
      * frame request (not one repeated while a frame is pending), which `frame()` follows. */
     batch(batch: unknown, boundary: boolean): void;
     /** A program error: reported once; its canvases (or every one) stop and show their placeholder with it. */
     private fail;
+    /**
+     * A GPU hang (widgets-gpu.md): the batch's work still unfinished `GPU_HANG_MS` after its submit stops the canvases it
+     * renders into, else every one, as an error would (later batches for them ignored, never restarted by a new device),
+     * with a client error. Timed without waiting: the work's completion clears the timer.
+     */
+    private watch;
+    /** Stops `error`'s canvases (or every one): each shows its placeholder with the message. */
+    private stop;
     private start;
     private adopt;
     private replay;

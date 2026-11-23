@@ -7,7 +7,7 @@ import { canvasSize } from "./gpu-checks.js"
 import { paint } from "./canvas.js"
 import { markdown } from "./markdown.js"
 import type { Frame, Rect, ViewNode, WidgetEvent } from "./protocol.js"
-import { DRAW_BUDGET_MS, MAX_FPS, MAX_SHADER_BYTES, MAX_SHADER_VALUES, OVERRUNS_TO_FREEZE, SHADER_FRAME_BUDGET_MS } from "./protocol.js"
+import { DRAW_BUDGET_MS, GPU_HANG, GPU_HANG_MS, MAX_FPS, MAX_SHADER_BYTES, MAX_SHADER_VALUES, OVERRUNS_TO_FREEZE, SHADER_FRAME_BUDGET_MS } from "./protocol.js"
 import type { ShaderError, Surface } from "./shader.js"
 import { UNIFORM_FLOATS, surface } from "./shader.js"
 import type { Resolved } from "./theme.js"
@@ -1082,6 +1082,8 @@ export class GpuCanvasView extends SurfaceBase {
   private failed = false
   private slow = 0
   private stopped = false
+  /** A GPU hang stopped it for the rest of the run: a new shader doesn't start it again. */
+  private hung = false
   private uniforms = new Float32Array(UNIFORM_FLOATS)
   private values = ""
   private lastFrame = 0
@@ -1108,7 +1110,7 @@ export class GpuCanvasView extends SurfaceBase {
       this.dirty = true
     }
     const wgsl = str(n.wgsl)
-    if (wgsl !== this.wgsl) {
+    if (wgsl !== this.wgsl && !this.hung) {
       this.wgsl = wgsl
       this.failed = false
       this.stopped = false
@@ -1155,6 +1157,11 @@ export class GpuCanvasView extends SurfaceBase {
     const message = e.line ? `${e.message} (WGSL line ${e.line}, column ${e.column})` : e.message
     if (e.program) this.ctx.programError("shader", { message })
     else this.ctx.clientError(`shader: ${message}`, e)
+    this.showError(message)
+  }
+
+  /** `poster` or `alt`, with `message`. */
+  private showError(message: string) {
     const poster = str(this.node.poster)
     const url = poster ? this.ctx.resolveImage(poster) : undefined
     if (url) {
@@ -1201,8 +1208,17 @@ export class GpuCanvasView extends SurfaceBase {
     u[6] = p?.down ? 1 : 0
     u[7] = 0
     const took = s.render(u)
-    took?.then((ms) => {
-      if (ms === undefined) return
+    if (!took) return
+    // A GPU hang (widgets-gpu.md): unfinished a second after its submit, it stops for good, before the 50 ms rule.
+    const hang = setTimeout(() => {
+      if (this.destroyed || this.hung) return
+      this.hung = this.stopped = true
+      this.ctx.clientError(GPU_HANG)
+      this.showError(GPU_HANG)
+    }, GPU_HANG_MS)
+    void took.then((ms) => {
+      clearTimeout(hang)
+      if (ms === undefined || this.stopped) return
       this.slow = ms > SHADER_FRAME_BUDGET_MS ? this.slow + 1 : 0
       if (this.slow >= OVERRUNS_TO_FREEZE && !this.stopped) {
         this.stopped = true

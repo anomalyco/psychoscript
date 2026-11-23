@@ -144,6 +144,8 @@ export declare class GpuCanvasView extends SurfaceBase {
     private failed;
     private slow;
     private stopped;
+    /** A GPU hang stopped it for the rest of the run: a new shader doesn't start it again. */
+    private hung;
     private uniforms;
     private values;
     private lastFrame;
@@ -155,6 +157,8 @@ export declare class GpuCanvasView extends SurfaceBase {
     update(n: ViewNode): void;
     private build;
     private fail;
+    /** `poster` or `alt`, with `message`. */
+    private showError;
     protected resized(): void;
     wake(): void;
     protected tick: (now: number) => void;

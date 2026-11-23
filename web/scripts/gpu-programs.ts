@@ -294,3 +294,24 @@ export const midFrame = `async function main() {
 
 /** A write into the canvas's texture: a host check (it can only be rendered into). */
 export const written = frame("", `device.queue.writeTexture({ texture: context.getCurrentTexture() }, new Uint8Array(4), { bytesPerRow: 4 }, [1, 1])`, 1)
+
+/**
+ * a and b drawn in turn, one a frame (a first), then it waits for the device's loss, asks for a new device and draws
+ * both blue in one batch: a, stopped by a GPU hang, stays stopped; b, stopped by the loss, starts again.
+ */
+export const hung = two(`for (let n = 0; n < 12; n++) {
+    await widget.frame()
+    submit((e) => pass(e, n % 2 ? "b" : "a", [0, 1, 0, 1]))
+  }
+  widget.render(ui.column([ui.row([ui.canvas({ key: "a", gpu: true, width: 64, height: 64, alt: "A" }), ui.canvas({ key: "b", gpu: true, width: 64, height: 64, alt: "B" })]), ui.text("waiting")]))
+  await device.lost
+  device = await widget.gpu.requestDevice()
+  configure()
+  widget.render(ui.column([ui.row([ui.canvas({ key: "a", gpu: true, width: 64, height: 64, alt: "A" }), ui.canvas({ key: "b", gpu: true, width: 64, height: 64, alt: "B" })]), ui.text("restarted")]))
+  for (let n = 0; n < 5; n++) {
+    await widget.frame()
+    submit((e) => {
+      pass(e, "a", [0, 0, 1, 1])
+      pass(e, "b", [0, 0, 1, 1])
+    })
+  }`)

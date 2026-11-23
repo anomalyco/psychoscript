@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// The GPU conformance fixtures (opencode `packages/widget/test/fixtures/gpu/*.json`, widgets 3efef1c62; copies in
+// The GPU conformance fixtures (opencode `packages/widget/test/fixtures/gpu/*.json`, widgets 1ef86872b; copies in
 // rust/crates/psychoscript-web/tests/fixtures/gpu): each program runs on this host's WebAssembly (the worker's
 // `LiveRun`, from wasm/) under the fixtures' driver, and must post the same batches (ops, and bytes byte for byte),
 // give the same program errors from the host checks (src/gpu-checks.ts, which the page runs before replaying), and
