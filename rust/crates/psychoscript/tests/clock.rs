@@ -291,11 +291,7 @@ fn a_host_call_off_the_cpu_is_left_out_in_full_and_the_run_still_ends() {
     // the CPU time of each interval, so the program counts next to nothing. The thread's CPU time with host calls
     // still ends the run, at ten times the budget.
     let code = "while (true) { const t = Date.now(); while (Date.now() - t < 1) {} nap(1) }";
-    let over: [(Limits, fn(&psychoscript::Outcome) -> bool); 2] = [
-        (limits(30, Clock::ThreadCpu), timed_out),
-        (sliced(30, Clock::ThreadCpu), sliced_out),
-    ];
-    for (limits, over) in over {
+    let ends = |limits: Limits, over: fn(&psychoscript::Outcome) -> bool| {
         let before = clock.now();
         let o = ticking(limits).execute(code);
         let used = clock.now() - before;
@@ -304,7 +300,9 @@ fn a_host_call_off_the_cpu_is_left_out_in_full_and_the_run_still_ends() {
             used >= Duration::from_millis(30) && used < Duration::from_millis(600),
             "{used:?}"
         );
-    }
+    };
+    ends(limits(30, Clock::ThreadCpu), timed_out);
+    ends(sliced(30, Clock::ThreadCpu), sliced_out);
 }
 
 #[test]
