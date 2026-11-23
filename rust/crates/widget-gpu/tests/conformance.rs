@@ -61,7 +61,8 @@ fn raw(source: &str) -> Vec<Posted> {
         )]
     });
     let program = format!(
-        "const __host = {{ post: (m) => __record(JSON.stringify({{ ops: m.ops, bytes: m.bytes.byteLength }})) }}
+        "const __number = (k, v) => (typeof v === 'number' && !Number.isFinite(v) ? {{ __number: String(v) }} : v)
+const __host = {{ post: (m) => __record(JSON.stringify({{ ops: m.ops, bytes: m.bytes.byteLength }}, __number)) }}
 const widget = {{ render() {{}}, frame: async () => {{}} }}
 const ui = {{ canvas: () => null }}
 {source}
@@ -79,11 +80,49 @@ return null"
             let v: Value = serde_json::from_str(p).unwrap();
             Posted {
                 frame: false,
-                ops: ops(&v["ops"]),
+                ops: v["ops"].as_array().map(|o| o.iter().map(carried).collect()),
                 bytes: Some(vec![0; v["bytes"].as_u64().unwrap() as usize]),
             }
         })
         .collect()
+}
+
+/// An op as the program posted it, read as JSON reads it (`undefined` already as JSON has it) but with its numbers as
+/// they are: the runner carries a non-finite one as `{ "__number": "NaN" | "Infinity" | "-Infinity" }`.
+fn carried(v: &Value) -> Arg {
+    match v {
+        Value::Object(o) if o.len() == 1 => match o.get("__number").and_then(Value::as_str) {
+            Some("NaN") => Arg::Num(f64::NAN),
+            Some("Infinity") => Arg::Num(f64::INFINITY),
+            Some("-Infinity") => Arg::Num(f64::NEG_INFINITY),
+            _ => Arg::Obj(o.iter().map(|(k, v)| (k.clone(), carried(v))).collect()),
+        },
+        Value::Object(o) => Arg::Obj(o.iter().map(|(k, v)| (k.clone(), carried(v))).collect()),
+        Value::Array(l) => Arg::List(l.iter().map(carried).collect()),
+        v => Arg::from_json(v),
+    }
+}
+
+#[test]
+fn the_raw_runner_carries_numbers_as_they_are() {
+    let posted = raw(
+        "async function main() {\n  __host.post({ type: \"gpu\", ops: [[\"setViewport\", NaN, Infinity, -Infinity, 1, undefined, [undefined]]], bytes: new ArrayBuffer(0) })\n}",
+    );
+    let ops = posted[0].ops.as_ref().unwrap();
+    let Arg::List(op) = &ops[0] else {
+        panic!("{ops:?}")
+    };
+    assert!(matches!(op[1], Arg::Num(n) if n.is_nan()));
+    assert_eq!(
+        op[2..],
+        [
+            Arg::Num(f64::INFINITY),
+            Arg::Num(f64::NEG_INFINITY),
+            Arg::Num(1.0),
+            Arg::Null,
+            Arg::List(vec![Arg::Null])
+        ]
+    );
 }
 
 fn fixtures() -> Vec<(String, Value)> {
