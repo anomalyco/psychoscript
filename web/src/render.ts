@@ -9,6 +9,7 @@ import { markdown } from "./markdown.js"
 import type { Frame, Rect, ViewNode, WidgetEvent } from "./protocol.js"
 import { DRAW_BUDGET_MS, MAX_FPS, MAX_SHADER_BYTES, MAX_SHADER_VALUES, OVERRUNS_TO_FREEZE, SHADER_FRAME_BUDGET_MS } from "./protocol.js"
 import type { ShaderError, Surface } from "./shader.js"
+import type { Run } from "./watchdog.js"
 import { UNIFORM_FLOATS, surface } from "./shader.js"
 import type { Resolved } from "./theme.js"
 
@@ -33,8 +34,8 @@ export interface RenderContext {
   programError(phase: string, error: { message: string; line?: number; column?: number }): void
   /** This host failed (valid WGSL it couldn't run, a surface too slow on this device): logged in dev mode only. */
   clientError(message: string, cause?: unknown): void
-  /** A strike for the run (widgets-gpu.md, Strikes): its GPU work was unfinished at a device loss. The same each time. */
-  gpuStrike(): void
+  /** The run (widgets-gpu.md, Strikes): its GPU work finished, or was unfinished at a device loss. The same each time. */
+  readonly gpuRun: Run
   ticker: Ticker
 }
 
@@ -1230,7 +1231,7 @@ export class GpuCanvasView extends SurfaceBase {
     u[6] = p?.down ? 1 : 0
     u[7] = 0
     // The run's strike, not the shader's: the shaders share a device, strikes are the run's (widgets-gpu.md, Strikes).
-    const took = s.render(u, this.hang, this.ctx.gpuStrike)
+    const took = s.render(u, this.hang, this.ctx.gpuRun)
     void took?.then((ms) => {
       if (ms === undefined || this.stopped) return
       this.slow = ms > SHADER_FRAME_BUDGET_MS ? this.slow + 1 : 0

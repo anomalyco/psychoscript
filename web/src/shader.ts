@@ -1,7 +1,7 @@
 // Canvases with `wgsl` (widgets.md, GPU canvases): the widget template's WGSL in a fixed full-screen pipeline on the
 // browser's WebGPU, the GPU canvases' path (widgets-gpu.md); without WebGPU, the placeholder (no WebGL fallback).
 
-import { Watchdog } from "./watchdog.js"
+import { type Run, Watchdog } from "./watchdog.js"
 
 /** What clients prepend to a widget template's WGSL. */
 export const HEADER =
@@ -34,10 +34,10 @@ export interface Surface {
   readonly drawing: boolean
   /**
    * Draws a frame with `uniforms`; resolves with how long the GPU took when the backend can tell, else undefined.
-   * On the queue the shaders share (widgets-gpu.md, GPU hang): `hang`, the frame hung; `struck`, the shader's own
-   * strike, its frame unfinished when the device was lost.
+   * On the queue the shaders share (widgets-gpu.md, GPU hang): `hang`, the frame hung; `run`, the shader's run, told
+   * when the frame finished or was unfinished at a device loss.
    */
-  render(uniforms: Float32Array, hang: () => void, struck: () => void): Promise<number | undefined> | undefined
+  render(uniforms: Float32Array, hang: () => void, run: Run): Promise<number | undefined> | undefined
   /** Settles when its device is lost: the shader is built again on a new one. */
   readonly lost: Promise<unknown>
   destroy(): void
@@ -138,7 +138,7 @@ async function gpuSurface(g: Gpu, canvas: HTMLCanvasElement, wgsl: string): Prom
       return drawing
     },
     lost: g.device.lost,
-    render(uniforms, hang, struck) {
+    render(uniforms, hang, run) {
       if (destroyed || canvas.width === 0 || canvas.height === 0) return undefined
       g.device.queue.writeBuffer(buffer, 0, uniforms.buffer, uniforms.byteOffset, uniforms.byteLength)
       const encoder = g.device.createCommandEncoder()
@@ -155,7 +155,7 @@ async function gpuSurface(g: Gpu, canvas: HTMLCanvasElement, wgsl: string): Prom
       g.device.queue.submit([encoder.finish()])
       // One frame drawing at a time: the time is this frame's rather than a queue of them.
       drawing = true
-      return g.watchdog.submitted(hang, struck).then(
+      return g.watchdog.submitted(hang, run).then(
         () => {
           drawing = false
           return timing ? performance.now() - started : undefined

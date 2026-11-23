@@ -1,3 +1,4 @@
+import { type Run } from "./watchdog.js";
 /** A batch as the worker hands it over: the ops, and the bytes they name by `[byteOffset, byteLength]`. */
 export interface Batch {
     ops: unknown[][];
@@ -27,8 +28,8 @@ export interface GpuHost {
     unavailable(): void;
     /** How long a batch's replay took on this thread, in ms (the GPU's work runs after). */
     metric(ms: number): void;
-    /** A strike (widgets-gpu.md, Strikes): the run's work was unfinished at a device loss. The same function each time. */
-    strike(): void;
+    /** The run (widgets-gpu.md, Strikes): its work finished, or was unfinished at a device loss. The same object each time. */
+    readonly run: Run;
     /** Runs `f` once in the next display frame, before the canvases present. */
     nextFrame(f: () => void): void;
 }

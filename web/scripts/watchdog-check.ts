@@ -17,7 +17,7 @@ function queue() {
   }
 }
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
-const none = () => {}
+const none = { finished: () => {}, strike: () => {} }
 
 let failed = 0
 const check = (ok: boolean, name: string, detail?: unknown) => {
@@ -65,34 +65,55 @@ const check = (ok: boolean, name: string, detail?: unknown) => {
   dog.stop()
 }
 {
-  // At a loss: each run with work unfinished gets one strike, however many of its submits were; one whose work finished
-  // gets none; and nothing is timed after.
+  // At a loss: each run with work unfinished is told once, however many of its submits were; one whose work finished
+  // isn't; nothing is timed after; and work settled by the loss isn't work finished on the device.
   const q = queue()
   const dog = new Watchdog(q)
-  const struck: string[] = []
+  const told: string[] = []
   const hung: string[] = []
-  const run = () => struck.push("run")
-  const done = () => struck.push("done")
+  const run = { finished: () => told.push("run finished"), strike: () => told.push("run struck") }
+  const done = { finished: () => told.push("done finished"), strike: () => told.push("done struck") }
   dog.submitted(() => hung.push("done"), done)
   dog.submitted(() => hung.push("run"), run)
   dog.submitted(() => hung.push("run"), run)
   q.finish()
   await sleep(10)
   dog.lost()
+  q.finish()
+  q.finish()
   await sleep(GPU_HANG_MS + 50)
-  check(struck.join() === "run", "a loss strikes each run with work unfinished, once, and none whose work finished", struck)
+  check(told.join() === "done finished,run struck", "work finished on the device tells its run; a loss tells each run with work unfinished, once; work settled after the loss isn't finished", told)
   check(hung.length === 0, "a loss is no GPU hang by itself: no 250 ms rule at a loss, no timer after it", hung)
 }
 {
-  // Two strikes within 30 s stop; strikes further apart don't.
+  // Strikes: only with the run's work finished since its last strike (or its start); two within 30 s stop.
   const clock = { t: 0 }
   const strikes = new Strikes(() => clock.t)
-  const got = [strikes.strike()]
+  const got: boolean[] = []
+  got.push(strikes.strike())
+  strikes.done()
+  got.push(strikes.strike())
+  got.push(strikes.strike())
+  got.push(strikes.strike())
+  clock.t = 1000
+  strikes.done()
+  got.push(strikes.strike())
+  check(
+    got.join() === "false,false,false,false,true",
+    "a loss is a strike only after work finished since the last strike: losses in a row with none between are one strike; the second strike within 30 s stops",
+    got,
+  )
+  const apart = new Strikes(() => clock.t)
+  clock.t = 0
+  apart.done()
+  const far = [apart.strike()]
   clock.t = STRIKE_MS + 1
-  got.push(strikes.strike())
+  apart.done()
+  far.push(apart.strike())
   clock.t += STRIKE_MS
-  got.push(strikes.strike())
-  check(got.join() === "false,false,true", "a first strike changes nothing; a second within 30 s stops; 30 s apart, it doesn't", got)
+  apart.done()
+  far.push(apart.strike())
+  check(far.join() === "false,false,true", "strikes over 30 s apart don't stop; 30 s or less do", far)
 }
 
 console.log(failed === 0 ? "watchdog: all checks pass" : `watchdog: ${failed} check(s) failed`)

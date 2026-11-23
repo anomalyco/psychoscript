@@ -1616,26 +1616,28 @@ for (const query of ["?only=shader-broken"]) {
     await page.close()
   }
 
-  // Strikes (widgets-gpu.md, GPU hang), losses made by the check: the device is destroyed right after a submit whose work
-  // it keeps unfinished. A first strike changes nothing; a second within 30 s stops every GPU canvas of the run.
+  // Strikes (widgets-gpu.md), losses made by the check: the device is destroyed right after a submit whose work it keeps
+  // unfinished. Two losses in a row with no work finished between (the new device's first submit kept unfinished too)
+  // are one strike, which changes nothing; a later loss after work finished is the second, which stops the run.
   {
     const page = await browser.newPage({ viewport: { width: 800, height: 600 } })
     const errors: string[] = []
     page.on("pageerror", (e) => errors.push(e.message))
     await page.addInitScript(() => {
-      const w = window as unknown as { __devices: GPUDevice[]; __loseNext: boolean }
+      const w = window as unknown as { __devices: GPUDevice[]; __loseNext: number }
       w.__devices = []
-      w.__loseNext = false
+      w.__loseNext = 0
       const request = GPUAdapter.prototype.requestDevice
       GPUAdapter.prototype.requestDevice = async function (this: GPUAdapter, d?: GPUDeviceDescriptor) {
         const device = await request.call(this, d)
         w.__devices.push(device)
         return device
       }
+      // The next `__loseNext` submits: each kept unfinished, its device then lost.
       const done = GPUQueue.prototype.onSubmittedWorkDone
       GPUQueue.prototype.onSubmittedWorkDone = function (this: GPUQueue) {
         if (!w.__loseNext) return Promise.race([done.call(this), new Promise<undefined>((r) => setTimeout(() => r(undefined), 100))])
-        w.__loseNext = false
+        w.__loseNext--
         const device = w.__devices.find((d) => d.queue === this)!
         setTimeout(() => device.destroy())
         return new Promise<undefined>(() => {})
@@ -1643,25 +1645,25 @@ for (const query of ["?only=shader-broken"]) {
     })
     await page.goto(base + "?only=confirm")
     await mount(page, gpu.struck, 1000)
-    const lose = async () => {
-      await page.evaluate(() => ((window as unknown as { __loseNext: boolean }).__loseNext = true))
-      await page.waitForTimeout(1200)
+    const lose = async (losses: number) => {
+      await page.evaluate((n) => ((window as unknown as { __loseNext: number }).__loseNext = n), losses)
+      await page.waitForTimeout(1500)
       return canvases(page)
     }
-    const first = await lose()
+    const first = await lose(2)
     const a1 = await centre(page, first.canvases[0]!.rect)
     const message = "the GPU work hung; the canvas is stopped"
     check(
-      first.text.includes("devices 2") && first.clientErrors.length === 0 && first.reports.length === 0 &&
+      first.text.includes("devices 3") && first.clientErrors.length === 0 && first.reports.length === 0 &&
         first.canvases.every((c) => c.alt === "") && near(a1, [0, 0, 255]),
-      "gpu: a first strike (work unfinished at a device loss) changes nothing: the new device restarts the canvases",
+      "gpu: two losses in a row with no work finished between are one strike, which changes nothing: the canvases restart",
       { ...first, a1 },
     )
-    const second = await lose()
+    const second = await lose(1)
     check(
-      second.text.includes("devices 3") && second.clientErrors.length === 1 && second.clientErrors[0] === message &&
+      second.text.includes("devices 4") && second.clientErrors.length === 1 && second.clientErrors[0] === message &&
         second.reports.length === 0 && second.canvases[0]!.alt === "A\n" + message && second.canvases[1]!.alt === "B\n" + message,
-      "gpu: a second strike within 30 s stops every GPU canvas of the run (a client error, once); its new device restarts none",
+      "gpu: a loss after work finished is the second strike within 30 s: every GPU canvas of the run stops (a client error, once); its new device restarts none",
       second,
     )
     await done(page)

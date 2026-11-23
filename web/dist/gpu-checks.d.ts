@@ -14,7 +14,7 @@ export interface Checked {
 }
 /** The client error a GPU hang stops canvases with (widgets-gpu.md, Errors and device loss). */
 export declare const GPU_HANG = "the GPU work hung; the canvas is stopped";
-/** Two strikes this close stop a run: device losses while it had GPU work in flight. */
+/** Two strikes this close stop a run: device losses while it had GPU work in flight, one per GPU reset. */
 export declare const STRIKE_MS = 30000;
 export declare const GPU_LIMITS: {
     ops: number;

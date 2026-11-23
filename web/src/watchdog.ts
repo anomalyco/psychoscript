@@ -1,16 +1,21 @@
 // A GPU queue's watchdog (widgets-gpu.md, GPU hang). Submits finish in order, so only the oldest unfinished one is
 // timed, from its submit or, if later, from when the one before it finished: still unfinished `GPU_HANG_MS` after
-// that, it hangs and its `hang` runs; work queued behind it isn't blamed. At a device loss, each run with work still
-// unfinished gets a strike (`Strikes`). Nothing waits on the GPU: one `onSubmittedWorkDone` per submit and one
+// that, it hangs and its `hang` runs; work queued behind it isn't blamed. Work that finishes while the device is
+// current tells its run; at a device loss, each run with work still unfinished is told (`Strikes` decides the strike). Nothing waits on the GPU: one `onSubmittedWorkDone` per submit and one
 // timer for the oldest. (Chromium settles `device.lost` before the work pending at the loss: unfinished work is seen.)
 
 import { STRIKE_MS } from "./gpu-checks.js"
 import { GPU_HANG_MS } from "./protocol.js"
 
+/** The run a submit is for (the same object each time): its work finished, or was unfinished at a loss (once a loss). */
+export interface Run {
+  finished(): void
+  strike(): void
+}
+
 interface Submit {
   hang: () => void
-  /** Its submitter's strike: called once per loss, however many of its submits were unfinished. */
-  struck: () => void
+  run: Run
   start: number
   done: boolean
   hung: boolean
@@ -32,27 +37,30 @@ export class Watchdog {
   ) {}
 
   /**
-   * Work was just submitted: `hang` runs if it hangs, `struck` if it is unfinished when the device is lost (pass the
-   * run's own, the same each time: one strike a run a loss). Resolves (or rejects) when the work is done.
+   * Work was just submitted for `run`: `hang` runs if it hangs; `run` hears when it finishes on this device, or that it
+   * was unfinished when the device was lost. Resolves (or rejects) when the work is done.
    */
-  submitted(hang: () => void, struck: () => void): Promise<undefined> {
-    const submit: Submit = { hang, struck, start: this.now(), done: false, hung: false }
+  submitted(hang: () => void, run: Run): Promise<undefined> {
+    const submit: Submit = { hang, run, start: this.now(), done: false, hung: false }
     this.submits.push(submit)
     if (this.submits.length === 1) this.arm()
     const done = this.queue.onSubmittedWorkDone()
     const finish = () => {
       submit.done = true
+      // Settled by the loss (after it): not work finished on the current device.
+      if (this.gone) return
+      run.finished()
       this.settle()
     }
     done.then(finish, finish)
     return done
   }
 
-  /** The device was lost: each run with work unfinished gets a strike, once; then none is left. */
+  /** The device was lost: each run with work unfinished is told, once; then none is left. */
   lost() {
-    const struck = new Set(this.submits.filter((submit) => !submit.done).map((submit) => submit.struck))
+    const runs = new Set(this.submits.filter((submit) => !submit.done).map((submit) => submit.run))
     this.stop()
-    for (const strike of struck) strike()
+    for (const run of runs) run.strike()
   }
 
   /** No more timing (the device or the widget is gone). */
@@ -89,14 +97,26 @@ export class Watchdog {
   }
 }
 
-/** A run's strikes at device losses (widgets-gpu.md, Strikes): whether one is the second within `STRIKE_MS`. */
+/**
+ * A run's strikes at device losses (widgets-gpu.md, Strikes). A loss with the run's work in flight is a strike only if
+ * its work finished on a device since its last strike (or its start): losses in a row with none finished between are
+ * one reset, one strike.
+ */
 export class Strikes {
   private last: number | undefined
+  private finished = false
 
   constructor(private readonly now: () => number = () => performance.now()) {}
 
-  /** A strike now: true when it is the second within `STRIKE_MS` of the last (the run stops). */
+  /** The run's GPU work finished on a device. */
+  done() {
+    this.finished = true
+  }
+
+  /** A loss with the run's work in flight: true when it is a strike, the second within `STRIKE_MS` (the run stops). */
   strike(): boolean {
+    if (!this.finished) return false
+    this.finished = false
     const now = this.now()
     const second = this.last !== undefined && now - this.last <= STRIKE_MS
     this.last = now

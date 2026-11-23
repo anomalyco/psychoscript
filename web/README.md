@@ -124,7 +124,9 @@ Behavior, per the contract:
   (`src/watchdog.ts`; `onSubmittedWorkDone` and one timer, never waited on) times only its oldest unfinished submit,
   from its submit or, if later, from when the one before it finished, so work queued behind a hung submit isn't
   blamed. Strikes: at a device loss, a run with GPU work submitted and not yet seen finished (its live device's, or its
-  `wgsl` shaders' on the device they share) gets a strike; the first changes nothing visible, a second 30 s or less
+  `wgsl` shaders' on the device they share) gets a strike, if its work finished on a device (an `onSubmittedWorkDone`
+  resolved there, not by the loss) since its previous strike or its start: losses in a row with none finished between
+  are one reset, one strike. The first changes nothing visible, a second 30 s or less
   after it stops every GPU canvas of the run, shaders too, for the rest of the run with that client error (once), and no
   new device restarts them. Without WebGPU the canvas shows `poster`, else `alt`, else "GPU canvas not supported" (a
   client error, not reported). Why the page's thread: the canvases, their sizes, placeholders, full

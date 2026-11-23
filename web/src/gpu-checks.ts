@@ -1,6 +1,6 @@
 // GPU batch checks a host makes without a GPU (specs/v2/widgets-gpu.md, Host checks): every op's shape, the handles
 // it names, and the limits; the page replays what passes (gpu.ts). Opencode's `packages/widget/src/gpu.ts` at widgets
-// 0a6b8ba1b, the reference, with three changes for this host: a batch's bytes come as a `Uint8Array` (a view of what
+// 2364311f1, the reference, with three changes for this host: a batch's bytes come as a `Uint8Array` (a view of what
 // the worker transferred), an error gives the op it stopped at (`at`, the ops before it replay), and `scoped` applies
 // the canvases rule to an error the replay found (a WebGPU validation error).
 
@@ -22,7 +22,7 @@ export interface Checked {
 
 /** The client error a GPU hang stops canvases with (widgets-gpu.md, Errors and device loss). */
 export const GPU_HANG = "the GPU work hung; the canvas is stopped"
-/** Two strikes this close stop a run: device losses while it had GPU work in flight. */
+/** Two strikes this close stop a run: device losses while it had GPU work in flight, one per GPU reset. */
 export const STRIKE_MS = 30_000
 
 export const GPU_LIMITS = {

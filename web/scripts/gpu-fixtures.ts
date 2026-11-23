@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// The GPU conformance fixtures (opencode `packages/widget/test/fixtures/gpu/*.json`, widgets 0a6b8ba1b; copies in
+// The GPU conformance fixtures (opencode `packages/widget/test/fixtures/gpu/*.json`, widgets 2364311f1; copies in
 // rust/crates/psychoscript-web/tests/fixtures/gpu): each program runs on this host's WebAssembly (the worker's
 // `LiveRun`, from wasm/) under the fixtures' driver, and must post the same batches (ops, and bytes byte for byte),
 // give the same program errors from the host checks (src/gpu-checks.ts, which the page runs before replaying), and
@@ -25,7 +25,7 @@ interface Fixture {
   source: string
   data?: unknown
   canvases: Array<{ key: string; width: number; height: number }>
-  inputs?: Array<{ frame: number; after?: boolean; input: { type: string; key?: string; width?: number; height?: number; lost?: string; inFlight?: boolean } }>
+  inputs?: Array<{ frame: number; after?: boolean; input: { type: string; key?: string; width?: number; height?: number; lost?: string; inFlight?: boolean; finished?: boolean } }>
   gpu: { available: boolean; format: string }
   // `"from-source"`: too many to record; the run's own are the batches (its errors and end are still compared).
   batches?: Array<{ frame: boolean; ops: unknown; bytes: string | null }> | "from-source"
@@ -129,15 +129,17 @@ async function run(f: Fixture) {
     }
   }
   // As the page sends them: a canvas's size clamped to the texture limit; a device loss lost by the checks first, a
-  // strike before that when the run had GPU work in flight (`inFlight`, not sent): a second within 30 s stops the run.
+  // strike before that when the run had GPU work in flight (`inFlight`, not sent) and some finished since its last
+  // strike (`finished`, default true: since the previous loss): a second within 30 s stops the run.
   let now = 0
   const strikes = new Strikes(() => now)
-  const input = (given: { type: string; key?: string; width?: number; height?: number; lost?: string; inFlight?: boolean }) => {
+  const input = (given: { type: string; key?: string; width?: number; height?: number; lost?: string; inFlight?: boolean; finished?: boolean }) => {
     if (given.type === "canvas") {
       const [width, height] = canvasSize(given.width!, given.height!)
       return deliver({ type: "canvas", key: given.key, width, height })
     }
     if (given.type === "gpu" && given.lost !== undefined) {
+      if (given.finished !== false) strikes.done()
       const hang = given.inFlight === true && strikes.strike() ? checks.hung() : undefined
       if (hang) errors.push({ message: hang.message, canvases: hang.canvases })
       checks.lost()

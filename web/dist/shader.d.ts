@@ -1,4 +1,4 @@
-import { Watchdog } from "./watchdog.js";
+import { type Run, Watchdog } from "./watchdog.js";
 /** What clients prepend to a widget template's WGSL. */
 export declare const HEADER = "struct Widget { resolution: vec2f, time: f32, scale: f32, pointer: vec4f, values: array<vec4f, 4> }\n@group(0) @binding(0) var<uniform> widget: Widget;\n";
 /** The uniform block: resolution, time, scale, pointer, values (std140 and WGSL agree: 96 bytes). */
@@ -21,10 +21,10 @@ export interface Surface {
     readonly drawing: boolean;
     /**
      * Draws a frame with `uniforms`; resolves with how long the GPU took when the backend can tell, else undefined.
-     * On the queue the shaders share (widgets-gpu.md, GPU hang): `hang`, the frame hung; `struck`, the shader's own
-     * strike, its frame unfinished when the device was lost.
+     * On the queue the shaders share (widgets-gpu.md, GPU hang): `hang`, the frame hung; `run`, the shader's run, told
+     * when the frame finished or was unfinished at a device loss.
      */
-    render(uniforms: Float32Array, hang: () => void, struck: () => void): Promise<number | undefined> | undefined;
+    render(uniforms: Float32Array, hang: () => void, run: Run): Promise<number | undefined> | undefined;
     /** Settles when its device is lost: the shader is built again on a new one. */
     readonly lost: Promise<unknown>;
     destroy(): void;

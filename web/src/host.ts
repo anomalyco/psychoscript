@@ -9,7 +9,7 @@ import type { RenderContext } from "./render.js"
 import { CanvasView, GpuCanvasView, Ticker, WebGpuCanvasView, destroy as destroyTree, hasSurface, icon, rectIn, reconcile, surfaces } from "./render.js"
 import { GpuReplay } from "./gpu.js"
 import { GPU_HANG } from "./gpu-checks.js"
-import { Strikes } from "./watchdog.js"
+import { type Run, Strikes } from "./watchdog.js"
 import { stylesheet } from "./styles.js"
 import type { Resolved, Theme } from "./theme.js"
 import { apply, resolve } from "./theme.js"
@@ -523,7 +523,7 @@ class Widget implements MountedWidget {
       warn: (m) => this.warn(m),
       programError: (phase, e) => this.report(phase, e),
       clientError: (m, cause) => this.clientError(m, cause),
-      gpuStrike: this.gpuStrike,
+      gpuRun: this.gpuRun,
       ticker: host.ticker,
     }
     if (options.resolveImage) {
@@ -1122,17 +1122,21 @@ class Widget implements MountedWidget {
   private gpuUnavailable = false
   /**
    * The run's strikes (widgets-gpu.md, Strikes): its GPU work unfinished at a device loss, its live device's or the
-   * shaders' shared one, one a loss. The first changes nothing; a second within 30 s stops every GPU canvas of the run
-   * for the rest of it (no new device restarts them), with one client error; later ones report nothing more.
+   * shaders' shared one, one a loss, if its work finished on a device since its last strike. The first changes nothing;
+   * a second within 30 s stops every GPU canvas of the run for the rest of it (no new device restarts them), with one
+   * client error; later ones report nothing more.
    */
   private strikes = new Strikes()
   private gpuHung = false
-  private readonly gpuStrike = () => {
-    if (this.gpuHung || !this.strikes.strike()) return
-    this.gpuHung = true
-    this.clientError(GPU_HANG)
-    this.gpu?.stopAll()
-    for (const s of surfaces(this.viewEl)) if (s instanceof GpuCanvasView) s.stopHung()
+  private readonly gpuRun: Run = {
+    finished: () => this.strikes.done(),
+    strike: () => {
+      if (this.gpuHung || !this.strikes.strike()) return
+      this.gpuHung = true
+      this.clientError(GPU_HANG)
+      this.gpu?.stopAll()
+      for (const s of surfaces(this.viewEl)) if (s instanceof GpuCanvasView) s.stopHung()
+    },
   }
   private gpuKeys: Record<string, string> = {}
 
@@ -1157,7 +1161,7 @@ class Widget implements MountedWidget {
         this.host.ticker.add(once)
       },
       clientError: (message, cause) => this.clientError(message, cause),
-      strike: this.gpuStrike,
+      run: this.gpuRun,
       lost: (reason, message) => this.worker?.send({ t: "deliver", wid: this.wid, message: { type: "gpu", lost: reason, message } }),
       unavailable: () => {
         this.gpuUnavailable = true

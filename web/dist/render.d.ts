@@ -1,6 +1,7 @@
 import type { Command, Images } from "./canvas.js";
 import type { GpuCanvas } from "./gpu.js";
 import type { Frame, Rect, ViewNode, WidgetEvent } from "./protocol.js";
+import type { Run } from "./watchdog.js";
 import type { Resolved } from "./theme.js";
 /** What rendering needs from its widget. */
 export interface RenderContext {
@@ -31,8 +32,8 @@ export interface RenderContext {
     }): void;
     /** This host failed (valid WGSL it couldn't run, a surface too slow on this device): logged in dev mode only. */
     clientError(message: string, cause?: unknown): void;
-    /** A strike for the run (widgets-gpu.md, Strikes): its GPU work was unfinished at a device loss. The same each time. */
-    gpuStrike(): void;
+    /** The run (widgets-gpu.md, Strikes): its GPU work finished, or was unfinished at a device loss. The same each time. */
+    readonly gpuRun: Run;
     ticker: Ticker;
 }
 /** One `requestAnimationFrame` loop for every animated surface on the page, running only while one wants frames. */

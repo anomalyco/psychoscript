@@ -15,7 +15,7 @@
 // canvas's context has COPY_DST; the rest are configured as the program's canvas texture is, RENDER_ATTACHMENT alone.
 
 import { type Checked, GPU_HANG, gpuChecks, type GpuError } from "./gpu-checks.js"
-import { Watchdog } from "./watchdog.js"
+import { type Run, Watchdog } from "./watchdog.js"
 
 /** A batch as the worker hands it over: the ops, and the bytes they name by `[byteOffset, byteLength]`. */
 export interface Batch {
@@ -52,8 +52,8 @@ export interface GpuHost {
   unavailable(): void
   /** How long a batch's replay took on this thread, in ms (the GPU's work runs after). */
   metric(ms: number): void
-  /** A strike (widgets-gpu.md, Strikes): the run's work was unfinished at a device loss. The same function each time. */
-  strike(): void
+  /** The run (widgets-gpu.md, Strikes): its work finished, or was unfinished at a device loss. The same object each time. */
+  readonly run: Run
   /** Runs `f` once in the next display frame, before the canvases present. */
   nextFrame(f: () => void): void
 }
@@ -271,7 +271,7 @@ export class GpuReplay {
     }
     if (this.submitted) {
       const keys = checked.keys
-      this.watchdog!.submitted(() => this.hang(keys), this.host.strike)
+      this.watchdog!.submitted(() => this.hang(keys), this.host.run)
     }
     // Drawn mid-frame: shown at the next display frame (the frame request's batch is shown by the frame's end).
     if (!boundary && !this.presenting && [...this.kept.values()].some((k) => k.dirty)) this.schedulePresent()
