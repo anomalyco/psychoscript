@@ -614,15 +614,16 @@ reject }` object.
 The only binary type. Bytes stay inside the program or cross to host functions as copies; the result boundary rejects them
 with a hint to encode as text first (`TextDecoder`, `toBase64`, `toHex`).
 
-- [x] `new Uint8Array(length | array | iterable | Uint8Array)`, `Uint8Array.from`, `Uint8Array.of`, `fromBase64`
+- [x] `new Uint8Array(length | array | iterable | array-like | Uint8Array)`, `Uint8Array.from`, `Uint8Array.of`, `fromBase64`
       (with the `alphabet` and `lastChunkHandling` options), and `fromHex`. Lengths are capped like arrays. The
       `Uint8Array.from` mapper and `thisArg` see the original values, so
       `Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))` decodes base64. `BYTES_PER_ELEMENT` is 1 on the
-      constructor, its instances, and `Buffer`.
+      constructor, its instances, and `Buffer`. A fractional length truncates and `NaN` is 0, as `ToIndex` gives.
 - [x] Index reads and writes with JS byte semantics: values wrap modulo 256, out-of-range writes are ignored, indexes
       cannot be deleted. `length`, `byteLength` and `byteOffset` are prototype accessors, so `Object.keys` lists only indexes.
-- [x] `at`, `slice`, `subarray` (a view on the same bytes), `set`, `fill`, `reverse`, `indexOf`, `lastIndexOf`,
-      `includes`, `join`, `toString`, `toBase64` (with `alphabet` and `omitPadding`), `toHex`, and live `keys`, `values`, `entries`, and `[Symbol.iterator]`
+- [x] `at`, `slice`, `subarray` (a view on the same bytes), `set`, `fill`, `reverse`, `copyWithin`, `toReversed`,
+      `toSorted`, `with`, `indexOf`, `lastIndexOf`, `includes`, `join`, `toString`, `toBase64` (with `alphabet` and
+      `omitPadding`), `toHex`, `setFromBase64`, `setFromHex`, and live `keys`, `values`, `entries`, and `[Symbol.iterator]`
       iterators. Start indexes coerce as for arrays, search values do not (`bytes.includes("1")` is `false`), and
       `lastIndexOf(x, undefined)` searches from index 0 while `lastIndexOf(x)` searches from the end, as in JS.
 - [x] Spread, destructuring, `for...of`, `yield*`, `Array.from`, and `new Set(bytes)`. `Array.isArray` is false.
@@ -641,12 +642,15 @@ Node's `Buffer`, where the host has one (Node and Bun; not browsers). It is a `U
 method works on it, and its text conversions default to UTF-8.
 
 - [x] `Buffer.from(string, encoding)`, `Buffer.from(bytes | array | array-like | { type: "Buffer", data })`,
-      `alloc`, `allocUnsafe`, `concat`, `byteLength`, `compare`, `isBuffer`, and `isEncoding`, with the encodings
+      `alloc`, `allocUnsafe`, `concat`, `byteLength`, `compare`, `isBuffer`, `isEncoding`, `of`, and `copyBytesFrom`, with the encodings
       utf8, hex, base64, base64url, latin1/binary, ascii, and utf16le/ucs2. An unknown encoding is a `TypeError` with
-      code `ERR_UNKNOWN_ENCODING`.
+      code `ERR_UNKNOWN_ENCODING`, except in `byteLength`, which counts it as UTF-8 like Node. `Buffer.from(bytes, offset,
+      length)` copies all the bytes, as Node ignores the offset and length for anything but an `ArrayBuffer`. The
+      constructor inherits `Uint8Array`'s statics, so `Buffer.fromHex` and `Buffer.fromBase64` make Uint8Arrays.
 - [x] `toString(encoding, start, end)` (so string coercion and templates give UTF-8 text), `toJSON` as
       `{ type: "Buffer", data }`, `slice` and `subarray` as Buffer views on the same bytes, `equals`, `compare`,
-      `indexOf`, `lastIndexOf`, `includes`, `write`, `fill`, `copy`, and the `read`/`write` integer and float methods.
+      `indexOf`, `lastIndexOf`, `includes`, `write`, `fill`, `copy`, and the `read`/`write` integer and float methods
+      (with the lowercase `readUint*`/`writeUint*` aliases).
       `console.log` prints `<Buffer ..>`.
 - [x] The inherited `Uint8Array` methods that make new bytes (`map`, `filter`, `slice`, `subarray`, also called
       through `Uint8Array.prototype`) make a Buffer from a Buffer, as JS's species does.
@@ -667,7 +671,7 @@ method works on it, and its text conversions default to UTF-8.
       `DOMException`, the failure is a `TypeError` whose message starts with `DataCloneError:`.
 - [x] `TextEncoder` and `TextDecoder` for UTF-8 only: any other label is a `RangeError`. `TextDecoder` accepts the
       `fatal` and `ignoreBOM` options. `decode(chunk, { stream: true })` accepts incremental Uint8Array input;
-      `decode()` flushes the stream.
+      `decode()` flushes the stream. `encodeInto(text, bytes)` returns `{ read, written }`.
 - [x] `new Headers()` from records, synchronous iterables of pairs, and Headers, wrapping the host's `Headers`: names
       fold to lowercase, values are normalized and combined, and invalid names or values throw a `TypeError`.
 - [x] Headers `append`, `delete`, `get`, `getSetCookie`, `has`, `set`, `forEach`, `keys`, `values`, `entries`, and

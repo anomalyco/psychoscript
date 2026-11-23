@@ -7,7 +7,6 @@ import {
   Arr,
   Bytes,
   define,
-  frozen,
   get,
   hidden,
   Obj,
@@ -78,7 +77,9 @@ const numeric = [
   "readDoubleLE",
   "readDoubleBE",
   "readUIntLE",
+  "readUintLE",
   "readUIntBE",
+  "readUintBE",
   "readIntLE",
   "readIntBE",
   "readBigInt64LE",
@@ -107,7 +108,9 @@ const numeric = [
   "writeDoubleLE",
   "writeDoubleBE",
   "writeUIntLE",
+  "writeUintLE",
   "writeUIntBE",
+  "writeUintBE",
   "writeIntLE",
   "writeIntBE",
   "writeBigInt64LE",
@@ -158,11 +161,8 @@ export const bufferGlobal = <R>(ctx: Interpreter<R>) => {
   }
   const bytesFrom = (value: Value, second: Value, third: Value): Uint8Array => {
     if (typeof value === "string") return new Uint8Array(Buffer.from(value, encoding(second) ?? "utf8"))
-    if (value instanceof Bytes) {
-      const offset = second === undefined ? 0 : coerceToNumber(second)
-      const length = third === undefined ? undefined : coerceToNumber(third)
-      return value.bytes.slice(offset, length === undefined ? undefined : offset + length)
-    }
+    // As in Node, the offset and length apply only to an ArrayBuffer, so bytes are copied whole.
+    if (value instanceof Bytes) return value.bytes.slice()
     if (value instanceof Arr) return Uint8Array.from(value.items, coerceToNumber)
     if (value instanceof Obj) {
       const data = get(value, "data")
@@ -195,9 +195,26 @@ export const bufferGlobal = <R>(ctx: Interpreter<R>) => {
     construct: (args, newTarget) =>
       withReads(() => new BufferObj(prototypeFrom(newTarget, proto), bytesFrom(args[0], args[1], args[2]))),
   })
-  // Bun inherits this from Uint8Array; Buffer's constructor here does not.
-  define(buffer, "BYTES_PER_ELEMENT", 1, frozen)
+  // Buffer's statics inherit Uint8Array's (fromHex, fromBase64, BYTES_PER_ELEMENT), which globals makes first.
+  const uint8Array = get(builtins.Uint8Array, "constructor")
+  if (uint8Array instanceof Obj) buffer.proto = uint8Array
   methods(builtins, buffer, [
+    ["of", 0, (_, args) => wrap(Uint8Array.from(args, coerceToNumber))],
+    [
+      "copyBytesFrom",
+      3,
+      (_, args) => {
+        const view = args[0]
+        if (!(view instanceof Bytes)) {
+          throw fail(
+            "TypeError",
+            `The "view" argument must be an instance of TypedArray. Received ${describeValue(view)}`,
+            "ERR_INVALID_ARG_TYPE",
+          )
+        }
+        return wrap(new Uint8Array(attempt(() => Buffer.copyBytesFrom(view.bytes, ...(args.slice(1, 3).map(argument) as [number?, number?])))))
+      },
+    ],
     ["from", 3, (_, args) => withReads(() => wrap(bytesFrom(args[0], args[1], args[2])))],
     [
       "alloc",
@@ -219,7 +236,8 @@ export const bufferGlobal = <R>(ctx: Interpreter<R>) => {
       (_, args) =>
         args[0] instanceof Bytes
           ? args[0].bytes.byteLength
-          : Buffer.byteLength(coerceToString(args[0]), encoding(args[1])),
+          : // Node and Bun count an unknown or empty encoding as UTF-8 here.
+            Buffer.byteLength(coerceToString(args[0]), isEncoding(args[1]) ? encoding(args[1]) : "utf8"),
     ],
     [
       "concat",

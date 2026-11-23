@@ -17,6 +17,17 @@ describe("Buffer", () => {
     ).toEqual([6, "héllo", "héllo", "héllo", "68c3a96c6c6f", "aMOpbGxv", "hi", "hi", 2])
   })
 
+  test("copies bytes whole, inherits Uint8Array's statics and has Node's lowercase aliases", async () => {
+    expect(
+      await value(`const b = Buffer.alloc(4)
+        b.writeUintBE(258, 0, 2)
+        b.writeUintLE(258, 2, 2)
+        return [[...Buffer.from(new Uint8Array([1, 2, 3, 4]), 1, 2)], Object.getPrototypeOf(Buffer) === Uint8Array,
+          Buffer.isBuffer(Buffer.of(1, 2)), [...Buffer.fromHex("0102")], [...Buffer.copyBytesFrom(new Uint8Array([1, 2, 3]), 1)],
+          [...b], b.readUintBE(0, 2), b.readUintLE(2, 2), Buffer.byteLength("hi", "")]`),
+    ).toEqual([[1, 2, 3, 4], true, true, [1, 2], [2, 3], [1, 2, 2, 1], 258, 258, 2])
+  })
+
   test("is a Uint8Array, and Buffer.isBuffer tells the two apart", async () => {
     expect(
       await value(`const b = Buffer.from([1, 2, 3])
