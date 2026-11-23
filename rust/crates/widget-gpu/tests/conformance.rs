@@ -39,8 +39,9 @@ fn base64(s: &str) -> Vec<u8> {
     out
 }
 
+/// A batch's ops, when they are a list.
 fn ops(v: &Value) -> Option<Vec<Arg>> {
-    Some(v.as_array()?.iter().map(Arg::from_json).collect())
+    Some(v.as_array()?.iter().map(carried).collect())
 }
 
 /// A raw fixture's own batches: its source run with a `widget` that records what `__host.post` gets.
@@ -61,7 +62,7 @@ fn raw(source: &str) -> Vec<Posted> {
         )]
     });
     let program = format!(
-        "const __number = (k, v) => (typeof v === 'number' && !Number.isFinite(v) ? {{ __number: String(v) }} : v)
+        "const __number = (k, v) => (typeof v === 'number' && !Number.isFinite(v) ? {{ $num: String(v) }} : v)
 const __host = {{ post: (m) => __record(JSON.stringify({{ ops: m.ops, bytes: m.bytes.byteLength }}, __number)) }}
 const widget = {{ render() {{}}, frame: async () => {{}} }}
 const ui = {{ canvas: () => null }}
@@ -80,7 +81,7 @@ return null"
             let v: Value = serde_json::from_str(p).unwrap();
             Posted {
                 frame: false,
-                ops: v["ops"].as_array().map(|o| o.iter().map(carried).collect()),
+                ops: ops(&v["ops"]),
                 bytes: Some(vec![0; v["bytes"].as_u64().unwrap() as usize]),
             }
         })
@@ -88,10 +89,11 @@ return null"
 }
 
 /// An op as the program posted it, read as JSON reads it (`undefined` already as JSON has it) but with its numbers as
-/// they are: the runner carries a non-finite one as `{ "__number": "NaN" | "Infinity" | "-Infinity" }`.
+/// they are: a non-finite one is tagged `{ "$num": "NaN" | "Infinity" | "-Infinity" }`, in the fixtures' `batches`
+/// as in what the raw runner records (`widgets-gpu.md`, Conformance).
 fn carried(v: &Value) -> Arg {
     match v {
-        Value::Object(o) if o.len() == 1 => match o.get("__number").and_then(Value::as_str) {
+        Value::Object(o) if o.len() == 1 => match o.get("$num").and_then(Value::as_str) {
             Some("NaN") => Arg::Num(f64::NAN),
             Some("Infinity") => Arg::Num(f64::INFINITY),
             Some("-Infinity") => Arg::Num(f64::NEG_INFINITY),
