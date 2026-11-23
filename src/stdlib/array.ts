@@ -1,5 +1,5 @@
 import { Invoke } from "../runtime/signals.js"
-import type { Builtins } from "../runtime/intrinsics.js"
+import { type Builtins, primitivePrototype } from "../runtime/intrinsics.js"
 import { builtinCursor } from "../runtime/operations.js"
 import { constructor, methods, prototypeFrom, receiver, iteratorMethods } from "../runtime/native.js"
 import { checkArrayLength, checkStringLength, MAX_ARRAY_LENGTH } from "../runtime/limits.js"
@@ -20,7 +20,8 @@ import {
   rejectAddition,
   type Value,
 } from "../runtime/objects.js"
-import { describeValue, rejectCircularInsertion } from "../runtime/references.js"
+import { describeValue, rejectCircularInsertion, typeofValue } from "../runtime/references.js"
+import { classTag } from "./object.js"
 import { requireCallback, withPrimitives, readsPending, withReads } from "../runtime/callback.js"
 import type { Interpreter } from "../runtime/interpreter.js"
 import { compareText } from "../runtime/operations.js"
@@ -223,11 +224,14 @@ export const arrayGlobal = <R>(ctx: Interpreter<R>) => {
       "toString",
       0,
       (thisValue) =>
-        withPrimitives(
-          "string",
-          Array.from(self(thisValue, "toString").items, (item) => item ?? ""),
-          (items) => joinText(items, ","),
-        ),
+        withReads(() => {
+          const target = thisValue instanceof Obj ? thisValue : primitivePrototype(builtins, thisValue)
+          if (target === undefined) throw typeError("Array.prototype.toString called on null or undefined.")
+          const join = get(target, "join")
+          if (readsPending()) return undefined
+          if (typeofValue(join) !== "function") return `[object ${classTag(thisValue)}]`
+          return new Invoke(requireCallback(join, "Array.prototype.toString"), thisValue, [], undefined)
+        }),
     ],
     [
       "includes",

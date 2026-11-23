@@ -1465,7 +1465,6 @@ built-ins/Array/prototype/toSpliced/length-tolength.js  # TypeError: Array.proto
 built-ins/Array/prototype/toSpliced/mutate-while-iterating.js  # TypeError: Accessor properties are not supported on array elements; store the value or use a plain o
 built-ins/Array/prototype/toSpliced/this-value-boolean.js  # TypeError: Array.prototype.toSpliced called on incompatible receiver a boolean.
 built-ins/Array/prototype/toString/S15.4.4.2_A3_T1.js  # #1: Array.prototype[1] = 1; x = [0]; x.length = 2; x.toString() === "0,1". Actual: 0,
-built-ins/Array/prototype/toString/call-with-boolean.js  # TypeError: Array.prototype.toString called on incompatible receiver a boolean.
 built-ins/Array/prototype/unshift/S15.4.4.13_A2_T1.js  # TypeError: Array.prototype.unshift called on incompatible receiver a data object.
 built-ins/Array/prototype/unshift/S15.4.4.13_A2_T3.js  # TypeError: Array.prototype.unshift called on incompatible receiver a data object.
 built-ins/Array/prototype/unshift/S15.4.4.13_A3_T2.js  # TypeError: Array.prototype.unshift called on incompatible receiver a data object.
@@ -1685,15 +1684,14 @@ built-ins/Iterator/prototype/toArray/next-method-throws.js  # TypeError: Extendi
 built-ins/Iterator/subclassable.js  # TypeError: Extending the built-in Iterator is not supported. Only classes and Error types can be ext
 built-ins/JSON/parse/reviver-array-non-configurable-prop-create.js  # TypeError: Array elements share their attributes; only writable, enumerable and configurable equal t
 built-ins/JSON/parse/reviver-array-non-configurable-prop-delete.js  # TypeError: Array elements share their attributes; only writable, enumerable and configurable equal t
-built-ins/JSON/parse/reviver-call-args-after-forward-modification.js  # TypeError: Cannot destructure undefined as it is undefined.
-built-ins/JSON/parse/reviver-forward-modifies-object.js  # TypeError: Cannot destructure undefined as it is undefined.
+built-ins/JSON/parse/reviver-forward-modifies-object.js  # TypeError: Object.getOwnPropertySymbols is not a function.
 built-ins/JSON/parse/reviver-get-name-err.js  # Expected a Test262Error but got a TypeError
 built-ins/JSON/parse/reviver-object-non-configurable-prop-create.js  # Expected SameValue(«22», «2») to be true
 built-ins/JSON/parse/reviver-object-non-configurable-prop-delete.js  # TypeError: Cannot delete property '…'.
 built-ins/JSON/parse/text-object-abrupt.js  # Expected a Test262Error but got a SyntaxError
 built-ins/JSON/parse/text-object.js  # SyntaxError: JSON.parse received invalid JSON: JSON Parse error: Unexpected identifier "object"
 built-ins/JSON/rawJSON/basic.js  # TypeError: JSON.rawJSON is not a function.
-built-ins/JSON/rawJSON/bigint-raw-json-can-be-stringified.js  # TypeError: Cannot destructure undefined as it is undefined.
+built-ins/JSON/rawJSON/bigint-raw-json-can-be-stringified.js  # TypeError: JSON.rawJSON is not a function.
 built-ins/JSON/rawJSON/illegal-empty-and-start-end-chars.js  # Expected a SyntaxError but got a TypeError
 built-ins/JSON/rawJSON/returns-expected-object.js  # TypeError: JSON.rawJSON is not a function.
 built-ins/JSON/stringify/value-array-circular.js  # TypeError: Array.push result contains a circular value.

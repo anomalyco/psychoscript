@@ -227,6 +227,23 @@ describe("Array.from mapper", () => {
   })
 })
 
+describe("Array.fromAsync", () => {
+  test("awaits values from async iterables, iterables, and array-likes, then the mapper's results", async () => {
+    expect(await value(`return await Array.fromAsync([1, Promise.resolve(2)])`)).toEqual([1, 2])
+    expect(await value(`async function* g() { yield 1; yield 2 } return await Array.fromAsync(g(), (x, i) => x * 10 + i)`)).toEqual([10, 21])
+    expect(
+      await value(`return await Array.fromAsync({ length: 2, 0: Promise.resolve("a"), 1: "b" }, async function (x) { return x + this.s }, { s: "!" })`),
+    ).toEqual(["a!", "b!"])
+  })
+
+  test("rejects rather than throwing", async () => {
+    expect(await value(`const p = Array.fromAsync([1], 42); return [p instanceof Promise, await p.catch((e) => e.name)]`)).toEqual([
+      true,
+      "TypeError",
+    ])
+  })
+})
+
 describe("thisArg is accepted and ignored, like JS arrows", () => {
   // psychoscript functions have no `this`, so a thisArg can never change behavior —
   // exactly like passing one alongside an arrow function in real JS.

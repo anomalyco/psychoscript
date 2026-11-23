@@ -93,7 +93,7 @@ const accessorsOnChain = (target: Obj): boolean => {
   return false
 }
 
-const classTag = (value: Value): string => {
+export const classTag = (value: Value): string => {
   if (value === null) return "Null"
   if (value === undefined) return "Undefined"
   if (value instanceof Obj) return value.tag
