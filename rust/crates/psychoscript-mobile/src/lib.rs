@@ -35,7 +35,7 @@ pub use gpu::{GpuCanvasState, GpuErrorKind, GpuFailure, GpuSurface, ShaderCanvas
 #[cfg(feature = "test-hooks")]
 pub use gpu::{
     GpuDeviceInfo, GpuStats, gpu_device, gpu_fail_devices, gpu_input_format, gpu_lose_device,
-    gpu_record_batches, gpu_submit_times, gpu_wait_idle,
+    gpu_lose_device_at_frame_end, gpu_record_batches, gpu_submit_times, gpu_wait_idle,
 };
 pub use live::{LiveContext, LiveExit, LiveHandler, LiveOptions, LiveRun, LiveSurfaces};
 pub use program::{Program, RunOptions, RunSession};

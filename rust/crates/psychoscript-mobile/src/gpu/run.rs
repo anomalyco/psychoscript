@@ -236,16 +236,11 @@ impl RunGpu {
     pub(crate) fn due(&self) {
         if let Some((reason, message)) = lock(&self.loss).take() {
             let mut st = lock(&self.state);
-            // The work the loss found hung stops its canvases first (`Gpu::lost`, then `Gpu::poll` has its error).
+            // A second strike stops every canvas (`Gpu::lost`, then `Gpu::poll` has its error).
             let hung = st.gpu.as_mut().and_then(|gpu| {
                 gpu.lost();
                 gpu.poll().err()
             });
-            if let Some(e) = hung {
-                drop(st);
-                self.stopped(&e);
-                st = lock(&self.state);
-            }
             if let Some(gpu) = &st.gpu {
                 // A canvas an error stopped keeps its placeholder (stopped stays stopped).
                 let lost: Vec<String> = (st.keys.iter())
@@ -257,7 +252,11 @@ impl RunGpu {
                 st.flights.clear();
                 drop(st);
                 self.surfaces.clear();
+                // The program first: when the app hears of it, its message is there.
                 self.ctx.deliver(lost_message(&reason, &message));
+                if let Some(e) = hung {
+                    self.stopped(&e);
+                }
                 for k in lost {
                     self.tell(Some(&k), GpuCanvasState::Lost);
                 }
@@ -510,7 +509,15 @@ impl widget_wire::GpuHost for Host {
         let st = &mut *st;
         match (st.held.as_mut(), st.gpu.as_mut()) {
             (Some(held), _) => held.push(Held::EndFrame),
-            (None, Some(gpu)) => gpu.end_frame(),
+            (None, Some(gpu)) => {
+                gpu.end_frame();
+                // A test's loss with the frame's work in flight: nothing polled since its last batch.
+                #[cfg(feature = "test-hooks")]
+                if super::LOSE_AT_FRAME_END.swap(false, Ordering::SeqCst) {
+                    gpu.lost();
+                    super::gpu_lose_device();
+                }
+            }
             (None, None) => {}
         }
     }
@@ -553,6 +560,11 @@ impl device::Loss for RunGpu {
     /// A GPU hang (`widgets-gpu.md`): `Gpu::poll`, skipped while the run's thread is replaying (it can't be stuck
     /// in a submit, at most two batches being on the GPU).
     fn tick(&self) {
+        // A test's loss at the next frame end is to find that frame's work not seen finished.
+        #[cfg(feature = "test-hooks")]
+        if super::LOSE_AT_FRAME_END.load(Ordering::SeqCst) {
+            return;
+        }
         let mut st = match self.state.try_lock() {
             Ok(st) => st,
             Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
