@@ -135,7 +135,7 @@ fn drive(f: &Value) -> (Vec<Value>, String, String, Vec<Value>) {
     // What the run will do, from the fixture: its frame requests (`frame: true` entries, answered up to 10), its
     // batches and errors. A run that stays open (`stop`) is stopped once it has done all of it. Every wait is on
     // events, capped generously: nothing here counts on the machine's speed.
-    let batches = f["batches"].as_array();
+    let batches = batches_of(f);
     let requests = batches.map_or(10, |b| {
         b.iter().filter(|b| b["frame"] == true).count().min(10)
     });
@@ -209,6 +209,18 @@ fn drive(f: &Value) -> (Vec<Value>, String, String, Vec<Value>) {
     (errors, end.unwrap(), events, posted)
 }
 
+/// A fixture's `batches`: the recorded ones; none to compare without (a `raw-` one's), or when it says
+/// `"from-source"` (its batches are what its source posts: the errors and the end are still checked, and it must post
+/// some).
+fn batches_of(f: &Value) -> Option<&Vec<Value>> {
+    match &f["batches"] {
+        Value::Array(b) => Some(b),
+        Value::Null => None,
+        Value::String(s) if s == "from-source" => None,
+        other => panic!("{}: `batches` is {other}", f["name"]),
+    }
+}
+
 #[test]
 fn every_gpu_fixture_as_a_live_run() {
     gpu_record_batches();
@@ -220,9 +232,12 @@ fn every_gpu_fixture_as_a_live_run() {
         let (errors, end, events, posted) = drive(&f);
         let took = started.elapsed();
         // The batches as posted: the same ops and, from psychoscript's `Math`, the same bytes.
-        let expected = f.get("batches").and_then(Value::as_array);
+        let expected = batches_of(&f);
         if let Some(d) = expected.and_then(|e| batches_differ(&posted, e)) {
             failures.push(format!("{name}: {d}"));
+        }
+        if f["batches"] == "from-source" && posted.is_empty() {
+            failures.push(format!("{name}: its source posted no batch"));
         }
         ran += 1;
         if errors.as_slice() != f["errors"].as_array().unwrap().as_slice() || end != f["end"] {
@@ -233,14 +248,14 @@ fn every_gpu_fixture_as_a_live_run() {
                 events.chars().take(600).collect::<String>()
             ));
         } else {
-            let compared = f
-                .get("batches")
-                .and_then(Value::as_array)
-                .map_or(0, Vec::len);
-            eprintln!(
-                "{name}: ok ({} errors, {end}, {compared} batches the same)",
-                errors.len()
-            );
+            let batches = match expected {
+                Some(e) => format!("{} batches the same", e.len()),
+                None if f["batches"] == "from-source" => {
+                    format!("{} batches posted from its source", posted.len())
+                }
+                None => "0 batches the same".to_owned(),
+            };
+            eprintln!("{name}: ok ({} errors, {end}, {batches})", errors.len());
         }
     }
     assert_eq!(ran, 50);

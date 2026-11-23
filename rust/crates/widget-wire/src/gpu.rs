@@ -286,6 +286,7 @@ pub(crate) fn decode(c: &mut Cursor) -> Result<Batch, Malformed> {
 /// A batch as the GPU conformance fixtures write a posted one (`widgets-gpu.md`, Conformance): `{ frame, ops, bytes }`,
 /// `ops` as posted (numbers JSON can't hold as `{ "$num": "NaN" }` and the like), `bytes` base64, or `null` when not an
 /// `ArrayBuffer`. Without a batch: a frame request that carries none, `{ frame: true, ops: [], bytes: "" }`.
+#[cfg(feature = "test-hooks")]
 pub(crate) fn recorded(frame: bool, batch: Option<&HostValue>) -> Value {
     let Some(batch) = batch else {
         return serde_json::json!({ "frame": frame, "ops": [], "bytes": "" });
@@ -300,6 +301,7 @@ pub(crate) fn recorded(frame: bool, batch: Option<&HostValue>) -> Value {
     serde_json::json!({ "frame": frame, "ops": arg_json(&ops), "bytes": bytes })
 }
 
+#[cfg(feature = "test-hooks")]
 fn arg_json(a: &Arg) -> Value {
     match a {
         Arg::Null => Value::Null,
@@ -321,6 +323,7 @@ fn arg_json(a: &Arg) -> Value {
     }
 }
 
+#[cfg(feature = "test-hooks")]
 fn base64(b: &[u8]) -> String {
     const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(b.len().div_ceil(3) * 4);

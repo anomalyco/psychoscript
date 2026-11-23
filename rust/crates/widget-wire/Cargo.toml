@@ -11,6 +11,10 @@ psychoscript = { path = "../psychoscript" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 
+[features]
+# For tests (psychoscript-mobile's `test-hooks`): `LivePosts::record_batches`. Never in a release build.
+test-hooks = []
+
 [dev-dependencies]
 # Fixtures' numbers read exactly (a number key's id is its shortest digits).
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }

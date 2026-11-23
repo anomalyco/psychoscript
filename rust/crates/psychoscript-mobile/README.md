@@ -403,8 +403,8 @@ WebGPU, shader translation and presenting are this crate's.
   work. Work still unfinished 250 ms after its submit stops the canvases it draws into: `stopped(client, "the GPU work
   hung; the canvas is stopped")`. Apple's GPUs stop work themselves sooner (after 0.05 to 0.6 s on an M5 Max) and fail
   what follows it on the queue: with Rune's wgpu-hal (the workspace's `[patch.crates-io]`; stock wgpu-hal counts such
-  work finished and tells nothing) that loses the device, every run gets `lost` and draws again on a new one, and work
-  the GPU aborted after running 30 ms or more is the hang, stopped as above, so a widget hangs the GPU once at most. The
+  work finished and tells nothing) that loses the device: every run gets `lost` and draws again on a new one, and
+  widget-gpu's hang rule decides what the loss stops. The
   app's thread never waits on any of it. On the iOS Simulator only, such a timeout can bring down the Simulator's
   Metal host, which then kills the app (`OS_REASON_METAL`, "Connection to SimMetalHost ... lost"), or leave other Metal
   work of the process stuck.

@@ -14,8 +14,9 @@ mod surface;
 
 pub use shader::ShaderCanvas;
 
-/// The GPU device widget runs share, once made (Rust only, for diagnostics): its adapter's name, its backend, and
-/// how long making it took.
+#[cfg(feature = "test-hooks")]
+/// The GPU device widget runs share, once made (Rust only, for tests): its adapter's name, its backend, and how long
+/// making it took.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GpuDeviceInfo {
     pub adapter: String,
@@ -23,9 +24,9 @@ pub struct GpuDeviceInfo {
     pub made_ms: f64,
 }
 
-/// A run's GPU work so far (Rust only, for diagnostics and benchmarks): batches replayed and canvases presented, with
-/// their time in µs.
-#[doc(hidden)]
+#[cfg(feature = "test-hooks")]
+/// A run's GPU work so far (Rust only, for tests and benchmarks): batches replayed and canvases presented, with their
+/// time in µs.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GpuStats {
     pub batches: u64,
@@ -36,7 +37,7 @@ pub struct GpuStats {
     pub present_max_us: f64,
 }
 
-#[cfg(feature = "widget-gpu")]
+#[cfg(all(feature = "widget-gpu", feature = "test-hooks"))]
 impl GpuStats {
     pub(crate) fn replayed(&mut self, us: f64) {
         self.batches += 1;
@@ -52,7 +53,7 @@ impl GpuStats {
 
 /// Destroys the device widget runs share, as a driver reset would lose it (Rust only, for tests): every run is
 /// told, and a new one is made.
-#[doc(hidden)]
+#[cfg(feature = "test-hooks")]
 pub fn gpu_lose_device() {
     #[cfg(feature = "widget-gpu")]
     if let Some(d) = device::current() {
@@ -74,7 +75,7 @@ pub fn gpu_lose_device() {
 }
 
 /// Waits until the GPU is done with everything submitted to the shared device (Rust only, for tests).
-#[doc(hidden)]
+#[cfg(feature = "test-hooks")]
 pub fn gpu_wait_idle() {
     #[cfg(feature = "widget-gpu")]
     if let Some(d) = device::current() {
@@ -84,7 +85,7 @@ pub fn gpu_wait_idle() {
 
 /// The GPU time (from submit to completion, as the host sees it: what the hang rule measures) of each submit since the
 /// last call, in ms; the first call starts recording (Rust only, for tests).
-#[doc(hidden)]
+#[cfg(feature = "test-hooks")]
 pub fn gpu_submit_times() -> Vec<f64> {
     #[cfg(feature = "widget-gpu")]
     return std::mem::take(
@@ -97,24 +98,9 @@ pub fn gpu_submit_times() -> Vec<f64> {
     Vec::new()
 }
 
-/// Has the GPU tell every submission of the widget GPUs made from now on aborted after `after_ms` (none: as it is), so
-/// the hang rules are tested without a real hang (Rust only, for tests).
-#[doc(hidden)]
-pub fn gpu_fake_aborts(after_ms: Option<u64>) {
-    #[cfg(feature = "widget-gpu")]
-    {
-        *device::FAKE_ABORTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            after_ms.map(std::time::Duration::from_millis);
-    }
-    #[cfg(not(feature = "widget-gpu"))]
-    let _ = after_ms;
-}
-
 /// Has every device made from now on fail, `after_ms` into making it (Rust only, for tests of a GPU that turns out
 /// to be missing).
-#[doc(hidden)]
+#[cfg(feature = "test-hooks")]
 pub fn gpu_fail_devices(after_ms: u64) {
     #[cfg(feature = "widget-gpu")]
     {
@@ -129,25 +115,28 @@ pub fn gpu_fail_devices(after_ms: u64) {
 
 /// Has widget runs started from now on keep the GPU batches their programs post (Rust only, for the conformance
 /// fixtures' `batches`: [`crate::LiveRun::gpu_posted`]).
-#[doc(hidden)]
+#[cfg(feature = "test-hooks")]
 pub fn gpu_record_batches() {
     RECORD.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
+#[cfg(feature = "test-hooks")]
 pub(crate) static RECORD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Has the live input's `gpu.format` say `format` (Rust only, for the conformance fixtures' `gpu`: a program may
 /// configure either canvas format).
-#[doc(hidden)]
+#[cfg(feature = "test-hooks")]
 pub fn gpu_input_format(format: &str) {
     *FORMAT
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(format.to_owned());
 }
 
+#[cfg(feature = "test-hooks")]
 pub(crate) static FORMAT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
-/// The device if one is made (see [`GpuDeviceInfo`]); `None` before, or without one.
+#[cfg(feature = "test-hooks")]
+/// The device if one is made (see [`GpuDeviceInfo`]); `None` before, or without one (Rust only, for tests).
 pub fn gpu_device() -> Option<GpuDeviceInfo> {
     #[cfg(feature = "widget-gpu")]
     return device::current().map(|d| {

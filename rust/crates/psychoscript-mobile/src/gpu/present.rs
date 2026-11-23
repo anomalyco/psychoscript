@@ -6,8 +6,10 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
+#[cfg(feature = "test-hooks")]
+use super::GpuStats;
+use super::GpuSurface;
 use super::device::{self, Dev};
-use super::{GpuStats, GpuSurface};
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
@@ -430,6 +432,7 @@ pub(crate) struct Surfaces {
     wake: Condvar,
     /// Present failures, by key, for the run's thread to report.
     failed: Mutex<Vec<(String, String)>>,
+    #[cfg(feature = "test-hooks")]
     stats: Mutex<GpuStats>,
 }
 
@@ -499,11 +502,13 @@ impl Surfaces {
         q.dirty.clear();
     }
 
+    #[cfg(feature = "test-hooks")]
     pub(crate) fn stats(&self) -> MutexGuard<'_, GpuStats> {
         lock(&self.stats)
     }
 
     /// The canvas's newest image as RGBA8, read back (waits for the GPU).
+    #[cfg(feature = "test-hooks")]
     pub(crate) fn pixels(&self, key: &str) -> Option<(u32, u32, Vec<u8>)> {
         let frame = lock(&self.queue).latest.get(key)?.clone();
         let (d, t) = (&frame.dev, &frame.texture);
@@ -616,8 +621,10 @@ fn present_loop(surfaces: std::sync::Weak<Surfaces>) {
                 continue;
             }
             let Some(a) = attached.as_mut() else { continue };
+            #[cfg(feature = "test-hooks")]
             let started = std::time::Instant::now();
             let shown = a.present(&frame, &mut blit);
+            #[cfg(feature = "test-hooks")]
             if let Ok(Shown::Yes) = shown {
                 s.stats().presented(started.elapsed().as_secs_f64() * 1e6);
             }

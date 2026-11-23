@@ -20,6 +20,9 @@ widget-wire = ["dep:widget-wire"]
 widget-gpu = ["widget-wire", "dep:widget-gpu", "dep:wgpu"]
 # The bindings generators (`uniffi-bindgen`, `uniffi-bindgen-swift`), for the build scripts only.
 cli = ["uniffi/cli"]
+# Rust-only hooks for this crate's tests (`gpu_lose_device`, `gpu_fake_aborts`, `LiveRun::gpu_stats`, the posted
+# batches' recording, ...): never in a release build. The tests turn it on (the dev-dependency below).
+test-hooks = ["widget-wire?/test-hooks"]
 
 [[bin]]
 name = "uniffi-bindgen"
@@ -50,3 +53,8 @@ wgpu = { version = "~30.0.1", default-features = false, features = ["std", "wgsl
 
 [target.'cfg(any(target_os = "android", target_os = "linux"))'.dependencies]
 wgpu = { version = "~30.0.1", default-features = false, features = ["std", "wgsl", "vulkan"], optional = true }
+
+[dev-dependencies]
+# This crate with its test hooks, for its tests.
+# (Its default features as the build asks: `--no-default-features` tests without them.)
+psychoscript-mobile = { path = ".", default-features = false, features = ["test-hooks"] }

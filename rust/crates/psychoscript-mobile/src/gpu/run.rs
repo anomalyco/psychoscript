@@ -9,9 +9,11 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use psychoscript::HostValue;
 use widget_gpu::{Arg, ErrorKind, Gpu, GpuError, SavedStop, SavedStops, Stops};
 
+#[cfg(feature = "test-hooks")]
+use super::GpuStats;
 use super::device::{self, Dev};
 use super::present::{Frame, Surfaces};
-use super::{GpuCanvasState, GpuErrorKind, GpuStats, GpuSurface};
+use super::{GpuCanvasState, GpuErrorKind, GpuSurface};
 use crate::{LiveContext, LiveSurfaces};
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -107,9 +109,8 @@ impl RunGpu {
     /// The device, and the run's [`Gpu`] on it, or why there is none.
     fn start(&self, st: &mut State) -> Result<(), String> {
         let dev = device::get()?;
-        let mut gpu =
+        let gpu =
             Gpu::new(dev.device.clone(), dev.queue.clone(), dev.format).map_err(|e| e.message)?;
-        gpu.set_aborts(device::aborts());
         st.gpu = Some(gpu);
         st.dev = Some(dev);
         Ok(())
@@ -134,14 +135,13 @@ impl RunGpu {
             }
         }
         let available = st.gpu.is_some() || st.waiting;
-        let mut format = match &st.gpu {
+        let format = match &st.gpu {
             Some(gpu) => gpu.preferred_format(),
             None => device::format().unwrap_or("rgba8unorm"),
         }
         .to_owned();
-        if let Some(f) = lock(&super::FORMAT).clone() {
-            format = f;
-        }
+        #[cfg(feature = "test-hooks")]
+        let format = lock(&super::FORMAT).clone().unwrap_or(format);
         drop(st);
         if !available {
             self.tell(None, GpuCanvasState::Unavailable);
@@ -295,8 +295,7 @@ impl RunGpu {
                 .reset(dev.device.clone(), dev.queue.clone())
                 .map(|()| dev),
             (Some(dev), None) => {
-                Gpu::new(dev.device.clone(), dev.queue.clone(), dev.format).map(|mut gpu| {
-                    gpu.set_aborts(device::aborts());
+                Gpu::new(dev.device.clone(), dev.queue.clone(), dev.format).map(|gpu| {
                     st.gpu = Some(gpu);
                     dev
                 })
@@ -351,10 +350,12 @@ impl RunGpu {
 
     fn batch_in(&self, st: &mut State, ops: &[Arg], bytes: &[u8]) {
         let Some(gpu) = st.gpu.as_mut() else { return };
+        #[cfg(feature = "test-hooks")]
         let started = std::time::Instant::now();
         let submits = device::submits();
         let applied = gpu.apply(ops, bytes);
         drop(submits);
+        #[cfg(feature = "test-hooks")]
         (self.surfaces.stats()).replayed(started.elapsed().as_secs_f64() * 1e6);
         if let Err(e) = applied {
             // wgpu tells of a loss as the device is next used: an error then is the loss's, not the program's, and
@@ -587,10 +588,12 @@ impl LiveSurfaces for RunGpu {
         self.surfaces.detach(key);
     }
 
+    #[cfg(feature = "test-hooks")]
     fn stats(&self) -> GpuStats {
         self.surfaces.stats().clone()
     }
 
+    #[cfg(feature = "test-hooks")]
     fn pixels(&self, key: &str) -> Option<(u32, u32, Vec<u8>)> {
         self.surfaces.pixels(key)
     }

@@ -98,7 +98,7 @@ pub trait EncodePosts: Send {
     /// The run ended (it won't post again): release what it holds.
     fn ended(&mut self) {}
     /// See [`crate::LiveRun::gpu_posted`].
-    #[doc(hidden)]
+    #[cfg(feature = "test-hooks")]
     fn recorded(&self) -> Vec<String> {
         Vec::new()
     }
@@ -248,7 +248,12 @@ mod widget {
             Box::new(widget_wire::NativeStep::new(draw))
         }
         fn live(&self, ctx: crate::LiveContext) -> Box<dyn EncodePosts> {
+            #[cfg_attr(
+                not(any(feature = "widget-gpu", feature = "test-hooks")),
+                allow(unused_mut)
+            )]
             let mut posts = widget_wire::LivePosts::new();
+            #[cfg(feature = "test-hooks")]
             if crate::gpu::RECORD.load(std::sync::atomic::Ordering::SeqCst) {
                 posts.record_batches();
             }
@@ -337,6 +342,7 @@ mod widget {
             #[cfg(feature = "widget-gpu")]
             self.gpu.ended();
         }
+        #[cfg(feature = "test-hooks")]
         fn recorded(&self) -> Vec<String> {
             self.posts
                 .recorded()
