@@ -115,7 +115,10 @@ impl GpuSurface {
     }
 
     /// The `CAMetalLayer`, for its settings wgpu leaves.
-    #[cfg_attr(not(any(target_os = "ios", target_os = "macos")), allow(dead_code))]
+    #[cfg_attr(
+        not(all(feature = "widget-gpu", any(target_os = "ios", target_os = "macos"))),
+        allow(dead_code)
+    )]
     pub(crate) fn layer(&self) -> Option<*mut c_void> {
         match self.native {
             Native::Layer(layer) => Some(layer),
