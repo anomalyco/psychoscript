@@ -4,6 +4,9 @@
 
 - `Uint8Array.prototype.byteLength` and `byteOffset`. They were `undefined`, so code that sized bytes with
   `byteLength` (such as a `fetch` response's `arrayBuffer()`) got no size.
+- RegExp: `RegExp(re)` without `new` returns `re`; match results always have `groups`, and group objects (including
+  `indices.groups` and the replace callback's groups) have a null prototype; `RegExp.prototype.source`/`flags`/flag
+  getters read as on an empty pattern instead of throwing.
 - BigInt: literals, arithmetic, `BigInt()`, `BigInt.asIntN`/`asUintN`, the prototype methods, and Buffer's 64-bit
   `readBigInt64*`/`writeBigInt64*` methods. A BigInt is capped at
   2^20 bits and cannot cross to the host; `JSON.stringify` throws on one unless the program defines
