@@ -1,0 +1,887 @@
+:root {
+  --ink: #1d1614;
+  --cream: #f6e3bd;
+  --yellow: #f9bb2d;
+  --orange: #f26a21;
+  --pink: #ee5a8f;
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  background: #120d0c;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--cream);
+}
+
+img,
+svg,
+canvas {
+  display: block;
+}
+
+button {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  -webkit-tap-highlight-color: transparent;
+}
+
+:focus-visible {
+  outline: 3px solid var(--cream);
+  outline-offset: 3px;
+  box-shadow: 0 0 0 3px var(--ink), 0 0 0 9px var(--ink);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* The sheet: everything is printed on one piece of aged paper. */
+.poster {
+  position: relative;
+  display: block;
+  background: var(--ink);
+  overflow: hidden;
+}
+.poster::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  pointer-events: none;
+  background: url("art/paper.svg");
+  mix-blend-mode: multiply;
+  opacity: 0.28;
+  box-shadow: inset 0 0 70px rgba(58, 30, 8, 0.35);
+}
+
+/* The hero is the whole page. Its parts are sized in --u, a hundredth of its width (less when it is short). */
+.hero {
+  position: relative;
+  container-type: size;
+  --u: min(1cqw, 1.6cqh);
+  height: 100svh;
+  min-height: 520px;
+  overflow: hidden;
+  background: var(--ink) url("art/bg-wide.svg") center / cover no-repeat;
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none; /* holding a finger down fires the lasers; it should not offer to save the title */
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'%3E%3Cg fill='none' stroke-linecap='round'%3E%3Cpath d='M16 3v7M16 22v7M3 16h7M22 16h7' stroke='%231d1614' stroke-width='5'/%3E%3Ccircle cx='16' cy='16' r='4.5' stroke='%231d1614' stroke-width='5'/%3E%3Cpath d='M16 3v7M16 22v7M3 16h7M22 16h7' stroke='%23f6e3bd' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='4.5' stroke='%23f9bb2d' stroke-width='2'/%3E%3C/g%3E%3C/svg%3E") 16 16, crosshair;
+}
+.liquid {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  transition: opacity 0.25s ease-out;
+}
+.liquid.is-live {
+  opacity: 1;
+}
+.sky,
+.flower {
+  position: absolute;
+  height: auto;
+  pointer-events: none;
+}
+.sky {
+  left: 0;
+  top: 0;
+  width: calc(36.1 * var(--u));
+}
+.flower {
+  left: calc(-3.4 * var(--u));
+  bottom: calc(-5 * var(--u));
+  width: calc(12.4 * var(--u));
+  z-index: 4;
+}
+
+.title {
+  position: absolute;
+  left: 50%;
+  top: calc(3 * var(--u));
+  z-index: 3;
+  width: calc(64 * var(--u));
+  margin: 0 0 0 calc(-32 * var(--u));
+  font-size: 1rem;
+  pointer-events: none;
+}
+.wordmark {
+  width: 100%;
+  height: auto;
+}
+/* Live, the lettering is painted by liquid.js; the image keeps its place and its name. */
+.hero.has-live-title .wordmark {
+  opacity: 0;
+}
+
+.scene {
+  position: absolute;
+  right: calc(-1 * var(--u));
+  bottom: 0;
+  z-index: 1;
+  width: calc(51 * var(--u));
+  container-type: inline-size;
+  pointer-events: none;
+}
+.scene__art {
+  position: relative;
+  width: 100%;
+  height: auto;
+}
+.sun-still {
+  position: absolute;
+  left: 71%;
+  top: 27.5%;
+  width: 58%;
+  height: auto;
+  transform: translate(-50%, -50%);
+}
+
+/* While WebGPU is starting the hero is dark and the still art stays away, so
+   the first thing seen is the sunrise. */
+.gpu .hero {
+  background-image: none;
+}
+.gpu .sky,
+.gpu .flower,
+.gpu .scene .sun-still,
+.gpu .scene .scene__art {
+  visibility: hidden;
+}
+.gpu .wordmark {
+  opacity: 0;
+}
+.gpu:not([data-intro]) .sigils {
+  opacity: 0;
+}
+[data-intro="run"] .sigils {
+  animation: arrive 1.2s 3.4s both;
+}
+@keyframes arrive {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+
+/* The terminal's glass. Still, a cursor waits on it; live, liquid.js writes on
+   it and lays this button over it, so pressing the glass dives into it. */
+.cursor {
+  position: absolute;
+  left: 49.5%;
+  top: 62%;
+  width: 2.3%;
+  height: 5%;
+  background: #93f58c;
+  box-shadow: 0 0 0.9cqw rgba(110, 255, 120, 0.6);
+  transform: skewY(-5deg);
+  animation: blink 1.1s steps(1) infinite;
+}
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+.gpu .cursor {
+  visibility: hidden;
+}
+.prompt {
+  left: 0;
+  top: 0;
+  width: 300px;
+  height: 200px;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+/* Places in the picture that can be pressed: the planet, the sun, the glass.
+   liquid.js puts them there once the picture is live; they show nothing but focus. */
+.hot {
+  position: absolute;
+  z-index: 5;
+  border-radius: 50%;
+  /* Over something that can be pressed, the crosshair opens into an eye. */
+  cursor:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40'%3E%3Cg stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 20Q20 4 36 20Q20 36 4 20Z' fill='none' stroke='%231d1614' stroke-width='6'/%3E%3Cpath d='M4 20Q20 4 36 20Q20 36 4 20Z' fill='%231d1614' fill-opacity='.35' stroke='%23f6e3bd' stroke-width='2.4'/%3E%3Ccircle cx='20' cy='20' r='4.6' fill='%23f6e3bd' stroke='%231d1614' stroke-width='1.5'/%3E%3C/g%3E%3C/svg%3E")
+      20 20,
+    pointer;
+  pointer-events: auto;
+}
+.prompt.hot {
+  border-radius: 14% / 18%;
+}
+.hot[hidden],
+.sigil[hidden] {
+  display: none;
+}
+
+/* The dark button on NormalScript's notice. The picture draws it; this lies
+   over it while it can be pressed and shows nothing but a sensible focus ring. */
+.comply {
+  position: absolute;
+  z-index: 5;
+  overflow: hidden;
+  padding: 0;
+  border-radius: 4px;
+  color: transparent;
+  font-size: 1px;
+  cursor: pointer;
+}
+.comply[hidden] {
+  display: none;
+}
+.comply:focus-visible {
+  outline: 2px solid #3d3d3d;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 2px #f7f7f7;
+}
+
+/* Two plain controls in the bottom corner: the sound, and stopping everything moving. */
+.sigils {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 6;
+  display: flex;
+  gap: 6px;
+}
+.sigil {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: rgba(29, 22, 20, 0.62);
+  color: var(--cream);
+  opacity: 0.72;
+  cursor: pointer;
+  transition: opacity 0.15s, background-color 0.15s, transform 0.15s;
+}
+.sigil svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.sigil:hover,
+.sigil:focus-visible {
+  opacity: 1;
+  background: var(--ink);
+}
+.sigil:active {
+  transform: scale(0.92);
+}
+.sigil:focus-visible {
+  outline-offset: 2px;
+  box-shadow: 0 0 0 2px var(--ink), 0 0 0 6px var(--ink);
+}
+/* A speaker with waves, or crossed out; two bars to pause, or a triangle to go on. */
+.sigil__on,
+.sigil__off {
+  transition: opacity 0.15s;
+}
+.sigil__off,
+.sigil--sound[aria-pressed="false"] .sigil__on,
+.sigil--motion[aria-pressed="true"] .sigil__on {
+  opacity: 0;
+}
+.sigil--sound[aria-pressed="false"] .sigil__off,
+.sigil--motion[aria-pressed="true"] .sigil__off {
+  opacity: 1;
+}
+.sigil--motion .sigil__off {
+  fill: currentColor;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sigil,
+  .sigil__on,
+  .sigil__off,
+  .liquid {
+    transition: none;
+  }
+  .cursor {
+    animation: none;
+  }
+}
+
+/* Narrow screens: the title on two lines at the top, the scene at the bottom. */
+@media (max-width: 900px) {
+  .hero {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    container-type: inline-size;
+    --u: 1cqw;
+    height: auto;
+    min-height: 100svh;
+    background-image: url("art/bg-narrow.svg");
+  }
+  .sky {
+    left: -3cqw;
+    width: 64cqw;
+  }
+  .flower {
+    left: -8cqw;
+    bottom: -7cqw;
+    width: 30cqw;
+  }
+  .title {
+    position: relative;
+    left: auto;
+    top: auto;
+    width: 90cqw;
+    margin: 15cqw 0 0;
+  }
+  .sun-still {
+    left: 76%;
+    top: 26%;
+    width: 47%;
+  }
+  .scene {
+    position: relative;
+    right: auto;
+    bottom: auto;
+    align-self: flex-start;
+    width: 118cqw;
+    margin: auto 0 0 -14cqw;
+    padding-top: 6cqw;
+  }
+  .sigils {
+    left: 8px;
+    bottom: 8px;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Before the tab is taken the page is a grey and sensible one. Taking it opens
+   a hole in the grey, from the tab outward, with the picture behind. */
+@property --hole {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
+}
+html {
+  --trip-x: 50vw;
+  --trip-y: 50vh;
+}
+html[data-trip="off"] {
+  --hole: 0px;
+  transition: --hole 1.1s cubic-bezier(0.3, 0, 0.2, 1);
+}
+html[data-trip="on"] {
+  --hole: 190vmax;
+  transition: --hole 1.9s cubic-bezier(0.7, 0, 0.9, 0.5) 0.45s;
+}
+/* Where the picture can be drawn live it draws the tab too, and the grey
+   page's going: the page here only leaves a window for it round the tab, and
+   gets out of the way while it happens. */
+html.drawn .wave,
+html.drawn .tab::before {
+  display: none;
+}
+/* (The window fades open, so the tab that is drawn takes over from the one that is not without a jump.) */
+@property --lens {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+html.drawn {
+  --lens: 1;
+  transition: --lens 0.35s ease-out;
+}
+html.drawn .tab__paper {
+  opacity: calc(1 - var(--lens));
+}
+html.drawn .corp {
+  -webkit-mask-image: radial-gradient(circle at var(--trip-x) var(--trip-y), rgb(0 0 0 / calc(1 - var(--lens))) 210px, #000 330px);
+  mask-image: radial-gradient(circle at var(--trip-x) var(--trip-y), rgb(0 0 0 / calc(1 - var(--lens))) 210px, #000 330px);
+  transition: none;
+  visibility: visible;
+}
+html.drawn.melting .corp,
+html.drawn[data-trip="on"] .corp {
+  opacity: 0;
+  pointer-events: none;
+}
+/* The picture's own controls wait until the grey page has gone. */
+html[data-trip="off"] .sigils,
+html.melting .sigils {
+  opacity: 0 !important;
+  pointer-events: none;
+  animation: none;
+}
+.sigils {
+  transition: opacity 0.8s;
+}
+html.drawn .corp__page,
+html.drawn .tab {
+  transform: none !important;
+  filter: none !important;
+  transition: none !important;
+  animation: none !important;
+}
+html[data-trip="skip"] .corp,
+html[data-trip="skip"] .wave {
+  display: none;
+}
+/* Only ever printed. */
+.corp__form {
+  display: none;
+}
+@media print {
+  @page {
+    margin: 20mm;
+  }
+  html,
+  body {
+    background: #fff !important;
+  }
+  .poster,
+  .wave,
+  .tab,
+  .corp__nav,
+  .corp__bar .corp__button,
+  .corp__actions,
+  .corp__logos {
+    display: none !important;
+  }
+  .corp {
+    position: static !important;
+    display: block !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    -webkit-mask-image: none !important;
+    mask-image: none !important;
+    background: #fff;
+    color: #555;
+  }
+  .corp__page {
+    display: flex;
+    flex-direction: column;
+    height: auto;
+    transform: none !important;
+    filter: none !important;
+  }
+  .corp__bar,
+  .corp__foot {
+    padding: 0;
+    background: none;
+  }
+  .corp__main {
+    padding: 28px 0;
+  }
+  .corp__foot {
+    order: 3;
+  }
+  .corp__form {
+    display: block;
+    order: 2;
+    margin: 0 0 28px;
+    padding: 22px 26px;
+    border: 1px solid #999;
+    break-inside: avoid;
+  }
+  .corp__form p {
+    margin: 0 0 10px;
+  }
+  .corp__sign {
+    display: flex;
+    gap: 40px;
+    margin-top: 34px !important;
+  }
+  .corp__sign span {
+    flex: 1;
+    padding-top: 6px;
+    border-top: 1px solid #555;
+    font-size: 11px;
+  }
+  .corp__sign span:last-child {
+    flex: 0 0 30%;
+  }
+  .corp__small {
+    font-size: 10px;
+    color: #888;
+  }
+}
+
+.corp,
+.wave {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+}
+.corp {
+  overflow: hidden;
+  color-scheme: light;
+  background: #f1f1f1;
+  color: #8b8b8b;
+  font: 400 15px/1.5 "Helvetica Neue", Helvetica, Arial, sans-serif;
+  cursor: default;
+  -webkit-mask-image: radial-gradient(circle at var(--trip-x) var(--trip-y), transparent calc(var(--hole) - 2px), #000 var(--hole));
+  mask-image: radial-gradient(circle at var(--trip-x) var(--trip-y), transparent calc(var(--hole) - 2px), #000 var(--hole));
+  transition: visibility 0s 2.4s;
+}
+html[data-trip="on"] .corp {
+  visibility: hidden;
+}
+html[data-trip="off"] .corp {
+  transition: none;
+}
+/* The rim of the hole: the poster's rainbow, inked on both sides. */
+.wave {
+  z-index: 11;
+  pointer-events: none;
+  background: radial-gradient(
+    circle at var(--trip-x) var(--trip-y),
+    transparent calc(var(--hole) - 118px),
+    #1d1614 calc(var(--hole) - 118px) calc(var(--hole) - 112px),
+    #7b3fa6 calc(var(--hole) - 112px) calc(var(--hole) - 96px),
+    #1fa7a0 calc(var(--hole) - 96px) calc(var(--hole) - 80px),
+    #7cb83a calc(var(--hole) - 80px) calc(var(--hole) - 64px),
+    #f9bb2d calc(var(--hole) - 64px) calc(var(--hole) - 44px),
+    #f26a21 calc(var(--hole) - 44px) calc(var(--hole) - 26px),
+    #ee5a8f calc(var(--hole) - 26px) calc(var(--hole) - 8px),
+    #1d1614 calc(var(--hole) - 8px) var(--hole),
+    transparent var(--hole)
+  );
+}
+
+.corp__page {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  height: 100%;
+  transform-origin: var(--trip-x) var(--trip-y);
+}
+/* As it takes hold the sensible page swells and tips. */
+html[data-trip="on"] .corp__page {
+  transform: scale(1.5) rotate(-7deg);
+  filter: blur(2px);
+  transition: transform 2.4s cubic-bezier(0.6, 0, 0.9, 0.6) 0.1s, filter 2s 0.4s;
+}
+html[data-trip="off"] .corp__page {
+  transition: transform 1.1s cubic-bezier(0.3, 0, 0.2, 1), filter 0.6s;
+}
+.corp__bar,
+.corp__foot {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  padding: 0 40px;
+  background: #f7f7f7;
+}
+.corp__bar {
+  height: 64px;
+  border-bottom: 1px solid #dedede;
+}
+.corp__logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-right: auto;
+  color: #6f6f6f;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.corp__logo i {
+  width: 22px;
+  height: 22px;
+  border-radius: 3px;
+  background: #b9b9b9;
+}
+.corp__logo sup {
+  margin-left: -8px;
+  font-size: 10px;
+}
+.corp__nav {
+  display: flex;
+  gap: 28px;
+  font-size: 14px;
+}
+.corp__button {
+  display: inline-block;
+  padding: 10px 18px;
+  border: 1px solid #9a9a9a;
+  border-radius: 4px;
+  background: #9a9a9a;
+  color: #f7f7f7;
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.corp__button--quiet {
+  border-color: #cfcfcf;
+  background: none;
+  color: #8b8b8b;
+}
+.corp__main {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 24px 40px;
+  text-align: center;
+}
+.corp__main p,
+.corp__title {
+  margin: 0;
+}
+.corp__eyebrow {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.corp__title {
+  max-width: 15em;
+  margin-top: 14px;
+  color: #6a6a6a;
+  font-size: clamp(30px, 4.4vw, 54px);
+  font-weight: 700;
+  line-height: 1.08;
+  letter-spacing: -0.03em;
+}
+.corp__text {
+  max-width: 35em;
+  margin-top: 18px !important;
+  font-size: 17px;
+}
+.corp__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+}
+.corp__trust {
+  margin-top: 44px !important;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+.corp__logos {
+  display: flex;
+  gap: 26px;
+  margin-top: 14px !important;
+}
+.corp__logos i {
+  width: 92px;
+  height: 22px;
+  border-radius: 3px;
+  background: #dcdcdc;
+}
+.corp__logos i:nth-child(even) {
+  width: 64px;
+}
+.corp__foot {
+  height: 52px;
+  border-top: 1px solid #dedede;
+  font-size: 12px;
+}
+.corp__foot span:first-child {
+  margin-right: auto;
+}
+
+/* The only thing on it with any colour: a little tab, smiling. */
+@property --swirl {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+.tab {
+  position: relative;
+  margin: 46px 0 48px;
+  padding: 13px;
+  border-radius: 12px;
+  cursor: pointer;
+  animation: tab-sit 4s ease-in-out infinite;
+  /* As grey as the page until someone comes near it. */
+  --near: max(var(--close, 0), var(--looked, 0));
+}
+.tab:hover,
+.tab:focus-visible {
+  --looked: 1;
+}
+.tab::before {
+  /* its light on the grey around it */
+  content: "";
+  position: absolute;
+  inset: -22px;
+  border-radius: 50%;
+  background: conic-gradient(from var(--swirl), #ee5a8f, #f9bb2d, #7cb83a, #1fa7a0, #7b3fa6, #ee5a8f);
+  filter: blur(18px) opacity(var(--near));
+  transition: filter 0.3s;
+  opacity: 0.55;
+  animation: tab-swirl 4s linear infinite, tab-glow 2s ease-in-out infinite alternate;
+}
+.tab__paper {
+  position: relative;
+  display: block;
+  width: 54px;
+  height: 54px;
+  overflow: hidden;
+  border: 3px solid #fbf6ea;
+  border-radius: 5px;
+  outline: 1px dashed rgb(29 22 20 / 0.35);
+  outline-offset: -1px;
+  background: #fbf6ea;
+  box-shadow: 0 1px 0 #c9c2b2, 0 6px 10px -4px rgb(0 0 0 / 0.35);
+  transform: rotate(-7deg);
+  filter: grayscale(calc(1 - var(--near)));
+  transition: transform 0.25s cubic-bezier(0.3, 1.6, 0.5, 1), filter 0.3s;
+}
+.tab__swirl {
+  position: absolute;
+  inset: -40%;
+  background: repeating-conic-gradient(from var(--swirl), #ee5a8f 0 30deg, #f26a21 0 60deg, #f9bb2d 0 90deg, #7cb83a 0 120deg, #1fa7a0 0 150deg, #7b3fa6 0 180deg);
+  animation: tab-swirl 4s linear infinite;
+}
+.tab svg {
+  position: absolute;
+  inset: 4px;
+  width: auto;
+  height: auto;
+  border-radius: 50%;
+  background: #f9bb2d;
+  box-shadow: 0 0 0 2.5px #1d1614;
+  fill: #1d1614;
+  stroke: #1d1614;
+  stroke-width: 2.6;
+  stroke-linecap: round;
+}
+.tab svg path {
+  fill: none;
+}
+.tab:hover .tab__paper,
+.tab:focus-visible .tab__paper {
+  transform: rotate(5deg) scale(1.14);
+}
+.tab:focus-visible {
+  outline: 2px solid #6a6a6a;
+  outline-offset: 2px;
+}
+/* Where the picture is going to draw the tab, the page shows a photograph of the tab it draws (at rest, grey)
+   until it does, so that the one takes over from the other and nothing is seen to change. */
+.tab__still {
+  display: none;
+}
+html.lensing .tab__still {
+  display: block;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 176px;
+  height: 176px;
+  max-width: none;
+  margin: -88.3px 0 0 -88px;
+  pointer-events: none;
+}
+html.lensing .tab::before,
+html.lensing .tab__paper {
+  visibility: hidden;
+}
+html.lensing:not([data-trip="on"]) .tab {
+  animation: none;
+}
+/* Taken: it spins up and is gone. */
+html[data-trip="on"] .tab {
+  animation: tab-taken 0.6s cubic-bezier(0.5, 0, 0.9, 0.4) both;
+}
+@keyframes tab-swirl {
+  to {
+    --swirl: 360deg;
+  }
+}
+@keyframes tab-glow {
+  from {
+    opacity: 0.4;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 0.7;
+    transform: scale(1.12);
+  }
+}
+@keyframes tab-sit {
+  50% {
+    transform: translateY(-4px);
+  }
+}
+@keyframes tab-taken {
+  to {
+    transform: scale(3.4) rotate(200deg);
+    opacity: 0;
+  }
+}
+
+@media (max-width: 760px) {
+  .corp__nav,
+  .corp__foot span:not(:first-child),
+  .corp__bar .corp__button {
+    display: none;
+  }
+  .corp__bar,
+  .corp__foot {
+    padding: 0 20px;
+  }
+  .corp__logos i:nth-child(n + 4) {
+    display: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  html[data-trip] {
+    transition: --hole 0.01s;
+  }
+  html[data-trip="on"] .corp__page {
+    transform: none;
+    filter: none;
+  }
+  .tab,
+  .tab::before,
+  .tab__swirl {
+    animation: none !important;
+  }
+}
+
+/* The planet has taken the pointer; after a while it gives back something else. */
+.hero[data-cursor="gone"],
+.hero[data-cursor="gone"] * {
+  cursor: none !important;
+}
+.hero[data-cursor="flower"],
+.hero[data-cursor="flower"] .hot {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='36' height='36'%3E%3Ccircle cx='27.0' cy='18.0' r='6.2' fill='%23ee5a8f' stroke='%231d1614' stroke-width='2'/%3E%3Ccircle cx='22.5' cy='25.8' r='6.2' fill='%23ee5a8f' stroke='%231d1614' stroke-width='2'/%3E%3Ccircle cx='13.5' cy='25.8' r='6.2' fill='%23ee5a8f' stroke='%231d1614' stroke-width='2'/%3E%3Ccircle cx='9.0' cy='18.0' r='6.2' fill='%23ee5a8f' stroke='%231d1614' stroke-width='2'/%3E%3Ccircle cx='13.5' cy='10.2' r='6.2' fill='%23ee5a8f' stroke='%231d1614' stroke-width='2'/%3E%3Ccircle cx='22.5' cy='10.2' r='6.2' fill='%23ee5a8f' stroke='%231d1614' stroke-width='2'/%3E%3Ccircle cx='18' cy='18' r='5.5' fill='%23f9bb2d' stroke='%231d1614' stroke-width='2'/%3E%3C/svg%3E") 18 18, crosshair;
+}
+.hero[data-cursor="eye"],
+.hero[data-cursor="eye"] .hot {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='36' height='36'%3E%3Ccircle cx='18' cy='18' r='14' fill='%23f6e3bd' stroke='%231d1614' stroke-width='2.5'/%3E%3Ccircle cx='18' cy='18' r='8' fill='%231f9c9b' stroke='%231d1614' stroke-width='2'/%3E%3Ccircle cx='18' cy='18' r='3.6' fill='%231d1614'/%3E%3Ccircle cx='15' cy='14.5' r='2' fill='%23fff'/%3E%3C/svg%3E") 18 18, crosshair;
+}
+.hero[data-cursor="face"],
+.hero[data-cursor="face"] .hot {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='36' height='36'%3E%3Ccircle cx='18' cy='18' r='14' fill='%23f9bb2d' stroke='%231d1614' stroke-width='2.5'/%3E%3Cellipse cx='13' cy='14.5' rx='2' ry='3' fill='%231d1614'/%3E%3Cellipse cx='23' cy='14.5' rx='2' ry='3' fill='%231d1614'/%3E%3Cpath d='M10.5 20.5Q18 29 25.5 20.5' fill='none' stroke='%231d1614' stroke-width='2.5' stroke-linecap='round'/%3E%3C/svg%3E") 18 18, crosshair;
+}

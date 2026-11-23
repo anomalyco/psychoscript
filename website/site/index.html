@@ -1,0 +1,151 @@
+<!doctype html>
+<!--
+        \   |   /
+     '.  .---.  .'
+    =   ( ^ ^ )   =
+     .'  '---'  '.
+        /   |   \
+
+  The one above laughs when poked, until it does not.
+  The one with a glass face hears every word you spell it.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>NormalScript® | Enterprise Scripting Solutions</title>
+    <meta name="description" content="PSYCHOSCRIPT, a programming language." />
+    <meta name="robots" content="noindex" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="PSYCHOSCRIPT" />
+    <meta property="og:description" content="PSYCHOSCRIPT, a programming language." />
+    <meta property="og:url" content="https://psychoscript.pages.dev/" />
+    <meta property="og:image" content="https://psychoscript.pages.dev/art/card.jpg?v=2" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="The word Psychoscript in orange hand lettering over a sun with a face, a river valley and a computer terminal walking on striped legs." />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="theme-color" content="#1d1614" />
+    <link rel="icon" href="art/favicon.svg" type="image/svg+xml" data-plain="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='4' fill='%23b9b9b9'/%3E%3Cpath d='M10 23V9l12 14V9' fill='none' stroke='%23f2f2f2' stroke-width='3'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="preload" as="image" href="art/tab.webp" />
+    <script>
+      if (navigator.gpu) document.documentElement.classList.add('gpu')
+      // The page opens as a grey one; ?awake (or a frozen frame) goes straight to the picture.
+      document.documentElement.dataset.trip = /[?&](awake|freeze)\b/.test(location.search) ? 'skip' : 'off'
+      // Where the picture is going to draw the tab itself, the page shows a photograph of that tab until it does.
+      if (navigator.gpu && document.documentElement.dataset.trip === 'off' && !matchMedia('(prefers-reduced-motion: reduce)').matches)
+        document.documentElement.classList.add('lensing')
+    </script>
+    <noscript><style>.corp, .wave { display: none }</style></noscript>
+    <script type="module" src="liquid.js"></script>
+  </head>
+  <body>
+    <main class="poster" id="main">
+      <section class="hero" aria-labelledby="title">
+        <canvas class="liquid" aria-hidden="true"></canvas>
+        <img class="sky" src="art/sky.svg" alt="" width="520" height="240" />
+        <img class="flower" src="art/flower.svg" alt="" width="210" height="210" />
+
+        <h1 class="title" id="title">
+          <picture>
+            <source media="(max-width: 900px)" srcset="art/wordmark-stacked.png" width="768" height="801" />
+            <img class="wordmark" src="art/wordmark.png" alt="PSYCHOSCRIPT" width="1152" height="533" />
+          </picture>
+          <span class="sr-only">, a programming language</span>
+        </h1>
+
+        <!-- Parts of the picture that do something when pressed. -->
+        <button type="button" class="hot hot--planet" hidden aria-label="Turn day into night, or night into day"></button>
+        <button type="button" class="hot hot--sun" hidden aria-label="Make it roar"></button>
+        <button type="button" class="hot hot--boots" hidden aria-label="Make it jump. Space does the same."></button>
+        <!-- The dark button on NormalScript's notice, while the notice is up. -->
+        <button type="button" class="comply" hidden>Accept all normalcy</button>
+
+        <div class="scene">
+          <img class="sun-still" src="art/sun.svg" alt="" width="340" height="340" />
+          <img
+            class="scene__art"
+            src="art/scene.svg"
+            alt="A sun with a face over a river valley, behind a vintage computer terminal."
+            width="760"
+            height="600"
+          />
+          <span class="cursor" aria-hidden="true"></span>
+          <button type="button" class="prompt hot" hidden aria-label="Dive into the screen, and out again. To cast a line of script, type, then press Enter."></button>
+        </div>
+
+        <div class="sigils" role="group" aria-label="Controls">
+          <button type="button" class="sigil sigil--sound" id="sound-toggle" aria-label="Sound" title="Sound" aria-pressed="false" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 9.6h3.4L11.6 6v12l-4.2-3.6H4z" />
+              <g class="sigil__on">
+                <path d="M15 9.3a4 4 0 0 1 0 5.4" />
+                <path d="M17.6 6.8a7.6 7.6 0 0 1 0 10.4" />
+              </g>
+              <path class="sigil__off" d="M15.4 9.6l4.8 4.8M20.2 9.6l-4.8 4.8" />
+            </svg>
+          </button>
+          <button type="button" class="sigil sigil--motion" id="motion-toggle" aria-label="Pause motion" title="Pause" aria-pressed="false" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path class="sigil__on" d="M8.6 6v12M15.4 6v12" />
+              <path class="sigil__off" d="M8.5 5.8l10.2 6.2-10.2 6.2z" />
+            </svg>
+          </button>
+        </div>
+      </section>
+    </main>
+
+    <!-- What the page looks like before the tab is taken. -->
+    <div class="wave" aria-hidden="true"></div>
+    <div class="corp">
+      <div class="corp__page">
+        <header class="corp__bar">
+          <span class="corp__logo"><i></i>NormalScript<sup>®</sup></span>
+          <span class="corp__nav"><span>Products</span><span>Solutions</span><span>Resources</span><span>Pricing</span><span>Company</span></span>
+          <span class="corp__button corp__button--quiet">Contact sales</span>
+        </header>
+
+        <div class="corp__main">
+          <p class="corp__eyebrow">Enterprise scripting solutions</p>
+          <h2 class="corp__title">A perfectly normal scripting language.</h2>
+          <p class="corp__text">
+            NormalScript® helps cross-functional teams align on scalable, compliant scripting outcomes. Nothing unusual happens here.
+          </p>
+          <button type="button" class="tab" aria-label="Take the tab">
+            <img class="tab__still" src="art/tab.webp" alt="" width="176" height="176" decoding="sync" />
+            <span class="tab__paper">
+              <span class="tab__swirl"></span>
+              <svg viewBox="0 0 40 40" aria-hidden="true">
+                <circle cx="14" cy="16" r="2.6" />
+                <circle cx="26" cy="16" r="2.6" />
+                <path d="M10.5 22.5Q20 33 29.5 22.5" />
+              </svg>
+            </span>
+          </button>
+          <p class="corp__actions">
+            <span class="corp__button">Request a demo</span>
+            <span class="corp__button corp__button--quiet">Download the white paper</span>
+          </p>
+          <p class="corp__trust">Trusted by more than 400 normal organizations</p>
+          <p class="corp__logos" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></p>
+        </div>
+
+        <footer class="corp__foot">
+          <span>© 2026 NormalScript Holdings, LLC. All rights reserved.</span>
+          <span>Privacy</span><span>Terms</span><span>Cookie preferences</span>
+        </footer>
+
+        <!-- Printed, the page is this form. -->
+        <section class="corp__form">
+          <p class="corp__eyebrow">Form NS-7 · Declaration of Normal Viewing</p>
+          <p>I, the undersigned, declare that I viewed the NormalScript® website and that nothing unusual happened.</p>
+          <p>I did not take the tab. I did not see a sun, a face, a valley, a terminal, a planet, a snake, or my manager. Any colours I recall were within brand guidelines.</p>
+          <p>I understand that this declaration may be audited.</p>
+          <p class="corp__sign"><span>Signature</span><span>Date</span></p>
+          <p class="corp__small">Retain for your records. Do not fold.</p>
+        </section>
+      </div>
+    </div>
+  </body>
+</html>
