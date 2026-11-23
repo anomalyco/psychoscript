@@ -6,8 +6,8 @@
  * - test/built-ins/Date/prototype/toUTCString/invalid-date.js
  * - test/built-ins/RegExp/prototype/exec/S15.10.6.2_A4_T8.js
  *
- * psychoscript does not support Symbol.toPrimitive, so the Date-constructor cases exercise the same primitive-result
- * handling through supported own valueOf and toString functions.
+ * The Date-constructor cases exercise the same primitive-result handling through own valueOf and toString functions
+ * instead of Symbol.toPrimitive.
  *
  * Copyright (C) 2016 the V8 project authors. All rights reserved.
  * Copyright (C) 2017 the V8 project authors. All rights reserved.
@@ -2455,5 +2455,34 @@ describe("Uint8Array callback methods", () => {
       return [a.lastIndexOf(1, undefined), a.lastIndexOf(1), a.lastIndexOf(2, undefined), b.lastIndexOf(1, undefined), b.lastIndexOf(1)]
     `),
     ).toEqual([0, 2, -1, 0, 2])
+  })
+})
+
+describe("well-known symbols", () => {
+  test("Symbol.toPrimitive and Symbol.toStringTag are honoured; unsupported ones throw when read", async () => {
+    expect(
+      await value(`
+      const o = { [Symbol.toPrimitive](hint) { return hint === "number" ? 42 : hint } }
+      const tagged = { [Symbol.toStringTag]: "X" }
+      return [
+        +o, \`\${o}\`, o + "", Object.keys(o), String(tagged), Object.prototype.toString.call(Symbol.iterator),
+        Symbol.iterator.description, String(Symbol.iterator), String(Symbol.asyncIterator),
+      ]
+    `),
+    ).toEqual([
+      42,
+      "string",
+      "default",
+      [],
+      "[object X]",
+      "[object Symbol]",
+      "Symbol.iterator",
+      "Symbol(Symbol.iterator)",
+      "Symbol(Symbol.asyncIterator)",
+    ])
+    expect((await error(`return +{ [Symbol.toPrimitive]() { return {} } }`)).message).toContain(
+      "Cannot convert object to primitive value",
+    )
+    expect((await error(`return { [Symbol.species]: 1 }`)).message).toContain("Symbol.species is not supported")
   })
 })

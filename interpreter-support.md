@@ -65,8 +65,13 @@ the ultimate source of truth. Upstream test262 files run verbatim from `test/tes
 - [x] `NaN` and `Infinity` globals.
 - [x] BigInt literals (`1n`, `0xffn`, `1_000n`, and as object keys), with arithmetic inside the program; see
       [BigInt](#bigint). A BigInt cannot cross to the host.
-- [ ] Arbitrary Symbol primitive values and symbol-keyed properties. The confined `Symbol.iterator` and
-      `Symbol.asyncIterator` keys are available only for the iterator protocols.
+- [ ] Arbitrary Symbol primitive values and symbol-keyed properties. Four well-known symbols exist:
+      `Symbol.iterator` and `Symbol.asyncIterator` for the iterator protocols, `Symbol.toPrimitive` (consulted by
+      every ToPrimitive that runs program code, before `valueOf`/`toString`), and `Symbol.toStringTag` (read by
+      `Object.prototype.toString`). They have `description` (`"Symbol.iterator"`), `toString`
+      (`"Symbol(Symbol.iterator)"`), `valueOf`, and `Symbol.prototype`. Reading any other well-known symbol
+      (`Symbol.species`, `Symbol.hasInstance`, `Symbol.dispose`, …) throws a `TypeError` rather than giving
+      `undefined`.
 - [x] Getter and setter definitions in object literals (`get x() {}`, `set x(v) {}`, computed and symbol keys), named
       `get x` / `set x`. Every read and write honours program accessors: member and computed reads, method calls,
       destructuring, `=`, compound and logical assignment, `++`/`--`, inherited setters (with a primitive as `this`
@@ -342,7 +347,7 @@ reject }` object.
 - [x] `Object()` and `new Object()` return `{}` for nullish arguments and pass objects through unchanged;
       primitive wrapper objects (`Object(1)`) are rejected explicitly.
 - [x] Computed property names and object spread. Any value works as a key (ToPropertyKey): strings, numbers, and the
-      two confined symbols as themselves, data objects through their own `toString` (`o[[1, 2]]` is `o["1,2"]`), and
+      well-known symbols as themselves, data objects through their own `toString` (`o[[1, 2]]` is `o["1,2"]`), and
       everything else as its string form (`o[null]` is `o["null"]`), in reads, writes, literals, `in`, and
       destructuring.
 - [x] `Object.keys`, `Object.values`, `Object.entries`, `Object.hasOwn`, `Object.assign`, and `Object.fromEntries`, with
@@ -361,8 +366,8 @@ reject }` object.
       change is confined to that run. `__proto__` is an ordinary own data key, so `o.__proto__ = x` never changes the
       chain, and `Object.groupBy` results have no prototype at all, as in JS.
 - [x] `Object.getPrototypeOf`: the prototype of an object, or the built-in prototype for a string, number, or boolean
-      (`Object.getPrototypeOf("a") === String.prototype`); `null`, `undefined`, and the two confined symbols throw a
-      `TypeError`.
+      (`Object.getPrototypeOf("a") === String.prototype`), and `Symbol.prototype` for a symbol; `null` and
+      `undefined` throw a `TypeError`.
 - [x] `Object.create(proto)` with an object or `null` prototype; any other prototype is a `TypeError`
       (`Object prototype may only be an Object or null`). Inherited reads, `in`, `hasOwnProperty`, own-only
       `Object.keys`, and `for...in` follow the chain as in JS. A second `properties`
@@ -392,7 +397,8 @@ reject }` object.
 - [x] `Object.prototype` methods on values: `toString` (`"[object Array]"`, `"[object Map]"`, `"[object Promise]"`, and so
       on for every built-in kind, including `"[object Math]"`, `"[object JSON]"`, `"[object Crypto]"`,
       `"[object TextEncoder]"`, `"[object Symbol]"` and `"[object AsyncFunction]"`, as JS reports through
-      `Symbol.toStringTag`), `toLocaleString` (calls the value's `toString`, as in JS), `valueOf`, `hasOwnProperty`, `isPrototypeOf`, and `propertyIsEnumerable`.
+      `Symbol.toStringTag`; an own or inherited string `[Symbol.toStringTag]` replaces the kind), `toLocaleString`
+      (calls the value's `toString`, as in JS), `valueOf`, `hasOwnProperty`, `isPrototypeOf`, and `propertyIsEnumerable`.
 
 ## Arrays
 

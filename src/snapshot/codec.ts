@@ -9,6 +9,8 @@ import {
   lostError,
   PendingThrow,
   Throw,
+  ToPrimitiveSymbol,
+  ToStringTagSymbol,
 } from "../runtime/model.js"
 import {
   accessorFunction,
@@ -177,6 +179,8 @@ export type DecodeEnv = {
 const symbols = new Map<string, symbol>([
   ["iterator", IteratorSymbol],
   ["asyncIterator", AsyncIteratorSymbol],
+  ["toPrimitive", ToPrimitiveSymbol],
+  ["toStringTag", ToStringTagSymbol],
   ["deleted", deleted],
 ])
 const symbolNames = new Map([...symbols].map(([name, symbol]) => [symbol, name]))

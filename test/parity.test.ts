@@ -1407,10 +1407,10 @@ describe("Object.getPrototypeOf and Object.create", () => {
     ).toEqual([true, true, null, true, true, true, true, true, true])
   })
 
-  test("getPrototypeOf rejects null, undefined, and symbols", async () => {
+  test("getPrototypeOf rejects null and undefined, and gives Symbol.prototype for a symbol", async () => {
     expect((await error(`Object.getPrototypeOf(null)`)).message).toContain("cannot convert null to an object")
     expect((await error(`Object.getPrototypeOf(undefined)`)).message).toContain("cannot convert undefined to an object")
-    expect((await error(`Object.getPrototypeOf(Symbol.iterator)`)).message).toContain("cannot convert a symbol")
+    expect(await value(`return Object.getPrototypeOf(Symbol.iterator) === Symbol.prototype`)).toBe(true)
   })
 
   test("Object.create links the prototype: inherited reads, in, own-only keys, and inherited for...in", async () => {
