@@ -14,6 +14,14 @@ use psychoscript::{
 };
 use serde_json::json;
 
+/// The starvation test keeps every core busy where it can't pin its spinners (macOS): the tests that time something
+/// hold this shared, and it holds it alone.
+static HOG: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+fn quiet() -> std::sync::RwLockReadGuard<'static, ()> {
+    HOG.read().unwrap_or_else(|e| e.into_inner())
+}
+
 fn limits(ms: u64, clock: Clock) -> Limits {
     Limits {
         timeout_ms: Some(ms),
@@ -47,6 +55,7 @@ fn drive<F: Future>(future: F) -> F::Output {
 
 #[test]
 fn the_default_clock_is_the_wall_clock() {
+    let _quiet = quiet();
     assert_eq!(Limits::default().clock, Clock::Wall);
     let o = Runtime::make()
         .limits(Limits {
@@ -62,6 +71,7 @@ fn the_default_clock_is_the_wall_clock() {
 
 #[test]
 fn a_busy_loop_is_stopped_at_its_cpu_budget() {
+    let _quiet = quiet();
     let rt = Runtime::make().limits(limits(300, Clock::ThreadCpu));
     let before = thread_clock::ThreadClock::current().now();
     let o = rt.execute("while (true) {}");
@@ -78,6 +88,7 @@ fn a_busy_loop_is_stopped_at_its_cpu_budget() {
 
 #[test]
 fn a_busy_loop_on_the_run_s_worker_is_stopped_at_its_cpu_budget() {
+    let _quiet = quiet();
     // Driven as a future, the loop moves to the run's worker thread after a millisecond: its CPU time counts there.
     let rt = Runtime::make().limits(limits(200, Clock::ThreadCpu));
     let start = Instant::now();
@@ -92,6 +103,7 @@ fn a_busy_loop_on_the_run_s_worker_is_stopped_at_its_cpu_budget() {
 
 #[test]
 fn waiting_on_host_calls_is_not_cpu_time() {
+    let _quiet = quiet();
     // Ten 30 ms waits: 300 ms on the wall clock, which a 100 ms wall-clock timeout doesn't allow.
     let rt = |clock| {
         Runtime::make().limits(limits(100, clock)).globals(|_| {
@@ -114,6 +126,7 @@ fn waiting_on_host_calls_is_not_cpu_time() {
 
 #[test]
 fn a_wait_that_never_ends_ends_at_the_wall_clock_backstop() {
+    let _quiet = quiet();
     // Ten times the 50 ms timeout, on the wall clock: an async call, and a call the program blocks on.
     for (code, f) in [
         (
@@ -205,6 +218,7 @@ fn ticking(limits: Limits) -> Runtime {
 
 #[test]
 fn a_loop_that_never_awaits_stops_at_the_slice() {
+    let _quiet = quiet();
     for clock in [Clock::Wall, Clock::ThreadCpu] {
         let start = Instant::now();
         let o = ticking(sliced(50, clock)).execute("await tick(); while (true) {}");
@@ -226,6 +240,7 @@ fn a_loop_that_never_awaits_stops_at_the_slice() {
 
 #[test]
 fn a_program_that_awaits_the_host_often_runs_past_the_slice() {
+    let _quiet = quiet();
     // Fifty stretches of 10 ms, half a second in all, under a 50 ms slice.
     let code = "for (let i = 0; i < 50; i++) { const t = Date.now(); while (Date.now() - t < 10) {} await tick() } return 1";
     for clock in [Clock::Wall, Clock::ThreadCpu] {
@@ -238,6 +253,7 @@ fn a_program_that_awaits_the_host_often_runs_past_the_slice() {
 
 #[test]
 fn host_calls_are_not_counted_in_the_slice() {
+    let _quiet = quiet();
     // 300 ms in host calls without awaiting, under a 50 ms slice: sleeping, spinning and blocking.
     for (clock, code) in [
         (Clock::Wall, "nap(100); nap(100); nap(100); return 1"),
@@ -283,6 +299,7 @@ fn waiting(limits: Limits) -> Runtime {
 
 #[test]
 fn a_suspended_run_keeps_its_clock() {
+    let _quiet = quiet();
     let code = "let n = 0; for (let i = 0; i < 1000; i++) n += i; await wait(); return n";
     let state = suspend_waiting(&waiting(limits(50, Clock::ThreadCpu)), code);
     assert_eq!(state.0["header"]["limits"]["clock"], json!("threadCpu"));
@@ -358,6 +375,7 @@ fn starve() -> Option<(usize, fn())> {
 
 #[test]
 fn a_run_starved_by_a_cpu_hog_is_not_timed_out() {
+    let _hog = HOG.write().unwrap_or_else(|e| e.into_inner());
     thread::spawn(|| {
         let Some((spinners, place)) = starve() else {
             eprintln!("skipped: this thread can't be pinned to a CPU");
