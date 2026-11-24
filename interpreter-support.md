@@ -546,11 +546,13 @@ reject }` object.
 
 ## Regular expressions
 
-- [x] Literal and `RegExp(pattern, flags)` construction, with or without `new`.
+- [x] Literal and `RegExp(pattern, flags)` construction, with or without `new`. `RegExp(re)` without `new` or flags
+      returns `re` itself.
 - [x] `test`, `exec`, and `toString`.
 - [x] Readable `source`, `flags`, `lastIndex`, `hasIndices`, `global`, `ignoreCase`, `multiline`, `sticky`, `unicode`,
       `unicodeSets`, and `dotAll`.
-- [x] Captures, named groups, match `.index` and `.input`, and stateful global matching.
+- [x] Captures, named groups, match `.index` and `.input`, and stateful global matching. Match results always have
+      `groups` (undefined without named groups); group objects have a null prototype.
 - [x] Integration with supported String methods, including function replacers.
 - [x] Writable `lastIndex`, shared by `exec`, `test`, and the String methods. It is a prototype accessor that stores
       a number, so `re.lastIndex = "12"` reads back `12`, `delete` is a no-op, and `hasOwnProperty("lastIndex")` is

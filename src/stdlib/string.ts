@@ -59,7 +59,7 @@ const replaceWithCallback = <R>(
     if (typeof match !== "string" || typeof offset !== "number") {
       throw typeError(`String.${name} produced an invalid replacement match.`)
     }
-    const args = callbackArgs.map((arg) => (typeof arg === "object" ? record(builtins.Object, arg) : arg))
+    const args = callbackArgs.map((arg) => (typeof arg === "object" ? record(null, arg) : arg))
     matches.push({ match, offset, args })
     return match
   }

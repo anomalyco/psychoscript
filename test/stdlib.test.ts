@@ -452,6 +452,26 @@ describe("RegExp", () => {
     expect(await value(`return [/a/ instanceof RegExp, /a/.source]`)).toEqual([true, "a"])
   })
 
+  test("RegExp(r) returns r; match groups are always present and have a null prototype", async () => {
+    expect(await value(`const r = /a/g; return [RegExp(r) === r, RegExp(r, "g") === r, new RegExp(r) === r]`)).toEqual(
+      [true, false, false],
+    )
+    expect(await value(`return ["groups" in /a/.exec("a"), [..."a".matchAll(/a/g)].map((m) => "groups" in m)]`)).toEqual(
+      [true, [true]],
+    )
+    expect(
+      await value(`
+        const m = /(?<n>\\d)/d.exec("1")
+        let g
+        "1".replace(/(?<n>\\d)/, (...args) => { g = args.at(-1); return "" })
+        return [m.groups, m.indices.groups, g].map((o) => Object.getPrototypeOf(o) === null)
+      `),
+    ).toEqual([true, true, true])
+    expect(
+      await value(`return [RegExp.prototype.source, RegExp.prototype.flags, RegExp.prototype.global, String(RegExp.prototype)]`),
+    ).toEqual(["(?:)", "", null, "/(?:)/"])
+  })
+
   test("invalid patterns fail with actionable messages", async () => {
     const fromString = await error(`return "abc".match("(")`)
     expect(fromString.message).toContain('String.match received the string "("')
@@ -1823,17 +1843,19 @@ describe("stdlib integration", () => {
       ],
     ])
     expect(await value(`const match = /a/.exec("ba"); return [Object.values(match), Object.entries(match)]`)).toEqual([
-      ["a", 1, "ba"],
+      ["a", 1, "ba", null],
       [
         ["0", "a"],
         ["index", 1],
         ["input", "ba"],
+        ["groups", null],
       ],
     ])
     expect(await value(`return Object.keys(Object.values({ match: /a/.exec("ba") })[0])`)).toEqual([
       "0",
       "index",
       "input",
+      "groups",
     ])
   })
 
