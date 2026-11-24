@@ -411,6 +411,10 @@ reject }` object.
       while `lastIndexOf(1)` is `2`.
 - [x] Aggregation: `reduce` and `reduceRight`.
 - [x] Ordering: `sort`, `toSorted`, `reverse`, and `toReversed`.
+- [x] A default `sort` or `toSorted` over numbers only is numeric: `[10, 9, 1].sort()` is `[1, 9, 10]`. A deliberate
+      difference from JavaScript, which gives `[1, 10, 9]`. Any other mix of elements keeps the string order.
+- [x] A default `sort` or `toSorted` that would compare an object (an array, a date, a function, any non-primitive)
+      throws a `TypeError` asking for a comparator; JavaScript would sort by the objects' strings.
 - [x] Access/copying: `at`, `slice`, `concat`, `flat`, `with`, `join`, and `toLocaleString` (each element's
       `toLocaleString` with the same locales and options, holes and nullish elements as empty strings).
 - [x] Mutation: `push`, `pop`, `shift`, `unshift`, `splice`, `fill`, and `copyWithin`.
