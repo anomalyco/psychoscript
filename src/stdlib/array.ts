@@ -1,5 +1,5 @@
 import { Invoke } from "../runtime/signals.js"
-import type { Builtins } from "../runtime/intrinsics.js"
+import { type Builtins, primitivePrototype } from "../runtime/intrinsics.js"
 import { builtinCursor } from "../runtime/operations.js"
 import { constructor, methods, prototypeFrom, receiver, iteratorMethods } from "../runtime/native.js"
 import { charge, ELEMENT_BYTES } from "../runtime/heap.js"
@@ -25,7 +25,8 @@ import {
   type NativeResult,
   type Value,
 } from "../runtime/objects.js"
-import { describeValue, rejectCircularInsertion } from "../runtime/references.js"
+import { describeValue, rejectCircularInsertion, typeofValue } from "../runtime/references.js"
+import { classTag } from "./object.js"
 import { requireCallback, withPrimitives, readsPending, withReads } from "../runtime/callback.js"
 import type { Interpreter } from "../runtime/interpreter.js"
 import { compareText } from "../runtime/operations.js"
@@ -76,7 +77,7 @@ const arrayFromReads = <R>(ctx: Interpreter<R>, args: Array<Value>): Value | Inv
 }
 
 /** Where a sort puts its result: back into an array or bytes, or into a new array. */
-export type SortInto = "Array.sort" | "Array.toSorted" | "Uint8Array.sort"
+export type SortInto = "Array.sort" | "Array.toSorted" | "Uint8Array.sort" | "Uint8Array.toSorted"
 
 /** The most values the default sort sorts in one native call; more sort in bounded steps (see `sortDefault`). */
 export const SORT_RUN = 4096
@@ -240,11 +241,14 @@ export const arrayGlobal = <R>(ctx: Interpreter<R>) => {
       "toString",
       0,
       (thisValue) =>
-        withPrimitives(
-          "string",
-          Array.from(self(thisValue, "toString").items, (item) => item ?? ""),
-          (items) => joinText(items, ","),
-        ),
+        withReads(() => {
+          const target = thisValue instanceof Obj ? thisValue : primitivePrototype(builtins, thisValue)
+          if (target === undefined) throw typeError("Array.prototype.toString called on null or undefined.")
+          const join = get(target, "join")
+          if (readsPending()) return undefined
+          if (typeofValue(join) !== "function") return `[object ${classTag(ctx, thisValue)}]`
+          return new Invoke(requireCallback(join, "Array.prototype.toString"), thisValue, [], undefined)
+        }),
     ],
     [
       "includes",

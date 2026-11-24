@@ -173,8 +173,8 @@ the ultimate source of truth. Upstream test262 files run verbatim from `test/tes
       call that invoked the built-in, and a resumed `await` starts from depth 0 as in JS, so long async chains such
       as recursive pagination are unaffected.
 - [x] Expression and block function bodies.
-- [x] User callbacks for the supported Array, Map, Set, URLSearchParams, sort, string-replacement, and `Array.from`
-      mapper APIs, with one shared acceptance rule everywhere including promise reactions.
+- [x] User callbacks for the supported Array, Map, Set, URLSearchParams, sort, string-replacement, `Array.from`, and
+      `Array.fromAsync` mapper APIs, with one shared acceptance rule everywhere including promise reactions.
 - [x] `Boolean`, `Number`, `String`, `parseInt`, `parseFloat`, `isFinite`, `isNaN`, and URI helpers as callbacks.
 - [x] Built-in method references as callbacks, such as `values.map(Math.abs)`, `records.map(JSON.stringify)`,
       `items.forEach(console.log)`, and `Promise.resolve(-1).then(Math.abs)`. Extra callback arguments a built-in
@@ -202,7 +202,9 @@ Math.floor)` is `"3"`). A detached method loses its receiver, as in JS: `values.
       `Array.prototype.push.call(arr, 1)`, `Math.max.apply(null, values)`, `fn.bind(obj, first)`. `apply` accepts an
       array, an array-like object (its `length` clamped and capped like `Array.from`), or `null`/`undefined`. A
       bound function is named `bound f`, has its remaining `length`, and is not constructible.
-- [x] `JSON.parse` revivers and `JSON.stringify` function replacers see the holder object as `this`.
+- [x] `JSON.parse` revivers and `JSON.stringify` function replacers see the holder object as `this`. A reviver's third
+      argument is `{ source }` for a primitive it has not changed (`JSON.parse("1.0", (k, v, c) => c.source)` is
+      `"1.0"`) and `{}` otherwise.
 - [x] The optional `thisArg` of the Array, Uint8Array, and `Array.from` callback methods and of Map, Set,
       URLSearchParams, and Headers `forEach` is the callback's `this`: `[1, 2].forEach(function () { this.n++ }, c)`
       increments `c.n` twice. Arrows ignore it, as in JS; `reduce`/`reduceRight` take an initial value instead.
@@ -243,7 +245,7 @@ Math.floor)` is `"3"`). A detached method loses its receiver, as in JS: `values.
 - [x] Synchronous iterator acquisition and result validation follow `IteratorClose` boundaries: consumer errors and
       intentional early stops invoke `return()`, acquisition/`next()` failures do not, and an original consumer error
       wins over a cleanup failure. A generator's `return()` is an intentional stop, so a `return()` that throws or
-      yields a non-object surfaces from it as a `TypeError`. Async iterator consumption remains limited to `for await...of` and async `yield*`.
+      yields a non-object surfaces from it as a `TypeError`. Async iterator consumption remains limited to `for await...of`, async `yield*`, and `Array.fromAsync`.
 - [x] Portable generator protocol coverage is adapted from pinned Test262 cases for suspended-start, suspended-yield,
       and completed states; sync and async `next`/`return`/`throw`; finally yields and completion overrides; rejected
       yielded promises; mixed async request queues; sync and async `yield*` forwarding; malformed methods/results;
@@ -359,11 +361,11 @@ Math.floor)` is `"3"`). A detached method loses its receiver, as in JS: `values.
       throw rejects unless the promise already settled, resolving with a promise or callable thenable adopts it, and
       resolving with the promise itself rejects with a `TypeError`. Resolver callables work anywhere callbacks are
       accepted, including `.then`/`.catch` handlers and collection callbacks, and vanish at the data boundary like
-      any function.
+      any function. Any callable that callback sites accept, bound functions included, works as an executor.
 - [x] `Promise.withResolvers()`: the same promise and resolver callables as the constructor, as a `{ promise, resolve,
 reject }` object. The resolvers are anonymous (`name` is `""`) with `length` 1, as every resolving function is.
 - [x] `Promise.try(fn, ...args)`: calls `fn` synchronously; a throw rejects, a return fulfils, and a returned promise or
-      thenable is adopted.
+      thenable is adopted. A non-function `fn` returns a promise rejected with a `TypeError`.
 - [x] Recursive assimilation of objects with an own callable `then` field across `Promise.resolve`, combinators,
       constructors, reactions, `finally`, `await`, and async returns. Thenable methods run deferred, receive
       first-call-wins resolve/reject functions, and ignore throws after settlement. Inherited and accessor `then`
@@ -383,9 +385,12 @@ reject }` object. The resolvers are anonymous (`name` is `""`) with `length` 1, 
       everything else as its string form (`o[null]` is `o["null"]`), in reads, writes, literals, `in`, and
       destructuring.
 - [x] `Object.keys`, `Object.values`, `Object.entries`, `Object.hasOwn`, `Object.assign`, and `Object.fromEntries`, with
-      synchronous iterator support for `fromEntries`. Sources follow ToObject: strings enumerate by index, other
-      primitives and wrappers contribute nothing, and `null`/`undefined` throw. `Object.assign` accepts array
-      targets for index keys only; a primitive target is a `TypeError` rather than a boxed object.
+      synchronous iterator support for `fromEntries` (each entry must be an object; its value can be anything,
+      functions and promises included). Sources follow ToObject: strings enumerate by UTF-16 code unit index, other primitives and
+      wrappers contribute nothing, and `null`/`undefined` throw. `Object.hasOwn`, `hasOwnProperty` and
+      `propertyIsEnumerable` convert an object key with ToPropertyKey (its `toString`), and the prototype methods
+      accept primitive receivers (`Object.prototype.hasOwnProperty.call("abc", "0")` is `true`). `Object.assign`
+      accepts array targets for index keys only; a primitive target is a `TypeError` rather than a boxed object.
 - [x] `Object.keys` over arrays and host namespaces.
 - [x] Object identity is preserved by in-psychoscript Object helpers.
 - [x] Every value has a real prototype chain built fresh for each run: `Object.prototype`, `Array.prototype`,
@@ -401,7 +406,8 @@ reject }` object. The resolvers are anonymous (`name` is `""`) with `length` 1, 
       (`Object prototype may only be an Object or null`). Inherited reads, `in`, `hasOwnProperty`, own-only
       `Object.keys`, and `for...in` follow the chain as in JS. A second `properties`
       argument defines properties from descriptors, as `Object.defineProperties` does.
-- [x] `Object.defineProperty`, `defineProperties`, `getOwnPropertyDescriptor(s)` and `getOwnPropertyNames`, with the
+- [x] `Object.defineProperty`, `defineProperties`, `getOwnPropertyDescriptor(s)`, `getOwnPropertyNames` and
+      `getOwnPropertySymbols` (only the two confined symbols can appear), with the
       spec's validation (non-configurable and non-writable rules, `SameValue`, extensibility) and descriptor objects
       read through getters and the prototype chain. Built-in accessors (`Map.prototype.size`, `URL.prototype.href`, …)
       show as callable functions and can be redefined, one half at a time.
@@ -423,8 +429,9 @@ reject }` object. The resolvers are anonymous (`name` is `""`) with `length` 1, 
 - [x] `Object.groupBy` over finite collections and custom synchronous iterators/generators, with string-key coercion
       and plain-object results.
 - [x] `Object.prototype` methods on values: `toString` (`"[object Array]"`, `"[object Map]"`, `"[object Promise]"`, and so
-      on for every built-in kind, as JS reports through `Symbol.toStringTag`), `toLocaleString` (calls the value's
-      `toString`, as in JS), `valueOf`, `hasOwnProperty`, `isPrototypeOf`, and `propertyIsEnumerable`.
+      on for every built-in kind, including `"[object Math]"`, `"[object JSON]"`, `"[object Crypto]"`,
+      `"[object TextEncoder]"`, `"[object Symbol]"` and `"[object AsyncFunction]"`, as JS reports through
+      `Symbol.toStringTag`), `toLocaleString` (calls the value's `toString`, as in JS), `valueOf`, `hasOwnProperty`, `isPrototypeOf`, and `propertyIsEnumerable`.
 
 ## Arrays
 
@@ -441,7 +448,7 @@ reject }` object. The resolvers are anonymous (`name` is `""`) with `length` 1, 
 - [x] Aggregation: `reduce` and `reduceRight`.
 - [x] Ordering: `sort`, `toSorted`, `reverse`, and `toReversed`.
 - [x] Access/copying: `at`, `slice`, `concat`, `flat`, `with`, `join`, and `toLocaleString` (each element's
-      `toLocaleString`, holes and nullish elements as empty strings).
+      `toLocaleString` with the same locales and options, holes and nullish elements as empty strings).
 - [x] Mutation: `push`, `pop`, `shift`, `unshift`, `splice`, `fill`, and `copyWithin`.
 - [x] `keys`, `values`, `entries`, and `[Symbol.iterator]` (the same function as `values`) return live iterator objects
       with `next()` and `[Symbol.iterator]`, as in JS. Iterator objects are opaque references: they print as
@@ -474,7 +481,7 @@ reject }` object. The resolvers are anonymous (`name` is `""`) with `length` 1, 
 - [x] Searching/tests: `includes`, `startsWith`, `endsWith`, `indexOf`, `lastIndexOf`, and `search`.
 - [x] Slicing/access: `slice`, `substring`, Annex B `substr`, `at`, `charAt`, `charCodeAt`, and `codePointAt`.
 - [x] Construction/transformation: `split`, `concat`, `repeat`, `padStart`, `padEnd`, `replace`, and `replaceAll`.
-- [x] Regular-expression integration: `match`, materialized `matchAll`, `replace`, `replaceAll`, `split`, and `search`.
+- [x] Regular-expression integration: `match`, `matchAll` (an iterator over matches collected up front), `replace`, `replaceAll`, `split`, and `search`.
 - [x] `localeCompare`, with its locales and collator options (`numeric`, `sensitivity`, `caseFirst`,
       `ignorePunctuation`, and the rest) passed to the host collator; there is still no global `Intl`.
 - [x] `isWellFormed` and `toWellFormed`.
@@ -486,7 +493,7 @@ reject }` object. The resolvers are anonymous (`name` is `""`) with `length` 1, 
       ToPrimitive above). Promises and tool references still reject as data errors, and `repeat` still requires a finite
       non-negative count.
 - [x] Native no-argument parity for `match()`, `matchAll()`, and `search()`; all behave as an empty pattern.
-- [x] `String.raw`, on a template object or any `{ raw }` object; raw strings and substitutions coerce through their own
+- [x] `String.raw`, on a template object or any `{ raw }` object, including a string `raw`; raw strings and substitutions coerce through their own
       `toString`.
 - [x] `match`, `matchAll`, `search`, and `split` read any non-RegExp argument as a pattern string, as `new RegExp(arg)`
       would: `"a1b".match(1)` matches `/1/`, `search(null)` looks for `"null"`, `undefined` is the empty pattern, and
@@ -498,7 +505,8 @@ reject }` object. The resolvers are anonymous (`name` is `""`) with `length` 1, 
 - [x] Number predicates/parsers: `Number.isInteger`, `Number.isFinite`, `Number.isNaN`, `Number.isSafeInteger`,
       `Number.parseInt`, and `Number.parseFloat`.
 - [x] Number formatting: `toFixed`, `toPrecision`, `toExponential`, `toString`, `valueOf`, and `toLocaleString`, which
-      always formats as `en-US` (`"1,234.5"`) so output does not depend on the host.
+      formats through the host's `Intl.NumberFormat`, honoring the locale and options (`style`, `currency`,
+      `maximumFractionDigits`, ...); without a locale it formats as `en-US` (`"1,234.5"`), Bun's default.
 - [x] `Number.prototype.toString` truncates a fractional radix before validating the 2–36 range; invalid radixes
       throw a catchable `RangeError`.
 - [x] Number constants: `MAX_SAFE_INTEGER`, `MIN_SAFE_INTEGER`, `MAX_VALUE`, `MIN_VALUE`, `EPSILON`, `NaN`,
@@ -527,8 +535,8 @@ reject }` object. The resolvers are anonymous (`name` is `""`) with `length` 1, 
       `RangeError`. Comparisons and `==` work across BigInts, numbers and strings, and Maps and Sets key BigInts by
       value.
 - [x] `BigInt(value)` from integers, booleans, and decimal, hex, octal and binary strings; `BigInt.asIntN`,
-      `BigInt.asUintN`, and `toString(radix)`, `toLocaleString` (`en-US`) and `valueOf` on the prototype. `new
-      BigInt()` is a `TypeError`.
+      `BigInt.asUintN`, and `toString(radix)`, `toLocaleString` (locale and options as for numbers) and `valueOf` on
+      the prototype. `new BigInt()` is a `TypeError`.
 - [x] A BigInt has at most 2^20 bits (about 315,000 decimal digits), so no single operator runs for long; a larger
       result is a `RangeError` (`Maximum BigInt size exceeded`), and `**` and `<<` refuse before computing it.
 - [x] `JSON.stringify` throws a `TypeError` on a BigInt unless the program defines `BigInt.prototype.toJSON`. A BigInt
@@ -580,11 +588,13 @@ reject }` object. The resolvers are anonymous (`name` is `""`) with `length` 1, 
 
 ## Regular expressions
 
-- [x] Literal and `RegExp(pattern, flags)` construction, with or without `new`.
+- [x] Literal and `RegExp(pattern, flags)` construction, with or without `new`. `RegExp(re)` without `new` or flags
+      returns `re` itself.
 - [x] `test`, `exec`, and `toString`.
 - [x] Readable `source`, `flags`, `lastIndex`, `hasIndices`, `global`, `ignoreCase`, `multiline`, `sticky`, `unicode`,
       `unicodeSets`, and `dotAll`.
-- [x] Captures, named groups, match `.index` and `.input`, and stateful global matching.
+- [x] Captures, named groups, match `.index` and `.input`, and stateful global matching. Match results always have
+      `groups` (undefined without named groups); group objects have a null prototype.
 - [x] Integration with supported String methods, including function replacers.
 - [x] Writable `lastIndex`, shared by `exec`, `test`, and the String methods. It is a prototype accessor that stores
       a number, so `re.lastIndex = "12"` reads back `12`, `delete` is a no-op, and `hasOwnProperty("lastIndex")` is
@@ -645,15 +655,16 @@ reject }` object. The resolvers are anonymous (`name` is `""`) with `length` 1, 
 Bytes stay inside the program or cross to host functions as copies; the result boundary rejects them with a hint to
 encode as text first (`TextDecoder`, `toBase64`, `toHex`). The other typed arrays are below.
 
-- [x] `new Uint8Array(length | array | iterable | Uint8Array)`, `Uint8Array.from`, `Uint8Array.of`, `fromBase64`
+- [x] `new Uint8Array(length | array | iterable | array-like | Uint8Array)`, `Uint8Array.from`, `Uint8Array.of`, `fromBase64`
       (with the `alphabet` and `lastChunkHandling` options), and `fromHex`. Lengths are capped like arrays. The
       `Uint8Array.from` mapper and `thisArg` see the original values, so
       `Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))` decodes base64. `BYTES_PER_ELEMENT` is 1 on the
-      constructor, its instances, and `Buffer`.
+      constructor, its instances, and `Buffer`. A fractional length truncates and `NaN` is 0, as `ToIndex` gives.
 - [x] Index reads and writes with JS byte semantics: values wrap modulo 256, out-of-range writes are ignored, indexes
-      cannot be deleted. `length` is a prototype accessor, so `Object.keys` lists only indexes.
-- [x] `at`, `slice`, `subarray` (a view on the same bytes), `set`, `fill`, `reverse`, `indexOf`, `lastIndexOf`,
-      `includes`, `join`, `toString`, `toBase64` (with `alphabet` and `omitPadding`), `toHex`, and live `keys`, `values`, `entries`, and `[Symbol.iterator]`
+      cannot be deleted. `length`, `byteLength` and `byteOffset` are prototype accessors, so `Object.keys` lists only indexes.
+- [x] `at`, `slice`, `subarray` (a view on the same bytes), `set`, `fill`, `reverse`, `copyWithin`, `toReversed`,
+      `toSorted`, `with`, `indexOf`, `lastIndexOf`, `includes`, `join`, `toString`, `toBase64` (with `alphabet` and
+      `omitPadding`), `toHex`, `setFromBase64`, `setFromHex`, and live `keys`, `values`, `entries`, and `[Symbol.iterator]`
       iterators. Start indexes coerce as for arrays, search values do not (`bytes.includes("1")` is `false`), and
       `lastIndexOf(x, undefined)` searches from index 0 while `lastIndexOf(x)` searches from the end, as in JS.
 - [x] Spread, destructuring, `for...of`, `yield*`, `Array.from`, and `new Set(bytes)`. `Array.isArray` is false.
@@ -711,12 +722,15 @@ Node's `Buffer`, where the host has one (Node and Bun; not browsers). It is a `U
 method works on it, and its text conversions default to UTF-8.
 
 - [x] `Buffer.from(string, encoding)`, `Buffer.from(bytes | array | array-like | { type: "Buffer", data })`,
-      `alloc`, `allocUnsafe`, `concat`, `byteLength`, `compare`, `isBuffer`, and `isEncoding`, with the encodings
+      `alloc`, `allocUnsafe`, `concat`, `byteLength`, `compare`, `isBuffer`, `isEncoding`, `of`, and `copyBytesFrom`, with the encodings
       utf8, hex, base64, base64url, latin1/binary, ascii, and utf16le/ucs2. An unknown encoding is a `TypeError` with
-      code `ERR_UNKNOWN_ENCODING`.
+      code `ERR_UNKNOWN_ENCODING`, except in `byteLength`, which counts it as UTF-8 like Node. `Buffer.from(bytes, offset,
+      length)` copies all the bytes, as Node ignores the offset and length for anything but an `ArrayBuffer`. The
+      constructor inherits `Uint8Array`'s statics, so `Buffer.fromHex` and `Buffer.fromBase64` make Uint8Arrays.
 - [x] `toString(encoding, start, end)` (so string coercion and templates give UTF-8 text), `toJSON` as
       `{ type: "Buffer", data }`, `slice` and `subarray` as Buffer views on the same bytes, `equals`, `compare`,
-      `indexOf`, `lastIndexOf`, `includes`, `write`, `fill`, `copy`, and the `read`/`write` integer and float methods.
+      `indexOf`, `lastIndexOf`, `includes`, `write`, `fill`, `copy`, and the `read`/`write` integer and float methods
+      (with the lowercase `readUint*`/`writeUint*` aliases).
       `console.log` prints `<Buffer ..>`.
 - [x] The inherited `Uint8Array` methods that make new bytes (`map`, `filter`, `slice`, `subarray`, also called
       through `Uint8Array.prototype`) make a Buffer from a Buffer, as JS's species does.
@@ -737,14 +751,14 @@ method works on it, and its text conversions default to UTF-8.
       `DOMException`, the failure is a `TypeError` whose message starts with `DataCloneError:`.
 - [x] `TextEncoder` and `TextDecoder` for UTF-8 only: any other label is a `RangeError`. `TextDecoder` accepts the
       `fatal` and `ignoreBOM` options. `decode(chunk, { stream: true })` accepts incremental Uint8Array input;
-      `decode()` flushes the stream.
+      `decode()` flushes the stream. `encodeInto(text, bytes)` returns `{ read, written }`.
 - [x] `new Headers()` from records, synchronous iterables of pairs, and Headers, wrapping the host's `Headers`: names
       fold to lowercase, values are normalized and combined, and invalid names or values throw a `TypeError`.
 - [x] Headers `append`, `delete`, `get`, `getSetCookie`, `has`, `set`, `forEach`, `keys`, `values`, `entries`, and
       `[Symbol.iterator]`; iteration is live and sorted by name, with `set-cookie` values kept apart.
 - [x] Headers serialize to a `{ name: value }` object in JSON, in results, and in host function arguments.
 - [ ] `Request`, `Response`, and `Blob`.
-- [x] A host-provided streaming fetch response exposes `bodyUsed`, whole-body readers, a default stream reader and `for await` iteration. `arrayBuffer()` crosses as a `Uint8Array`.
+- [x] A host-provided streaming fetch response exposes `type`, `bodyUsed`, `clone()`, whole-body readers, a default stream reader (with `closed`) and `for await` iteration. `arrayBuffer()` crosses as a `Uint8Array`. `blob()`, `formData()` and the body's `tee`, `pipeTo` and `pipeThrough` throw a TypeError.
 - [ ] `crypto.subtle` and non-UTF-8 `TextDecoder` encodings.
 
 ## Host functions

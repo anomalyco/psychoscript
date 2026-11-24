@@ -14,7 +14,7 @@
 - Typed arrays are opt-in: `Runtime.make({ typedArrays: true })` (Rust: `Runtime::typed_arrays(true)`). Without it, the
   default, programs and host functions behave as before they were added (0.2.1): no `ArrayBuffer`, `Uint16Array`,
   `Uint32Array`, `Int32Array`, `Float32Array` or `Float64Array`, a host function returning one fails at the call, and
-  `Uint8Array` is unchanged; `globalNames` leaves them out.
+  `Uint8Array` has no `buffer`; `globalNames` leaves them out.
 - `Host.error(name, message)` (Rust: `HostError::located(name, message)`, a new `HostValue::Located`): a host call
   that fails with it, sync or async, thrown, rejected or as an Effect's failure, throws a real error of that standard
   class in the program, located at the call: its `stack` names the call, and uncaught the run fails with
@@ -37,10 +37,31 @@
 - `translate: { functions: "mark" }`: a program function inside a host call's argument, or in the run's result,
   crosses as `Host.functionMarker` (Rust: `HostValue::FunctionMarker`, `Data::FunctionMarker`) instead of failing
   the call or being left out.
+- `Uint8Array.prototype.byteLength` and `byteOffset`. They were `undefined`, so code that sized bytes with
+  `byteLength` (such as a `fetch` response's `arrayBuffer()`) got no size.
+- RegExp: `RegExp(re)` without `new` returns `re`; match results always have `groups`, and group objects (including
+  `indices.groups` and the replace callback's groups) have a null prototype; `RegExp.prototype.source`/`flags`/flag
+  getters read as on an empty pattern instead of throwing.
+- `Number.prototype.toLocaleString` and `BigInt.prototype.toLocaleString` honor their locales and options through
+  the host's Intl instead of ignoring them, and `Array.prototype.toLocaleString` passes both on to each element.
+- Uint8Array: `toSorted`, `toReversed`, `with`, `copyWithin`, `setFromBase64`, `setFromHex`, array-like sources, and
+  fractional lengths. Buffer: inherits Uint8Array's statics, `of`, `copyBytesFrom`, the `readUint*`/`writeUint*`
+  aliases, and `from(bytes, offset, length)` copies the whole input as Node does. `TextEncoder.prototype.encodeInto`.
 - BigInt: literals, arithmetic, `BigInt()`, `BigInt.asIntN`/`asUintN`, the prototype methods, and Buffer's 64-bit
   `readBigInt64*`/`writeBigInt64*` methods. A BigInt is capped at
   2^20 bits and cannot cross to the host; `JSON.stringify` throws on one unless the program defines
   `BigInt.prototype.toJSON`. Snapshots keep BigInts.
+- `String.prototype.matchAll` returns an iterator instead of an array; `String.raw` accepts a string `raw`; and
+  `Object.keys`/`values`/`entries`/`assign`/`hasOwn`, object spread and `for...in` index a string by UTF-16 code unit.
+- Promises: `Promise.try(nonFunction)` returns a rejected promise instead of throwing, and `new Promise` accepts bound
+  functions as executors.
+- `Array.fromAsync`; a `JSON.parse` reviver gets its third argument (`{ source }` for primitives); and
+  `Array.prototype.toString` calls the receiver's `join`, as in JS.
+- Object: `Object.fromEntries` accepts any entry value, `hasOwnProperty`/`propertyIsEnumerable` accept primitive
+  receivers, own-property checks apply ToPropertyKey to object keys, `Object.prototype.toString` reports Math, JSON,
+  crypto, TextEncoder/TextDecoder, symbols and async/generator functions, and `Object.getOwnPropertySymbols` exists.
+- A `StreamingResponse` now has `type`, `clone()` and `reader.closed`; `blob()`, `formData()` and the body's `tee`,
+  `pipeTo` and `pipeThrough` throw a TypeError instead of being undefined.
 
 ## 0.2.1
 

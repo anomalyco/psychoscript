@@ -22,6 +22,7 @@ import {
   ownKeys,
   IteratorObj,
   positionIterator,
+  coerceToInteger,
   coerceToNumber,
   get,
   MapObj,
@@ -122,6 +123,15 @@ export const helpers = (ctx: Interpreter<unknown>): Array<readonly [string, Valu
       ([array, index, value]) => {
         ;(array as Arr).items[index as number] = value
         return value
+      },
+    ],
+    /** An array-like's length, as ToLength gives it, capped like arrays. */
+    $Length: [
+      1,
+      ([value]) => {
+        const length = Math.max(0, coerceToInteger(value))
+        checkArrayLength(length)
+        return length
       },
     ],
     $SumPrecise: [1, ([numbers]) => Math.sumPrecise((numbers as Arr).items as Array<number>)],

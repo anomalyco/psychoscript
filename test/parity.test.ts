@@ -1193,6 +1193,7 @@ describe("String.raw", () => {
         return [String.raw({ raw: ["x", "y"] }, 1, 2), String.raw({ raw: ["x", "y", "z"] }, shout), String.raw({ raw: { length: 0 } })]
       `),
     ).toEqual(["x1y", "x!yz", ""])
+    expect(await value(`return String.raw({ raw: "test" }, 0, 1, 2)`)).toBe("t0e1s2t")
   })
 
   test("a template without a raw array is a TypeError", async () => {
@@ -1989,7 +1990,7 @@ describe("String and Number method arguments convert through ToPrimitive", () =>
         return [
           "abc".split(s), "abc".split(/b/, { valueOf() { return 1 } }), "abc".split(undefined, { valueOf() { return undefined } }),
           "abc".replace(s, "X"), "abc".replace(/b/, { toString() { return "R" } }), "abc".replaceAll(s, s),
-          "abc".replace(s, (m) => m.toUpperCase()), "abc".match(s)[0], "abcb".matchAll(s).length, "abc".search(s),
+          "abc".replace(s, (m) => m.toUpperCase()), "abc".match(s)[0], "abcb".matchAll(s).toArray().length, "abc".search(s),
         ]
       `),
     ).toEqual([["a", "c"], ["a"], [], "aXc", "aRc", "abc", "aBc", "b", 2, 1])

@@ -56,7 +56,8 @@ export const matchToValue = (builtins: Builtins, match: RegExpMatchArray): Arr =
   )
   if (match.index !== undefined) define(result, "index", match.index)
   if (match.input !== undefined) define(result, "input", match.input)
-  if (match.groups) define(result, "groups", record(builtins.Object, match.groups))
+  // Like JS, `groups` is always present: undefined without named groups, otherwise a null-prototype object.
+  define(result, "groups", match.groups === undefined ? undefined : record(null, match.groups))
   if (match.indices) define(result, "indices", indicesToValue(builtins, match.indices))
   return result
 }
@@ -90,7 +91,11 @@ export const regexpGlobal = <R>(ctx: Interpreter<R>) => {
   const regexp = constructor(builtins, proto, {
     name: "RegExp",
     length: 2,
-    call: (_, args) => constructRegExp(builtins, args),
+    // RegExp(r) without new returns r itself when it is a plain RegExp and no flags are given.
+    call: (_, args) =>
+      args[0] instanceof RegExpObj && args[0].proto === proto && args[1] === undefined
+        ? args[0]
+        : constructRegExp(builtins, args),
     construct: (args, newTarget) => constructRegExp(builtins, args, prototypeFrom(newTarget, proto)),
   })
   methods(builtins, regexp, [
@@ -105,8 +110,9 @@ export const regexpGlobal = <R>(ctx: Interpreter<R>) => {
   ])
 
   const self = (thisValue: Value, name: string) => receiver(RegExpObj, thisValue, `RegExp.prototype.${name}`)
-  defineAccessor(proto, "source", (thisValue) => self(thisValue, "source").source)
-  defineAccessor(proto, "flags", (thisValue) => self(thisValue, "flags").flags)
+  // RegExp.prototype itself is not a RegExp, but JS reads it as the empty pattern with no flags set.
+  defineAccessor(proto, "source", (thisValue) => (thisValue === proto ? "(?:)" : self(thisValue, "source").source))
+  defineAccessor(proto, "flags", (thisValue) => (thisValue === proto ? "" : self(thisValue, "flags").flags))
   // One lastIndex per RegExp, so exec/test and the String methods share one counter.
   defineAccessor(
     proto,
@@ -116,7 +122,9 @@ export const regexpGlobal = <R>(ctx: Interpreter<R>) => {
       self(thisValue, "lastIndex").lastIndex = coerceToNumber(value)
     },
   )
-  for (const name of flagProperties) defineAccessor(proto, name, (thisValue) => self(thisValue, name).regex[name])
+  for (const name of flagProperties) {
+    defineAccessor(proto, name, (thisValue) => (thisValue === proto ? undefined : self(thisValue, name).regex[name]))
+  }
   const run = (name: "exec" | "test"): Method => [
     name,
     1,
@@ -131,7 +139,7 @@ export const regexpGlobal = <R>(ctx: Interpreter<R>) => {
   methods(builtins, proto, [
     run("exec"),
     run("test"),
-    ["toString", 0, (thisValue) => coerceToString(self(thisValue, "toString"))],
+    ["toString", 0, (thisValue) => (thisValue === proto ? "/(?:)/" : coerceToString(self(thisValue, "toString")))],
   ])
   return regexp
 }
@@ -146,7 +154,7 @@ const indicesToValue = (builtins: Builtins, indices: RegExpIndicesArray): Arr =>
     "groups",
     groups === undefined
       ? undefined
-      : record(builtins.Object, Object.fromEntries(Object.entries(groups).map(([key, pair]) => [key, range(pair)]))),
+      : record(null, Object.fromEntries(Object.entries(groups).map(([key, pair]) => [key, range(pair)]))),
   )
   return result
 }

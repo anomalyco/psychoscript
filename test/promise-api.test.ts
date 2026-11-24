@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { fromBytes, Host, Runtime, toBytes } from "../src/index.js"
+import { fromBytes, Host, Runtime, StreamingResponse, toBytes } from "../src/index.js"
 
 const execute = (runtime: Runtime.Runtime, code: string) => runtime.execute(code)
 
@@ -136,5 +136,37 @@ describe("Promise API", () => {
       ok: true,
       value: { a: 1 },
     })
+  })
+
+  test("a StreamingResponse has type, clone(), reader.closed, and refuses what needs a Blob or WritableStream", async () => {
+    const runtime = Runtime.make({
+      globals: () => ({ get: Host.fn(async () => new StreamingResponse(new Response("hi", { status: 201 }))) }),
+    })
+    expect(
+      await execute(
+        runtime,
+        `const r = await get()
+        const c = r.clone()
+        const reader = c.body.getReader()
+        const same = reader.closed === reader.closed
+        await reader.read()
+        await reader.read()
+        await reader.closed
+        const text = await r.text()
+        let used
+        try { r.clone() } catch (e) { used = e.name }
+        return [r.type, c.status, same, text, used]`,
+      ),
+    ).toMatchObject({ ok: true, value: ["default", 201, true, "hi", "TypeError"] })
+    expect(
+      await execute(
+        runtime,
+        `const r = await get()
+        const names = []
+        for (const f of [() => r.blob(), () => r.formData(), () => r.body.pipeTo(), () => r.body.tee()])
+          try { await f() } catch (e) { names.push(e.name) }
+        return names`,
+      ),
+    ).toMatchObject({ ok: true, value: ["TypeError", "TypeError", "TypeError", "TypeError"] })
   })
 })
