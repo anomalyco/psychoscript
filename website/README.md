@@ -92,11 +92,11 @@ What has been tried and what it saved is in `perf/frame.md`.
 
 ## Deploying
 
-The site is the Cloudflare Pages project `psychoscript`, at <https://psychoscript.pages.dev/>. `tools/deploy.sh` uploads `site/` as it is:
+The site deploys automatically from GitHub Actions (`.github/workflows/deploy.yml`) as a Cloudflare Worker with static assets:
+
+- Pushing to `dev` deploys `psychoscript-dev-site` to <https://dev.psychoscript.com/>.
+- Fast-forwarding `production` from `dev` (`git push origin dev:production`) deploys `psychoscript-production-site` to <https://psychoscript.com/>.
 
 ```sh
-tools/deploy.sh                                        # from a shell signed in to the project's account
-BASE=https://psychoscript.pages.dev/ bun check.mjs    # from tools/: check the deployed copy in a browser
+BASE=https://dev.psychoscript.com/ bun check.mjs    # from tools/: check the deployed copy in a browser
 ```
-
-The project lives in Kit's own Cloudflare account for now: his login to the company account cannot create Pages projects. The account is pinned in the script; change it there if the project moves.
