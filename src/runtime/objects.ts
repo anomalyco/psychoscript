@@ -1149,7 +1149,7 @@ export const set = (target: Obj, key: PropertyKey, value: Value): boolean | Call
   rejectAddition(target, name)
   changed(target)
   guard(target, name)
-  target.props.set(name, { value, ...data })
+  target.props.set(name, { value, writable: true, enumerable: true, configurable: true })
   return true
 }
 
@@ -1165,7 +1165,7 @@ export const define = (target: Obj, key: PropertyKey, value: Value, attrs: Attri
   if (isIndexed(target) && writeElement(target, name, value) !== undefined) return
   changed(target)
   guard(target, name)
-  target.props.set(name, { value, ...attrs })
+  target.props.set(name, { value, writable: attrs.writable, enumerable: attrs.enumerable, configurable: attrs.configurable })
 }
 
 /** A built-in's native accessor. Made with the intrinsics, each half gets its companion program function. */
