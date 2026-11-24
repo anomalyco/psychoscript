@@ -346,9 +346,12 @@ reject }` object.
       everything else as its string form (`o[null]` is `o["null"]`), in reads, writes, literals, `in`, and
       destructuring.
 - [x] `Object.keys`, `Object.values`, `Object.entries`, `Object.hasOwn`, `Object.assign`, and `Object.fromEntries`, with
-      synchronous iterator support for `fromEntries`. Sources follow ToObject: strings enumerate by UTF-16 code unit index, other
-      primitives and wrappers contribute nothing, and `null`/`undefined` throw. `Object.assign` accepts array
-      targets for index keys only; a primitive target is a `TypeError` rather than a boxed object.
+      synchronous iterator support for `fromEntries` (each entry must be an object; its value can be anything,
+      functions and promises included). Sources follow ToObject: strings enumerate by UTF-16 code unit index, other primitives and
+      wrappers contribute nothing, and `null`/`undefined` throw. `Object.hasOwn`, `hasOwnProperty` and
+      `propertyIsEnumerable` convert an object key with ToPropertyKey (its `toString`), and the prototype methods
+      accept primitive receivers (`Object.prototype.hasOwnProperty.call("abc", "0")` is `true`). `Object.assign`
+      accepts array targets for index keys only; a primitive target is a `TypeError` rather than a boxed object.
 - [x] `Object.keys` over arrays and host namespaces.
 - [x] Object identity is preserved by in-psychoscript Object helpers.
 - [x] Every value has a real prototype chain built fresh for each run: `Object.prototype`, `Array.prototype`,
@@ -364,7 +367,8 @@ reject }` object.
       (`Object prototype may only be an Object or null`). Inherited reads, `in`, `hasOwnProperty`, own-only
       `Object.keys`, and `for...in` follow the chain as in JS. A second `properties`
       argument defines properties from descriptors, as `Object.defineProperties` does.
-- [x] `Object.defineProperty`, `defineProperties`, `getOwnPropertyDescriptor(s)` and `getOwnPropertyNames`, with the
+- [x] `Object.defineProperty`, `defineProperties`, `getOwnPropertyDescriptor(s)`, `getOwnPropertyNames` and
+      `getOwnPropertySymbols` (only the two confined symbols can appear), with the
       spec's validation (non-configurable and non-writable rules, `SameValue`, extensibility) and descriptor objects
       read through getters and the prototype chain. Built-in accessors (`Map.prototype.size`, `URL.prototype.href`, …)
       show as callable functions and can be redefined, one half at a time.
@@ -386,8 +390,9 @@ reject }` object.
 - [x] `Object.groupBy` over finite collections and custom synchronous iterators/generators, with string-key coercion
       and plain-object results.
 - [x] `Object.prototype` methods on values: `toString` (`"[object Array]"`, `"[object Map]"`, `"[object Promise]"`, and so
-      on for every built-in kind, as JS reports through `Symbol.toStringTag`), `toLocaleString` (calls the value's
-      `toString`, as in JS), `valueOf`, `hasOwnProperty`, `isPrototypeOf`, and `propertyIsEnumerable`.
+      on for every built-in kind, including `"[object Math]"`, `"[object JSON]"`, `"[object Crypto]"`,
+      `"[object TextEncoder]"`, `"[object Symbol]"` and `"[object AsyncFunction]"`, as JS reports through
+      `Symbol.toStringTag`), `toLocaleString` (calls the value's `toString`, as in JS), `valueOf`, `hasOwnProperty`, `isPrototypeOf`, and `propertyIsEnumerable`.
 
 ## Arrays
 

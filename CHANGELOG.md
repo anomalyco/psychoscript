@@ -14,6 +14,9 @@
   functions as executors.
 - `Array.fromAsync`; a `JSON.parse` reviver gets its third argument (`{ source }` for primitives); and
   `Array.prototype.toString` calls the receiver's `join`, as in JS.
+- Object: `Object.fromEntries` accepts any entry value, `hasOwnProperty`/`propertyIsEnumerable` accept primitive
+  receivers, own-property checks apply ToPropertyKey to object keys, `Object.prototype.toString` reports Math, JSON,
+  crypto, TextEncoder/TextDecoder, symbols and async/generator functions, and `Object.getOwnPropertySymbols` exists.
 
 ## 0.2.1
 
