@@ -459,8 +459,8 @@ fn lost_message(reason: &str, message: &str) -> HostValue {
     HostValue::Object(m)
 }
 
-/// A test's loss at a frame's end, its work in flight (nothing polled since its last batch): also a frame held for
-/// the new device, at its end as it replays.
+/// A test's loss at a frame's end, its work in flight: also a frame held for the new device, at its end as it
+/// replays.
 #[cfg(feature = "test-hooks")]
 fn lose_at_frame_end(gpu: &mut Gpu) {
     match super::LOSE_AT_FRAME_END.swap(0, Ordering::SeqCst) {
@@ -469,6 +469,8 @@ fn lose_at_frame_end(gpu: &mut Gpu) {
             if with == 2 {
                 gpu.work_finished();
             }
+            // In flight, as the fixture says, though its small batch may be seen finished already.
+            gpu.work_in_flight();
             gpu.lost();
             super::gpu_lose_device();
         }
