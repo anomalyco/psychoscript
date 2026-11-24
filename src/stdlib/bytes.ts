@@ -13,6 +13,7 @@ import {
   coerceToInteger,
   coerceToNumber,
   coerceToString,
+  record,
   type Value,
 } from "../runtime/objects.js"
 import { describeValue } from "../runtime/references.js"
@@ -55,8 +56,9 @@ export const finishBytes = (bytes: Uint8Array, into: Obj, offset: number): Value
 const constructBytes = <R>(ctx: Interpreter<R>, args: Array<Value>, proto: Obj) => {
   const source = args[0]
   if (source !== null && typeof source === "object") return collectBytes(ctx, source, "new Uint8Array(...)", proto, 0)
-  const length = source === undefined ? 0 : coerceToNumber(source)
-  if (!Number.isInteger(length) || length < 0) throw rangeError(`Invalid typed array length: ${coerceToString(source)}`)
+  // ToIndex: fractions truncate and NaN is 0.
+  const length = source === undefined ? 0 : Math.trunc(coerceToNumber(source)) || 0
+  if (!Number.isFinite(length) || length < 0) throw rangeError(`Invalid typed array length: ${coerceToString(source)}`)
   checkArrayLength(length)
   return new Bytes(proto, new Uint8Array(length))
 }
@@ -125,6 +127,14 @@ export const uint8ArrayGlobal = <R>(ctx: Interpreter<R>) => {
     ],
     ["fromHex", 1, (_, args) => decode("fromHex", args, (text) => Uint8Array.fromHex(text))],
   ])
+  const written = (name: string, format: string, run: () => { read: number; written: number }) => {
+    try {
+      const result = run()
+      return record(builtins.Object, { read: result.read, written: result.written })
+    } catch {
+      throw syntaxError(`${name}: the string is not valid ${format}.`)
+    }
+  }
   define(uint8Array, "BYTES_PER_ELEMENT", 1, frozen)
   define(proto, "BYTES_PER_ELEMENT", 1, frozen)
 
@@ -193,6 +203,41 @@ export const uint8ArrayGlobal = <R>(ctx: Interpreter<R>) => {
         return sortArray(ctx, target, args[0], "Uint8Array.sort")
       },
     ],
+    [
+      "toSorted",
+      1,
+      (thisValue, args) => {
+        const copy = wrap(self(thisValue, "toSorted").bytes.slice())
+        if (args[0] === undefined) {
+          copy.bytes.sort()
+          return copy
+        }
+        return sortArray(ctx, copy, args[0], "Uint8Array.toSorted")
+      },
+    ],
+    ["toReversed", 0, (thisValue) => wrap(self(thisValue, "toReversed").bytes.toReversed())],
+    [
+      "with",
+      2,
+      (thisValue, args) => {
+        const bytes = self(thisValue, "with").bytes
+        const index = optNumber(args[0]) ?? 0
+        const resolved = index < 0 ? bytes.length + index : index
+        // The value is converted before the index is checked, as in JS.
+        const value = coerceToNumber(args[1])
+        if (resolved < 0 || resolved >= bytes.length) throw rangeError("Uint8Array.with index is out of range.")
+        return wrap(bytes.with(resolved, value))
+      },
+    ],
+    [
+      "copyWithin",
+      2,
+      (thisValue, args) => {
+        const target = self(thisValue, "copyWithin")
+        target.bytes.copyWithin(optNumber(args[0]) ?? 0, optNumber(args[1]) ?? 0, optNumber(args[2]))
+        return target
+      },
+    ],
     ["indexOf", 1, (thisValue, args) => self(thisValue, "indexOf").bytes.indexOf(search(args[0]), optNumber(args[1]))],
     [
       "lastIndexOf",
@@ -235,6 +280,33 @@ export const uint8ArrayGlobal = <R>(ctx: Interpreter<R>) => {
       },
     ],
     ["toHex", 0, (thisValue) => self(thisValue, "toHex").bytes.toHex()],
+    [
+      "setFromBase64",
+      1,
+      (thisValue, args) => {
+        const bytes = self(thisValue, "setFromBase64").bytes
+        const name = "Uint8Array.prototype.setFromBase64"
+        if (typeof args[0] !== "string") throw typeError(`${name} expects a string.`)
+        const text = args[0]
+        return withReads(() => {
+          const options = base64Options(args[1], name)
+          const alphabet = base64Option(options, "alphabet", base64Alphabets, name)
+          const lastChunkHandling = base64Option(options, "lastChunkHandling", lastChunkHandlings, name)
+          return written(name, "base64", () => bytes.setFromBase64(text, { alphabet, lastChunkHandling }))
+        })
+      },
+    ],
+    [
+      "setFromHex",
+      1,
+      (thisValue, args) => {
+        const bytes = self(thisValue, "setFromHex").bytes
+        const name = "Uint8Array.prototype.setFromHex"
+        if (typeof args[0] !== "string") throw typeError(`${name} expects a string.`)
+        const text = args[0]
+        return written(name, "hex", () => bytes.setFromHex(text))
+      },
+    ],
     ...iteratorMethods(builtins, self),
     // The callback methods are the prelude's.
   ])
@@ -252,6 +324,18 @@ export const textEncoderGlobal = <R>(ctx: Interpreter<R>) => {
       "encode",
       0,
       (_, args) => new Bytes(builtins.Uint8Array, encoder.encode(coerceToString(args[0] === undefined ? "" : args[0]))),
+    ],
+    [
+      "encodeInto",
+      2,
+      (_, args) => {
+        const target = args[1]
+        if (!(target instanceof Bytes)) {
+          throw typeError(`TextEncoder.encodeInto expects a Uint8Array, received ${describeValue(target)}.`)
+        }
+        const result = encoder.encodeInto(coerceToString(args[0]), target.bytes)
+        return record(builtins.Object, { read: result.read, written: result.written })
+      },
     ],
   ])
   return constructor(builtins, proto, {

@@ -72,7 +72,7 @@ const arrayFromReads = <R>(ctx: Interpreter<R>, args: Array<Value>): Value | Inv
 }
 
 /** Where a sort puts its result: back into an array or bytes, or into a new array. */
-export type SortInto = "Array.sort" | "Array.toSorted" | "Uint8Array.sort"
+export type SortInto = "Array.sort" | "Array.toSorted" | "Uint8Array.sort" | "Uint8Array.toSorted"
 
 /** The most values the default sort sorts in one native call; more sort in bounded steps (see `sortDefault`). */
 export const SORT_RUN = 4096

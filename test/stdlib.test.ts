@@ -1084,9 +1084,45 @@ describe("Uint8Array", () => {
     `),
     ).toEqual([[0, 0], [1, 2, 44], [7, 8], [9, 2, 44], [1, 2, 44], 3, [1, 2]])
     expect((await error(`new Uint8Array(-1)`)).message).toContain("Invalid typed array length: -1")
-    expect((await error(`new Uint8Array(1.5)`)).message).toContain("Invalid typed array length")
     expect((await error(`new Uint8Array(20_000_000)`)).message).toContain("Invalid array length")
-    expect((await error(`Uint8Array.from(/x/)`)).message).toContain("received a RegExp")
+    expect((await error(`Uint8Array.from(null)`)).message).toContain("received null")
+  })
+
+  test("constructs from and sets array-likes, and truncates a fractional length", async () => {
+    expect(
+      await value(`
+      const like = { length: 2, 0: 10, 1: "20" }
+      const into = new Uint8Array(3)
+      into.set(like, 1)
+      return [[...new Uint8Array(like)], [...Uint8Array.from(like, (v) => v * 2)], [...into], new Uint8Array(3.9).length,
+        new Uint8Array(NaN).length, Uint8Array.from(/x/).length]
+    `),
+    ).toEqual([[10, 20], [20, 40], [0, 10, 20], 3, 0, 0])
+  })
+
+  test("toSorted, toReversed, with, copyWithin, setFromHex and setFromBase64 work as in JS", async () => {
+    expect(
+      await value(`
+      const b = new Uint8Array([3, 1, 2])
+      const hex = new Uint8Array(3)
+      const base64 = new Uint8Array(3)
+      return [[...b.toSorted()], [...b.toSorted((x, y) => y - x)], [...b.toReversed()], [...b.with(-1, 300)], [...b],
+        [...new Uint8Array([1, 2, 3, 4, 5]).copyWithin(0, 3)], hex.setFromHex("abcd"), [...hex],
+        base64.setFromBase64("AQID"), [...base64]]
+    `),
+    ).toEqual([
+      [1, 2, 3],
+      [3, 2, 1],
+      [2, 1, 3],
+      [3, 1, 44],
+      [3, 1, 2],
+      [4, 5, 3, 4, 5],
+      { read: 4, written: 2 },
+      [171, 205, 0],
+      { read: 4, written: 3 },
+      [1, 2, 3],
+    ])
+    expect((await error(`new Uint8Array(2).with(2, 1)`)).message).toContain("RangeError")
   })
 
   test("BYTES_PER_ELEMENT is a read-only 1 on Uint8Array, Buffer and their instances", async () => {
@@ -1240,6 +1276,14 @@ describe("Uint8Array", () => {
 })
 
 describe("TextEncoder and TextDecoder", () => {
+  test("encodeInto writes into a Uint8Array and reports what it read and wrote", async () => {
+    expect(
+      await value(`const bytes = new Uint8Array(3)
+        return [new TextEncoder().encodeInto("héllo", bytes), [...bytes]]`),
+    ).toEqual([{ read: 2, written: 3 }, [104, 195, 169]])
+    expect((await error(`new TextEncoder().encodeInto("a", [])`)).message).toContain("expects a Uint8Array")
+  })
+
   test("encodes null as text while omitted and undefined inputs stay empty", async () => {
     expect(
       await value(`

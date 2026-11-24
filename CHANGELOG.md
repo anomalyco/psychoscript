@@ -9,6 +9,9 @@
   getters read as on an empty pattern instead of throwing.
 - `Number.prototype.toLocaleString` and `BigInt.prototype.toLocaleString` honor their locales and options through
   the host's Intl instead of ignoring them, and `Array.prototype.toLocaleString` passes both on to each element.
+- Uint8Array: `toSorted`, `toReversed`, `with`, `copyWithin`, `setFromBase64`, `setFromHex`, array-like sources, and
+  fractional lengths. Buffer: inherits Uint8Array's statics, `of`, `copyBytesFrom`, the `readUint*`/`writeUint*`
+  aliases, and `from(bytes, offset, length)` copies the whole input as Node does. `TextEncoder.prototype.encodeInto`.
 - BigInt: literals, arithmetic, `BigInt()`, `BigInt.asIntN`/`asUintN`, the prototype methods, and Buffer's 64-bit
   `readBigInt64*`/`writeBigInt64*` methods. A BigInt is capped at
   2^20 bits and cannot cross to the host; `JSON.stringify` throws on one unless the program defines

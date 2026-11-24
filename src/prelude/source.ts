@@ -424,12 +424,17 @@ function aggregateError(error, errors) {
   return $Define(error, "errors", list, false)
 }
 
-// A Uint8Array's bytes from an iterable: a new one with prototype into, or set into the Uint8Array into at
-// offset. As in TypedArray.from, a mapper sees the original values, after the source is consumed in full.
+// A Uint8Array's bytes from an iterable or array-like: a new one with prototype into, or set into the Uint8Array into
+// at offset. As in TypedArray.from, a mapper sees the original values, after the source is consumed in full.
 function collectBytes(source, name, mapper, thisArg, into, offset) {
-  if (!$IsIterable(source)) $Throw("TypeError", name + " expects a Uint8Array, an array, or an iterable of numbers, received " + $Describe(source) + ".")
+  if (source === null || source === undefined) $Throw("TypeError", name + " expects a Uint8Array, an array, an iterable, or an array-like of numbers, received " + $Describe(source) + ".")
   const values = []
-  for (const item of source) $ArraySet(values, values.length, item)
+  if ($IsIterable(source)) {
+    for (const item of source) $ArraySet(values, values.length, item)
+  } else {
+    const length = $Length(source.length)
+    while (values.length < length) $ArraySet(values, values.length, source[values.length])
+  }
   let index = 0
   if (mapper !== undefined) {
     while (index < values.length) {
