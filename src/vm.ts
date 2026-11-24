@@ -297,6 +297,8 @@ export class Vm {
   heap: HeapMeter | undefined = undefined
   /** What the heap held as the body returned, with its bindings, once measured (see `finishProgram`). */
   heapAtReturn: number | undefined = undefined
+  /** The runtime's `translate: { functions: "mark" }`: a function in the result is `Host.functionMarker`. */
+  markFunctions = false
 
   constructor(readonly ctx: Interpreter<unknown>) {
     this.scheduler = new VmScheduler(this)
@@ -2498,7 +2500,7 @@ export class Vm {
     if (!isThenable(value)) {
       let fast: ReturnType<typeof tryFastBoundaryOrJson>
       try {
-        fast = tryFastBoundaryOrJson(this.ctx.builtins, value, true, VISIT_BUDGET)
+        fast = tryFastBoundaryOrJson(this.ctx.builtins, value, true, VISIT_BUDGET, this.markFunctions)
       } catch (error) {
         this.frames.pop()
         this.release(frame)

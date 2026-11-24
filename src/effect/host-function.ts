@@ -21,6 +21,7 @@ import { adapt, work } from "./work.js"
 
 export type { Call, DurableCall, Snapshot, Type }
 export { DurableFn, Fn, Namespace }
+export { functionMarker } from "../runtime/contract.js"
 
 export type Options =
   | {
@@ -55,7 +56,10 @@ export { HostFailure as Failure }
 
 type Requirements<A> = A extends Effect.Effect<infer _A, infer _E, infer R> ? R : never
 
-/** A host function: `f` gets the program's arguments, as they crossed, and the call. */
+/**
+ * A host function: `f` gets the program's arguments, as they crossed (only under `translate: { functions: "mark" }`
+ * with `functionMarker` where a function was), and the call.
+ */
 export const fn = <F extends (args: ReadonlyArray<any>, call: Call) => unknown>(
   f: F,
   options: Options = {},

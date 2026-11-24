@@ -20,14 +20,15 @@ export type Limits = {
 
 /**
  * How a host call's arguments carry program values the host can't hold. Every host function in the runtime gets its
- * arguments this way; results are not affected.
+ * arguments this way; the run's result only takes `functions: "mark"`.
  */
 export type Translate = {
   /**
    * A program function inside an argument: `"error"` (the default) fails the call; `"drop"` leaves it out, as
-   * `JSON.stringify` does: an object's key is left out, an array's item is `null`, and an argument is `undefined`.
+   * `JSON.stringify` does: an object's key is left out, an array's item is `null`, and an argument is `undefined`;
+   * `"mark"` puts `Host.functionMarker` in its place, and in the run's result where a function would vanish too.
    */
-  readonly functions?: "error" | "drop" | undefined
+  readonly functions?: "error" | "drop" | "mark" | undefined
   /**
    * A program promise inside an argument: `"error"` (the default) fails the call; `"await"` makes the call wait for it
    * to settle and use its value. A rejection fails the call with its reason.
