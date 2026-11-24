@@ -41,6 +41,11 @@ pub struct StdProtos {
     pub params: Id,
     pub headers: Id,
     pub array_buffer: Id,
+    /// `Math`, `JSON` and `crypto` (with its lazy group), whose `Symbol.toStringTag` objects inheriting from them
+    /// report (see `object::class_tag`).
+    pub math: Id,
+    pub json: Id,
+    pub crypto: Id,
     /// `BigInt.prototype`, made with its lazy group (`LAZY_BIGINT`).
     pub bigint: Id,
     /// The prototypes of the typed arrays other than Uint8Array, in `Elem::TYPED` order.
@@ -589,6 +594,26 @@ fn accessors(vm: &mut Vm, proto: Id, names: &[&'static str]) {
         let k = vm.atoms.intern_static(name);
         vm.heap[proto as usize].props.insert(k, Value::Uninit, 0);
     }
+}
+
+/// Reading an accessor of `this` that its kind doesn't answer: `RegExp.prototype` reads as the empty pattern with no
+/// flags set, as in JS; anything else is `accessor_error`.
+#[cold]
+pub fn accessor_read(vm: &mut Vm, this: Id, key: Atom) -> Res {
+    if !vm.restricted_hit
+        && let Some(v) = prototype_read(vm, this, key)
+    {
+        return Ok(v);
+    }
+    Err(accessor_error(vm, this, key))
+}
+
+/// A built-in accessor read from the prototype that has it, which answers for itself: `RegExp.prototype`'s.
+pub fn prototype_read(vm: &mut Vm, this: Id, key: Atom) -> Option<Value> {
+    if vm.realm.std.loaded & LAZY_REGEXP != 0 && this == vm.realm.std.regexp {
+        return regexp::prototype_prop(vm, key);
+    }
+    None
 }
 
 /// The error for reading an accessor of `this`, which is not the kind the accessor belongs to.

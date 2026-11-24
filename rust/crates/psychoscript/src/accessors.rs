@@ -832,6 +832,11 @@ pub(crate) enum WithReads<T> {
 /// "size").get`): its data is the prototype that has the accessor, and its name `get <key>`.
 pub(crate) fn companion_get(vm: &mut Vm, this: Value, _args: &[Value], callee: Id) -> Res {
     let (owner, key) = companion_of(vm, callee);
+    if matches!(this, Value::Obj(id) if id == owner)
+        && let Some(v) = crate::builtins::prototype_read(vm, owner, key)
+    {
+        return Ok(v);
+    }
     if !inherits(vm, &this, owner) {
         return Err(companion_error(vm, owner, key, &this));
     }
@@ -1179,7 +1184,7 @@ impl Vm {
             }
             let x = self.get_obj(id, key);
             let x = if let Value::Uninit = x {
-                return Err(crate::builtins::accessor_error(self, id, key));
+                crate::builtins::accessor_read(self, id, key)?
             } else {
                 x
             };

@@ -39,6 +39,7 @@ pub fn setup(vm: &mut Vm) {
                 1,
                 object_get_own_property_descriptors,
             ),
+            ("getOwnPropertySymbols", 1, object_get_own_property_symbols),
             ("getOwnPropertyNames", 1, object_get_own_property_names),
         ],
     );
@@ -146,6 +147,7 @@ pub fn setup(vm: &mut Vm) {
     vm.methods(sp, &[("toString", 0, symbol_to_string)]);
 
     let json = vm.new_object();
+    vm.realm.std.json = json;
     vm.methods(
         json,
         &[("parse", 2, json_parse), ("stringify", 3, json_stringify)],
@@ -391,7 +393,7 @@ impl crate::native::ForOf for FromEntries {
     fn item(vm: &mut Vm, fr: crate::native::Frame, x: Value) -> Result<crate::native::Flow, Value> {
         // One entry: `$IsObject`, `String` of its key, `$Define`.
         fuel::native(vm);
-        if !matches!(x, Value::Obj(_)) || contains_opaque(vm, &x, &mut Vec::new()) {
+        if !matches!(x, Value::Obj(id) if !vm.is_namespace(id)) {
             return Err(vm.type_error("Object.fromEntries expects [key, value] entry objects."));
         }
         // `String(entry[0])`, then `entry[1]`, as the prelude's `$Define(result, String(entry[0]), entry[1])`.
@@ -475,19 +477,22 @@ fn define_entry(vm: &mut Vm, fr: crate::native::Frame, k: &Value, v: Value) -> R
 fn object_has_own(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
     let o = arg(args, 0);
     vm.enumerable_source("Object.hasOwn(...)", &o)?;
-    let k = vm.key_of(&arg(args, 1))?;
-    Ok(Value::Bool(match o {
-        Value::Obj(id) => vm.has_own(id, k),
-        // A string reads as the array of its characters.
-        Value::Str(s) => {
-            k == vm.names.length
-                || vm
-                    .atoms
-                    .index(k)
-                    .is_some_and(|i| (i as usize) < vm.atoms.sref(s).len16())
-        }
-        _ => false,
-    }))
+    // ToPropertyKey, which may call the program.
+    fuel::with_primitives(vm, &[Hint::String], [arg(args, 1)], false, |vm, [key]| {
+        let k = vm.key_of(&key)?;
+        Ok(Value::Bool(match o {
+            Value::Obj(id) => vm.has_own(id, k),
+            // A string reads as the array of its characters.
+            Value::Str(s) => {
+                k == vm.names.length
+                    || vm
+                        .atoms
+                        .index(k)
+                        .is_some_and(|i| (i as usize) < vm.atoms.sref(s).len16())
+            }
+            _ => false,
+        }))
+    })
 }
 
 fn set_flags(vm: &mut Vm, args: &[Value], flags: u8) -> Res {
@@ -593,7 +598,7 @@ fn define_properties(vm: &mut Vm, id: Id, props: &Value) -> Res {
                 }
                 let d = vm.get_obj(p, key);
                 let d = if let Value::Uninit = d {
-                    return Err(super::accessor_error(vm, p, key));
+                    super::accessor_read(vm, p, key)?
                 } else {
                     d
                 };
@@ -761,6 +766,21 @@ fn object_get_own_property_names(vm: &mut Vm, _this: Value, args: &[Value], _: I
     Ok(vm.new_array(names))
 }
 
+fn object_get_own_property_symbols(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
+    let v = arg(args, 0);
+    require_coercible(vm, &v, "getOwnPropertySymbols")?;
+    let symbols: Vec<Value> = match v {
+        Value::Obj(id) => vm
+            .own_property_keys(id)
+            .into_iter()
+            .filter(|k| *k <= SYM_ASYNC_ITERATOR)
+            .map(Value::Sym)
+            .collect(),
+        _ => Vec::new(),
+    };
+    Ok(vm.new_array(symbols))
+}
+
 fn object_get_prototype_of(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
     Ok(match arg(args, 0) {
         Value::Obj(id) if !vm.is_namespace(id) => vm.heap[id as usize]
@@ -809,10 +829,33 @@ fn is_namespace_ref(vm: &Vm, v: &Value) -> bool {
     matches!(v, Value::Obj(id) if matches!(vm.heap[*id as usize].kind, Kind::Namespace(_)))
 }
 
+/// The key of `hasOwnProperty` and `propertyIsEnumerable` (ToPropertyKey, which may call the program), then their
+/// receiver, which a primitive is as its boxed object.
+fn own_check(
+    vm: &mut Vm,
+    this: Value,
+    args: &[Value],
+    method: &str,
+    body: impl FnOnce(&mut Vm, Atom) -> bool,
+) -> Res {
+    fuel::with_primitives(vm, &[Hint::String], [arg(args, 0)], false, |vm, [key]| {
+        let k = vm.key_of(&key)?;
+        require_coercible(vm, &this, method)?;
+        Ok(Value::Bool(body(vm, k)))
+    })
+}
+
 fn proto_has_own_property(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
-    let id = object_receiver(vm, &this, "hasOwnProperty")?;
-    let k = vm.key_of(&arg(args, 0))?;
-    Ok(Value::Bool(vm.has_own(id, k)))
+    own_check(
+        vm,
+        this,
+        args,
+        "prototype.hasOwnProperty",
+        |vm, k| match this {
+            Value::Obj(id) => vm.has_own(id, k),
+            _ => primitive_slot(vm, &this, k).is_some(),
+        },
+    )
 }
 
 pub fn tag_of(vm: &Vm, v: &Value) -> &'static str {
@@ -858,17 +901,50 @@ pub fn tag_of(vm: &Vm, v: &Value) -> &'static str {
     }
 }
 
+/// The tag `Object.prototype.toString` reports for a value (the reference's `classTag`): the `Symbol.toStringTag` JS
+/// puts on `Math`, `JSON`, `crypto` and the TextEncoder and TextDecoder prototypes, which objects inheriting from them
+/// report too, then a generator or async function's, then its kind's.
+pub fn class_tag(vm: &Vm, v: &Value) -> &'static str {
+    let Value::Obj(id) = *v else {
+        return tag_of(vm, v);
+    };
+    let s = &vm.realm.std;
+    let loaded = |bit: u8| s.loaded & bit != 0;
+    let tags = [
+        (Some(s.math), "Math"),
+        (Some(s.json), "JSON"),
+        (loaded(64).then_some(s.crypto), "Crypto"),
+        (
+            loaded(super::LAZY_BYTES).then_some(s.text_encoder),
+            "TextEncoder",
+        ),
+        (
+            loaded(super::LAZY_BYTES).then_some(s.text_decoder),
+            "TextDecoder",
+        ),
+    ];
+    let mut cur = Some(id);
+    while let Some(c) = cur {
+        if let Some((_, tag)) = tags.iter().find(|(t, _)| *t == Some(c)) {
+            return tag;
+        }
+        cur = vm.heap[c as usize].proto;
+    }
+    match &vm.heap[id as usize].kind {
+        Kind::Error(_) => "Error",
+        Kind::Native { .. } if super::array::is_from_async(vm, id) => "AsyncFunction",
+        Kind::Closure(c) => match (c.proto.is_generator, c.proto.is_async) {
+            (true, true) => "AsyncGeneratorFunction",
+            (true, false) => "GeneratorFunction",
+            (false, true) => "AsyncFunction",
+            (false, false) => "Function",
+        },
+        _ => tag_of(vm, v),
+    }
+}
+
 fn proto_to_string(vm: &mut Vm, this: Value, _args: &[Value], _: Id) -> Res {
-    if let Value::Obj(id) = this
-        && let Kind::Error(_) = vm.heap[id as usize].kind
-    {
-        return Ok(vm.static_str("[object Error]"));
-    }
-    // The reference has no tag of its own for a symbol.
-    if let Value::Sym(_) = this {
-        return Ok(vm.static_str("[object Object]"));
-    }
-    let t = format!("[object {}]", tag_of(vm, &this));
+    let t = format!("[object {}]", class_tag(vm, &this));
     Ok(vm.static_str(&t))
 }
 
@@ -905,23 +981,24 @@ fn proto_is_prototype_of(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res
 }
 
 fn proto_property_is_enumerable(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
-    let id = object_receiver(vm, &this, "propertyIsEnumerable")?;
-    let k = vm.key_of(&arg(args, 0))?;
-    let o = &vm.heap[id as usize];
-    // A sparse array's far elements are properties, read below.
-    if let Kind::Array(items) = &o.kind
-        && let Some(i) = vm.atoms.index(k)
-        && items
-            .get(i as usize)
-            .is_some_and(|v| !matches!(v, Value::Uninit))
-    {
-        return Ok(Value::Bool(true));
-    }
-    Ok(Value::Bool(
+    own_check(vm, this, args, "prototype.propertyIsEnumerable", |vm, k| {
+        let Value::Obj(id) = this else {
+            return primitive_slot(vm, &this, k).is_some_and(|s| s.enumerable);
+        };
+        let o = &vm.heap[id as usize];
+        // A sparse array's far elements are properties, read below.
+        if let Kind::Array(items) = &o.kind
+            && let Some(i) = vm.atoms.index(k)
+            && items
+                .get(i as usize)
+                .is_some_and(|v| !matches!(v, Value::Uninit))
+        {
+            return true;
+        }
         o.props
             .find(k)
-            .is_some_and(|i| o.props.items[i].flags & ENUMERABLE != 0),
-    ))
+            .is_some_and(|i| o.props.items[i].flags & ENUMERABLE != 0)
+    })
 }
 
 // ---------- Function ----------
@@ -949,7 +1026,7 @@ fn function_call(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
 
 /// Calls `f` as the reference's `call` and `apply` do: they cost a native call before they hand on to `f`, which
 /// costs what a call of it from bytecode costs (see `fuel.rs`). The call is made from a native frame.
-fn invoke(vm: &mut Vm, callee: Id, f: Value, this: Value, args: &[Value]) -> Res {
+pub(crate) fn invoke(vm: &mut Vm, callee: Id, f: Value, this: Value, args: &[Value]) -> Res {
     super::fuel::native(vm);
     let mut slots = vec![f, this, Value::Num(args.len() as f64)];
     slots.extend_from_slice(args);
@@ -1256,11 +1333,11 @@ fn parse(vm: &mut Vm, c: &mut fuel::Conversions, args: &[Value], callee: Id) -> 
     c.convert(vm, &[Hint::String], &mut text, false)?;
     let text = vm.string_of(&text[0])?;
     let text = vm.text(text).to_owned();
-    let v = convert::parse(vm, &text)?;
     let reviver = arg(args, 1);
     if vm.type_of(&reviver) != "function" {
-        return Ok(v);
+        return convert::parse(vm, &text);
     }
+    let (v, snapshot) = convert::parse_revivable(vm, &text)?;
     let reviver = super::require_callback(vm, &reviver, "JSON.parse")?;
     let holder = vm.new_object();
     let empty = vm.atoms.intern_static("");
@@ -1270,31 +1347,50 @@ fn parse(vm: &mut Vm, c: &mut fuel::Conversions, args: &[Value], callee: Id) -> 
     let key = vm.static_str("");
     let op = crate::native::NativeOp::Revive;
     vm.enter_native(op, callee, Value::Undef, &[reviver, Value::Num(0.0)])?;
-    push_level(vm, Value::Obj(holder), key);
+    push_level(vm, Value::Obj(holder), key, snapshot);
     Ok(Value::Undef)
 }
 
 // The slots of a reviving frame: the reviver and how many levels deep it is; then, per level, the holder, the key, the
-// value, the value's keys (an internal array, or undefined for a primitive) and the next of them to revive.
+// value, the value's keys (an internal array, or undefined for a primitive), the next of them to revive, and the
+// value's snapshot (see `convert::parse_revivable`), once an object's visited its children's snapshots.
 const REV_F: usize = 0;
 const REV_DEPTH: usize = 1;
 const REV_LEVELS: usize = 2;
-const LEVEL: usize = 5;
+const LEVEL: usize = 6;
 const L_HOLDER: usize = 0;
 const L_KEY: usize = 1;
 const L_VAL: usize = 2;
 const L_KEYS: usize = 3;
 const L_I: usize = 4;
+const L_SNAP: usize = 5;
 
 /// Pushes a level to revive `key` of `holder`, on top of the frame's slots.
-fn push_level(vm: &mut Vm, holder: Value, key: Value) {
+fn push_level(vm: &mut Vm, holder: Value, key: Value, snapshot: Value) {
     vm.stack.extend(
-        [holder, key, Value::Undef, Value::Undef, Value::Num(0.0)].map(crate::value::Slot::pack),
+        [
+            holder,
+            key,
+            Value::Undef,
+            Value::Undef,
+            Value::Num(0.0),
+            snapshot,
+        ]
+        .map(crate::value::Slot::pack),
     );
 }
 
+/// The two items of a snapshot (an internal array).
+fn snapshot_items(vm: &Vm, snapshot: &Value) -> Option<(Value, Value)> {
+    match &vm.heap[snapshot.as_obj()? as usize].kind {
+        Kind::Array(items) if items.len() == 2 => Some((items[0], items[1])),
+        _ => None,
+    }
+}
+
 /// The step of a reviving frame: the prelude's `revive`, entered once per value; an object's `$IsObject` and
-/// `$Keys`, a back-edge per key, then the reviver, children first.
+/// `$Keys`, a back-edge per key, then the reviver, children first, with a context giving the source text of a
+/// primitive the revivers left as parsed.
 pub(crate) fn revive_step(
     vm: &mut Vm,
     fr: crate::native::Frame,
@@ -1348,6 +1444,12 @@ pub(crate) fn revive_step(
             fuel::native(vm);
             fr.set(vm, at(depth, L_VAL), val);
             if let Value::Obj(id) = val {
+                // The children's snapshots, while the value is the one parsed.
+                let children = match snapshot_items(vm, &fr.get(vm, at(depth, L_SNAP))) {
+                    Some((Value::Obj(parsed), children)) if parsed == id => children,
+                    _ => Value::Undef,
+                };
+                fr.set(vm, at(depth, L_SNAP), children);
                 let keys: Vec<Value> = vm
                     .own_keys(id)
                     .into_iter()
@@ -1367,20 +1469,45 @@ pub(crate) fn revive_step(
             Some(Kind::Array(items)) => items.get(fr.index(vm, at(depth, L_I))).copied(),
             _ => None,
         };
+        let snapshot = fr.get(vm, at(depth, L_SNAP));
         if let Some(k) = next_key {
-            push_level(vm, val, k);
+            let child = match snapshot {
+                Value::Obj(children) => {
+                    let a = vm.key_of(&k)?;
+                    vm.heap[children as usize]
+                        .props
+                        .get(a)
+                        .copied()
+                        .unwrap_or_default()
+                }
+                _ => Value::Undef,
+            };
+            push_level(vm, val, k, child);
             depth += 1;
             fr.set_index(vm, REV_DEPTH, depth);
             visited = false;
             continue;
         }
+        let context = vm.new_object();
+        if !matches!(val, Value::Obj(_)) && !matches!(snapshot, Value::Undef) {
+            // `$IsObject` of the snapshot's first item.
+            fuel::native(vm);
+            if let Some((source, parsed)) = snapshot_items(vm, &snapshot)
+                && !matches!(source, Value::Obj(_))
+                && vm.same_value(&val, &parsed)
+            {
+                let sk = vm.atoms.intern_static("source");
+                vm.define(context, sk, source);
+            }
+        }
         let f = fr.slot(vm, REV_F);
-        let (holder, key, val) = (
+        let (holder, key, val, context) = (
             crate::value::Slot::pack(holder),
             crate::value::Slot::pack(key),
             crate::value::Slot::pack(val),
+            crate::value::Slot::pack(Value::Obj(context)),
         );
-        return fr.call_slots(vm, f, holder, [key, val]);
+        return fr.call_slots(vm, f, holder, [key, val, context]);
     }
 }
 

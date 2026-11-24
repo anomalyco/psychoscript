@@ -421,7 +421,12 @@ fn promise_ctor(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
         return Err(vm.type_error("Promise constructor cannot be invoked without 'new'"));
     }
     let executor = arg(args, 0);
-    if !vm.is_callable(&executor) || matches!(executor, Value::Obj(id) if vm.is_namespace(id)) {
+    if !super::supported_callback(vm, &executor) {
+        if vm.type_of(&executor) == "function" {
+            return Err(vm.type_error(
+                "new Promise(...) cannot use this callable as an executor; wrap it in an arrow function, e.g. (resolve, reject) => fn(resolve, reject).",
+            ));
+        }
         return Err(vm.type_error(
             "new Promise(...) expects an executor function (e.g. new Promise((resolve, reject) => { ... })).",
         ));
@@ -639,11 +644,15 @@ fn promise_with_resolvers(vm: &mut Vm, _this: Value, _args: &[Value], _: Id) -> 
 
 fn promise_try(vm: &mut Vm, _this: Value, args: &[Value], callee: Id) -> Res {
     let f = arg(args, 0);
+    let p = vm.new_promise();
     if !vm.is_callable(&f) {
         let d = vm.describe_data(&f);
-        return Err(vm.type_error(&format!("Promise.try expects a function, received {d}.")));
+        let e = vm.type_error(&format!("Promise.try expects a function, received {d}."));
+        // Located at the call, as a throw from it would be.
+        vm.locate_native(&e, vm.frames.len());
+        vm.reject(p, e);
+        return Ok(Value::Obj(p));
     }
-    let p = vm.new_promise();
     let rest = if args.is_empty() { &[][..] } else { &args[1..] };
     // The reference's native returns before the callback runs, which a call from bytecode spent its fifty on.
     let counted = vm.host.meter.counted;

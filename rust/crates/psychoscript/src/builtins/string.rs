@@ -104,6 +104,7 @@ pub fn setup(vm: &mut Vm) {
     );
 
     let math = vm.new_object();
+    vm.realm.std.math = math;
     for (name, v) in [
         ("PI", std::f64::consts::PI),
         ("E", std::f64::consts::E),
@@ -287,6 +288,20 @@ fn raw_parts(vm: &mut Vm, args: &[Value]) -> Result<Vec<Value>, Value> {
             vm.get_obj(id, k)
         }
         _ => Value::Undef,
+    };
+    // Like other array-likes, a string raw reads its code units.
+    let raw = match raw {
+        Value::Str(s) => {
+            let n = vm.atoms.sref(s).len16();
+            let units = (0..n)
+                .map(|i| match vm.atoms.sref(s).code_unit(i) {
+                    Some(c) => vm.char_str(c),
+                    None => Value::Undef,
+                })
+                .collect();
+            vm.new_array(units)
+        }
+        raw => raw,
     };
     if !matches!(raw, Value::Obj(_)) {
         return Err(vm.type_error("String.raw expects a template object with a raw array."));

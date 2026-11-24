@@ -125,6 +125,7 @@ fn natives() -> &'static Natives {
         }
         let mut list: Vec<NativeFn> = Vec::new();
         list.extend(host::snapshot_natives());
+        list.extend(crate::builtins::array::snapshot_natives());
         list.extend(crate::promise::snapshot_natives());
         for o in vm.heap.iter() {
             if let Kind::Native { f, .. } = &o.kind {
@@ -440,6 +441,7 @@ impl Enc<'_> {
             "frames": vm.frames.iter().map(|f| self.frame(f)).collect::<R<Vec<_>>>()?,
             "handlers": vm.handlers_ref().iter().map(handler).collect::<Vec<_>>(),
             "globals": vals(&vm.globals),
+            "code": vm.protos.len(),
             "globalMap": global_map.iter().map(|(a, v)| json!([a, val(v)])).collect::<Vec<_>>(),
             "templates": vm.template_objs_ref().iter().map(|t| opt_id(*t)).collect::<Vec<_>>(),
             "jobs": vm.jobs.iter().map(|j| self.job(j)).collect::<Vec<_>>(),
@@ -2186,6 +2188,18 @@ pub fn restore(vm: &mut Vm, snapshot: &Snapshot, program_hash: &str) -> R<()> {
         .collect::<R<_>>()?;
     vm.atoms.restore(texts, atoms).map_err(invalid)?;
 
+    // Built-in code the run compiled (`Array.fromAsync`'s), after the program's, compiled again.
+    let code = st
+        .get("code")
+        .map(usize_)
+        .transpose()?
+        .unwrap_or(vm.protos.len());
+    if code > vm.protos.len() {
+        crate::builtins::array::from_async_code(vm, false);
+    }
+    if code != vm.protos.len() {
+        return Err(invalid("the run's code does not match."));
+    }
     let rest = field_list(st, "heap")?;
     let changed = field_list(st, "changed")?;
     let dec = Dec {

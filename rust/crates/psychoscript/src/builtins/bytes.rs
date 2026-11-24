@@ -374,14 +374,14 @@ pub fn get_prop(vm: &mut Vm, id: Id, key: Atom) -> Option<Value> {
     if key == vm.names.length {
         return Some(Value::Num(b.len as f64));
     }
-    if !vm.realm.std.typed_arrays {
-        return None;
-    }
     if key == vm.names.byte_length {
         return Some(Value::Num(b.byte_len() as f64));
     }
     if key == vm.names.byte_offset {
         return Some(Value::Num(b.start as f64));
+    }
+    if !vm.realm.std.typed_arrays {
+        return None;
     }
     if key == vm.names.buffer {
         return Some(Value::Obj(array_buffer_of(vm, id)));
@@ -413,15 +413,15 @@ pub fn set_prop(vm: &mut Vm, id: Id, key: Atom, val: Value) -> Option<Result<(),
             super::builtin_number(vm, &val).map(|n| bytes_ref(vm, id).set_num(vm, i as usize, n)),
         );
     }
-    if key == vm.names.length {
+    let names = &vm.names;
+    if [names.length, names.byte_length, names.byte_offset].contains(&key) {
         return Some(Err(vm.only_getter(&Value::Obj(id), key)));
     }
     // Without typed arrays, a Uint8Array keeps any other key as a property.
     if !vm.realm.std.typed_arrays {
         return None;
     }
-    let names = &vm.names;
-    if [names.byte_length, names.byte_offset, names.buffer].contains(&key) {
+    if key == vm.names.buffer {
         return Some(Err(vm.only_getter(&Value::Obj(id), key)));
     }
     // A typed array has no element at another numeric key (-1, 1.5, 2 ** 32): writing one does nothing.
@@ -658,7 +658,7 @@ pub fn setup(vm: &mut Vm) {
     if vm.realm.std.typed_arrays {
         super::accessors(vm, proto, &["length", "byteLength", "byteOffset", "buffer"]);
     } else {
-        super::accessors(vm, proto, &["length"]);
+        super::accessors(vm, proto, &["length", "byteLength", "byteOffset"]);
     }
     vm.methods(
         proto,
@@ -670,6 +670,10 @@ pub fn setup(vm: &mut Vm) {
             ("fill", 1, u_fill),
             ("reverse", 0, u_reverse),
             ("sort", 1, u_sort),
+            ("toSorted", 1, u_to_sorted),
+            ("toReversed", 0, u_to_reversed),
+            ("with", 2, u_with),
+            ("copyWithin", 2, u_copy_within),
             ("indexOf", 1, u_index_of),
             ("lastIndexOf", 1, u_last_index_of),
             ("includes", 1, u_includes),
@@ -677,6 +681,8 @@ pub fn setup(vm: &mut Vm) {
             ("toString", 0, u_to_string),
             ("toBase64", 0, u_to_base64),
             ("toHex", 0, u_to_hex),
+            ("setFromBase64", 1, u_set_from_base64),
+            ("setFromHex", 1, u_set_from_hex),
             ("keys", 0, u_keys),
             ("values", 0, u_values),
             ("entries", 0, u_entries),
@@ -703,6 +709,7 @@ pub fn setup(vm: &mut Vm) {
     let ek = vm.atoms.intern_static("encoding");
     vm.define_hidden(ep, ek, utf8);
     vm.method(ep, "encode", 0, encoder_encode);
+    vm.method(ep, "encodeInto", 2, encoder_encode_into);
     vm.ctor("TextEncoder", 0, encoder_ctor, ep, Value::Undef);
 
     let dp = vm.plain(op);
@@ -747,8 +754,9 @@ pub(super) enum Sink {
     Set { target: Id, offset: Value },
 }
 
-/// The values a Uint8Array, array or iterable describes, each mapped (with the original values) then converted, handed
-/// to `into`. An iterable is read and mapped by a native frame (`Collect`).
+/// The values a Uint8Array, array, iterable or array-like describes, each mapped (with the original values) then
+/// converted, handed to `into`. An iterable is read and mapped by a native frame (`Collect`), an array-like's values
+/// read ahead (`Vm::reading`) and mapped by one.
 pub(super) fn collect(
     vm: &mut Vm,
     source: &Value,
@@ -762,29 +770,53 @@ pub(super) fn collect(
         let values = b.nums(vm);
         return collected(vm, &values, into);
     }
+    let like = match source {
+        Value::Undef | Value::Null | Value::Uninit => None,
+        v if is_iterable(vm, v) => None,
+        v => Some(vm.reading(|vm| array_like_values(vm, v))?),
+    };
     // The reference's `collectBytes`, after the native's own call when a native hands on to it (see `fuel.rs`).
     if native {
         fuel::handoff(vm);
     } else {
         fuel::method(vm);
     }
-    fuel::native(vm);
-    if !is_iterable(vm, source) {
+    if source.is_nullish() || matches!(source, Value::Uninit) {
         let d = describe_value(vm, source);
         fuel::native(vm);
         return Err(vm.type_error(&format!(
-            "{name} expects a Uint8Array, an array, or an iterable of numbers, received {d}."
+            "{name} expects a Uint8Array, an array, an iterable, or an array-like of numbers, received {d}."
         )));
+    }
+    fuel::native(vm);
+    let (target, offset) = match into {
+        Sink::New(elem) => (Value::Undef, Value::Num(elem.code() as f64)),
+        Sink::Set { target, offset } => (Value::Obj(target), offset),
+    };
+    if let Some(values) = like {
+        // `$Length`, then a back-edge per index read.
+        fuel::native(vm);
+        for _ in &values {
+            fuel::step(vm);
+        }
+        let Some((f, this_arg)) = mapper else {
+            return convert(vm, &values, into);
+        };
+        let values = vm.new_array(values);
+        return crate::native::enter_after_loop_sub(
+            vm,
+            crate::native::NativeOp::Arrays,
+            COLLECT,
+            callee,
+            Value::Undef,
+            &[f, this_arg, values, target, offset, Value::Num(0.0)],
+        );
     }
     if mapper.is_none() && steps_natively(vm, source) {
         let values = fuel::for_of(vm, source)?;
         return convert(vm, &values, into);
     }
     let (f, this_arg) = mapper.unwrap_or_default();
-    let (target, offset) = match into {
-        Sink::New(elem) => (Value::Undef, Value::Num(elem.code() as f64)),
-        Sink::Set { target, offset } => (Value::Obj(target), offset),
-    };
     let values = vm.new_array(Vec::new());
     crate::native::enter_for_of_sub(
         vm,
@@ -795,6 +827,21 @@ pub(super) fn collect(
         *source,
         &[f, this_arg, values, target, offset, Value::Num(0.0)],
     )
+}
+
+/// An array-like's values: its `length` as ToLength gives it (capped like arrays), then each index.
+fn array_like_values(vm: &mut Vm, v: &Value) -> Result<Vec<Value>, Value> {
+    let lk = vm.names.length;
+    let len = vm.get(v, lk)?;
+    let n = super::builtin_integer(vm, &len)?.max(0.0);
+    if n > MAX_ARRAY_LEN as f64 {
+        return Err(vm.range_error("Invalid array length"));
+    }
+    let mut values = Vec::with_capacity(n as usize);
+    for i in 0..n as usize {
+        values.push(vm.get_elem(v, &Value::Num(i as f64))?);
+    }
+    Ok(values)
 }
 
 /// Whether iterating `v` runs no program code: its iterator is the VM's own over its items (see `Vm::walks`), which
@@ -945,7 +992,7 @@ fn uint8_ctor(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
     if let Some(buf) = super::typed::as_array_buffer(vm, &source) {
         return super::typed::from_buffer(vm, Elem::U8, buf, &arg(args, 1), &arg(args, 2));
     }
-    if let Value::Obj(_) = source {
+    if vm.type_of(&source) == "object" && !matches!(source, Value::Null) {
         return collect(
             vm,
             &source,
@@ -956,19 +1003,25 @@ fn uint8_ctor(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
             callee,
         );
     }
+    let n = typed_length(vm, &source)?;
+    Ok(new_bytes(vm, vec![0; n], false))
+}
+
+/// A typed array's length from a primitive, as ToIndex reads it: fractions truncate and NaN is 0.
+pub(super) fn typed_length(vm: &mut Vm, source: &Value) -> Result<usize, Value> {
     let n = match source {
         Value::Undef => 0.0,
-        v => super::builtin_number(vm, &v)?,
+        v => crate::value::to_integer(super::builtin_number(vm, v)?),
     };
-    if n.fract() != 0.0 || !n.is_finite() || n < 0.0 {
-        let s = vm.string_of(&source)?;
+    if !n.is_finite() || n < 0.0 {
+        let s = vm.string_of(source)?;
         let s = vm.text(s).to_owned();
         return Err(vm.range_error(&format!("Invalid typed array length: {s}")));
     }
     if n > MAX_ARRAY_LEN as f64 {
         return Err(vm.range_error("Invalid array length"));
     }
-    Ok(new_bytes(vm, vec![0; n as usize], false))
+    Ok(n as usize)
 }
 
 fn optional_callback(vm: &mut Vm, f: &Value, name: &str) -> Result<Option<Value>, Value> {
@@ -1260,6 +1313,60 @@ fn u_sort(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
     Ok(this)
 }
 
+fn u_to_sorted(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
+    let id = this_bytes(vm, &this, "toSorted")?;
+    let mut data = bytes_ref(vm, id).to_vec(vm);
+    let cmp = arg(args, 0);
+    if matches!(cmp, Value::Undef) {
+        data.sort_unstable();
+        return Ok(new_bytes(vm, data, false));
+    }
+    let copy = new_bytes(vm, data.clone(), false);
+    super::array::sort_comparator(vm, &cmp, "Uint8Array.toSorted")?;
+    let list: Vec<Value> = data.iter().map(|b| Value::Num(*b as f64)).collect();
+    super::array::sort_with(vm, callee, copy, list, cmp, 0, super::array::SORT_BYTES)
+}
+
+fn u_to_reversed(vm: &mut Vm, this: Value, _args: &[Value], _: Id) -> Res {
+    let id = this_bytes(vm, &this, "toReversed")?;
+    let mut data = bytes_ref(vm, id).to_vec(vm);
+    data.reverse();
+    Ok(new_bytes(vm, data, false))
+}
+
+fn u_with(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
+    let id = this_bytes(vm, &this, "with")?;
+    let len = len_of(vm, id) as f64;
+    let index = match arg(args, 0) {
+        Value::Undef => 0.0,
+        v => super::builtin_number(vm, &v)?,
+    };
+    let resolved = if index < 0.0 { len + index } else { index };
+    // The value is converted before the index is checked, as in JS.
+    let value = super::builtin_number(vm, &arg(args, 1))?;
+    if resolved < 0.0 || resolved >= len {
+        return Err(vm.range_error("Uint8Array.with index is out of range."));
+    }
+    let mut data = bytes_ref(vm, id).to_vec(vm);
+    data[crate::value::to_integer(resolved) as usize] = to_u8(value);
+    Ok(new_bytes(vm, data, false))
+}
+
+fn u_copy_within(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
+    let id = this_bytes(vm, &this, "copyWithin")?;
+    let len = len_of(vm, id);
+    let to = rel_index(vm, &arg(args, 0), len, 0)?;
+    let from = rel_index(vm, &arg(args, 1), len, 0)?;
+    let end = rel_index(vm, &arg(args, 2), len, len)?;
+    let count = end.saturating_sub(from).min(len - to);
+    if count > 0 {
+        let b = bytes_ref(vm, id);
+        let start = b.start;
+        storage_mut(vm, b.store).copy_within(start + from..start + from + count, start + to);
+    }
+    Ok(this)
+}
+
 /// Writes a sort's result into the bytes `id`.
 pub(super) fn put_sorted(vm: &mut Vm, id: Id, sorted: &[Value]) {
     let b = bytes_ref(vm, id);
@@ -1373,6 +1480,198 @@ fn u_to_hex(vm: &mut Vm, this: Value, _args: &[Value], _: Id) -> Res {
     let id = this_bytes(vm, &this, "toHex")?;
     let out = hex_encode(&bytes_ref(vm, id).to_vec(vm));
     Ok(vm.string_val(out))
+}
+
+/// What `setFromBase64` and `setFromHex` report: `{ read, written }`.
+fn read_written(vm: &mut Vm, read: usize, written: usize) -> Value {
+    let o = vm.new_object();
+    let (rk, wk) = (
+        vm.atoms.intern_static("read"),
+        vm.atoms.intern_static("written"),
+    );
+    vm.define(o, rk, Value::Num(read as f64));
+    vm.define(o, wk, Value::Num(written as f64));
+    Value::Obj(o)
+}
+
+/// Writes what was decoded into the bytes `id`, then reports it, or fails as the reference's host refuses the text.
+fn set_decoded(vm: &mut Vm, id: Id, decoded: Decoded, name: &str, format: &str) -> Res {
+    let b = bytes_ref(vm, id);
+    for (i, v) in decoded.bytes.iter().enumerate() {
+        b.put(vm, i, *v);
+    }
+    if !decoded.ok {
+        return Err(vm.syntax_error(&format!("{name}: the string is not valid {format}.")));
+    }
+    Ok(read_written(vm, decoded.read, decoded.bytes.len()))
+}
+
+fn u_set_from_base64(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
+    const NAME: &str = "Uint8Array.prototype.setFromBase64";
+    let id = this_bytes(vm, &this, "setFromBase64")?;
+    let Value::Str(s) = arg(args, 0) else {
+        return Err(vm.type_error(&format!("{NAME} expects a string.")));
+    };
+    let (url, last) = vm.reading(|vm| {
+        let options = base64_options(vm, &arg(args, 1), NAME)?;
+        let url = base64_option(vm, options, "alphabet", &["base64", "base64url"], NAME)? == 1;
+        let last = base64_option(
+            vm,
+            options,
+            "lastChunkHandling",
+            &["loose", "strict", "stop-before-partial"],
+            NAME,
+        )?;
+        Ok((url, last))
+    })?;
+    let units = vm.atoms.sref(s).utf16();
+    let decoded = base64_into(&units, url, last, len_of(vm, id));
+    set_decoded(vm, id, decoded, NAME, "base64")
+}
+
+fn u_set_from_hex(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
+    const NAME: &str = "Uint8Array.prototype.setFromHex";
+    let id = this_bytes(vm, &this, "setFromHex")?;
+    let Value::Str(s) = arg(args, 0) else {
+        return Err(vm.type_error(&format!("{NAME} expects a string.")));
+    };
+    let units = vm.atoms.sref(s).utf16();
+    let decoded = hex_into(&units, len_of(vm, id));
+    set_decoded(vm, id, decoded, NAME, "hex")
+}
+
+/// What FromBase64 or FromHex decoded into at most a given number of bytes: the bytes, the code units read, and
+/// whether the text was valid up to where decoding stopped.
+struct Decoded {
+    bytes: Vec<u8>,
+    read: usize,
+    ok: bool,
+}
+
+/// FromBase64 of the base64 proposal with a maximum length, as `setFromBase64` decodes: `url` picks the alphabet,
+/// `last` the last chunk's handling (0 loose, 1 strict, 2 stop-before-partial).
+fn base64_into(units: &[u16], url: bool, last: usize, max: usize) -> Decoded {
+    let mut d = Decoded {
+        bytes: Vec::new(),
+        read: 0,
+        ok: true,
+    };
+    if max == 0 {
+        return d;
+    }
+    let len = units.len();
+    let ws = |c: u16| matches!(c, 0x09 | 0x0a | 0x0c | 0x0d | 0x20);
+    let skip = |mut i: usize| {
+        while i < len && ws(units[i]) {
+            i += 1;
+        }
+        i
+    };
+    let fail = |mut d: Decoded| {
+        d.ok = false;
+        d
+    };
+    let mut chunk: Vec<u32> = Vec::with_capacity(4);
+    let mut i = 0;
+    loop {
+        i = skip(i);
+        if i == len {
+            if !chunk.is_empty() {
+                match last {
+                    2 => return d,
+                    0 if chunk.len() > 1 => {
+                        if decode_chunk(&chunk, false, &mut d.bytes).is_none() {
+                            return fail(d);
+                        }
+                    }
+                    _ => return fail(d),
+                }
+            }
+            d.read = len;
+            return d;
+        }
+        let c = units[i];
+        i += 1;
+        if c == u16::from(b'=') {
+            if chunk.len() < 2 {
+                return fail(d);
+            }
+            i = skip(i);
+            if chunk.len() == 2 {
+                if i == len {
+                    return if last == 2 { d } else { fail(d) };
+                }
+                if units[i] == u16::from(b'=') {
+                    i = skip(i + 1);
+                }
+            }
+            if i < len {
+                return fail(d);
+            }
+            let mut out = std::mem::take(&mut d.bytes);
+            let ok = decode_chunk(&chunk, last == 1, &mut out).is_some();
+            d.bytes = out;
+            if !ok {
+                return fail(d);
+            }
+            d.read = len;
+            return d;
+        }
+        let c = match char::from_u32(u32::from(c)) {
+            Some(c) => c,
+            None => return fail(d),
+        };
+        let c = match (url, c) {
+            (true, '+' | '/') | (false, '-' | '_') => return fail(d),
+            (true, '-') => '+',
+            (true, '_') => '/',
+            (_, c) => c,
+        };
+        let Some(v) = b64_value(c, Some(false)) else {
+            return fail(d);
+        };
+        let remaining = max - d.bytes.len();
+        if (remaining == 1 && chunk.len() == 2) || (remaining == 2 && chunk.len() == 3) {
+            return d;
+        }
+        chunk.push(v);
+        if chunk.len() == 4 {
+            let mut out = std::mem::take(&mut d.bytes);
+            let ok = decode_chunk(&chunk, false, &mut out).is_some();
+            d.bytes = out;
+            if !ok {
+                return fail(d);
+            }
+            chunk.clear();
+            d.read = i;
+            if d.bytes.len() == max {
+                return d;
+            }
+        }
+    }
+}
+
+/// FromHex of the base64 proposal with a maximum length, as `setFromHex` decodes.
+fn hex_into(units: &[u16], max: usize) -> Decoded {
+    let mut d = Decoded {
+        bytes: Vec::new(),
+        read: 0,
+        ok: true,
+    };
+    if !units.len().is_multiple_of(2) {
+        d.ok = false;
+        return d;
+    }
+    let digit = |u: u16| char::from_u32(u32::from(u)).and_then(|c| c.to_digit(16));
+    while d.read < units.len() && d.bytes.len() < max {
+        let (Some(hi), Some(lo)) = (digit(units[d.read]), digit(units[d.read + 1])) else {
+            d.ok = false;
+            return d;
+        };
+        d.read += 2;
+        d.bytes.push((hi * 16 + lo) as u8);
+    }
+    d
 }
 
 fn u_iter(vm: &mut Vm, this: &Value, name: &str, kind: IterKind) -> Res {
@@ -1704,6 +2003,32 @@ fn encoder_encode(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
         }
     };
     Ok(new_bytes(vm, s.into_bytes(), false))
+}
+
+fn encoder_encode_into(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
+    let target = arg(args, 1);
+    let Some(b) = as_bytes(vm, &target) else {
+        let d = describe_value(vm, &target);
+        return Err(vm.type_error(&format!(
+            "TextEncoder.encodeInto expects a Uint8Array, received {d}."
+        )));
+    };
+    let text = super::builtin_string(vm, &arg(args, 0))?;
+    let text = crate::strings::host_text(&text).into_owned();
+    // As many whole characters as fit, each counted in the UTF-16 code units it was.
+    let (mut read, mut out) = (0, Vec::with_capacity(b.len.min(text.len())));
+    for c in text.chars() {
+        if out.len() + c.len_utf8() > b.len {
+            break;
+        }
+        let mut buf = [0; 4];
+        out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+        read += c.len_utf16();
+    }
+    for (i, v) in out.iter().enumerate() {
+        b.put(vm, i, *v);
+    }
+    Ok(read_written(vm, read, out.len()))
 }
 
 const UTF8_LABELS: [&str; 6] = [

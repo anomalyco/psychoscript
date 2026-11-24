@@ -180,6 +180,18 @@ impl Vm {
                 return true;
             }
             let f = self.get_obj(*id, name);
+            if crate::builtins::array::is_builtin_to_string(self, &f) {
+                // `toString` calls the receiver's `join`.
+                let jk = self.atoms.intern_static("join");
+                if self.has_program_getter(*id, jk) {
+                    return true;
+                }
+                let j = self.get_obj(*id, jk);
+                if !crate::builtins::array::is_builtin_join(self, &j) {
+                    return self.is_callable(&j)
+                        && !matches!(&j, Value::Obj(m) if matches!(self.heap[*m as usize].kind, Kind::Native { .. }));
+                }
+            }
             if crate::builtins::array::is_join(self, &f) {
                 // `join` converts each element, as the reference's bytecode calls it: an element that calls the
                 // program makes the array's conversion one that does (an array nested deeper than this is left

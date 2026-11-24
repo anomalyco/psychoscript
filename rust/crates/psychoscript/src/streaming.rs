@@ -2,9 +2,11 @@
 //! `Extension.StreamingResponse`.
 //!
 //! The program gets a plain object with the response's fields, a live `bodyUsed`, the reading methods (`text`,
-//! `json`, `bytes`, `arrayBuffer`) and a `body` with a live `locked`, `cancel`, `getReader` and async iteration. The
-//! host supplies the body as chunks through [`HttpBody`]; reading, locking and cancelling follow the reference's host
-//! runtime, `ReadableStream` errors included.
+//! `json`, `bytes`, `arrayBuffer`), `clone()` and a `body` with a live `locked`, `cancel`, `getReader` (whose reader
+//! has `closed`) and async iteration. `blob()`, `formData()` and the body's `tee`, `pipeTo` and `pipeThrough` throw a
+//! TypeError: the runtime has no Blob, FormData or WritableStream. The host supplies the body as chunks through
+//! [`HttpBody`]; reading, locking and cancelling follow the reference's host runtime, `ReadableStream` errors
+//! included.
 //!
 //! The reference hands the program the response's methods as plain functions inside a result, which it calls at once:
 //! a read or cancel the program starts takes effect when it is called, so `locked` and `bodyUsed` change right away.
@@ -37,6 +39,8 @@ pub trait HttpBody: Send + 'static {
 /// A live HTTP response whose body the host streams for as long as the program holds it. Clones share the body.
 #[derive(Clone)]
 pub struct StreamingResponse {
+    /// The program's `type`: `"default"` unless set.
+    pub response_type: String,
     pub url: String,
     pub status: u16,
     pub status_text: String,
@@ -50,6 +54,7 @@ impl StreamingResponse {
     /// A response with this status and body; `None` is a response without one, such as a 204.
     pub fn new(status: u16, body: Option<Box<dyn HttpBody>>) -> Self {
         Self {
+            response_type: "default".to_owned(),
             url: String::new(),
             status,
             status_text: String::new(),
@@ -57,6 +62,11 @@ impl StreamingResponse {
             redirected: false,
             body: body.map(|body| Arc::new(Mutex::new(Stream::new(body)))),
         }
+    }
+
+    pub fn with_type(mut self, response_type: impl Into<String>) -> Self {
+        self.response_type = response_type.into();
+        self
     }
 
     pub fn with_url(mut self, url: impl Into<String>) -> Self {
@@ -150,6 +160,8 @@ pub(crate) struct Stream {
     /// Started calls that wait for chunks, served in order.
     reading: VecDeque<u64>,
     iters: FxHashMap<u64, Iter>,
+    /// The readers released while the stream was still readable, whose `closed` rejects.
+    released_open: Vec<u64>,
     wakers: Vec<Waker>,
 }
 
@@ -159,6 +171,17 @@ fn type_error(message: &str) -> HostValue {
 
 fn locked() -> HostValue {
     type_error("Invalid state: ReadableStream is locked")
+}
+
+fn released() -> HostValue {
+    type_error("Invalid state: Reader released")
+}
+
+/// What a response offers that needs a Blob, FormData or WritableStream, none of which this runtime has.
+fn unsupported(name: &str) -> HostValue {
+    type_error(&format!(
+        "{name} is not supported in this runtime; read the body with bytes(), text() or arrayBuffer()."
+    ))
 }
 
 fn detached() -> HostValue {
@@ -181,8 +204,33 @@ impl Stream {
             started: FxHashMap::default(),
             reading: VecDeque::new(),
             iters: FxHashMap::default(),
+            released_open: Vec::new(),
             wakers: Vec::new(),
         }
+    }
+
+    /// A stream with the same chunks, for a clone of the response: the body is split in two, each half getting every
+    /// chunk, as `Response.clone` tees it. Only an untouched body can be.
+    fn tee(&mut self) -> Result<Stream, HostValue> {
+        if self.disturbed || self.reader.is_some() {
+            return Err(type_error("Body is disturbed or locked"));
+        }
+        let source = std::mem::replace(&mut self.body, Box::new(Ended));
+        let shared = Arc::new(Mutex::new(Tee {
+            source,
+            queued: [VecDeque::new(), VecDeque::new()],
+            cancelled: [false, false],
+            end: None,
+            wakers: [None, None],
+        }));
+        self.body = Box::new(Half {
+            tee: shared.clone(),
+            side: 0,
+        });
+        Ok(Stream::new(Box::new(Half {
+            tee: shared,
+            side: 1,
+        })))
     }
 
     fn id(&mut self) -> u64 {
@@ -314,6 +362,9 @@ impl Stream {
             return;
         }
         self.reader = None;
+        if matches!(self.flow, Flow::Readable) {
+            self.released_open.push(reader);
+        }
         let started = &mut self.started;
         self.reading.retain(|t| match started.get(t) {
             Some(Progress::Read { reader: r, .. }) if *r == reader => {
@@ -403,6 +454,110 @@ impl Stream {
     }
 }
 
+/// A body with no chunks, in place of one being split.
+struct Ended;
+
+impl HttpBody for Ended {
+    fn poll_chunk(&mut self, _: &mut Context<'_>) -> Poll<Option<Result<Vec<u8>, HostValue>>> {
+        Poll::Ready(None)
+    }
+}
+
+/// A body split in two (`Stream::tee`): a chunk one half reads first waits in the other's queue.
+struct Tee {
+    source: Box<dyn HttpBody>,
+    queued: [VecDeque<Vec<u8>>; 2],
+    cancelled: [bool; 2],
+    /// How the source ended: `Ok` at its end, `Err` when it failed.
+    end: Option<Result<(), HostValue>>,
+    wakers: [Option<Waker>; 2],
+}
+
+struct Half {
+    tee: Arc<Mutex<Tee>>,
+    side: usize,
+}
+
+impl HttpBody for Half {
+    fn poll_chunk(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<Vec<u8>, HostValue>>> {
+        let mut t = lock(&self.tee);
+        let (side, other) = (self.side, 1 - self.side);
+        if let Some(chunk) = t.queued[side].pop_front() {
+            return Poll::Ready(Some(Ok(chunk)));
+        }
+        match &t.end {
+            Some(Ok(())) => return Poll::Ready(None),
+            Some(Err(e)) => return Poll::Ready(Some(Err(e.clone()))),
+            None => {}
+        }
+        match t.source.poll_chunk(cx) {
+            Poll::Pending => {
+                t.wakers[side] = Some(cx.waker().clone());
+                return Poll::Pending;
+            }
+            Poll::Ready(Some(Ok(chunk))) => {
+                if !t.cancelled[other] {
+                    t.queued[other].push_back(chunk.clone());
+                }
+                if let Some(w) = t.wakers[other].take() {
+                    w.wake();
+                }
+                return Poll::Ready(Some(Ok(chunk)));
+            }
+            Poll::Ready(None) => t.end = Some(Ok(())),
+            Poll::Ready(Some(Err(e))) => t.end = Some(Err(e)),
+        }
+        if let Some(w) = t.wakers[other].take() {
+            w.wake();
+        }
+        match &t.end {
+            Some(Err(e)) => Poll::Ready(Some(Err(e.clone()))),
+            _ => Poll::Ready(None),
+        }
+    }
+
+    /// The source is cancelled once both halves are.
+    fn cancel(&mut self, reason: HostValue) {
+        let mut t = lock(&self.tee);
+        t.cancelled[self.side] = true;
+        t.queued[self.side].clear();
+        if t.cancelled == [true, true] && t.end.is_none() {
+            t.end = Some(Ok(()));
+            t.source.cancel(reason);
+        }
+    }
+}
+
+/// `closed` of a reader: settles once the stream closes or fails while the reader holds it, and fails once it lets
+/// go of a stream still readable, or at once when it had let go when `closed` was first read.
+struct Closed {
+    stream: Arc<Mutex<Stream>>,
+    reader: u64,
+    attached: bool,
+}
+
+impl Future for Closed {
+    type Output = HostResult;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<HostResult> {
+        if !self.attached {
+            return Poll::Ready(Err(released()));
+        }
+        let mut s = lock(&self.stream);
+        if s.reader != Some(self.reader) && s.released_open.contains(&self.reader) {
+            return Poll::Ready(Err(released()));
+        }
+        match &s.flow {
+            Flow::Closed => Poll::Ready(Ok(HostValue::Undefined)),
+            Flow::Errored(e) => Poll::Ready(Err(e.clone())),
+            Flow::Readable => {
+                s.wakers.push(cx.waker().clone());
+                Poll::Pending
+            }
+        }
+    }
+}
+
 /// What a reading method answers with the whole body.
 fn consumed(kind: Consume, buf: Vec<u8>) -> HostResult {
     match kind {
@@ -425,8 +580,8 @@ struct Call {
     polled: bool,
 }
 
-fn lock(stream: &Mutex<Stream>) -> MutexGuard<'_, Stream> {
-    stream.lock().unwrap_or_else(|e| e.into_inner())
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 impl Future for Call {
@@ -452,11 +607,25 @@ impl Future for Call {
 
 /// The functions and accessors of a streaming response, made once when it crosses to the program.
 pub(crate) struct Surface {
-    /// `text`, `json`, `bytes`, `arrayBuffer`.
+    /// `text`, `json`, `bytes`, `arrayBuffer`, `blob`, `formData`, `clone`.
     pub methods: Vec<(&'static str, HostFunction)>,
     pub body_used: Getter,
-    /// `cancel`, `getReader`, and the `Symbol.asyncIterator` method, with the `locked` getter.
-    pub body: Option<(HostFunction, HostFunction, HostFunction, Getter)>,
+    pub body: Option<BodySurface>,
+}
+
+/// A reader `getReader` attached: its methods, and the host function its `closed` reads once.
+pub(crate) type Attached = (HostValue, HostFunction);
+
+/// The functions and accessors of a response's `body`.
+pub(crate) struct BodySurface {
+    pub locked: Getter,
+    pub cancel: HostFunction,
+    /// `getReader`'s work, where host code runs: the reader, or `None` when the stream is locked.
+    pub attach: Arc<dyn Fn() -> Option<Attached> + Send + Sync>,
+    /// `tee`, `pipeThrough`, `pipeTo`.
+    pub unsupported: [(&'static str, HostFunction); 3],
+    /// The `Symbol.asyncIterator` method.
+    pub iterate: HostFunction,
 }
 
 fn op_call(stream: &Arc<Mutex<Stream>>, epoch: &Epoch, op: Op) -> Call {
@@ -492,7 +661,7 @@ pub(crate) fn surface(response: &StreamingResponse, epoch: &Epoch) -> Surface {
         ("bytes", Consume::Bytes),
         ("arrayBuffer", Consume::ArrayBuffer),
     ];
-    let methods = kinds
+    let mut methods: Vec<(&'static str, HostFunction)> = kinds
         .into_iter()
         .map(|(key, kind)| {
             let stream = response.body.clone();
@@ -517,6 +686,25 @@ pub(crate) fn surface(response: &StreamingResponse, epoch: &Epoch) -> Surface {
             (key, f)
         })
         .collect();
+    for (key, name) in [
+        ("blob", "Response.blob()"),
+        ("formData", "Response.formData()"),
+    ] {
+        let f = HostFunction::internal_async("", 0, move |_| async move { Err(unsupported(name)) });
+        methods.push((key, f));
+    }
+    let clone = {
+        let (template, epoch) = (response.clone(), epoch.clone());
+        HostFunction::internal("", 0, move |_| {
+            let mut copy = template.clone();
+            if let Some(stream) = &template.body {
+                let half = observed(stream, &epoch).tee()?;
+                copy.body = Some(Arc::new(Mutex::new(half)));
+            }
+            Ok(HostValue::Response(copy))
+        })
+    };
+    methods.push(("clone", clone));
     let Some(stream) = response.body.clone() else {
         return Surface {
             methods,
@@ -538,20 +726,30 @@ pub(crate) fn surface(response: &StreamingResponse, epoch: &Epoch) -> Surface {
             op_call(&stream, &epoch, Op::CancelStream(first(args)))
         })
     };
-    let get_reader = {
+    let attach = {
         let (stream, epoch) = (stream.clone(), epoch.clone());
-        HostFunction::internal("", 1, move |args| {
-            if let Some(HostValue::Object(fields)) = args.first()
-                && fields
-                    .iter()
-                    .any(|(k, v)| k == "mode" && !matches!(v, HostValue::Undefined))
-            {
-                return Err(type_error("Only the default stream reader is supported."));
-            }
-            let reader = observed(&stream, &epoch).attach()?;
-            Ok(reader_object(&stream, &epoch, reader))
-        })
+        Arc::new(move || {
+            let reader = observed(&stream, &epoch).attach().ok()?;
+            let closed = {
+                let (stream, epoch) = (stream.clone(), epoch.clone());
+                HostFunction::internal_async("", 0, move |_| {
+                    let attached = observed(&stream, &epoch).reader == Some(reader);
+                    Closed {
+                        stream: stream.clone(),
+                        reader,
+                        attached,
+                    }
+                })
+            };
+            Some((reader_object(&stream, &epoch, reader), closed))
+        }) as Arc<dyn Fn() -> Option<Attached> + Send + Sync>
     };
+    let tee = HostFunction::internal("", 0, |_| Err(unsupported("ReadableStream.tee()")));
+    let pipe_through =
+        HostFunction::internal("", 0, |_| Err(unsupported("ReadableStream.pipeThrough()")));
+    let pipe_to = HostFunction::internal_async("", 0, |_| async {
+        Err(unsupported("ReadableStream.pipeTo()"))
+    });
     let iterate = {
         let (stream, epoch) = (stream.clone(), epoch.clone());
         HostFunction::internal("", 0, move |_| {
@@ -587,7 +785,17 @@ pub(crate) fn surface(response: &StreamingResponse, epoch: &Epoch) -> Surface {
     Surface {
         methods,
         body_used,
-        body: Some((cancel, get_reader, iterate, is_locked)),
+        body: Some(BodySurface {
+            locked: is_locked,
+            cancel,
+            attach,
+            unsupported: [
+                ("tee", tee),
+                ("pipeThrough", pipe_through),
+                ("pipeTo", pipe_to),
+            ],
+            iterate,
+        }),
     }
 }
 

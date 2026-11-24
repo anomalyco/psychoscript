@@ -205,27 +205,12 @@ fn typed_ctor(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
     if let Some(buf) = as_array_buffer(vm, &source) {
         return from_buffer(vm, elem, buf, &arg(args, 1), &arg(args, 2));
     }
-    if let Value::Obj(_) = source {
+    if vm.type_of(&source) == "object" && !matches!(source, Value::Null) {
         let what = format!("new {name}(...)");
         return collect(vm, &source, &what, None, false, Sink::New(elem), callee);
     }
-    let n = match source {
-        Value::Undef => 0.0,
-        v => super::builtin_number(vm, &v)?,
-    };
-    if n.fract() != 0.0 || !n.is_finite() || n < 0.0 {
-        let s = vm.string_of(&source)?;
-        let s = vm.text(s).to_owned();
-        return Err(vm.range_error(&format!("Invalid typed array length: {s}")));
-    }
-    if n > MAX_ARRAY_LEN as f64 {
-        return Err(vm.range_error("Invalid array length"));
-    }
-    Ok(super::bytes::new_typed(
-        vm,
-        vec![0; n as usize * elem.size()],
-        elem,
-    ))
+    let n = super::bytes::typed_length(vm, &source)?;
+    Ok(super::bytes::new_typed(vm, vec![0; n * elem.size()], elem))
 }
 
 fn typed_from(vm: &mut Vm, _this: Value, args: &[Value], callee: Id) -> Res {

@@ -188,7 +188,8 @@ pub struct Closure {
     pub this: Value,
     /// [[HomeObject]]: the object a method was defined on, which `super` reads from; undefined for others.
     pub home: Value,
-    /// A class constructor's instance field initializer, once its class has one.
+    /// A class constructor's instance field initializer, once its class has one; for a function of built-in code
+    /// (`Array.fromAsync`'s), the source offset of the program's call of it.
     pub fields: Value,
 }
 

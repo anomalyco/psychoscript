@@ -1095,6 +1095,7 @@ pub fn headers_inspect(vm: &Vm, id: Id) -> String {
 
 pub fn setup_globals(vm: &mut Vm) {
     let crypto = vm.new_object();
+    vm.realm.std.crypto = crypto;
     vm.methods(
         crypto,
         &[

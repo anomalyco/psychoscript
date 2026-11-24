@@ -1415,14 +1415,29 @@ struct Parser<'s> {
     text: &'s str,
     i: usize,
     depth: usize,
+    /// Whether to record each value's snapshot in `snapshot`, for a reviver.
+    snapshots: bool,
+    snapshot: Value,
 }
 
 pub fn parse(vm: &mut Vm, text: &str) -> Res {
+    parse_with(vm, text, false).map(|(v, _)| v)
+}
+
+/// `parse`, and the parsed value's snapshot for a reviver (the reference's `revivable`): `[object, its children's
+/// snapshots by key]` (a null-prototype object), or `[source text, primitive]`.
+pub fn parse_revivable(vm: &mut Vm, text: &str) -> Result<(Value, Value), Value> {
+    parse_with(vm, text, true)
+}
+
+fn parse_with(vm: &mut Vm, text: &str, snapshots: bool) -> Result<(Value, Value), Value> {
     let mut p = Parser {
         s: text.as_bytes(),
         text,
         i: 0,
         depth: 0,
+        snapshots,
+        snapshot: Value::Undef,
     };
     p.ws();
     let v = p.value(vm)?;
@@ -1430,7 +1445,7 @@ pub fn parse(vm: &mut Vm, text: &str) -> Res {
     if p.i < p.s.len() {
         return Err(p.error(vm));
     }
-    Ok(v)
+    Ok((v, p.snapshot))
 }
 
 impl<'s> Parser<'s> {
@@ -1447,6 +1462,35 @@ impl<'s> Parser<'s> {
     }
 
     fn value(&mut self, vm: &mut Vm) -> Res {
+        if !self.snapshots {
+            return self.token(vm);
+        }
+        let start = self.i;
+        let v = self.token(vm)?;
+        if !matches!(v, Value::Obj(_)) {
+            let source = vm.string_val(self.text[start..self.i].to_owned());
+            self.snapshot = vm.new_array(vec![source, v]);
+        }
+        Ok(v)
+    }
+
+    /// The children's snapshots of an object or array being parsed, when recording them.
+    fn children(&self, vm: &mut Vm) -> Option<Id> {
+        self.snapshots
+            .then(|| vm.alloc(Obj::new(None, Kind::Ordinary)))
+    }
+
+    /// Ends an object's or array's snapshot.
+    fn snapshot_of(&mut self, vm: &mut Vm, v: Value, children: Option<Id>) -> Value {
+        if let Some(c) = children {
+            self.snapshot = vm.new_array(vec![v, Value::Obj(c)]);
+        }
+        v
+    }
+
+    // Inlined into `value`, so a parse without snapshots recurses as one function.
+    #[inline(always)]
+    fn token(&mut self, vm: &mut Vm) -> Res {
         let Some(&c) = self.s.get(self.i) else {
             return Err(self.error(vm));
         };
@@ -1458,11 +1502,12 @@ impl<'s> Parser<'s> {
                 }
                 self.i += 1;
                 let id = vm.new_object();
+                let children = self.children(vm);
                 self.ws();
                 if self.s.get(self.i) == Some(&b'}') {
                     self.i += 1;
                     self.depth -= 1;
-                    return Ok(Value::Obj(id));
+                    return Ok(self.snapshot_of(vm, Value::Obj(id), children));
                 }
                 loop {
                     self.ws();
@@ -1479,13 +1524,16 @@ impl<'s> Parser<'s> {
                     let v = self.value(vm)?;
                     let a = vm.atoms.intern(&k);
                     vm.define(id, a, v);
+                    if let Some(c) = children {
+                        vm.define(c, a, self.snapshot);
+                    }
                     self.ws();
                     match self.s.get(self.i) {
                         Some(b',') => self.i += 1,
                         Some(b'}') => {
                             self.i += 1;
                             self.depth -= 1;
-                            return Ok(Value::Obj(id));
+                            return Ok(self.snapshot_of(vm, Value::Obj(id), children));
                         }
                         _ => return Err(self.error(vm)),
                     }
@@ -1498,22 +1546,29 @@ impl<'s> Parser<'s> {
                 }
                 self.i += 1;
                 let mut items = Vec::new();
+                let children = self.children(vm);
                 self.ws();
                 if self.s.get(self.i) == Some(&b']') {
                     self.i += 1;
                     self.depth -= 1;
-                    return Ok(vm.new_array(items));
+                    let a = vm.new_array(items);
+                    return Ok(self.snapshot_of(vm, a, children));
                 }
                 loop {
                     self.ws();
                     items.push(self.value(vm)?);
+                    if let Some(c) = children {
+                        let a = vm.atoms.intern(&(items.len() - 1).to_string());
+                        vm.define(c, a, self.snapshot);
+                    }
                     self.ws();
                     match self.s.get(self.i) {
                         Some(b',') => self.i += 1,
                         Some(b']') => {
                             self.i += 1;
                             self.depth -= 1;
-                            return Ok(vm.new_array(items));
+                            let a = vm.new_array(items);
+                            return Ok(self.snapshot_of(vm, a, children));
                         }
                         _ => return Err(self.error(vm)),
                     }

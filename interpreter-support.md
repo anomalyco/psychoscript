@@ -448,7 +448,8 @@ reject }` object. The resolvers are anonymous (`name` is `""`) with `length` 1, 
 - [x] Aggregation: `reduce` and `reduceRight`.
 - [x] Ordering: `sort`, `toSorted`, `reverse`, and `toReversed`.
 - [x] Access/copying: `at`, `slice`, `concat`, `flat`, `with`, `join`, and `toLocaleString` (each element's
-      `toLocaleString` with the same locales and options, holes and nullish elements as empty strings).
+      `toLocaleString`, holes and nullish elements as empty strings; as there is no `Intl`, only primitives, arrays and
+      dates get the same locales and options, other elements' none).
 - [x] Mutation: `push`, `pop`, `shift`, `unshift`, `splice`, `fill`, and `copyWithin`.
 - [x] `keys`, `values`, `entries`, and `[Symbol.iterator]` (the same function as `values`) return live iterator objects
       with `next()` and `[Symbol.iterator]`, as in JS. Iterator objects are opaque references: they print as
@@ -589,7 +590,7 @@ reject }` object. The resolvers are anonymous (`name` is `""`) with `length` 1, 
 ## Regular expressions
 
 - [x] Literal and `RegExp(pattern, flags)` construction, with or without `new`. `RegExp(re)` without `new` or flags
-      returns `re` itself.
+      returns `re` itself when its `constructor` is `RegExp`.
 - [x] `test`, `exec`, and `toString`.
 - [x] Readable `source`, `flags`, `lastIndex`, `hasIndices`, `global`, `ignoreCase`, `multiline`, `sticky`, `unicode`,
       `unicodeSets`, and `dotAll`.

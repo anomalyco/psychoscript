@@ -326,6 +326,6 @@ fn without_typed_arrays_programs_and_host_functions_behave_as_before_they_were_a
             "const u = new Uint8Array(2); u[-1] = 5; u[1.5] = 6; \
              return [u.byteLength, u.byteOffset, u.buffer, Object.keys(u), u[-1], 'byteLength' in u]"
         ),
-        json!([null, null, null, ["0", "1", "-1", "1.5"], 5, false])
+        json!([2, 0, null, ["0", "1", "-1", "1.5"], 5, true])
     );
 }

@@ -400,6 +400,28 @@ const programs: Array<string> = [
   `const r = await fetch(${JSON.stringify(text)}); const copy = { ...r }; return [Object.keys(copy), copy.bodyUsed]`,
   `const r = await fetch(${JSON.stringify(text)}); const reader = r.body.getReader(); reader.releaseLock(); reader.releaseLock(); return [await reader.cancel().catch((e) => e.message), r.body.locked]`,
   `const r = await fetch(${JSON.stringify(text)}); const it = r.body[Symbol.asyncIterator](); const a = await it.next(); const b = await it.return(); return [[...a.value], a.done, b, r.body.locked]`,
+  // clone() splits an untouched body; blob(), formData() and the body's tee, pipeThrough and pipeTo refuse.
+  `const r = await fetch(${JSON.stringify(text)}); const c = r.clone()
+   const parts = [c.type, c.status, c.statusText, c.headers.get("x-a"), c.bodyUsed, Object.keys(c).length]
+   const both = [await c.text(), await r.text(), c.bodyUsed, r.bodyUsed]
+   return [parts, both, r.clone.length, ...[() => r.clone(), () => c.clone()].map((f) => { try { f() } catch (e) { return [e.name, e.message] } })]`,
+  `const r = await fetch(${JSON.stringify(text)}); r.body.getReader(); try { r.clone() } catch (e) { return [e.name, e.message] }`,
+  `const r = await fetch({ status: 204 }); const c = r.clone(); return [c.body, c.status, await c.text()]`,
+  `const r = await fetch(${JSON.stringify(text)}); const out = []
+   for (const f of [() => r.blob(), () => r.formData(), () => r.body.pipeTo(), () => r.body.tee(), () => r.body.pipeThrough()])
+     try { await f() } catch (e) { out.push([e.name, e.message]) }
+   return [out, r.bodyUsed, r.body.locked]`,
+  // A reader's closed: one promise, settled when the stream closes or fails, or refused once the reader lets go.
+  `const r = await fetch(${JSON.stringify(text)}); const reader = r.body.getReader(); const same = reader.closed === reader.closed
+   const reads = [await reader.read(), await reader.read(), await reader.read()].map((x) => x.done)
+   return [same, reads, await reader.closed, Object.keys(reader), "closed" in reader]`,
+  `const r = await fetch(${JSON.stringify(text)}); const reader = r.body.getReader(); const closed = reader.closed.then(() => "closed", (e) => [e.name, e.message])
+   await reader.read(); reader.releaseLock(); return await closed`,
+  `const r = await fetch(${JSON.stringify(text)}); const reader = r.body.getReader(); await reader.cancel(); return await reader.closed`,
+  `const r = await fetch({ chunks: ["a"], fail: 1 }); const reader = r.body.getReader(); const closed = reader.closed.catch((e) => e.message)
+   await reader.read(); await reader.read().catch(() => 0); return await closed`,
+  `const r = await fetch(${JSON.stringify(text)}); const reader = r.body.getReader(); for (let i = 0; i < 3; i++) await reader.read()
+   reader.releaseLock(); return await reader.closed.catch((e) => e.message)`,
 ]
 
 const record = async (code: string) => {

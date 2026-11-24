@@ -39,6 +39,17 @@ const MAX_NESTING: u32 = 2_000;
 const MAX_SOURCE_BYTES: usize = 256 * 1024;
 
 pub fn compile(source: &str, atoms: &mut Strings) -> R<Program> {
+    compile_as(source, atoms, false)
+}
+
+/// Compiles a built-in the reference writes in its bytecode prelude, from the reference's source: its `$Call(f,
+/// thisArg, ...args)` is a call of `f` with that receiver and `$ArraySet(array, index, value)` an element write, as
+/// the reference lowers them; any other `$` helper is a global the caller binds.
+pub(crate) fn compile_internal(source: &str, atoms: &mut Strings) -> R<Program> {
+    compile_as(source, atoms, true)
+}
+
+fn compile_as(source: &str, atoms: &mut Strings, internal: bool) -> R<Program> {
     if source.len() > MAX_SOURCE_BYTES {
         return Err(CompileError {
             kind: DiagnosticKind::ParseError,
@@ -148,6 +159,7 @@ pub fn compile(source: &str, atoms: &mut Strings) -> R<Program> {
     let scoping = semantic.semantic.scoping();
     let mut c = Compiler::new(scoping, semantic.semantic.nodes(), atoms);
     c.await_alias = await_alias;
+    c.internal = internal;
     c.find_unbound(program);
     c.find_field_values(program);
     c.compute_captured();
@@ -1211,6 +1223,8 @@ struct Compiler<'a, 's> {
     pseudo: usize,
     /// Whether the function compiled last uses its home object (`super`).
     last_home: bool,
+    /// Compiling a prelude built-in (see `compile_internal`).
+    internal: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1253,6 +1267,7 @@ impl<'a, 's> Compiler<'a, 's> {
             field_keys: FxHashMap::default(),
             pseudo: 0,
             last_home: false,
+            internal: false,
         }
     }
 
@@ -3860,6 +3875,37 @@ impl<'a, 's> Compiler<'a, 's> {
     }
 
     fn call(&mut self, c: &'a CallExpression<'a>) -> R<()> {
+        if self.internal
+            && let Expression::Identifier(id) = &c.callee
+            && !c.optional
+            && c.arguments.iter().all(|a| a.as_expression().is_some())
+        {
+            let args: Vec<&Expression> = c
+                .arguments
+                .iter()
+                .filter_map(|a| a.as_expression())
+                .collect();
+            match (id.name.as_str(), args.as_slice()) {
+                ("$Call", [f, this, rest @ ..]) => {
+                    self.expr(f)?;
+                    self.expr(this)?;
+                    for a in rest {
+                        self.expr(a)?;
+                    }
+                    self.emit(Op::Call(rest.len() as u32));
+                    return Ok(());
+                }
+                ("$ArraySet", [array, index, value]) => {
+                    self.expr(array)?;
+                    self.expr(index)?;
+                    self.emit(Op::WriteKey);
+                    self.expr(value)?;
+                    self.emit(Op::SetElem);
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
         match &c.callee {
             callee if Self::super_member(callee.as_member_expression()).is_some() => {
                 if let Some(m) = callee.as_member_expression() {

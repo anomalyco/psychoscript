@@ -1390,7 +1390,6 @@ built-ins/Array/prototype/splice/length-and-deleteCount-exceeding-integer-limit.
 built-ins/Array/prototype/splice/length-exceeding-integer-limit-shrink-array.js  # TypeError: Array.prototype.splice called on incompatible receiver a data object.
 built-ins/Array/prototype/splice/length-near-integer-limit-grow-array.js  # TypeError: Array.prototype.splice called on incompatible receiver a data object.
 built-ins/Array/prototype/splice/set_length_no_args.js  # TypeError: Array.prototype.splice called on incompatible receiver a data object.
-built-ins/Array/prototype/toLocaleString/invoke-element-tolocalestring.js  # Actual [undefined, undefined] and expected [] should have the same contents. must invoke element toL
 built-ins/Array/prototype/toLocaleString/primitive_this_value_getter.js  # Expected SameValue(«"object,object"», «"boolean,boolean"») to be true
 built-ins/Array/prototype/toReversed/frozen-this-value.js  # TypeError: Array.prototype.toReversed called on incompatible receiver a data object.
 built-ins/Array/prototype/toReversed/get-descending-order.js  # TypeError: Array.prototype.toReversed called on incompatible receiver a data object.
@@ -2187,7 +2186,6 @@ built-ins/RegExp/S15.10.4.1_A8_T4.js  # SyntaxError: RegExp flags must be a stri
 built-ins/RegExp/S15.10.4.1_A8_T6.js  # The value of e is expected to be "intostr" Expected SameValue(«Test262Error: #1.1: new RegExp({toStr
 built-ins/RegExp/S15.10.4.1_A8_T7.js  # The value of e is expected to be "invalof" Expected SameValue(«Test262Error: #1.1: new RegExp({toStr
 built-ins/RegExp/S15.10.4.1_A8_T8.js  # The value of e is expected to be "intostr" Expected SameValue(«SyntaxError: new RegExp(...) received
-built-ins/RegExp/call_with_regexp_not_same_constructor.js  # RegExp returns new object Expected SameValue(«object», «object») to be false
 built-ins/RegExp/named-groups/groups-object-subclass-sans.js  # TypeError: Extending the built-in RegExp is not supported. Only classes and Error types can be exten
 built-ins/RegExp/named-groups/groups-object-subclass.js  # TypeError: Extending the built-in RegExp is not supported. Only classes and Error types can be exten
 built-ins/RegExp/named-groups/unicode-match.js  # Actual object and expected object should have the same contents. 
