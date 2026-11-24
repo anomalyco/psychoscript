@@ -1734,7 +1734,10 @@ export class Vm {
       return this.execConstruct(frame, parent, args, callSiteOf(frame, pc), regs[bx] as Fn)
     }
     if (!(parent instanceof Fn) || parent.klass === undefined) {
-      throw typeError(`Super constructor ${describeValue(parent)} of anonymous class is not a constructor`, frame.code.siteAt(pc))
+      throw typeError(
+        `Super constructor ${describeValue(parent)} of anonymous class is not a constructor`,
+        frame.code.siteAt(pc),
+      )
     }
     return this.constructClass(frame, parent, args, callSiteOf(frame, pc), regs[bx] as Fn)
   }
@@ -2086,7 +2089,7 @@ export class Vm {
     }
     frame.pc = pc
     const base = sp - n
-    const callee = regs[base - 1] as Builtin | Fn
+    const callee = this.constructible(frame, regs[base - 1] as Value, pc, sp)
     const args = regs.slice(base, sp) as Array<Value>
     frame.sp = base - 1
     if (callee instanceof Fn) return this.constructClass(frame, callee, args, callSiteOf(frame, pc))
@@ -2095,12 +2098,20 @@ export class Vm {
 
   private execNewSpread(frame: Frame, pc: number, sp: number): number {
     const regs = frame.regs
-    const argsArr = regs[--sp] as Arr
-    const callee = regs[--sp] as Builtin | Fn
     frame.pc = pc
-    frame.sp = sp
+    const callee = this.constructible(frame, regs[sp - 2] as Value, pc, sp)
+    const argsArr = regs[--sp] as Arr
+    frame.sp = --sp
     if (callee instanceof Fn) return this.constructClass(frame, callee, [...argsArr.items], callSiteOf(frame, pc))
     return this.execConstruct(frame, callee, [...argsArr.items], callSiteOf(frame, pc))
+  }
+
+  // IsConstructor, checked once the arguments are evaluated: a class, or a built-in that constructs.
+  private constructible(frame: Frame, callee: Value, pc: number, sp: number): Builtin | Fn {
+    if (callee instanceof Fn && callee.klass !== undefined) return callee
+    if (callee instanceof Builtin && callee.construct !== undefined) return callee
+    frame.sp = sp
+    throw notConstructible(callee, frame.code.siteAt(pc) as NewExpression)
   }
 
   // `new C(...)`, or `super(...)` for `newTarget`, runs C's constructor (`Mode.CONSTRUCT`): a base class's on a new
@@ -2116,7 +2127,14 @@ export class Vm {
     const proto = get(newTarget, "prototype")
     const self = ctor.klass!.derived ? newTarget : new Obj(proto instanceof Obj ? proto : this.ctx.builtins.Object)
     // A derived constructor's frame holds its new target until `super()` binds `this`.
-    this.pushFn(ctor, self, args, site ?? callerFrame.origin, Mode.CONSTRUCT, ctor.klass!.derived ? newTarget : undefined)
+    this.pushFn(
+      ctor,
+      self,
+      args,
+      site ?? callerFrame.origin,
+      Mode.CONSTRUCT,
+      ctor.klass!.derived ? newTarget : undefined,
+    )
     this.fuel--
     return 1
   }
@@ -2386,11 +2404,13 @@ export class Vm {
       }
       childCells = arr
     }
-    const fn = new Fn(this.ctx.builtins.Function, childCode, childCells)
-    if ((childCode.flags & CodeFlags.GENERATOR) !== 0) {
-      const isAsync = (childCode.flags & CodeFlags.ASYNC) !== 0
-      define(fn, "prototype", new Obj(isAsync ? this.ctx.builtins.AsyncGenerator : this.ctx.builtins.Generator), hidden)
+    const builtins = this.ctx.builtins
+    const isAsync = (childCode.flags & CodeFlags.ASYNC) !== 0
+    if ((childCode.flags & CodeFlags.GENERATOR) === 0) {
+      return new Fn(isAsync ? builtins.AsyncFunction : builtins.Function, childCode, childCells)
     }
+    const fn = new Fn(isAsync ? builtins.AsyncGeneratorFunction : builtins.GeneratorFunction, childCode, childCells)
+    define(fn, "prototype", new Obj(isAsync ? builtins.AsyncGenerator : builtins.Generator), hidden)
     return fn
   }
 
@@ -2585,7 +2605,11 @@ export class Vm {
   }
 
   private execCheckBase(fcode: Code, kind: number, bx: number, regs: Array<unknown>, sp: number, pc: number): void {
-    const base = regs[kind === CheckBaseKind.READ || kind === CheckBaseKind.WRITE_ELEM ? sp - 2 : sp - 1] as Value
+    const base = regs[
+      kind === CheckBaseKind.READ || kind === CheckBaseKind.WRITE_ELEM || kind === CheckBaseKind.ASSIGN_PROP
+        ? sp - 2
+        : sp - 1
+    ] as Value
     if (base instanceof Obj && !(base instanceof PromiseObj)) return
     const site = fcode.siteAt(pc)!
     if (kind === CheckBaseKind.DESTRUCTURE) {
@@ -2599,7 +2623,7 @@ export class Vm {
       requireMemberBase(memberNode, base, regs[sp - 1] as Value)
       return
     }
-    const key = kind === CheckBaseKind.WRITE_PROP ? (fcode.consts[bx] as string) : propertyKey(regs[sp - 1] as Value)
+    const key = kind === CheckBaseKind.WRITE_ELEM ? propertyKey(regs[sp - 1] as Value) : (fcode.consts[bx] as string)
     const ref = this.resolveMember(base, key, site)
     // A primitive's inherited accessor takes the write (see `primitiveSetter`); the base is all that's checked here.
     if (!(ref instanceof HostNamespace) && !("value" in ref) && ref.receiver !== ref.target) {
