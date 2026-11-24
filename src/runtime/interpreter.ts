@@ -8,6 +8,7 @@ import { isRuntimeModule, moduleName, resolveModule } from "./modules.js"
 import { define, type HostNamespace, keys, peek, makingIntrinsics, nativeRule, Obj, Protector, type Value } from "./objects.js"
 import type { HostResult } from "../host.js"
 import { Prelude } from "../prelude/prelude.js"
+import type { ConsoleState } from "../stdlib/console.js"
 import type { NodeId, Source } from "./source.js"
 
 /** What a host namespace does, by the global it is under; see `HostNamespace`. */
@@ -43,6 +44,8 @@ export class Interpreter<R> {
   readonly protector = new Protector()
   /** Whether programs have typed arrays besides `Uint8Array`; see `Runtime.Options`. */
   readonly typedArrays: boolean
+  /** What `console.count`, `group` and `time` remember between calls. Saved with the run. */
+  readonly consoleState: ConsoleState = { counts: new Map(), timers: new Map(), depth: 0 }
 
   constructor(options: {
     readonly builtins: Builtins

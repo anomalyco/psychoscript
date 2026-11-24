@@ -1,5 +1,5 @@
 import { constructor, methods, receiver } from "../runtime/native.js"
-import { type AstNode, AsyncIteratorSymbol, invalidData, IteratorSymbol, typeError } from "../runtime/model.js"
+import { type AstNode, invalidData, ToStringTagSymbol, typeError, wellKnownSymbols } from "../runtime/model.js"
 import {
   changed,
   entries,
@@ -155,7 +155,7 @@ const functionTag = (value: Obj): string | undefined => {
 }
 
 const propertyKey = (value: Value): PropertyKey =>
-  value === AsyncIteratorSymbol || value === IteratorSymbol ? value : coerceToString(value)
+  typeof value === "symbol" && wellKnownSymbols.has(value) ? value : coerceToString(value)
 
 // SetIntegrityLevel: primitives pass through. A typed array's bytes cannot carry attributes, so JS throws after
 // already making it non-extensible.
@@ -468,7 +468,16 @@ export const objectGlobal = <R>(ctx: Interpreter<R>) => {
           return slot?.enumerable === true
         }),
     ],
-    ["toString", 0, (thisValue) => `[object ${classTag(ctx, thisValue)}]`],
+    [
+      "toString",
+      0,
+      (thisValue) =>
+        withReads(() => {
+          const target = thisValue instanceof Obj ? thisValue : primitivePrototype(ctx.builtins, thisValue)
+          const tag = target === undefined ? undefined : get(target, ToStringTagSymbol, thisValue)
+          return `[object ${typeof tag === "string" ? tag : classTag(ctx, thisValue)}]`
+        }),
+    ],
     [
       "toLocaleString",
       0,
