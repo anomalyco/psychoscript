@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `Host.error(name, message)`: a host call
+  that fails with it, sync or async, thrown, rejected or as an Effect's failure, throws a real error of that standard
+  class in the program, located at the call: its `stack` names the call, and uncaught the run fails with
+  `TypeError: message (line L, col C)`. Other names make an `Error`. Returned as a value, it is an error like any
+  other.
 - Installs from git (`github:anomalyco/psychoscript#<commit>`): a `prepare` script installs the dev dependencies and
   builds `dist/`, since package managers don't install a git dependency's dev dependencies. Bun runs it only for a
   trusted dependency (`trustedDependencies`).

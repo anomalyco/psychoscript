@@ -784,6 +784,8 @@ Host functions a host opts in through `Host.fn`, `Host.durableFn`, and `Host.nam
 - [x] Source locations on unsupported-syntax diagnostics. The diagnostic names the rejected node type and attaches a
       short orientation to the supported subset; this matrix is the full reference.
 - [x] Host failure messages and underlying causes reach the diagnostic.
+- [x] `Host.error(name, message)`: a host call that fails with it throws a real error of that standard class, located
+      at the call (its `stack`, and the uncaught diagnostic's line and column), from sync and async calls alike.
 - [x] Caught errors do not distinguish user throws, interpreter failures, and host failures; a program sees one
       Error-shaped value in `catch`, rejection handlers, and `Promise.allSettled` reasons. It always has `name` and
       `message`, plus `cause` and own data when the failure carried them. This is deliberate: the program should
