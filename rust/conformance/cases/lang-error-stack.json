@@ -1,0 +1,71 @@
+{
+  "bindings": {},
+  "ok": true,
+  "value": [
+    [
+      "Error: boom",
+      "    at inner (<program>:4:27)",
+      "    at outer (<program>:5:21)",
+      "    at <program>:22:3"
+    ],
+    "MyErr: x\n    at MyErr (<program>:6:46)\n    at <program>:22:30",
+    "Late: z\n    at <program>:7:14",
+    "Late: z\n    at <program>:7:14",
+    "q\n    at <program>:10:17",
+    "N\n    at <program>:11:15",
+    "Error: g",
+    "custom",
+    1,
+    false,
+    [
+      "Error: deep",
+      "    at deep (<program>:15:37)",
+      "    at deep (<program>:15:57)",
+      "    at deep (<program>:15:57)",
+      "    at deep (<program>:15:57)",
+      "    at deep (<program>:15:57)",
+      "    at deep (<program>:15:57)",
+      "    at deep (<program>:15:57)",
+      "    at deep (<program>:15:57)",
+      "    at deep (<program>:15:57)",
+      "    at deep (<program>:15:57)"
+    ],
+    "TypeError: in a method\n    at method (<program>:16:31)\n    at <program>:24:31",
+    "RangeError: in a getter\n    at get prop (<program>:16:83)\n    at <program>:24:49",
+    "Error: callback\n    at <anonymous> (<program>:17:28)\n    at <program>:17:14",
+    "{\"name\":\"Error\",\"message\":\"x\",\"code\":1}",
+    [
+      "code"
+    ],
+    {
+      "value": "Error: x\n    at <program>:18:11",
+      "writable": true,
+      "enumerable": false,
+      "configurable": true
+    },
+    [
+      "message",
+      "stack",
+      "cause"
+    ],
+    "TypeError: Cannot read properties of null (reading 'x').\n    at <program>:26:17",
+    "TypeError: Cannot read properties of undefined (reading 'y').\n    at <program>:26:57",
+    "TypeError: Cannot read properties of null (reading 'z').\n    at <program>:26:107",
+    "SyntaxError: JSON.parse received invalid JSON: JSON Parse error: Expected '}'\n    at <program>:27:17",
+    "SyntaxError: s\n    at <anonymous> (<program>:27:57)\n    at attempt (<program>:3:39)\n    at <program>:27:35",
+    "RangeError\n    at <program>:27:82",
+    "AggregateError: agg\n    at <program>:28:3",
+    "Error: called\n    at <program>:28:41",
+    "TypeError: t\n    at <program>:28:64",
+    "Error: before\n    at <program>:19:16",
+    [
+      "stack"
+    ],
+    "Error: str",
+    false,
+    "TypeError: x is not a function.\n    at <program>:30:32",
+    "Error: ctor\n    at <anonymous> (<program>:30:89)\n    at <anonymous> (<program>:30:54)\n    at attempt (<program>:3:39)\n    at <program>:30:40"
+  ],
+  "logs": [],
+  "metadata": null
+}

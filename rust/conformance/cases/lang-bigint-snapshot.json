@@ -1,0 +1,19 @@
+{
+  "bindings": {},
+  "ok": true,
+  "value": [
+    "265252859812191058636308480000000",
+    "2432902008176640000",
+    "bigint",
+    5,
+    "30",
+    true,
+    "375",
+    true,
+    1507,
+    "TypeError: Argument 1 to tools.echo contains a bigint, which cannot be passed to the host.",
+    "TypeError: Argument 1 to tools.echo contains a bigint, which cannot be passed to the host."
+  ],
+  "logs": [],
+  "metadata": null
+}

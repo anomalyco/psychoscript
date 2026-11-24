@@ -1,0 +1,33 @@
+{
+  "bindings": {},
+  "ok": true,
+  "value": [
+    [
+      "TypeError: Do not know how to serialize a BigInt; convert it first, e.g. `String(n)`.",
+      "TypeError: Do not know how to serialize a BigInt; convert it first, e.g. `String(n)`.",
+      "TypeError: Do not know how to serialize a BigInt; convert it first, e.g. `String(n)`.",
+      "TypeError: Do not know how to serialize a BigInt; convert it first, e.g. `String(n)`.",
+      "{\"a\":\"1\"}",
+      "TypeError: Do not know how to serialize a BigInt; convert it first, e.g. `String(n)`.",
+      "TypeError: Do not know how to serialize a BigInt; convert it first, e.g. `String(n)`.",
+      "{}",
+      "TypeError: Do not know how to serialize a BigInt; convert it first, e.g. `String(n)`."
+    ],
+    [
+      "\"1:\"",
+      "{\"a\":\"1:a\",\"b\":[\"2:0\"]}",
+      "{\n \"a\": \"1:a\"\n}",
+      "[\"1:0!\"]",
+      "TypeError: Do not know how to serialize a BigInt; convert it first, e.g. `String(n)`."
+    ],
+    [
+      "\"object\"",
+      "\"bigint\""
+    ],
+    "TypeError: Do not know how to serialize a BigInt; convert it first, e.g. `String(n)`.",
+    "SyntaxError: JSON.parse received invalid JSON: JSON Parse error: Unable to parse JSON string",
+    12345678901234567000
+  ],
+  "logs": [],
+  "metadata": null
+}

@@ -1,0 +1,115 @@
+{
+  "bindings": {},
+  "ok": true,
+  "value": [
+    [
+      1,
+      2
+    ],
+    [
+      1,
+      2
+    ],
+    [
+      1,
+      2
+    ],
+    [
+      1,
+      2
+    ],
+    [
+      1,
+      2
+    ],
+    [
+      1,
+      2
+    ],
+    [
+      2,
+      4
+    ],
+    [
+      1,
+      2
+    ],
+    [],
+    "TypeError: Iterator.from is not a function.",
+    "TypeError: Iterator method must be a function.",
+    {
+      "a": 1,
+      "b": 2
+    },
+    [
+      [
+        "a",
+        1
+      ]
+    ],
+    {
+      "k": "v"
+    },
+    1,
+    "Error: entry",
+    1,
+    "Error: entry",
+    2,
+    {
+      "value": 9,
+      "done": true
+    },
+    "TypeError: The delegated iterator does not provide a throw() method.",
+    [
+      [
+        "a",
+        1
+      ],
+      [
+        "b",
+        2
+      ]
+    ],
+    {
+      "c": 3
+    },
+    [
+      "iter",
+      "iter",
+      "iter",
+      "iter",
+      "iter",
+      "done",
+      "value",
+      "done",
+      "value",
+      "done",
+      "done",
+      "value",
+      "done",
+      "value",
+      "done",
+      "done",
+      "value",
+      "done",
+      "value",
+      "done",
+      "done",
+      "value",
+      "done",
+      "value",
+      "done",
+      "0",
+      "key",
+      "1",
+      "0",
+      "1",
+      "return",
+      "return",
+      "b",
+      "c"
+    ]
+  ],
+  "logs": [],
+  "metadata": null
+}

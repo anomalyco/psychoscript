@@ -2,11 +2,20 @@
 
 ## Unreleased
 
-- Typed arrays are opt-in: `Runtime.make({ typedArrays: true })`. Without it, the
+- Rust: `Limits::clock` (`Clock::Wall`, the default, or `Clock::ThreadCpu`): with `ThreadCpu`, `timeout_ms` counts the
+  CPU time of the threads running the program, so a loaded machine doesn't time out a well-behaved program. Host work
+  isn't counted: synchronous host calls are left out by their wall-clock duration, which can only count too little
+  (the CPU time with them may reach ten times the timeout), and waits on host calls count on the wall clock, up to ten
+  times the timeout. A saved run keeps its clock. The new
+  `crates/thread-clock` (`ThreadClock::current`, `now`) reads a thread's CPU time on Linux, Android, Apple platforms
+  and Windows, and the wall clock elsewhere. `Limits::slice_ms` bounds how long a run computes without awaiting the
+  host, on the same clock and without its host calls; a run past it stops with `SliceExceeded`. Under `ThreadCpu` it
+  may run up to a sixteenth of the slice past it. The reference is unchanged.
+- Typed arrays are opt-in: `Runtime.make({ typedArrays: true })` (Rust: `Runtime::typed_arrays(true)`). Without it, the
   default, programs and host functions behave as before they were added (0.2.1): no `ArrayBuffer`, `Uint16Array`,
   `Uint32Array`, `Int32Array`, `Float32Array` or `Float64Array`, a host function returning one fails at the call, and
   `Uint8Array` has no `buffer`; `globalNames` leaves them out.
-- `Host.error(name, message)`: a host call
+- `Host.error(name, message)` (Rust: `HostError::located(name, message)`, a new `HostValue::Located`): a host call
   that fails with it, sync or async, thrown, rejected or as an Effect's failure, throws a real error of that standard
   class in the program, located at the call: its `stack` names the call, and uncaught the run fails with
   `TypeError: message (line L, col C)`. Other names make an `Error`. Returned as a value, it is an error like any
@@ -22,9 +31,11 @@
   process memory, so garbage never counts and the result is the same everywhere. A run over it stops with the new
   diagnostic kind `MemoryLimitExceeded`; a suspended run keeps its limit.
 - `limits.maxValueDepth`: how deep a value may nest where it crosses to or from the host (result, arguments, return
-  values) and in `JSON.stringify`; 32 by default as before, at most 256. A suspended run keeps its depth.
+  values) and in `JSON.stringify`; 32 by default as before, at most 256. In the Rust implementation these copies take
+  a fraction of the stack they did (a debug build's argument copy a fifth), and a saved call's argument no longer has
+  a depth past which the state can't be read back; snapshots from earlier builds don't resume.
 - `translate: { functions: "mark" }`: a program function inside a host call's argument, or in the run's result,
-  crosses as `Host.functionMarker` instead of failing
+  crosses as `Host.functionMarker` (Rust: `HostValue::FunctionMarker`, `Data::FunctionMarker`) instead of failing
   the call or being left out.
 - `Uint8Array.prototype.byteLength` and `byteOffset`. They were `undefined`, so code that sized bytes with
   `byteLength` (such as a `fetch` response's `arrayBuffer()`) got no size.
@@ -53,7 +64,8 @@
   receivers, own-property checks apply ToPropertyKey to object keys, `Object.prototype.toString` reports Math, JSON,
   crypto, TextEncoder/TextDecoder, symbols and async/generator functions, and `Object.getOwnPropertySymbols` exists.
 - A `StreamingResponse` now has `type`, `clone()` and `reader.closed`; `blob()`, `formData()` and the body's `tee`,
-  `pipeTo` and `pipeThrough` throw a TypeError instead of being undefined.
+  `pipeTo` and `pipeThrough` throw a TypeError instead of being undefined. Rust: `StreamingResponse::with_type` sets
+  `type` (`"default"` unless set).
 - Console: nested `undefined` prints as `undefined` (not `null`), `console.table` shows a table holding a function
   instead of `[opaque reference]`, and `console.assert`/`count`/`countReset`/`group`/`groupCollapsed`/`groupEnd`/
   `trace`/`time`/`timeLog`/`timeEnd` exist.

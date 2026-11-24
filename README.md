@@ -156,8 +156,8 @@ except typed arrays (below).
   program's buffer again. A `Uint8Array` still crosses as a copy.
 - **`translate`** (runtime option): what happens to a program function or promise inside an argument. By default both
   fail the call; `{ functions: "drop", promises: "await" }` drops functions (as `JSON.stringify` does) and awaits
-  promises. `functions: "mark"` puts `Host.functionMarker` (a symbol)
-  where each function was, in arguments and in the run's result (typed `Data`: JSON
+  promises. `functions: "mark"` puts `Host.functionMarker` (a symbol; `HostValue::FunctionMarker` and
+  `Data::FunctionMarker` in Rust) where each function was, in arguments and in the run's result (typed `Data`: JSON
   plus the marker), so a host can tell which props held one (`onPress`, say) without calling it.
 
 ```ts
@@ -265,7 +265,7 @@ defects become an `ExecutionFailure`.
 | `maxValueDepth`  | 32      | How deep a value may nest where it crosses to or from the host, and in `JSON.stringify`; 1 to 256. |
 
 `maxHeapBytes` measures what the program can still reach, not the process: garbage never counts, and the sizes are
-the same on every platform (64 bytes per object, 32 per property, 16 per array
+the same on every platform and in the Rust implementation (64 bytes per object, 32 per property, 16 per array
 element, 16 plus 2 per UTF-16 code unit per distinct string, 1 per byte of typed array storage; see
 `interpreter-support.md`). The heap is measured as the body returns (its own bindings included), when the run ends
 and, paced by allocation, while it runs; the run stops there, and no handler sees it. A brief peak between two
@@ -273,7 +273,8 @@ measurements may pass unseen. A saved run keeps its limit when resumed.
 
 `maxValueDepth` applies to the result, a host call's arguments and what it returns: a value nested deeper fails with a
 `TypeError` (a `RangeError` for the result and `JSON.stringify`). The walk a result takes when it holds a promise or a
-`toJSON` allows at least 100. A saved run keeps its depth when resumed.
+`toJSON` allows at least 100. Its bound, 256, keeps these copies, which recurse once a level, within the native stack
+a run has in the Rust implementation, in debug builds too. A saved run keeps its depth when resumed.
 
 Fixed caps: a string at most 2^24 characters, an array at most 10,000,000 elements, and at most 10,000 pending
 promises. Exceeding one throws a `RangeError` in the program. There is no step-count limit: bound runs with `timeoutMs`.
@@ -335,6 +336,10 @@ bun run bench
 bun run build            # dist/
 bun run script/sync-test262.ts ~/development/test262 && bun test test/test262.test.ts
 ```
+
+A Rust implementation of the same language lives in [`rust/`](rust/README.md), held to exact parity with recordings
+from this package: `cd rust && cargo test --workspace`, and after a change here, regenerate them with
+`bun conformance/generate.ts && bun conformance/host.ts && bun conformance/boundary.ts && bun conformance/streaming.ts`.
 
 ## License
 

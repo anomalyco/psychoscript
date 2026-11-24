@@ -1,0 +1,11 @@
+{
+  "bindings": {},
+  "limits": {
+    "max_heap_bytes": 4128
+  },
+  "typed_arrays": true,
+  "ok": true,
+  "value": 1000,
+  "logs": [],
+  "metadata": null
+}

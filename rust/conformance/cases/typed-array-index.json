@@ -1,0 +1,31 @@
+{
+  "bindings": {},
+  "typed_arrays": true,
+  "ok": true,
+  "value": [
+    [
+      1.5,
+      2.25,
+      1,
+      null,
+      null,
+      null,
+      1.5,
+      1,
+      null,
+      7,
+      0,
+      null
+    ],
+    204.75,
+    2,
+    [
+      "0",
+      "1",
+      "2"
+    ],
+    3
+  ],
+  "logs": [],
+  "metadata": null
+}

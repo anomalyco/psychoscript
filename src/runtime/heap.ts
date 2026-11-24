@@ -1,5 +1,5 @@
 // `limits.maxHeapBytes`: how much a run's heap may hold. The heap is measured, not the process: everything the run
-// can still reach (see `measureVm`), in a fixed size model, so a measurement is the same on
+// can still reach (see `measureVm`), in a size model both implementations share, so a measurement is the same on
 // every platform and garbage never counts.
 //
 // - An object made by the run: OBJECT_BYTES, plus PROPERTY_BYTES per own property, plus ELEMENT_BYTES per array
@@ -15,7 +15,8 @@
 // last measurement (objects, large strings, what concatenations copy, array contents, elements and properties added at
 // once, and FUEL_BYTES per unit of fuel for the rest), and measures again at its next safe point once that could have
 // taken it past the limit, and always as its body returns (its bindings still live) and when the run ends.
-// A run whose reachable heap is over the limit at a measurement stops with `MemoryLimitExceeded`.
+// A run whose reachable heap is over the limit at a measurement stops with `MemoryLimitExceeded`. Each measurement
+// finds the same in both implementations; when they fall between the first and the last differs.
 
 export const OBJECT_BYTES = 64
 export const PROPERTY_BYTES = 32
@@ -64,8 +65,8 @@ export const setCharging = (meter: HeapMeter | undefined): void => {
   lastConcat = undefined
 }
 
-// The last concatenation's result while a meter charges: a concatenation onto it counts as appended
-// in place, so only the appended part counts; any other copies every part.
+// The last concatenation's result while a meter charges: a concatenation onto it appends, as the Rust implementation
+// appends in place, so only the appended part counts; any other copies every part.
 let lastConcat: string | undefined
 
 /** Charges a running run's meter with a string concatenation of `left` and more into `result`. */

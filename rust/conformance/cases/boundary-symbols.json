@@ -1,0 +1,100 @@
+{
+  "bindings": {},
+  "ok": true,
+  "value": [
+    "Symbol(Symbol.iterator)",
+    "Symbol(Symbol.asyncIterator)",
+    "Symbol(Symbol.iterator),Symbol(Symbol.asyncIterator)",
+    "1Symbol(Symbol.iterator)2",
+    "Symbol(Symbol.iterator)",
+    [
+      "TypeError",
+      "Cannot convert a symbol to a string"
+    ],
+    [
+      "TypeError",
+      "Cannot convert a symbol to a number"
+    ],
+    [
+      "TypeError",
+      "Cannot convert a symbol to a number"
+    ],
+    [
+      "TypeError",
+      "Cannot convert a symbol to a number"
+    ],
+    [
+      "TypeError",
+      "Cannot convert a symbol to a number"
+    ],
+    [
+      "TypeError",
+      "Cannot convert a symbol to a number"
+    ],
+    null,
+    null,
+    [
+      "TypeError",
+      "Cannot convert a symbol to a number"
+    ],
+    [
+      "TypeError",
+      "Cannot convert a symbol to a number"
+    ],
+    "Symbol(Symbol.iterator)",
+    "Symbol(Symbol.iterator)",
+    [
+      "abca"
+    ],
+    "Symbol(Symbol.iterator)bca",
+    "abSymbol(Symbol.iterator)",
+    "SYMBOL(SYMBOL.ITERATOR)",
+    -1,
+    "Symbol.iterator",
+    "Symbol(Symbol.iterator)",
+    [
+      "TypeError",
+      "Cannot create property 'x' on symbol 'Symbol(Symbol.iterator)'."
+    ],
+    true,
+    null,
+    [
+      "TypeError",
+      "The 'in' operator requires a data object on the right-hand side."
+    ],
+    "[object Symbol]",
+    "{}",
+    "{\"s\":{},\"n\":[{}]}",
+    "[\n {}\n]",
+    1,
+    [],
+    {},
+    [
+      "TypeError",
+      "Cannot read properties of undefined (reading 'Symbol(Symbol.iterator)')."
+    ],
+    [
+      "TypeError",
+      "Cannot read properties of null (reading 'Symbol(Symbol.iterator)')."
+    ],
+    [
+      "TypeError",
+      "new URLSearchParams(...) expects a query string, data object, iterable pairs, or URLSearchParams."
+    ],
+    [
+      "TypeError",
+      "Object(symbol) wrapper objects are not supported; use the primitive value directly."
+    ],
+    {},
+    true,
+    true,
+    {},
+    [
+      {}
+    ]
+  ],
+  "logs": [
+    "Symbol(Symbol.iterator) [Symbol(Symbol.asyncIterator)] {\"k\":Symbol(Symbol.iterator)}"
+  ],
+  "metadata": null
+}

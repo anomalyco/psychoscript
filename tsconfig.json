@@ -9,5 +9,6 @@
     "allowJs": false,
     "noUncheckedIndexedAccess": false,
     "noUnusedLocals": true
-  }
+  },
+  "exclude": ["node_modules", "rust"]
 }

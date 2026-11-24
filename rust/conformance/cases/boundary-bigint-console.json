@@ -1,0 +1,10 @@
+{
+  "bindings": {},
+  "ok": true,
+  "value": 0,
+  "logs": [
+    "1n [2n] {\"a\":3n} Map(1) [[4n,5n]] Set(1) [-6n] 1180591620717411303424n",
+    "n 7n 8"
+  ],
+  "metadata": null
+}

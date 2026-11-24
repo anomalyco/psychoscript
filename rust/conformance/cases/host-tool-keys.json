@@ -1,0 +1,19 @@
+{
+  "bindings": {},
+  "ok": true,
+  "value": [
+    [
+      "echo",
+      "fail",
+      "git",
+      "upload"
+    ],
+    [
+      "status"
+    ],
+    "function",
+    "function"
+  ],
+  "logs": [],
+  "metadata": null
+}

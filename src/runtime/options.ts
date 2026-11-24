@@ -20,7 +20,7 @@ export type Limits = {
   /**
    * The deepest nesting a value may have where it crosses between the program and the host: the result, a host call's
    * arguments and what it returns. `JSON.stringify` copies to the same depth. 32 by default; from 1 to 256, as the
-   * copies recurse once a level.
+   * copies recurse once a level (on the native stack in the Rust implementation, where 256 fits the stack a run has).
    * A value nested deeper fails with a `TypeError` (a `RangeError` for the result and `JSON.stringify`).
    */
   readonly maxValueDepth?: number

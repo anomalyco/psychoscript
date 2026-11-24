@@ -16,7 +16,8 @@ export const MAX_PENDING_PROMISES = 10_000
  */
 export const DEFAULT_VALUE_DEPTH = 32
 /**
- * The most `limits.maxValueDepth` may be: those copies recurse once a level.
+ * The most `limits.maxValueDepth` may be. Those copies recurse once a level, on the native stack in the Rust
+ * implementation, where at this depth they fit the stack a run has (see `interpreter-support.md`).
  */
 export const MAX_VALUE_DEPTH_LIMIT = 256
 /** The depth the walk that runs a program's `toJSON`s and awaits promises allows, at the least. */

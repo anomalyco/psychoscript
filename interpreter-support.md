@@ -45,7 +45,12 @@ the ultimate source of truth. Upstream test262 files run verbatim from `test/tes
       `JSON.stringify` copies it. A value nested N + 1 deep fails with a `TypeError` naming where (`Argument 1 to f`,
       `f.key[0]`), a `RangeError` for the result and `JSON.stringify`. The walk a result takes when it holds a promise
       or a program `toJSON` (and `JSON.stringify` with a replacer) allows the larger of the limit and 100. A saved run
-      keeps its depth; a saved depth past 256 is refused.
+      keeps its depth; a saved depth past 256 is refused. These copies recurse once a level, on the native stack in the
+      Rust implementation. Measured there on Linux x86-64 with `bench/examples/value_stack_probe.rs`, the costliest (a
+      host call's argument, and a saved call's argument) takes 785 bytes a level in a release build and 1713 in a debug
+      build, so depth 200 needs at most 178 KB and 447 KB and 256 at most 221 KB and 543 KB: within the 1 MiB thread of
+      the mobile wrapper and a 512 KiB one at depth 200, and the 768 KiB thread a run moves to at 256, in both builds
+      (`tests/value_depth.rs`). The program's own heap saves and restores without recursing, at any depth.
 - [x] An optional heap limit, `limits.maxHeapBytes`: a run stops with an uncatchable `MemoryLimitExceeded` once what
       it can still reach is over it. Garbage never counts. Sizes come from a fixed model, not the process: 64 bytes per
       object the program made, 32 per own property (a function's `name` and `length`, an error's `stack` text and a
@@ -55,7 +60,9 @@ the ultimate source of truth. Upstream test262 files run verbatim from `test/tes
       Built-ins and host globals count nothing, though what the program stores on them does (except strings set
       directly as their properties); property keys count with their property. The heap is measured when the body
       ends, and in between at fuel points and host handovers once the run has allocated about enough to reach the
-      limit (objects, large strings and arrays, and 2 bytes per unit of fuel).
+      limit (objects, large strings and arrays, and 2 bytes per unit of fuel). A measurement finds the same in the
+      TypeScript and the Rust implementation; when the ones in between fall differs, so a heap that only briefly
+      passes the limit may stop one and not the other.
 - [x] The timeout fires between interpreter steps, so one built-in is bounded in what it may build: strings up to
       2^24 characters (`repeat`, `pad*`, `concat`, `join`, `+`, template literals, `JSON.stringify`), arrays up to
       10,000,000 elements (`Array(n)`, `length =`, `Array.from`, `split`, `matchAll`, `concat`, `flat`; below the JS
@@ -697,7 +704,7 @@ prototypes). A run resumes only in a runtime with the same setting.
 - [x] Index reads and writes with JS conversions: float32 rounding, integer wrapping modulo 2^16 or 2^32, NaN and
       infinities as 0 for the integer kinds. Out-of-range reads are `undefined` and writes are ignored, as are writes to
       other numeric keys (`-1`, `1.5`); elements cannot be deleted or made accessors. A NaN written to a float array
-      reads back as NaN.
+      reads back as NaN (its bytes are the canonical quiet NaN in Rust; the reference's engine may keep others).
 - [x] `length`, `byteLength`, `byteOffset`, and `buffer` (the same `ArrayBuffer` for every view of one buffer).
       Views share their bytes: a write through one shows through every other; `subarray` is a view, `slice` a copy.
 - [x] `at`, `slice`, `subarray`, `set` (from a typed array, array or iterable, at an offset), `fill`, `reverse`,
@@ -707,12 +714,13 @@ prototypes). A run resumes only in a runtime with the same setting.
       `[object Float32Array]`; `JSON.stringify` gives `{"0":1.5,...}` and an `ArrayBuffer` `{}`; `console.log` prints
       `Float32Array(n) [...]` and `ArrayBuffer { byteLength: n }`; `structuredClone` copies.
 - [x] Host functions get the typed arrays other than Uint8Array, and `ArrayBuffer`s, as the program's own bytes, lent
-      for the duration of the call (the host's typed array or ArrayBuffer), and a copy for an async or durable function,
-      one per buffer, whose views share it. A typed array a host function returns becomes
+      for the duration of the call (the host's typed array or ArrayBuffer; in Rust `HostValue::TypedArray`, empty once
+      the call returns, and a copy for an async or durable function). A typed array a host function returns becomes
       the program's: bytes it made, or one the same call got, which is the program's buffer again. The result boundary
       rejects them with a hint to pass the values instead. Their
       storage counts against `maxHeapBytes` once per buffer. Snapshots keep them, and which views share a buffer.
-- [x] Fast element access: an indexed read or write with a number goes straight to the bytes.
+- [x] Fast element access: an indexed read or write with a number goes straight to the bytes, in Rust and in the
+      reference.
 - [ ] The Array callback methods (`map`, `forEach`, `reduce`, ...), `sort`, `copyWithin`, `toReversed`, `toSorted`,
       `with`, and `findIndex` on the typed arrays other than Uint8Array; a call fails as calling a missing method does.
 - [ ] `Int8Array`, `Int16Array`, `Uint8ClampedArray`, `Float16Array`, `BigInt64Array`, `BigUint64Array`, `DataView`,
@@ -785,8 +793,8 @@ Host functions a host opts in through `Host.fn`, `Host.durableFn`, and `Host.nam
 - [x] `translate: { functions: "mark" }`: a program function inside an argument (an object's value, an array's,
       Map's or Set's item, an error's field, an awaited promise's value, or the argument itself) arrives as
       `Host.functionMarker`, one symbol with nothing to call and no identity, which `JSON.stringify` leaves out as it
-      would the function. The run's result marks its
-      functions the same way; its JSON, and the bytes `maxOutputBytes` counts, leave
+      would the function; Rust's `HostValue::FunctionMarker`, which `to_json` leaves out. The run's result marks its
+      functions the same way (Rust's `Data::FunctionMarker`); its JSON, and the bytes `maxOutputBytes` counts, leave
       them out. A call's arguments keep their markers across a suspend. A marker cannot come back: a host value
       holding one fails the call.
 - [x] A host function inside a result becomes a program function whose calls cross the same way, so a result can
