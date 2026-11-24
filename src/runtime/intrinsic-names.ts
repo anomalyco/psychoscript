@@ -1,5 +1,5 @@
 import type { Builtins } from "./intrinsics.js"
-import { AsyncIteratorSymbol, IteratorSymbol } from "./model.js"
+import { AsyncIteratorSymbol, IteratorSymbol, ToPrimitiveSymbol, ToStringTagSymbol } from "./model.js"
 import { accessorFunction, Arr, Fn, Native, Obj, type Value } from "./objects.js"
 
 /**
@@ -188,6 +188,8 @@ const prototypeKey: unique symbol = Symbol("[[Prototype]]")
 const symbolNames = new Map<symbol, string>([
   [IteratorSymbol, "[Symbol.iterator]"],
   [AsyncIteratorSymbol, "[Symbol.asyncIterator]"],
+  [ToPrimitiveSymbol, "[Symbol.toPrimitive]"],
+  [ToStringTagSymbol, "[Symbol.toStringTag]"],
   [prototypeKey, ".[[Prototype]]"],
 ])
 

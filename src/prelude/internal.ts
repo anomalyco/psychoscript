@@ -60,6 +60,13 @@ export const INTERNAL_SOURCE = String.raw`
 // A promise stays as it is, so that the operator or built-in it reaches rejects it as an un-awaited value.
 function $vmToPrimitive(v, hint) {
   if (!$IsObj(v) || $IsPromise(v)) return v
+  const exotic = v[Symbol.toPrimitive]
+  if (exotic !== undefined && exotic !== null) {
+    if (!$IsCallableAny(exotic)) $Throw("TypeError", "Symbol.toPrimitive must be a function.")
+    const result = $Call(exotic, v, hint)
+    if ($IsObj(result)) $Throw("TypeError", "Cannot convert object to primitive value.")
+    return result
+  }
   const first = hint === "string" || (hint === "default" && $IsDate(v)) ? "toString" : "valueOf"
   const second = first === "toString" ? "valueOf" : "toString"
   const m1 = v[first]

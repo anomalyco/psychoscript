@@ -23,6 +23,7 @@ const builtins = [
   "Number",
   "BigInt",
   "Boolean",
+  "Symbol",
   "Date",
   "RegExp",
   "Map",
@@ -69,12 +70,13 @@ export const createErrorValue = (prototype: Obj, message: string | undefined, tr
   return value
 }
 
-/** The prototype a primitive reads its methods from without being boxed; none for null, undefined, and symbols. */
+/** The prototype a primitive reads its methods from without being boxed; none for null and undefined. */
 export const primitivePrototype = (builtins: Builtins, value: Value): Obj | undefined => {
   if (typeof value === "string") return builtins.String
   if (typeof value === "number") return builtins.Number
   if (typeof value === "bigint") return builtins.BigInt
   if (typeof value === "boolean") return builtins.Boolean
+  if (typeof value === "symbol") return builtins.Symbol
   return undefined
 }
 
@@ -113,6 +115,7 @@ export const createBuiltins = (): Builtins => {
     Number: plain(),
     BigInt: plain(),
     Boolean: plain(),
+    Symbol: plain(),
     Date: plain(),
     RegExp: plain(),
     Map: plain(),
