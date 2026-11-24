@@ -7,6 +7,8 @@
 - RegExp: `RegExp(re)` without `new` returns `re`; match results always have `groups`, and group objects (including
   `indices.groups` and the replace callback's groups) have a null prototype; `RegExp.prototype.source`/`flags`/flag
   getters read as on an empty pattern instead of throwing.
+- `Number.prototype.toLocaleString` and `BigInt.prototype.toLocaleString` honor their locales and options through
+  the host's Intl instead of ignoring them, and `Array.prototype.toLocaleString` passes both on to each element.
 - BigInt: literals, arithmetic, `BigInt()`, `BigInt.asIntN`/`asUintN`, the prototype methods, and Buffer's 64-bit
   `readBigInt64*`/`writeBigInt64*` methods. A BigInt is capped at
   2^20 bits and cannot cross to the host; `JSON.stringify` throws on one unless the program defines

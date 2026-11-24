@@ -274,7 +274,7 @@ function sortDefault(target, into, holes, values, undefs) {
   return $Sorted(target, into, holes, $SortResult(state, values), undefs)
 }
 
-function Array$prototype$toLocaleString() {
+function Array$prototype$toLocaleString(locales = undefined, options = undefined) {
   const array = $Receiver(this, "Array", "Array.prototype.toLocaleString")
   let result = ""
   let index = 0
@@ -282,7 +282,7 @@ function Array$prototype$toLocaleString() {
   while (index < array.length) {
     if (index > 0) result += ","
     item = array[index]
-    if (item !== null && item !== undefined) result += String(item.toLocaleString())
+    if (item !== null && item !== undefined) result += String(item.toLocaleString(locales, options))
     index++
   }
   return result
