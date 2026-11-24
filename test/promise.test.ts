@@ -1119,6 +1119,14 @@ describe("Promise.withResolvers", () => {
       `),
     ).toEqual([["promise", "resolve", "reject"], true, "adopted", "no"])
   })
+
+  test("its resolving functions are anonymous, with length 1", async () => {
+    expect(
+      await value(
+        `const { resolve, reject } = Promise.withResolvers(); return [resolve.name, resolve.length, reject.name]`,
+      ),
+    ).toEqual(["", 1, ""])
+  })
 })
 
 describe("Promise.any", () => {

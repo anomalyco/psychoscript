@@ -4,11 +4,12 @@
 
 - `Uint8Array.prototype.byteLength` and `byteOffset`. They were `undefined`, so code that sized bytes with
   `byteLength` (such as a `fetch` response's `arrayBuffer()`) got no size.
-- RegExp: `RegExp(re)` without `new` returns `re`; match results always have `groups`, and group objects (including
+- RegExp: `RegExp(re)` without `new` returns `re` when its `constructor` is `RegExp`; match results always have `groups`, and group objects (including
   `indices.groups` and the replace callback's groups) have a null prototype; `RegExp.prototype.source`/`flags`/flag
   getters read as on an empty pattern instead of throwing.
 - `Number.prototype.toLocaleString` and `BigInt.prototype.toLocaleString` honor their locales and options through
-  the host's Intl instead of ignoring them, and `Array.prototype.toLocaleString` passes both on to each element.
+  the host's Intl instead of ignoring them, and `Array.prototype.toLocaleString` passes both on to each element that
+  is a primitive, an array or a date (without `Intl`, other elements' `toLocaleString` gets no arguments).
 - Uint8Array: `toSorted`, `toReversed`, `with`, `copyWithin`, `setFromBase64`, `setFromHex`, array-like sources, and
   fractional lengths. Buffer: inherits Uint8Array's statics, `of`, `copyBytesFrom`, the `readUint*`/`writeUint*`
   aliases, and `from(bytes, offset, length)` copies the whole input as Node does. `TextEncoder.prototype.encodeInto`.

@@ -456,6 +456,7 @@ describe("RegExp", () => {
     expect(await value(`const r = /a/g; return [RegExp(r) === r, RegExp(r, "g") === r, new RegExp(r) === r]`)).toEqual(
       [true, false, false],
     )
+    expect(await value(`const r = /a/; r.constructor = null; return RegExp(r) === r`)).toBe(false)
     expect(await value(`return ["groups" in /a/.exec("a"), [..."a".matchAll(/a/g)].map((m) => "groups" in m)]`)).toEqual(
       [true, [true]],
     )
@@ -988,6 +989,13 @@ describe("Map", () => {
 })
 
 describe("Set", () => {
+  test("keys is the same function as values", async () => {
+    expect(await value(`return [Set.prototype.keys === Set.prototype.values, Set.prototype.keys.name]`)).toEqual([
+      true,
+      "values",
+    ])
+  })
+
   test("forEach is live on Map and Set: deleted entries are skipped and added ones visited", async () => {
     expect(
       await value(`
@@ -1662,7 +1670,18 @@ describe("built-in iterators", () => {
     ])
     const logged = await run(`console.log([1].keys()); return null`)
     expect(logged.logs?.[0]).toBe("[opaque reference]")
-    expect((await error(`return [1].keys() + ""`)).message).toContain("Binary operators require data values")
+    expect(
+      await value(
+        `return [[1].keys(), "a"[Symbol.iterator](), new Map().entries(), new Set().values(), new Headers().keys(), new URLSearchParams().keys()].map(String)`,
+      ),
+    ).toEqual([
+      "[object Array Iterator]",
+      "[object String Iterator]",
+      "[object Map Iterator]",
+      "[object Set Iterator]",
+      "[object Headers Iterator]",
+      "[object URLSearchParams Iterator]",
+    ])
     expect((await error(`return [1].keys().next.call({})`)).message).toContain(
       "Iterator.prototype.next called on incompatible receiver a data object",
     )
@@ -1689,7 +1708,7 @@ describe("Object.prototype.toString", () => {
       "[object Set]",
       "[object Headers]",
       "[object Promise]",
-      "[object Iterator]",
+      "[object Array Iterator]",
       "[object Object]",
       "[object Map]",
       "[object Promise]",
@@ -1847,9 +1866,10 @@ describe("toLocaleString", () => {
         1234n.toLocaleString("en-US", { style: "currency", currency: "EUR" }),
         [1234.5, new Date(0)].toLocaleString("en-US", { timeZone: "UTC", maximumFractionDigits: 0 }),
         [].toLocaleString.length,
+        [{ toLocaleString: (...args) => args.length }].toLocaleString("en-US", {}),
       ]
     `),
-    ).toEqual(["$1,234.56", "25.6%", "1.234,5", "1234", "12.345.678.901.234.567.890", "€1,234.00", "1,235,1/1/1970, 12:00:00 AM", 0])
+    ).toEqual(["$1,234.56", "25.6%", "1.234,5", "1234", "12.345.678.901.234.567.890", "€1,234.00", "1,235,1/1/1970, 12:00:00 AM", 0, "0"])
     expect(
       await value(`
       const attempt = (f) => { try { return f() } catch (e) { return e.name } }

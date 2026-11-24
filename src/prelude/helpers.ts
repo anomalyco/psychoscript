@@ -1,6 +1,6 @@
 import { isSupportedCallback, requireCallback, withReads } from "../runtime/callback.js"
 import type { Builtins } from "../runtime/intrinsics.js"
-import { SORT_RUN, sortKeys, sorted, type SortInto } from "../stdlib/array.js"
+import { SORT_RUN, sorted, type SortInto } from "../stdlib/array.js"
 import { finishBytes } from "../stdlib/bytes.js"
 import { weakKey } from "../stdlib/collections.js"
 import { buildPairs } from "../stdlib/url.js"
@@ -202,7 +202,7 @@ export const helpers = (ctx: Interpreter<unknown>): Array<readonly [string, Valu
         return undefined
       },
     ],
-    $SortState: [1, ([values]) => sortState(builtins, values as Arr)],
+    $SortState: [1, ([keys]) => sortState(builtins, keys as Arr)],
     $SortStep: [1, ([state]) => sortStep(state as Arr)],
     $SortResult: [
       2,
@@ -278,8 +278,8 @@ const MERGE_STEP = 65_536
  * the next run to sort, and the merge pass's run width, output position, and positions in its two runs. Runs of
  * SORT_RUN are sorted first, then merged in passes of doubling width from the order into the buffer, which swap.
  */
-const sortState = (builtins: Builtins, values: Arr): Arr => {
-  const keys = sortKeys(values.items)
+const sortState = (builtins: Builtins, strings: Arr): Arr => {
+  const keys = strings.items as Array<string>
   const order = keys.map((_, at) => at)
   return new Arr(builtins.Array, [
     new Arr(builtins.Array, keys),

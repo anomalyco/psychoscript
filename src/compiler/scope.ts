@@ -113,7 +113,8 @@ export const supportedClassMember = (member: ClassNode["body"]["body"][number]):
 
 const plainKey = (key: Expression | PrivateIdentifier): boolean =>
   key.type === "Identifier" ||
-  (key.type === "Literal" && (typeof key.value === "string" || typeof key.value === "number"))
+  (key.type === "Literal" &&
+    (typeof key.value === "string" || typeof key.value === "number" || typeof key.value === "bigint"))
 
 /**
  * Pass 1: walks the AST to build lexical/var scopes, assign pre-order function indices,
