@@ -21,7 +21,8 @@ export type ConsoleState = {
   readonly counts: Map<string, number>
   /** Epoch milliseconds each `time` label started at, so the elapsed time survives a save and restore. */
   readonly timers: Map<string, number>
-  indent: string
+  /** How many `group`s are open; a number rather than the indent text, so an idle console adds nothing to the heap. */
+  depth: number
 }
 
 /** Captured console: every method appends one formatted line to `logs`. */
@@ -30,8 +31,8 @@ export const consoleGlobal = <R>(ctx: Interpreter<R>) => {
   const console = new Obj(builtins.Object)
   const state = () => ctx.consoleState
   const push = (prefix: string, message: string) => {
-    const indent = state().indent
-    ctx.logs.push(prefix + (indent === "" ? message : message.replace(/^/gm, indent)))
+    const depth = state().depth
+    ctx.logs.push(prefix + (depth === 0 ? message : message.replace(/^/gm, "  ".repeat(depth))))
     return undefined
   }
   const label = (value: Value) => (value === undefined ? "default" : coerceToString(value))
@@ -42,7 +43,7 @@ export const consoleGlobal = <R>(ctx: Interpreter<R>) => {
   }
   const group = (_: Value, args: Array<Value>) => {
     if (args.length > 0) push("", formatArgs(args))
-    state().indent += "  "
+    state().depth += 1
     return undefined
   }
   methods(builtins, console, [
@@ -83,7 +84,7 @@ export const consoleGlobal = <R>(ctx: Interpreter<R>) => {
       "groupEnd",
       0,
       () => {
-        state().indent = state().indent.slice(2)
+        state().depth = Math.max(0, state().depth - 1)
         return undefined
       },
     ],

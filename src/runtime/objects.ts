@@ -1,4 +1,5 @@
 import type { Builtins } from "./intrinsics.js"
+import { charge, ELEMENT_BYTES, PROPERTY_BYTES } from "./heap.js"
 import { checkArrayLength } from "./limits.js"
 import {
   type AstNode,
@@ -50,8 +51,9 @@ export const isProgramAccessor = (slot: Slot): slot is AccessorSlot =>
 /** Whether a slot is an accessor with no getter, which reads as undefined and never crosses to the host. */
 const isSetterOnly = (slot: Slot): boolean => !("value" in slot) && slot.get === undefined
 
-// The objects made while a runtime's intrinsics are being made, in creation order; see `makingIntrinsics`.
-let making: Array<Obj> | undefined
+// What each object made is pushed to: the list of a runtime's intrinsics while they are being made, in creation order
+// (see `makingIntrinsics`), or a capped run's heap meter while it runs (see `setCharging`).
+let making: { push(obj: Obj): unknown } | undefined
 // The `Function.prototype` of the intrinsics being made, for the companions of native accessors.
 let makingFunctions: Obj | undefined
 
@@ -88,6 +90,11 @@ export const makingIntrinsics = <A>(
     making = undefined
     makingFunctions = undefined
   }
+}
+
+/** Points the made-object hook at a running run's heap meter, or nothing (see `setCharging`). */
+export const chargeObjects = (meter: { push(obj: Obj): unknown } | undefined): void => {
+  making = meter
 }
 
 /** Marks an intrinsic as changed by the program, so saving a run records it; any other object is left alone. */
@@ -137,6 +144,8 @@ export class Obj {
   intrinsic = 0
   /** Whether a program accessor was ever defined here: the bulk readers' cue to take their slow paths. */
   hasProgramAccessors = false
+  /** The last heap measurement that reached it (see `measure` in snapshot/codec.ts). */
+  visited = 0
   /** Only on `Array.prototype` and the built-in iterators' prototype: the key whose change clears the protector. */
   declare guard?: { readonly key: PropertyKey; readonly protector: Protector }
   constructor(public proto: Obj | null) {
@@ -1104,6 +1113,8 @@ const writeElement = (target: Indexed, name: string | number | symbol, value: Va
     }
     if (!(at in target.items)) rejectAddition(target, at)
     changed(target)
+    // An append is covered by the fuel allowance; a write past a gap is charged its holes too.
+    if (at > target.items.length) charge(ELEMENT_BYTES * (at + 1 - target.items.length))
     target.items[at] = value
     return true
   }
@@ -1114,6 +1125,7 @@ const writeElement = (target: Indexed, name: string | number | symbol, value: Va
   if (length < target.items.length && !target.elements.configurable) return false
   checkArrayLength(length)
   changed(target)
+  if (length > target.items.length) charge(ELEMENT_BYTES * (length - target.items.length))
   target.items.length = length
   return true
 }
@@ -1188,7 +1200,7 @@ export const defineAccessor = (target: Obj, key: PropertyKey, get: Getter | unde
   const name = canonical(key)
   guard(target, name)
   target.props.set(name, { get, set, enumerable: false, configurable: true })
-  if (making === undefined) return
+  if (makingFunctions === undefined) return
   const label = typeof name === "symbol" ? `[${name.description}]` : name
   if (get !== undefined) {
     const getter = new Native(makingFunctions!, { name: `get ${label}`, call: (thisValue) => get(thisValue) })
@@ -1343,7 +1355,10 @@ const defineElement = (target: Indexed, at: number, current: Slot | undefined, d
   if (current === undefined || "value" in desc) {
     changed(target)
     if (target instanceof Bytes) target.bytes[at] = coerceToNumber(desc.value)
-    else target.items[at] = desc.value
+    else {
+      if (at > target.items.length) charge(ELEMENT_BYTES * (at + 1 - target.items.length))
+      target.items[at] = desc.value
+    }
   }
   return true
 }
@@ -1444,8 +1459,15 @@ export const record = (proto: Obj | null, fields: Record<string, Value>): Obj =>
  * on its chain runs.
  */
 export const copyDataProperties = (target: Obj, source: Obj, skip?: ReadonlySet<PropertyKey>): void => {
+  const before = target.props.size
   for (const key of enumerableKeys(source)) {
     if (skip?.has(key)) continue
     define(target, key, getOwn(source, key))
   }
+  chargeProps(target, before)
+}
+
+/** Charges a running run's meter with the own properties `target` gained since it had `before`. */
+export const chargeProps = (target: Obj, before: number): void => {
+  if (target.props.size > before) charge(PROPERTY_BYTES * (target.props.size - before))
 }

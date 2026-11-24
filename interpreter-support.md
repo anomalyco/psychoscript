@@ -38,6 +38,15 @@ the ultimate source of truth. Upstream test262 files run verbatim from `test/tes
       Node presents a CommonJS module. Anything else throws, and `import()` of it rejects. `export` is a parse error,
       and an import below the top level throws.
 - [x] Cooperative timeout, output bounding, and unrestricted host-call concurrency.
+- [x] An optional heap limit, `limits.maxHeapBytes`: a run stops with an uncatchable `MemoryLimitExceeded` once what
+      it can still reach is over it. Garbage never counts. Sizes come from a fixed model, not the process: 64 bytes per
+      object the program made, 32 per own property (a function's `name` and `length`, an error's `stack` text and a
+      RegExp's source are part of the object), 16 per array element or argument (holes included), 32 per Map, Set,
+      WeakMap or WeakSet entry, 1 per Uint8Array byte, and 16 plus 2 per UTF-16 code unit per distinct string value.
+      Built-ins and host globals count nothing, though what the program stores on them does (except strings set
+      directly as their properties); property keys count with their property. The heap is measured when the body
+      ends, and in between at fuel points and host handovers once the run has allocated about enough to reach the
+      limit (objects, large strings and arrays, and 2 bytes per unit of fuel).
 - [x] The timeout fires between interpreter steps, so one built-in is bounded in what it may build: strings up to
       2^24 characters (`repeat`, `pad*`, `concat`, `join`, `+`, template literals, `JSON.stringify`), arrays up to
       10,000,000 elements (`Array(n)`, `length =`, `Array.from`, `split`, `matchAll`, `concat`, `flat`; below the JS
