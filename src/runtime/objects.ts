@@ -1370,15 +1370,20 @@ export const remove = (target: Obj, key: PropertyKey): boolean => {
 
 // JS order: array indexes, integer-like keys ascending, other strings, then symbols.
 export const ownKeys = (target: Obj): Array<string | symbol> => {
-  const strings = [...target.props.keys()].filter((key): key is string => typeof key === "string")
-  const symbols = [...target.props.keys()].filter((key): key is symbol => typeof key === "symbol")
-  return [
-    ...(isIndexed(target) ? Object.keys(elements(target)) : []),
-    ...(target instanceof Arr ? ["length"] : []),
-    ...strings.filter((key) => parseArrayIndex(key) !== undefined).sort((a, b) => Number(a) - Number(b)),
-    ...strings.filter((key) => parseArrayIndex(key) === undefined),
-    ...symbols,
-  ]
+  const out: Array<string | symbol> = isIndexed(target) ? Object.keys(elements(target)) : []
+  if (target instanceof Arr) out.push("length")
+  let indexes: Array<string> | undefined
+  let names: Array<string> | undefined
+  let symbols: Array<symbol> | undefined
+  for (const key of target.props.keys()) {
+    if (typeof key === "symbol") (symbols ??= []).push(key)
+    else if (parseArrayIndex(key) !== undefined) (indexes ??= []).push(key)
+    else (names ??= []).push(key)
+  }
+  if (indexes !== undefined) for (const key of indexes.sort((a, b) => Number(a) - Number(b))) out.push(key)
+  if (names !== undefined) for (const key of names) out.push(key)
+  if (symbols !== undefined) for (const key of symbols) out.push(key)
+  return out
 }
 
 const enumerable = (target: Obj, key: string | symbol): boolean => own(target, key)?.enumerable === true
