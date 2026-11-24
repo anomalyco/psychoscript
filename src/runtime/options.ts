@@ -1,5 +1,6 @@
 import type { Json } from "../data.js"
 import type { Run, Setup } from "./execute.js"
+import { MAX_VALUE_DEPTH_LIMIT } from "./limits.js"
 
 /** Budgets enforced on each run. Time counts active time only, across every resume of a run. */
 export type Limits = {
@@ -16,6 +17,13 @@ export type Limits = {
    * the process's memory. A run over it stops with `MemoryLimitExceeded`. No default: absent means no limit.
    */
   readonly maxHeapBytes?: number
+  /**
+   * The deepest nesting a value may have where it crosses between the program and the host: the result, a host call's
+   * arguments and what it returns. `JSON.stringify` copies to the same depth. 32 by default; from 1 to 256, as the
+   * copies recurse once a level.
+   * A value nested deeper fails with a `TypeError` (a `RangeError` for the result and `JSON.stringify`).
+   */
+  readonly maxValueDepth?: number
 }
 
 /**
@@ -74,6 +82,7 @@ export const makeSetup = <R>(options: Options<Globals>): Setup<R> => ({
     timeoutMs: validateLimit("timeoutMs", options.limits?.timeoutMs, 1),
     maxOutputBytes: validateLimit("maxOutputBytes", options.limits?.maxOutputBytes, 0),
     maxHeapBytes: validateLimit("maxHeapBytes", options.limits?.maxHeapBytes, 1),
+    maxValueDepth: validateLimit("maxValueDepth", options.limits?.maxValueDepth, 1, MAX_VALUE_DEPTH_LIMIT),
   },
   globals: options.globals,
   modules: options.modules,
@@ -83,8 +92,17 @@ export const makeSetup = <R>(options: Options<Globals>): Setup<R> => ({
   },
 })
 
-const validateLimit = (name: string, value: number | undefined, minimum: number): number | undefined => {
-  if (value !== undefined && (!Number.isSafeInteger(value) || value < minimum)) {
+const validateLimit = (
+  name: string,
+  value: number | undefined,
+  minimum: number,
+  maximum?: number,
+): number | undefined => {
+  if (value === undefined) return value
+  if (maximum !== undefined && (!Number.isSafeInteger(value) || value < minimum || value > maximum)) {
+    throw new RangeError(`${name} must be an integer from ${minimum} to ${maximum}.`)
+  }
+  if (!Number.isSafeInteger(value) || value < minimum) {
     throw new RangeError(`${name} must be a safe integer greater than or equal to ${minimum}.`)
   }
   return value

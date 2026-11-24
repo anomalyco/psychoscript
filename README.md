@@ -251,6 +251,7 @@ defects become an `ExecutionFailure`.
 | `timeoutMs`      | none    | Active time a run may take, summed across resumes; checked between VM steps.                 |
 | `maxOutputBytes` | none    | UTF-8 bytes kept from the result and logs (warnings get an equal budget); the rest is cut.    |
 | `maxHeapBytes`   | none    | Bytes the reachable heap may hold, in a fixed size model; over it, `MemoryLimitExceeded`.    |
+| `maxValueDepth`  | 32      | How deep a value may nest where it crosses to or from the host, and in `JSON.stringify`; 1 to 256. |
 
 `maxHeapBytes` measures what the program can still reach, not the process: garbage never counts, and the sizes are
 the same on every platform (64 bytes per object, 32 per property, 16 per array
@@ -259,9 +260,12 @@ element, 16 plus 2 per UTF-16 code unit per distinct string; see
 and, paced by allocation, while it runs; the run stops there, and no handler sees it. A brief peak between two
 measurements may pass unseen. A saved run keeps its limit when resumed.
 
-Fixed caps: a string at most 2^24 characters, an array at most 10,000,000 elements, at most 10,000 pending promises,
-and values nested at most 32 deep when they cross to or from the host. Exceeding one throws a `RangeError` in the
-program. There is no step-count limit: bound runs with `timeoutMs`.
+`maxValueDepth` applies to the result, a host call's arguments and what it returns: a value nested deeper fails with a
+`TypeError` (a `RangeError` for the result and `JSON.stringify`). The walk a result takes when it holds a promise or a
+`toJSON` allows at least 100. A saved run keeps its depth when resumed.
+
+Fixed caps: a string at most 2^24 characters, an array at most 10,000,000 elements, and at most 10,000 pending
+promises. Exceeding one throws a `RangeError` in the program. There is no step-count limit: bound runs with `timeoutMs`.
 
 ## Security model
 
