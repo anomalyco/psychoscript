@@ -46,6 +46,7 @@ import {
   coerceToString,
   type Value,
   lookup,
+  parseArrayIndex,
   type Slot,
 } from "./objects.js"
 import { describeValue, isOpaque, typeofValue } from "./references.js"
@@ -155,6 +156,28 @@ export const hostGlobals = <R>(
       throw typeError(`${label} contains ${describeValue(value)}, which cannot be passed to the host.`)
     }
     seen.add(value)
+    // Plain data, most of what crosses, is copied here as its own `toHost` would copy it, without its allocations.
+    if (value.constructor === Arr) {
+      const items = (value as Arr).items
+      const copied: Array<unknown> = new Array(items.length)
+      for (let index = 0; index < items.length; index++) {
+        if (!(index in items)) continue
+        const item = toHost(items[index], label, depth + 1, seen, waiting, back)
+        copied[index] = item === OMITTED ? null : item
+      }
+      seen.delete(value)
+      return copied
+    }
+    if (value.constructor === Obj && isPlainData(value)) {
+      const copied: Record<string, unknown> = {}
+      for (const [key, slot] of value.props) {
+        if (typeof key !== "string" || !slot.enumerable || key === "__proto__" || !("value" in slot)) continue
+        const item = toHost(slot.value, label, depth + 1, seen, waiting, back)
+        if (item !== OMITTED) copied[key] = item
+      }
+      seen.delete(value)
+      return copied
+    }
     const next = (item: Value) => {
       const copied = toHost(item, label, depth + 1, seen, waiting, back)
       return copied === OMITTED && (value instanceof MapObj || value instanceof SetObj) ? undefined : copied
@@ -635,6 +658,21 @@ const hostErrors = new Map<string, ErrorConstructor>([
   ["EvalError", EvalError],
   ["URIError", URIError],
 ])
+
+/**
+ * Whether `value`'s own enumerable string properties are all data, none of them an array index: its property table then
+ * lists them, and their values, as `entries` does, and reading them runs nothing.
+ */
+const isPlainData = (value: Obj): boolean => {
+  if (value.hasProgramAccessors) return false
+  for (const [key, slot] of value.props) {
+    if (typeof key !== "string" || !slot.enumerable) continue
+    if (!("value" in slot)) return false
+    const first = key.charCodeAt(0)
+    if (first >= 48 && first <= 57 && parseArrayIndex(key) !== undefined) return false
+  }
+  return true
+}
 
 // The primitives the interpreter operates on; symbols and BigInts are not among them.
 const isPrimitive = (value: unknown): value is string | number | boolean | null | undefined =>
