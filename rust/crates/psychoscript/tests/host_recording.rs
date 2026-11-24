@@ -23,6 +23,8 @@ mod reference;
 use reference::describe;
 
 type Log = Arc<Mutex<Vec<Json>>>;
+/// The typed arrays a host function kept, by its name.
+type Kept = Arc<Mutex<Vec<(String, Vec<psychoscript::TypedArray>)>>>;
 
 /// What an entry's globals share: the log, whether the entry resumed, how often the globals were made, and whether a
 /// call reached a point that never settles before the resume.
@@ -33,11 +35,50 @@ struct State {
     made: Arc<AtomicUsize>,
     started: Arc<AtomicBool>,
     wakers: Arc<Mutex<Vec<Waker>>>,
+    /// The typed arrays `touch`, `touchLater` and `touchJob` kept, by name.
+    kept: Kept,
 }
 
 impl State {
     fn push(&self, entry: Json) {
         self.log.lock().unwrap().push(entry);
+    }
+
+    /// What `touch`, `touchLater` and `touchJob` do: write 100 into element 1 of the first typed array, keep the typed
+    /// arrays under `name`, and give what each holds then.
+    fn touched(&self, name: &str, args: &[HostValue]) -> Json {
+        let views: Vec<psychoscript::TypedArray> = args
+            .iter()
+            .filter_map(|a| match a {
+                HostValue::TypedArray(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect();
+        if let Some(first) = views.first() {
+            let kind = first.kind();
+            first.with_bytes_mut(|bytes| {
+                if let Some(c) = bytes.chunks_exact_mut(kind.size()).nth(1) {
+                    kind.write(100.0, c);
+                }
+            });
+        }
+        let seen = Self::values(&views);
+        let mut kept = self.kept.lock().unwrap();
+        kept.retain(|(n, _)| n != name);
+        kept.push((name.to_string(), views));
+        seen
+    }
+
+    /// What the typed arrays `name` kept hold now.
+    fn kept(&self, name: &str) -> Json {
+        let kept = self.kept.lock().unwrap();
+        kept.iter()
+            .find(|(n, _)| n == name)
+            .map_or(json!([]), |(_, views)| Self::values(views))
+    }
+
+    fn values(views: &[psychoscript::TypedArray]) -> Json {
+        Json::Array(views.iter().map(|v| json!(v.values())).collect())
     }
 
     /// Settles with `value` once the entry resumed; until then it never settles, and says a call reached it.
@@ -88,6 +129,7 @@ fn globals(state: &State, run: &psychoscript::Run) -> Vec<(String, HostValue)> {
     };
     let (note, post, never, grab, wait) = (s.clone(), s.clone(), s.clone(), s.clone(), s.clone());
     let scale = s.clone();
+    let (touch, touch_later, touch_job, kept) = (s.clone(), s.clone(), s.clone(), s.clone());
     let (start, waited, cancel) = (s.clone(), s.clone(), s.clone());
     let counting = run.clone();
     vec![
@@ -154,6 +196,41 @@ fn globals(state: &State, run: &psychoscript::Run) -> Vec<(String, HostValue)> {
                 HostValue::TypedArray(psychoscript::TypedArray::from_f32(&[0.5, 1.5, 2.5]))
             })
             .into(),
+        ),
+        (
+            "touch".into(),
+            HostFunction::new(move |args, _| HostValue::from_json(&touch.touched("touch", &args)))
+                .into(),
+        ),
+        (
+            "touchLater".into(),
+            HostFunction::new_async(move |args, _| {
+                let seen = touch_later.touched("touchLater", &args);
+                async move { Ok(HostValue::from_json(&seen)) }
+            })
+            .into(),
+        ),
+        (
+            "touchJob".into(),
+            DurableFunction::new(
+                move |args, _| {
+                    let seen = touch_job.touched("touchJob", &args);
+                    async move { Ok(Data::from(seen)) }
+                },
+                |data, _| async move { Ok(HostValue::from_json(&data.to_json())) },
+                |_, _| async {},
+            )
+            .into(),
+        ),
+        (
+            "kept".into(),
+            one(HostFunction::new(move |args, _| {
+                let name = match args.first() {
+                    Some(HostValue::String(s)) => s.to_string_lossy().into_owned(),
+                    _ => String::new(),
+                };
+                HostValue::from_json(&kept.kept(&name))
+            })),
         ),
         (
             "note".into(),

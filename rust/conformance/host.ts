@@ -40,6 +40,11 @@
 //   api.issues.list."], "NotFound")`.
 // - `count()`: sync; sets `run.metadata` to `{ count: 0 }` when it is null, then increments and gives `count`.
 // - `wait()`: async, `idempotent: true`; logs `["wait", call.key]`; never settles until the entry resumed, then gives 7.
+// - `touch(...views)`: sync; `touchLater(...views)`: async; `touchJob(...views)`: `Host.durableFn` whose `start` does
+//   the same and gives it as its data, and whose `wait` gives the data. Each writes 100 into element 1 of its first
+//   typed array, keeps the typed arrays it got under its name, and gives what each holds then (`Array.from`).
+// - `kept(name)`: sync; what the typed arrays `name` kept hold now. Only read for `touchLater` and `touchJob`, which
+//   get copies: after a call returns, what a synchronous one kept is left to the implementation.
 // - `job()`: `Host.durableFn`. `start(args, call)` logs `["job.start", call.key, args.map(describe)]` and gives
 //   `call.key` as its data; `wait(data, call)` logs `["job.wait", data, call.key, call.args.map(describe)]`, never
 //   settles until the entry resumed, then gives 41; `cancel(data, call)` logs `["job.cancel", data, call.key]`.
@@ -84,6 +89,12 @@ const read = () => "called"
 
 const make = (entry: Entry) => {
   const log: Array<unknown> = []
+  const kept: Record<string, Array<Float32Array>> = {}
+  const touched = (name: string, views: ReadonlyArray<unknown>) => {
+    kept[name] = views as Array<Float32Array>
+    kept[name][0]![1] = 100
+    return kept[name].map((view) => Array.from(view))
+  }
   const state = { resumed: false, made: 0, started: () => {} }
   const waiting = new Promise<void>((done) => (state.started = done))
   const pending = () => Effect.callback<never>(() => state.started())
@@ -106,6 +117,16 @@ const make = (entry: Entry) => {
           return view
         }),
         mesh: Host.fn(() => new Float32Array([0.5, 1.5, 2.5])),
+        touch: Host.fn((views: ReadonlyArray<unknown>) => touched("touch", views)),
+        touchLater: Host.fn((views: ReadonlyArray<unknown>) => Effect.sync(() => touched("touchLater", views)), {
+          type: "async",
+        }),
+        touchJob: Host.durableFn({
+          start: (views: ReadonlyArray<unknown>) => Effect.sync(() => touched("touchJob", views)),
+          wait: (data: unknown) => Effect.succeed(data),
+          cancel: () => Effect.void,
+        }),
+        kept: Host.fn(([name]: ReadonlyArray<unknown>) => (kept[name as string] ?? []).map((view) => Array.from(view))),
         note: Host.fn((args: ReadonlyArray<unknown>, call: { key: string }) => {
           log.push(["note", call.key, args.map(describe)])
         }),
@@ -368,6 +389,20 @@ return [thrown instanceof RangeError, thrown.message, sent instanceof Promise, a
     typedArrays: true,
   },
   { code: `return mesh()`, typedArrays: true },
+  // Typed arrays across a call, over two views of one buffer (they share its bytes within the call): a synchronous
+  // function borrows them, so its write reaches the program; an async or durable one gets a copy, taken at the call,
+  // so its write doesn't, and neither does the program's later one reach what it kept.
+  {
+    code: `const b = new ArrayBuffer(12); const whole = new Float32Array(b); const tail = new Float32Array(b, 4, 2); whole.set([1, 2, 3])
+const seen = touch(whole, tail); return [seen, Array.from(whole), Array.from(tail)]`,
+    typedArrays: true,
+  },
+  ...["touchLater", "touchJob"].map((name) => ({
+    code: `const b = new ArrayBuffer(12); const whole = new Float32Array(b); const tail = new Float32Array(b, 4, 2); whole.set([1, 2, 3])
+const call = ${name}(whole, tail); whole[0] = 5; const seen = await call; const after = [Array.from(whole), Array.from(tail)]
+whole[2] = 9; tail[0] = 8; return [seen, after, kept("${name}")]`,
+    typedArrays: true,
+  })),
   // Without typed arrays, a host function's Float32Array fails at the call, as before they were added.
   { code: `const m = mesh(); return m` },
   { code: `try { mesh() } catch (e) { return [e.name, e.message, e.stack] }` },
