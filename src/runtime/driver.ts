@@ -1,5 +1,14 @@
 import type { Json } from "../data.js"
-import { DurableFn, type Fn, HostDefect, HostWork, Interrupted, promiseControllers, type Settled } from "./contract.js"
+import {
+  DurableFn,
+  type Fn,
+  HostDefect,
+  HostWork,
+  Interrupted,
+  isLocatedError,
+  promiseControllers,
+  type Settled,
+} from "./contract.js"
 import type { HostCall } from "../scheduler.js"
 import { locate } from "./errors.js"
 import { HostFailure, PendingThrow } from "./model.js"
@@ -264,7 +273,9 @@ export class Driver {
               ? new Interruption()
               : settled.error instanceof HostDefect
                 ? locate(settled.error.error, call.site)
-                : settled.error,
+                : isLocatedError(settled.error)
+                  ? locate(settled.error, call.site)
+                  : settled.error,
           ),
     )
     this.wake?.()

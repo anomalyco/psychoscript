@@ -61,6 +61,29 @@ export class HostDefect {
   constructor(readonly error: unknown) {}
 }
 
+// The standard error classes `Host.error` makes, by name; `AggregateError` takes its errors first.
+const standardErrors = new Map<string, ErrorConstructor>([
+  ["TypeError", TypeError],
+  ["RangeError", RangeError],
+  ["SyntaxError", SyntaxError],
+  ["ReferenceError", ReferenceError],
+  ["EvalError", EvalError],
+  ["URIError", URIError],
+])
+const locatedErrors = new WeakSet<Error>()
+
+/** `Host.error`: an error of the standard class `name` (else `Error`) that a failing host call throws at the call. */
+export const locatedError = (name: string, message: string): Error => {
+  const error =
+    name === "AggregateError" ? new AggregateError([], message) : new (standardErrors.get(name) ?? Error)(message)
+  locatedErrors.add(error)
+  return error
+}
+
+/** Whether a host call failed with an error `Host.error` made. */
+export const isLocatedError = (reason: unknown): reason is Error =>
+  reason instanceof Error && locatedErrors.has(reason)
+
 /** Host work, or a run, that was interrupted. */
 export class Interrupted extends Error {
   override readonly name = "Interrupted"

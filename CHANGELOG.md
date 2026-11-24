@@ -6,6 +6,11 @@
   default, programs and host functions behave as before they were added (0.2.1): no `ArrayBuffer`, `Uint16Array`,
   `Uint32Array`, `Int32Array`, `Float32Array` or `Float64Array`, a host function returning one fails at the call, and
   `Uint8Array` has no `buffer`; `globalNames` leaves them out.
+- `Host.error(name, message)`: a host call
+  that fails with it, sync or async, thrown, rejected or as an Effect's failure, throws a real error of that standard
+  class in the program, located at the call: its `stack` names the call, and uncaught the run fails with
+  `TypeError: message (line L, col C)`. Other names make an `Error`. Returned as a value, it is an error like any
+  other.
 - Installs from git (`github:anomalyco/psychoscript#<commit>`): a `prepare` script installs the dev dependencies and
   builds `dist/`, since package managers don't install a git dependency's dev dependencies. Bun runs it only for a
   trusted dependency (`trustedDependencies`).
