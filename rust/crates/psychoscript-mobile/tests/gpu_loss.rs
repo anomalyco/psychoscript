@@ -11,8 +11,17 @@ use psychoscript_mobile::{GpuCanvasState, Program, gpu_device, gpu_lose_device};
 use serde_json::json;
 use widget_wire::Post;
 
+/// One test at a time: the device is the process's, so a test's loss is every running test's, and each counts what
+/// its own runs are told.
+fn alone() -> std::sync::MutexGuard<'static, ()> {
+    static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    ONE.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[test]
 fn a_lost_device_is_told_to_the_program_and_replaced() {
+    let _alone = alone();
     let mut r = start(&live_program(RED), json!({}));
     r.run
         .deliver(json!({ "type": "canvas", "key": "c", "width": 16, "height": 16 }).to_string())
@@ -106,6 +115,7 @@ fn a_lost_device_is_told_to_the_program_and_replaced() {
 #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
 #[test]
 fn a_shader_canvas_draws_on_after_a_loss() {
+    let _alone = alone();
     use psychoscript_mobile::ShaderCanvas;
     use std::time::{Duration, Instant};
     let surface = real::surface(64, 64);
