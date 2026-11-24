@@ -142,7 +142,7 @@ functions act as namespaces (`fs.read(...)`). Arguments reach the host as copies
   `ns.a.b(...)`, or `Host.missing(message, suggestions)`.
 - **`Host.fail(kind, message, suggestions)`**: throw it to give the program an error with your own `kind`.
 - **`StreamingResponse`**: return `new StreamingResponse(response)` to give the program a `Response`-like object whose
-  body streams (`text()`, `json()`, `bytes()`, `body` readers, `for await`).
+  body streams (`text()`, `json()`, `bytes()`, `clone()`, `body` readers, `for await`).
 - **`translate`** (runtime option): what happens to a program function or promise inside an argument. By default both
   fail the call; `{ functions: "drop", promises: "await" }` drops functions (as `JSON.stringify` does) and awaits
   promises.
