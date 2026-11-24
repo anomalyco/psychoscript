@@ -2,11 +2,11 @@
   "bindings": {},
   "ok": true,
   "value": [
-    "Symbol(psychoscript.iterator)",
-    "Symbol(psychoscript.async-iterator)",
-    "Symbol(psychoscript.iterator),Symbol(psychoscript.async-iterator)",
-    "1Symbol(psychoscript.iterator)2",
-    "Symbol(psychoscript.iterator)",
+    "Symbol(Symbol.iterator)",
+    "Symbol(Symbol.asyncIterator)",
+    "Symbol(Symbol.iterator),Symbol(Symbol.asyncIterator)",
+    "1Symbol(Symbol.iterator)2",
+    "Symbol(Symbol.iterator)",
     [
       "TypeError",
       "Cannot convert a symbol to a string"
@@ -41,35 +41,23 @@
       "TypeError",
       "Cannot convert a symbol to a number"
     ],
-    "Symbol(psychoscript.iterator)",
-    "Symbol(psychoscript.iterator)",
+    "Symbol(Symbol.iterator)",
+    "Symbol(Symbol.iterator)",
     [
       "abca"
     ],
-    "Symbol(psychoscript.iterator)bca",
-    "abSymbol(psychoscript.iterator)",
-    "SYMBOL(PSYCHOSCRIPT.ITERATOR)",
+    "Symbol(Symbol.iterator)bca",
+    "abSymbol(Symbol.iterator)",
+    "SYMBOL(SYMBOL.ITERATOR)",
     -1,
+    "Symbol.iterator",
+    "Symbol(Symbol.iterator)",
     [
       "TypeError",
-      "Cannot access a property on a non-object value."
+      "Cannot create property 'x' on symbol 'Symbol(Symbol.iterator)'."
     ],
-    [
-      "TypeError",
-      "Cannot access a property on a non-object value."
-    ],
-    [
-      "TypeError",
-      "Cannot access a property on a non-object value."
-    ],
-    [
-      "TypeError",
-      "Cannot access a property on a non-object value."
-    ],
-    [
-      "TypeError",
-      "Cannot access a property on a non-object value."
-    ],
+    true,
+    null,
     [
       "TypeError",
       "The 'in' operator requires a data object on the right-hand side."
@@ -83,11 +71,11 @@
     {},
     [
       "TypeError",
-      "Cannot read properties of undefined (reading 'Symbol(psychoscript.iterator)')."
+      "Cannot read properties of undefined (reading 'Symbol(Symbol.iterator)')."
     ],
     [
       "TypeError",
-      "Cannot read properties of null (reading 'Symbol(psychoscript.iterator)')."
+      "Cannot read properties of null (reading 'Symbol(Symbol.iterator)')."
     ],
     [
       "TypeError",
@@ -97,10 +85,7 @@
       "TypeError",
       "Object(symbol) wrapper objects are not supported; use the primitive value directly."
     ],
-    [
-      "TypeError",
-      "Object.getPrototypeOf cannot convert a symbol to an object."
-    ],
+    {},
     true,
     true,
     {},
@@ -109,7 +94,7 @@
     ]
   ],
   "logs": [
-    "Symbol(psychoscript.iterator) [Symbol(psychoscript.async-iterator)] {\"k\":Symbol(psychoscript.iterator)}"
+    "Symbol(Symbol.iterator) [Symbol(Symbol.asyncIterator)] {\"k\":Symbol(Symbol.iterator)}"
   ],
   "metadata": null
 }

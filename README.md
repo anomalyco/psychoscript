@@ -302,8 +302,9 @@ and with `typedArrays: true`, `ArrayBuffer`, `Uint16Array`, `Uint32Array`, `Int3
 `Float64Array`.
 
 Not supported: private members (`#x`), static blocks, `new` on plain functions, `Proxy`/`Reflect`, `Symbol()` (only
-`Symbol.iterator` and `Symbol.asyncIterator` exist), `Int8Array`, `Int16Array`, `Uint8ClampedArray`, the
-BigInt and Float16 typed arrays, `DataView`, resizable or shared buffers, `WeakRef`/`FinalizationRegistry`, sloppy mode, `eval`, `export`, and TypeScript syntax.
+`Symbol.iterator`, `Symbol.asyncIterator`, `Symbol.toPrimitive` and `Symbol.toStringTag` exist), `Int8Array`,
+`Int16Array`, `Uint8ClampedArray`, the BigInt and Float16 typed arrays, `DataView`, resizable or shared buffers,
+`WeakRef`/`FinalizationRegistry`, sloppy mode, `eval`, `export`, and TypeScript syntax.
 Unsupported syntax fails before the program runs, with a hint.
 
 [`interpreter-support.md`](interpreter-support.md) is the detailed support matrix.

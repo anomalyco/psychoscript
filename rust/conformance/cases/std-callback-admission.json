@@ -577,7 +577,7 @@
     ],
     [
       "TypeError",
-      "Symbol is not callable; only Symbol.asyncIterator and Symbol.iterator are available."
+      "Symbol is not callable; only Symbol.asyncIterator, Symbol.iterator, Symbol.toPrimitive and Symbol.toStringTag are available."
     ],
     [
       "TypeError",

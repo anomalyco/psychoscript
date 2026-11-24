@@ -10,11 +10,11 @@
     "(index)\tValue\n0\tstr",
     "undefined",
     "undefined",
-    "[opaque reference]",
+    "(index)\tf\n0\t[opaque reference]",
     "(index)",
     "(index)\t1\t2\tb\t10\n0\tone\ttwo\tb\t\n1\t\t\t\tten",
     "(index)\tValue\n0\t\n1\t\n2\tnull\n3\t\n4\ttrue",
-    "[opaque reference]",
+    "(index)\t[object Object]\na\t",
     "undefined",
     "1"
   ],

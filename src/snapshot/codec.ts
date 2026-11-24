@@ -11,6 +11,8 @@ import {
   lostError,
   PendingThrow,
   Throw,
+  ToPrimitiveSymbol,
+  ToStringTagSymbol,
 } from "../runtime/model.js"
 import {
   accessorFunction,
@@ -186,6 +188,8 @@ export type DecodeEnv = {
 const symbols = new Map<string, symbol>([
   ["iterator", IteratorSymbol],
   ["asyncIterator", AsyncIteratorSymbol],
+  ["toPrimitive", ToPrimitiveSymbol],
+  ["toStringTag", ToStringTagSymbol],
   ["deleted", deleted],
   ["functionMarker", functionMarker],
 ])
@@ -360,7 +364,7 @@ const builtinSpecs = (): ReadonlyArray<ClassSpec> => [
     name: "Interpreter",
     ctor: Interpreter,
     anchor: "ctx",
-    fields: ["logs", "globalScope", "modules", "namespaces", "protector"],
+    fields: ["logs", "globalScope", "modules", "namespaces", "protector", "consoleState"],
     skip: [
       "builtins",
       "vm",

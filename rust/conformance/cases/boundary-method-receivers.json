@@ -341,10 +341,7 @@
         "TypeError",
         "Set.isSubsetOf expects a Set-like object."
       ],
-      [
-        "TypeError",
-        "Object.prototype.toLocaleString called on null or undefined."
-      ],
+      "Symbol(Symbol.iterator)",
       [
         "TypeError",
         "Function.prototype.call called on incompatible receiver a symbol."

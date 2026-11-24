@@ -1,4 +1,15 @@
-import { Arr, BoundFn, Callable, coerceToInteger, defineAccessor, get, Obj, type Value } from "./objects.js"
+import {
+  Arr,
+  BoundFn,
+  Callable,
+  coerceToInteger,
+  define,
+  defineAccessor,
+  get,
+  Obj,
+  readonly,
+  type Value,
+} from "./objects.js"
 import { withReads } from "./callback.js"
 import { arrayGlobal } from "../stdlib/array.js"
 import { arrayBufferGlobal, textDecoderGlobal, textEncoderGlobal, typedArrayGlobal, uint8ArrayGlobal } from "../stdlib/bytes.js"
@@ -19,8 +30,8 @@ import { coercion } from "../stdlib/value.js"
 import { base64Global, cryptoGlobal, structuredCloneGlobal } from "../stdlib/web.js"
 import { errorGlobal } from "./errors.js"
 import { errorTypes } from "./intrinsics.js"
-import { constants, constructor, methods, native, receiver } from "./native.js"
-import { AsyncIteratorSymbol, IteratorSymbol, typeError } from "./model.js"
+import { constants, constructor, fn, methods, native, receiver } from "./native.js"
+import { AsyncIteratorSymbol, IteratorSymbol, ToPrimitiveSymbol, ToStringTagSymbol, typeError } from "./model.js"
 import { checkArrayLength } from "./limits.js"
 import { generatorGlobals } from "./generators.js"
 import { promiseGlobal } from "./promises.js"
@@ -88,14 +99,38 @@ const listFromArrayLike = (value: Value): Array<Value> => {
 }
 
 const symbolGlobal = <R>(ctx: Interpreter<R>) => {
-  const symbol = native(ctx.builtins, {
+  const builtins = ctx.builtins
+  const symbol = constructor(builtins, builtins.Symbol, {
     name: "Symbol",
     call: () => {
-      throw typeError("Symbol is not callable; only Symbol.asyncIterator and Symbol.iterator are available.")
+      throw typeError(
+        "Symbol is not callable; only Symbol.asyncIterator, Symbol.iterator, Symbol.toPrimitive and Symbol.toStringTag are available.",
+      )
     },
     callback: false,
   })
-  constants(symbol, { asyncIterator: AsyncIteratorSymbol, iterator: IteratorSymbol })
+  constants(symbol, {
+    asyncIterator: AsyncIteratorSymbol,
+    iterator: IteratorSymbol,
+    toPrimitive: ToPrimitiveSymbol,
+    toStringTag: ToStringTagSymbol,
+  })
+  const self = (thisValue: Value, name: string): symbol => {
+    if (typeof thisValue === "symbol") return thisValue
+    throw typeError(`Symbol.prototype.${name} requires that 'this' be a Symbol.`)
+  }
+  methods(builtins, builtins.Symbol, [
+    ["toString", 0, (thisValue) => String(self(thisValue, "toString"))],
+    ["valueOf", 0, (thisValue) => self(thisValue, "valueOf")],
+  ])
+  defineAccessor(builtins.Symbol, "description", (thisValue) => self(thisValue, "description").description)
+  define(
+    builtins.Symbol,
+    ToPrimitiveSymbol,
+    fn(builtins, "[Symbol.toPrimitive]", 1, (thisValue) => self(thisValue, "[Symbol.toPrimitive]")),
+    readonly,
+  )
+  define(builtins.Symbol, ToStringTagSymbol, "Symbol", readonly)
   return symbol
 }
 
