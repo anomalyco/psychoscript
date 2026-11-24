@@ -1443,6 +1443,7 @@ built-ins/Array/prototype/toReversed/length-increased-while-iterating.js  # Type
 built-ins/Array/prototype/toReversed/length-tolength.js  # TypeError: Array.prototype.toReversed called on incompatible receiver a data object.
 built-ins/Array/prototype/toReversed/this-value-boolean.js  # TypeError: Array.prototype.toReversed called on incompatible receiver a boolean.
 built-ins/Array/prototype/toSorted/comparefn-called-after-get-elements.js  # Expected a Test262Error but got a TypeError
+built-ins/Array/prototype/toSorted/comparefn-default.js  # numbers only sort numerically: a deliberate difference from JavaScript's text order
 built-ins/Array/prototype/toSorted/comparefn-stop-after-error.js  # Expected a Test262Error but got a TypeError
 built-ins/Array/prototype/toSorted/frozen-this-value.js  # TypeError: Array.prototype.toSorted called on incompatible receiver a data object.
 built-ins/Array/prototype/toSorted/holes-not-preserved.js  # Actual [1, 3, 4, undefined, undefined] and expected [1, 2, 3, 4, undefined] should have the same con
