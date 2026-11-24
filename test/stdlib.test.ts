@@ -1634,6 +1634,18 @@ describe("Object.prototype.toString", () => {
   })
 })
 
+describe("Array.prototype.toString", () => {
+  test("calls the receiver's join, or falls back to Object.prototype.toString", async () => {
+    expect(
+      await value(`
+      const a = [1, 2]
+      a.join = () => "x"
+      return [a.toString(), \`\${a}\`, String([1, [2, 3], null]), Array.prototype.toString.call({ join: () => "j" }), Array.prototype.toString.call({})]
+    `),
+    ).toEqual(["x", "x", "1,2,3,", "j", "[object Object]"])
+  })
+})
+
 describe("console.log of errors", () => {
   test("prints name and message, nested too", async () => {
     const result = await run(`console.log(new Error("boom"), { e: new RangeError("r") })`)

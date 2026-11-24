@@ -12,6 +12,8 @@
   `Object.keys`/`values`/`entries`/`assign`/`hasOwn`, object spread and `for...in` index a string by UTF-16 code unit.
 - Promises: `Promise.try(nonFunction)` returns a rejected promise instead of throwing, and `new Promise` accepts bound
   functions as executors.
+- `Array.fromAsync`; a `JSON.parse` reviver gets its third argument (`{ source }` for primitives); and
+  `Array.prototype.toString` calls the receiver's `join`, as in JS.
 
 ## 0.2.1
 

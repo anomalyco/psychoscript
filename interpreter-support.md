@@ -148,8 +148,8 @@ the ultimate source of truth. Upstream test262 files run verbatim from `test/tes
       call that invoked the built-in, and a resumed `await` starts from depth 0 as in JS, so long async chains such
       as recursive pagination are unaffected.
 - [x] Expression and block function bodies.
-- [x] User callbacks for the supported Array, Map, Set, URLSearchParams, sort, string-replacement, and `Array.from`
-      mapper APIs, with one shared acceptance rule everywhere including promise reactions.
+- [x] User callbacks for the supported Array, Map, Set, URLSearchParams, sort, string-replacement, `Array.from`, and
+      `Array.fromAsync` mapper APIs, with one shared acceptance rule everywhere including promise reactions.
 - [x] `Boolean`, `Number`, `String`, `parseInt`, `parseFloat`, `isFinite`, `isNaN`, and URI helpers as callbacks.
 - [x] Built-in method references as callbacks, such as `values.map(Math.abs)`, `records.map(JSON.stringify)`,
       `items.forEach(console.log)`, and `Promise.resolve(-1).then(Math.abs)`. Extra callback arguments a built-in
@@ -177,7 +177,9 @@ Math.floor)` is `"3"`). A detached method loses its receiver, as in JS: `values.
       `Array.prototype.push.call(arr, 1)`, `Math.max.apply(null, values)`, `fn.bind(obj, first)`. `apply` accepts an
       array, an array-like object (its `length` clamped and capped like `Array.from`), or `null`/`undefined`. A
       bound function is named `bound f`, has its remaining `length`, and is not constructible.
-- [x] `JSON.parse` revivers and `JSON.stringify` function replacers see the holder object as `this`.
+- [x] `JSON.parse` revivers and `JSON.stringify` function replacers see the holder object as `this`. A reviver's third
+      argument is `{ source }` for a primitive it has not changed (`JSON.parse("1.0", (k, v, c) => c.source)` is
+      `"1.0"`) and `{}` otherwise.
 - [x] The optional `thisArg` of the Array, Uint8Array, and `Array.from` callback methods and of Map, Set,
       URLSearchParams, and Headers `forEach` is the callback's `this`: `[1, 2].forEach(function () { this.n++ }, c)`
       increments `c.n` twice. Arrows ignore it, as in JS; `reduce`/`reduceRight` take an initial value instead.
@@ -216,7 +218,7 @@ Math.floor)` is `"3"`). A detached method loses its receiver, as in JS: `values.
 - [x] Synchronous iterator acquisition and result validation follow `IteratorClose` boundaries: consumer errors and
       intentional early stops invoke `return()`, acquisition/`next()` failures do not, and an original consumer error
       wins over a cleanup failure. A generator's `return()` is an intentional stop, so a `return()` that throws or
-      yields a non-object surfaces from it as a `TypeError`. Async iterator consumption remains limited to `for await...of` and async `yield*`.
+      yields a non-object surfaces from it as a `TypeError`. Async iterator consumption remains limited to `for await...of`, async `yield*`, and `Array.fromAsync`.
 - [x] Portable generator protocol coverage is adapted from pinned Test262 cases for suspended-start, suspended-yield,
       and completed states; sync and async `next`/`return`/`throw`; finally yields and completion overrides; rejected
       yielded promises; mixed async request queues; sync and async `yield*` forwarding; malformed methods/results;
