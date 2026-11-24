@@ -139,15 +139,18 @@ export const savedFrames = (snapshot: Snapshot): Array<string> => {
   })
 }
 
-let build: string | undefined
+const builds = new Map<boolean, string>()
 
 /**
  * The VM build a snapshot belongs to: the package version, and a hash of the format, the opcode table, the frame
  * modes, the compiler version, the prelude's and the internal helpers' bytecode, the static intrinsic names, and the
- * codec's shape. A runtime must have been made first (the intrinsic names come from it).
+ * codec's shape, and the runtime's typedArrays setting. A runtime with that setting must have been made first (the
+ * intrinsic names come from it).
  */
-export const buildId = (): string =>
-  (build ??= `${packageJson.version}+${hash(
+export const buildId = (typedArrays = false): string => {
+  const known = builds.get(typedArrays)
+  if (known !== undefined) return known
+  const id = `${packageJson.version}+${hash(
     [
       FORMAT,
       JSON.stringify(Object.entries(Op)),
@@ -155,10 +158,14 @@ export const buildId = (): string =>
       COMPILER_VERSION,
       hashOf(compiledPrelude().codes),
       hashOf(getInternalPrelude().codes),
-      staticNames().join("\n"),
+      staticNames(typedArrays).join("\n"),
       codecShape(vmSpecs()),
+      typedArrays ? "typedArrays" : "",
     ].join("\n"),
-  )}`)
+  )}`
+  builds.set(typedArrays, id)
+  return id
+}
 
 /** Saves a VM's state as it is now, with every built-in or host global the run changed. Changes nothing. */
 export const captureVm = (
@@ -197,7 +204,7 @@ export const captureVm = (
   const snapshot: Snapshot = {
     format: FORMAT,
     header: {
-      build: buildId(),
+      build: buildId(ctx.typedArrays),
       hosts: hostsId(ctx),
       runId: vm.hosts.runId,
       sources: programs.map((source) => ({
@@ -231,7 +238,7 @@ export const restoreVm = (vm: Vm, saved: unknown, options: RestoreOptions): Snap
   const snapshot = validate(saved)
   const header = snapshot.header
   const ctx = vm.ctx
-  const expected = buildId()
+  const expected = buildId(ctx.typedArrays)
   if (snapshot.format !== FORMAT || header.build !== expected) {
     throw new SnapshotError(
       `This state was saved by another psychoscript build (${header.build}); this runtime is ${expected}, so it can't resume it.`,

@@ -23,17 +23,20 @@ export class IntrinsicNames {
   private readonly hostNames: Array<string> = []
   private readonly hostIndex = new Map<Obj, number>()
   private named: Array<Obj> | undefined
+  private readonly table: Table
 
   constructor(
     /** The objects made with the intrinsics, by id. */
     private readonly made: ReadonlyArray<Obj>,
     roots: Roots,
     hosts: ReadonlyArray<readonly [string, Value]> = [],
+    private readonly typedArrays = false,
   ) {
     made.forEach((value, id) => {
       value.intrinsic = id + 1
     })
-    table ??= walk(made, roots)
+    const table = tables.get(typedArrays) ?? tables.set(typedArrays, walk(made, roots)).get(typedArrays)!
+    this.table = table
     if (made.length !== table.count) {
       throw new Error(`This runtime made ${made.length} intrinsics, and the first one made ${table.count}.`)
     }
@@ -42,7 +45,7 @@ export class IntrinsicNames {
       this.hostIndex.set(value, this.hostValues.length)
       this.hostValues.push(value)
       this.hostNames.push(name())
-      value.intrinsic = table!.count + this.hostValues.length
+      value.intrinsic = table.count + this.hostValues.length
     }
     let next = 0
     for (const [name, value] of hosts) {
@@ -58,14 +61,14 @@ export class IntrinsicNames {
 
   /** The named intrinsics, in name order (see `all`). */
   get values(): ReadonlyArray<Obj> {
-    return (this.named ??= [...table!.order.map((id) => this.made[id]!), ...this.hostValues])
+    return (this.named ??= [...this.table.order.map((id) => this.made[id]!), ...this.hostValues])
   }
 
   /** The name of an intrinsic, or undefined for any other object. */
   nameOf(value: Obj): string | undefined {
     if (this.isStatic(value)) {
-      const at = table!.position[Math.abs(value.intrinsic) - 1]!
-      return at < 0 ? undefined : table!.names[at]
+      const at = this.table.position[Math.abs(value.intrinsic) - 1]!
+      return at < 0 ? undefined : this.table.names[at]
     }
     const host = this.hostIndex.get(value)
     return host === undefined ? undefined : this.hostNames[host]
@@ -73,7 +76,7 @@ export class IntrinsicNames {
 
   /** The intrinsic a name refers to. */
   valueOf(name: string): Obj | undefined {
-    const id = staticIds().get(name)
+    const id = staticIds(this.typedArrays).get(name)
     if (id !== undefined) return this.made[id]
     const host = this.hostNames.indexOf(name)
     return host < 0 ? undefined : this.hostValues[host]
@@ -81,7 +84,7 @@ export class IntrinsicNames {
 
   /** Every name: the static ones in walk order, then the host globals'. */
   all(): ReadonlyArray<string> {
-    return [...table!.names, ...this.hostNames]
+    return [...this.table.names, ...this.hostNames]
   }
 
   /** The host globals' names, `@name`, in walk order. */
@@ -111,7 +114,8 @@ export const unchanged = (value: Obj): boolean => {
 }
 
 /** The static names, in walk order, once a runtime has been made in this process. */
-export const staticNames = (): ReadonlyArray<string> => {
+export const staticNames = (typedArrays = false): ReadonlyArray<string> => {
+  const table = tables.get(typedArrays)
   if (table === undefined) throw new Error("No runtime has been made yet, so the intrinsics have no names.")
   return table.names
 }
@@ -133,10 +137,14 @@ type Table = {
   readonly position: ReadonlyArray<number>
 }
 
-let table: Table | undefined
-let ids: Map<string, number> | undefined
+// By the runtime's typedArrays setting: a runtime without typed arrays makes fewer intrinsics.
+const tables = new Map<boolean, Table>()
+const ids = new Map<boolean, Map<string, number>>()
 
-const staticIds = () => (ids ??= new Map(table!.names.map((name, at) => [name, table!.order[at]!])))
+const staticIds = (typedArrays: boolean) => {
+  const table = tables.get(typedArrays)!
+  return ids.get(typedArrays) ?? ids.set(typedArrays, new Map(table.names.map((name, at) => [name, table.order[at]!]))).get(typedArrays)!
+}
 
 const walk = (made: ReadonlyArray<Obj>, roots: Roots): Table => {
   type Path = string | readonly [parent: number, key: string | symbol, half?: "get" | "set"]

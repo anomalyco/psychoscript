@@ -42,6 +42,8 @@ export class Interpreter<R> {
   private readonly namespaces = new Map<string, Obj>()
   /** Whether arrays may still be iterated directly; see `Protector`. Saved with the run. */
   readonly protector = new Protector()
+  /** Whether programs have typed arrays besides `Uint8Array`; see `Runtime.Options`. */
+  readonly typedArrays: boolean
   /** What `console.count`, `group` and `time` remember between calls. Saved with the run. */
   readonly consoleState: ConsoleState = { counts: new Map(), timers: new Map(), depth: 0 }
 
@@ -50,6 +52,8 @@ export class Interpreter<R> {
     readonly logs?: Array<string>
     /** Module names that load a global, beyond its own name; see `Runtime.Options`. */
     readonly modules?: Readonly<Record<string, string>> | undefined
+    /** Whether programs have typed arrays besides `Uint8Array`; see `Runtime.Options`. */
+    readonly typedArrays?: boolean | undefined
     /** The host's globals (extensions, a test harness): made again, the same way, when a saved run is restored. */
     readonly globals?: (ctx: Interpreter<R>) => ReadonlyArray<readonly [string, Value]>
     /** Data bound for this program, part of its saved state; host globals of the same name win. */
@@ -58,6 +62,7 @@ export class Interpreter<R> {
     this.builtins = options.builtins
     this.logs = options.logs ?? []
     this.moduleGlobals = options.modules ?? {}
+    this.typedArrays = options.typedArrays === true
     // Program code has no receiver: top-level `this` is undefined, as in a module.
     this.globalScope = new Map<string, Binding>([["this", { value: undefined }]])
     // Everything made from here to the host globals is an intrinsic, with a static id (see `IntrinsicNames`).
@@ -80,7 +85,10 @@ export class Interpreter<R> {
         ],
       },
       hosts,
+      this.typedArrays,
     )
+    // Without typed arrays, they are not made, and a Uint8Array has no `buffer`, as before them.
+    if (!this.typedArrays) this.builtins.Uint8Array.props.delete("buffer")
     for (const [name, value] of [...intrinsics, ...(options.bindings?.(this) ?? []), ...hosts]) {
       this.globalScope.set(name, { value })
     }

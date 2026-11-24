@@ -135,13 +135,13 @@ export const helpers = (ctx: Interpreter<unknown>): Array<readonly [string, Valu
       },
     ],
     $SumPrecise: [1, ([numbers]) => Math.sumPrecise((numbers as Arr).items as Array<number>)],
-    /** A Uint8Array of the values (see `collectBytes`). */
+    /** A typed array of the values, or the values set into one (see `collectBytes`). */
     $Bytes: [
       3,
       ([values, into, offset]) => {
         const items = (values as Arr).items
         checkArrayLength(items.length)
-        return finishBytes(Uint8Array.from(items, coerceToNumber), into as Obj, offset as number)
+        return finishBytes(builtins, items.map(coerceToNumber), into as Obj, offset as number)
       },
     ],
     /** A Uint8Array of the values, of the same kind as the Uint8Array `source`: a Buffer's map makes a Buffer. */
@@ -150,7 +150,7 @@ export const helpers = (ctx: Interpreter<unknown>): Array<readonly [string, Valu
       ([values, source]) => {
         const items = (values as Arr).items
         checkArrayLength(items.length)
-        return (source as Bytes).derive(builtins, Uint8Array.from(items, coerceToNumber))
+        return (source as Bytes).derive(builtins, Uint8Array.from(items as Array<Value>, coerceToNumber))
       },
     ],
     /** Headers or URLSearchParams from the pairs `readPairs` read, or from a record. */

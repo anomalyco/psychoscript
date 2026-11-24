@@ -1,6 +1,7 @@
 import type { Builtins } from "./intrinsics.js"
 import { typeError } from "./model.js"
 import {
+  Bytes,
   type Callable,
   define,
   frozen,
@@ -62,6 +63,15 @@ export const prototypeFrom = (newTarget: Callable, fallback: Obj): Obj => {
   const proto = newTarget.props.get("prototype")
   return proto !== undefined && "value" in proto && proto.value instanceof Obj ? proto.value : fallback
 }
+
+/** A typed array receiver: a Uint8Array (or Buffer) for `uint8`, any typed array otherwise. */
+export const typedReceiver: {
+  (thisValue: Value, method: string, uint8: true): Bytes<Uint8Array>
+  (thisValue: Value, method: string, uint8?: false): Bytes
+} = ((thisValue: Value, method: string, uint8 = false) => {
+  if (thisValue instanceof Bytes && (!uint8 || thisValue.isUint8())) return thisValue
+  throw typeError(`${method} called on incompatible receiver ${describeValue(thisValue)}.`)
+}) as never
 
 /** Narrows a method receiver to the built-in it belongs to, or throws the TypeError JS would. */
 export const receiver = <T extends Obj>(
