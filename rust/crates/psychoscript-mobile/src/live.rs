@@ -152,6 +152,22 @@ pub struct LiveRun {
     control: Arc<Control>,
 }
 
+impl LiveRun {
+    /// [`LiveRun::deliver`] of a message made already (Android's frames without JSON, `frames.rs`).
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    pub(crate) fn deliver_value(&self, message: HostValue) -> Result<(), PsychoScriptError> {
+        if matches!(*self.control.state(), State::Ended) {
+            return Err(ended());
+        }
+        if self.control.encoded.is_some() {
+            lock(&self.control.delivered).push(message.clone());
+        }
+        lock(&self.control.inbox).queue.push_back(message);
+        self.control.wake_receive();
+        Ok(())
+    }
+}
+
 impl std::fmt::Debug for LiveRun {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("LiveRun")
@@ -229,15 +245,7 @@ impl LiveRun {
         let message = Input::parse(&message_json).map_err(|e| PsychoScriptError::InvalidInput {
             reason: format!("the message isn't JSON: {e}"),
         })?;
-        if matches!(*self.control.state(), State::Ended) {
-            return Err(ended());
-        }
-        if self.control.encoded.is_some() {
-            lock(&self.control.delivered).push(message.clone());
-        }
-        lock(&self.control.inbox).queue.push_back(message);
-        self.control.wake_receive();
-        Ok(())
+        self.deliver_value(message)
     }
 
     /// Presents the GPU canvas `key` (a `gpu: true` canvas of the view, `widgets-gpu.md`) into `surface`, which is

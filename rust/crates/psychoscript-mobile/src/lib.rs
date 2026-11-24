@@ -19,6 +19,7 @@ mod cpu;
 mod encoder;
 mod error;
 mod fetch;
+mod frames;
 mod gpu;
 mod hint;
 mod json;

@@ -155,6 +155,13 @@ its own until it returns or is stopped. Beside its input function it gets `__hos
 - `deliver(json)`, `pause()`, `resume()`, `snapshot()`, `stop()`, `isRunning()`, `attachSurface(key, surface, width,
   height)`, `detachSurface(key)` ([GPU canvases](#gpu-canvases));
   `LiveRun.restore(snapshot, handler, inputName = "__input", options = LiveOptions(), transport = nil, encoder = nil)`.
+  - Android, frames without JSON: `LiveFrames(run)` (Kotlin) takes a reference to the run once; each
+    `frames.deliver(t, dt, width, height, scale, pointer, pointerX, pointerY, pointerDown, dark, fullscreen, close,
+    closeX, closeY, closeWidth, closeHeight)` queues the message `deliver` would for
+    `{"type":"frame","frame":{t, dt, width, height, scale, pointer: {x, y, down} | null, dark, fullscreen,
+    close: {x, y, width, height} | null}}`, in order with the other messages, through one JNI call (no string, no
+    UniFFI call); `InvalidState` once the run ended. Its `Float`s are passed exactly (`toDouble()`), not rounded to
+    the decimals a JSON text would print. `frames.close()` when the run ends.
   - `pause()`: no frames, messages or timers reach the program. `sleep` timers freeze with their remaining time,
     `now()` stops, delivered messages and finished fetches are held, and nothing is scheduled. A stretch of compute in
     progress finishes first (within the slice budget). After that it costs no CPU (measured: 0 ms over 2 s).
