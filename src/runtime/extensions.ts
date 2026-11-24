@@ -17,7 +17,11 @@ import {
   hidden,
   keys,
   Arr,
+  ArrayBufferObj,
   Bytes,
+  type TypedArray,
+  typedArrays,
+  type TypedArrayName,
   DateObj,
   ErrorObj,
   HeadersObj,
@@ -101,6 +105,10 @@ export const hostGlobals = <R>(
   // without it.
   const hosted = new WeakMap<object, Function>()
 
+  // The copies a call that the program doesn't wait for (an async or durable one) gets of the buffers its typed arrays
+  // and ArrayBuffers view, one per buffer, so its views still share their bytes; undefined when the call borrows them.
+  let copies: Map<ArrayBuffer, ArrayBuffer> | undefined
+
   // With `waiting`, a promise that hasn't fulfilled goes there instead, and the copy is to be made again once it settles.
   // `back` collects the host functions that cross back; without it they are treated like any function.
   const toHost = (
@@ -157,6 +165,10 @@ export const hostGlobals = <R>(
       }
       seen.delete(value)
       return copied
+    }
+    if (copies !== undefined && (value instanceof ArrayBufferObj || (value instanceof Bytes && !value.isUint8()))) {
+      seen.delete(value)
+      return copyBytes(value, copies)
     }
     const copied = value.toHost(next)
     seen.delete(value)
@@ -319,6 +331,14 @@ export const hostGlobals = <R>(
       if (typeof Buffer !== "undefined" && Buffer.isBuffer(value))
         return new BufferObj(builtins.Buffer, new Uint8Array(value))
       if (value instanceof Uint8Array) return new Bytes(builtins.Uint8Array, new Uint8Array(value))
+      // The other typed arrays view the same bytes, without a copy; without typed arrays, they can't cross.
+      if (ctx.typedArrays && ArrayBuffer.isView(value)) {
+        const name = (value as unknown as { [Symbol.toStringTag]: string })[Symbol.toStringTag]
+        if (!Object.hasOwn(typedArrays, name) || value instanceof DataView) {
+          throw typeError(`${label} produced ${describeHost(value)}, which the program cannot hold.`)
+        }
+        return new Bytes(builtins[name as TypedArrayName], value as TypedArray)
+      }
       if (value instanceof ArrayBuffer) {
         const view = new Uint8Array(value)
         // Only a real buffer has bytes to view; anything else would be read as array-like and lose them silently.
@@ -461,18 +481,24 @@ export const hostGlobals = <R>(
 
   ctx.hosts = {
     shape,
-    toHost: (values, label, waiting, back) =>
-      values.map((item, index) => {
-        const copied = toHost(
-          item,
-          `Argument ${index + 1} to ${label}`,
-          0,
-          new Set(),
-          translate.promises === "await" ? waiting : undefined,
-          back,
-        )
-        return copied === OMITTED ? undefined : copied
-      }),
+    toHost: (values, label, waiting, back, copy) => {
+      copies = copy ? new Map() : undefined
+      try {
+        return values.map((item, index) => {
+          const copied = toHost(
+            item,
+            `Argument ${index + 1} to ${label}`,
+            0,
+            new Set(),
+            translate.promises === "await" ? waiting : undefined,
+            back,
+          )
+          return copied === OMITTED ? undefined : copied
+        })
+      } finally {
+        copies = undefined
+      }
+    },
     fromHost: (value, label, owner) =>
       fromHost(value, label, 0, new Set(), {
         within:
@@ -610,4 +636,19 @@ const describeHost = (value: unknown): string => {
   const name = (value as { constructor?: { name?: string } }).constructor?.name
   if (name === undefined || name === "") return "an object"
   return `${/^[AEIO]/.test(name) ? "an" : "a"} ${name}`
+}
+
+// A copy of the bytes of a typed array or ArrayBuffer, over the call's one copy of its buffer.
+const copyBytes = (value: Bytes | ArrayBufferObj, copies: Map<ArrayBuffer, ArrayBuffer>): ArrayBuffer | TypedArray => {
+  // A program's buffers are never shared.
+  const source = (value instanceof ArrayBufferObj ? value.buffer : value.bytes.buffer) as ArrayBuffer
+  const buffer = copies.get(source) ?? source.slice(0)
+  copies.set(source, buffer)
+  if (value instanceof ArrayBufferObj) return buffer
+  const view = value.bytes
+  return new (view.constructor as new (buffer: ArrayBuffer, offset: number, length: number) => TypedArray)(
+    buffer,
+    view.byteOffset,
+    view.length,
+  )
 }

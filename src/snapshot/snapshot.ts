@@ -60,8 +60,11 @@ export type Header = {
 
 export type SnapshotHeader = Header
 
+// A runtime with typed arrays resumes only its own runs, and one without only its own.
 export const hostsId = (ctx: Interpreter<unknown>): string =>
-  hash([...ctx.intrinsics.hosts(), ...(ctx.hosts?.shape ?? [])].join("\n"))
+  hash(
+    [...ctx.intrinsics.hosts(), ...(ctx.hosts?.shape ?? []), ...(ctx.typedArrays ? ["typedArrays"] : [])].join("\n"),
+  )
 
 // --- Validation ---
 
