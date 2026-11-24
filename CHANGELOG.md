@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `limits.maxHeapBytes`: an optional cap on what a run can still reach, measured in a fixed size model rather than
+  process memory, so garbage never counts and the result is the same everywhere. A run over it stops with the new
+  diagnostic kind `MemoryLimitExceeded`; a suspended run keeps its limit.
 - `Uint8Array.prototype.byteLength` and `byteOffset`. They were `undefined`, so code that sized bytes with
   `byteLength` (such as a `fetch` response's `arrayBuffer()`) got no size.
 - RegExp: `RegExp(re)` without `new` returns `re` when its `constructor` is `RegExp`; match results always have `groups`, and group objects (including

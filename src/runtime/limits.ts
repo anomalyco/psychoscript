@@ -1,3 +1,4 @@
+import { charge } from "./heap.js"
 import { rangeError } from "./model.js"
 
 // The timeout only fires between interpreter steps, so a single built-in must not be able to materialize an
@@ -25,8 +26,10 @@ export const checkBigIntSize = (value: bigint): bigint => {
   return value
 }
 
+/** Checks the length of a string a built-in or operator is about to make, and charges it to the run's heap meter. */
 export const checkStringLength = (length: number): void => {
   if (length > MAX_STRING_LENGTH) throw rangeError("Invalid string length")
+  charge(2 * length)
 }
 
 export const checkArrayLength = (length: number): void => {

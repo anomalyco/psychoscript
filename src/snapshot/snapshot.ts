@@ -49,6 +49,8 @@ export type Header = {
   readonly limits: {
     readonly timeoutMs: number | null
     readonly maxOutputBytes: number | null
+    /** Absent when the run has no heap limit. */
+    readonly maxHeapBytes?: number | null
   }
   /** What the run has used so far, across every resume: active milliseconds. */
   readonly budget: { readonly activeMs: number }
@@ -114,6 +116,7 @@ export const validate = (saved: unknown): Snapshot => {
     limits: {
       timeoutMs: limit(limits.timeoutMs, "timeoutMs"),
       maxOutputBytes: limit(limits.maxOutputBytes, "maxOutputBytes"),
+      ...(limits.maxHeapBytes === undefined ? {} : { maxHeapBytes: limit(limits.maxHeapBytes, "maxHeapBytes") }),
     },
     budget: { activeMs: number(budget.activeMs, "the active time") },
     metadata: json(header.metadata, "the metadata"),

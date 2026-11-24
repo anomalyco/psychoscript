@@ -248,10 +248,18 @@ defects become an `ExecutionFailure`.
 | ---------------- | ------- | -------------------------------------------------------------------------------------------- |
 | `timeoutMs`      | none    | Active time a run may take, summed across resumes; checked between VM steps.                 |
 | `maxOutputBytes` | none    | UTF-8 bytes kept from the result and logs (warnings get an equal budget); the rest is cut.    |
+| `maxHeapBytes`   | none    | Bytes the reachable heap may hold, in a fixed size model; over it, `MemoryLimitExceeded`.    |
+
+`maxHeapBytes` measures what the program can still reach, not the process: garbage never counts, and the sizes are
+the same on every platform (64 bytes per object, 32 per property, 16 per array
+element, 16 plus 2 per UTF-16 code unit per distinct string; see
+`interpreter-support.md`). The heap is measured as the body returns (its own bindings included), when the run ends
+and, paced by allocation, while it runs; the run stops there, and no handler sees it. A brief peak between two
+measurements may pass unseen. A saved run keeps its limit when resumed.
 
 Fixed caps: a string at most 2^24 characters, an array at most 10,000,000 elements, at most 10,000 pending promises,
 and values nested at most 32 deep when they cross to or from the host. Exceeding one throws a `RangeError` in the
-program. There is no separate memory or step-count limit: bound runs with `timeoutMs`.
+program. There is no step-count limit: bound runs with `timeoutMs`.
 
 ## Security model
 
@@ -260,7 +268,7 @@ program. There is no separate memory or step-count limit: bound runs with `timeo
 - **No dynamic code.** No `eval`, `Function` constructor or `with`; programs are strict mode only.
 - **No prototype mutation.** No `Object.setPrototypeOf`, `__proto__` assignment, legacy accessors, `Proxy` or
   `Reflect`, so a program can't change how built-ins behave.
-- **Bounded.** Time via `timeoutMs`, output via `maxOutputBytes`, and the caps above. A single regular-expression
+- **Bounded.** Time via `timeoutMs`, output via `maxOutputBytes`, heap via `maxHeapBytes`, and the caps above. A single regular-expression
   match runs on the host engine and can't be interrupted, so a pathological pattern can run long.
 - **Checked snapshots.** A snapshot is validated on resume against the build that wrote it. Store snapshots as you
   would code: whoever can edit one controls the resumed run.

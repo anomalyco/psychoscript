@@ -43,7 +43,7 @@ export class Interpreter<R> {
   /** Whether arrays may still be iterated directly; see `Protector`. Saved with the run. */
   readonly protector = new Protector()
   /** What `console.count`, `group` and `time` remember between calls. Saved with the run. */
-  readonly consoleState: ConsoleState = { counts: new Map(), timers: new Map(), indent: "" }
+  readonly consoleState: ConsoleState = { counts: new Map(), timers: new Map(), depth: 0 }
 
   constructor(options: {
     readonly builtins: Builtins
