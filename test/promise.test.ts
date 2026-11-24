@@ -1082,9 +1082,25 @@ describe("Promise.try", () => {
         return [log, sum instanceof Promise, await sum, caught, await Promise.try(async () => 5), await Promise.try(() => ({ then: (r) => r("thenable") }))]
       `),
     ).toEqual([["ran", "after"], true, 3, "RangeError", 5, "thenable"])
-    expect((await error(`return Promise.try(5)`)).message).toContain(
+    expect((await error(`return await Promise.try(5)`)).message).toContain(
       "Promise.try expects a function, received a number.",
     )
+    expect(
+      await value(`
+        const made = Promise.try(5)
+        return [made instanceof Promise, await made.catch((e) => e.name)]
+      `),
+    ).toEqual([true, "TypeError"])
+  })
+
+  test("bound functions work as executors and handlers", async () => {
+    expect(
+      await value(`
+        const executor = function (resolve) { resolve(this.v) }.bind({ v: 7 })
+        const add = function (x) { return x + this.n }.bind({ n: 1 })
+        return [await new Promise(executor), await Promise.resolve(1).then(add), await Promise.try(add, 2)]
+      `),
+    ).toEqual([7, 2, 3])
   })
 })
 
