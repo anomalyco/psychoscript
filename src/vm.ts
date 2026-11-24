@@ -4,10 +4,21 @@ import { conversions } from "./runtime/callback.js"
 import { locate, materialize, stackFrame } from "./runtime/errors.js"
 import type { Interpreter } from "./runtime/interpreter.js"
 import { type Builtins, isErrorType } from "./runtime/intrinsics.js"
+import {
+  charge,
+  chargeConcat,
+  charging,
+  ELEMENT_BYTES,
+  FUEL_BYTES,
+  type HeapMeter,
+  memoryLimitMessage,
+  setCharging,
+} from "./runtime/heap.js"
 import { checkArrayLength, checkStringLength } from "./runtime/limits.js"
 import {
   AsyncIteratorSymbol,
   type AstNode,
+  HostFailure,
   invalidData,
   IteratorSymbol,
   PendingThrow,
@@ -94,7 +105,7 @@ import { constructRegExp } from "./stdlib/regexp.js"
 import { enumerableSource } from "./stdlib/object.js"
 import { registerAsyncIntrinsics, type SettlingTarget, VmScheduler } from "./async.js"
 import type { Code } from "./code.js"
-import { type CaptureOptions, captureVm, type RestoreOptions, restoreVm } from "./snapshot.js"
+import { type CaptureOptions, captureVm, measureVm, type RestoreOptions, restoreVm } from "./snapshot.js"
 import { compileSource } from "./compiler/compile.js"
 import {
   AsyncFromSyncIterator,
@@ -278,6 +289,10 @@ export class Vm {
   redo:
     | { readonly frame: Frame; readonly pc: number; readonly values: ReadonlyArray<Value>; next: number }
     | undefined = undefined
+  /** The run's `limits.maxHeapBytes` and its pacing, when it has one. Never saved: a restored run measures afresh. */
+  heap: HeapMeter | undefined = undefined
+  /** What the heap held as the body returned, with its bindings, once measured (see `finishProgram`). */
+  heapAtReturn: number | undefined = undefined
 
   constructor(readonly ctx: Interpreter<unknown>) {
     this.scheduler = new VmScheduler(this)
@@ -339,12 +354,30 @@ export class Vm {
    * other; the outcome; the next job; one inbox completion; wait for running calls; stuck.
    */
   run(): Stop {
+    const heap = this.heap
+    if (heap === undefined) return this.runUntilStop()
+    const outer = charging
+    setCharging(heap)
+    try {
+      return this.runUntilStop()
+    } finally {
+      setCharging(outer)
+    }
+  }
+
+  private runUntilStop(): Stop {
     if (this.sliceStart < 0) this.sliceStart = performance.now()
     if (this.tripEvery > 0) this.fuel = this.tripEvery
     const sched = this.scheduler
     const hosts = this.hosts
     while (true) {
-      if (hosts.queued.length > 0) return { kind: "host", calls: hosts.handOver() }
+      if (hosts.queued.length > 0) {
+        if (this.heap !== undefined && this.heap.due) {
+          const stop = this.heapLimit()
+          if (stop !== undefined) return stop
+        }
+        return { kind: "host", calls: hosts.handOver() }
+      }
       if (this.sliced) {
         this.sliced = false
         this.sliceStart = -1
@@ -357,11 +390,12 @@ export class Vm {
         continue
       }
       if (this.frames.length > 0) {
-        if (hosts.blocked !== undefined) return { kind: "host", calls: [] }
+        if (hosts.blocked !== undefined) return this.waiting()
         // Fuel can run out on a call that then stopped for the host (a built-in or sync host call costs fuel too):
         // that's a slice point as well, or a loop of such calls would refill forever without yielding.
         if (this.fuel <= 0) {
-          this.fuel = this.tripEvery || INITIAL_FUEL
+          const stop = this.refuel()
+          if (stop !== undefined) return stop
           if (this.tripEvery > 0 || performance.now() - this.sliceStart >= SLICE_MS) {
             this.sliced = true
             continue
@@ -376,19 +410,29 @@ export class Vm {
           continue
         }
         if (signal === EXEC_FUEL) {
-          this.fuel = this.tripEvery || INITIAL_FUEL
+          const stop = this.refuel()
+          if (stop !== undefined) return stop
           if (this.tripEvery > 0 || performance.now() - this.sliceStart >= SLICE_MS) {
             this.sliced = true
           }
         }
         continue
       }
-      if (this.outcome !== undefined) return { kind: "done", completion: this.outcome }
+      if (this.outcome !== undefined) {
+        // The run ended: the heap as the body returned (`finishProgram`), and what the run leaves reachable now.
+        if (this.heap !== undefined) {
+          const atReturn = this.heapAtReturn === undefined ? undefined : this.heapLimit(this.heapAtReturn)
+          const stop = atReturn ?? this.heapLimit()
+          if (stop !== undefined) return stop
+        }
+        return { kind: "done", completion: this.outcome }
+      }
       const job = sched.dequeue()
       if (job !== undefined) {
         sched.beginJob(job)
         if (--this.fuel <= 0) {
-          this.fuel = this.tripEvery || INITIAL_FUEL
+          const stop = this.refuel()
+          if (stop !== undefined) return stop
           if (this.tripEvery > 0 || performance.now() - this.sliceStart >= SLICE_MS) {
             this.sliced = true
           }
@@ -396,9 +440,38 @@ export class Vm {
         continue
       }
       if (hosts.deliver()) continue
-      if (hosts.running.size > 0) return { kind: "host", calls: [] }
+      if (hosts.running.size > 0) return this.waiting()
       return { kind: "stuck", node: sched.stuckAwait() }
     }
+  }
+
+  // A stop to wait for host work, after measuring the heap when that is due.
+  private waiting(): Stop {
+    if (this.heap !== undefined && this.heap.due) {
+      const stop = this.heapLimit()
+      if (stop !== undefined) return stop
+    }
+    return { kind: "host", calls: [] }
+  }
+
+  // A fuel point: fuel for the next stretch, and the heap measured when that is due. The stop that ends the run once
+  // its heap is over its limit.
+  private refuel(): Stop | undefined {
+    const full = this.tripEvery || INITIAL_FUEL
+    const heap = this.heap
+    if (heap !== undefined) heap.debt += FUEL_BYTES * (full - this.fuel)
+    this.fuel = full
+    return heap !== undefined && heap.due ? this.heapLimit() : undefined
+  }
+
+  // Measures the heap; over the limit, the run ends here with `MemoryLimitExceeded`, which no handler sees.
+  private heapLimit(measured?: number): Stop | undefined {
+    const heap = this.heap!
+    if (!heap.measured(measured ?? measureVm(this))) return undefined
+    const completion = abrupt(new HostFailure("MemoryLimitExceeded", memoryLimitMessage(heap.limit)))
+    this.outcome = completion
+    this.frames.length = 0
+    return { kind: "done", completion }
   }
 
   // Continues the job stopped at a blocking call with the call's result, or throws its failure at the call.
@@ -953,6 +1026,7 @@ export class Vm {
                 frame.sp = sp
                 this.failStringLength(s.length)
               }
+              if (charging !== undefined) chargeConcat(a, s)
               regs[sp - 1] = s
               pc++
               continue
@@ -1146,12 +1220,14 @@ export class Vm {
             const n = w >>> 16
             if (n === 2) {
               const b = regs[--sp] as string
-              const s = (regs[sp - 1] as string) + b
+              const left = regs[sp - 1] as string
+              const s = left + b
               if (s.length > 16_777_216) {
                 frame.pc = pc
                 frame.sp = sp
                 this.failStringLength(s.length)
               }
+              if (charging !== undefined) chargeConcat(left, s)
               regs[sp - 1] = s
               pc++
               continue
@@ -1981,6 +2057,7 @@ export class Vm {
       out += regs[i] as string
       if (out.length > 16_777_216) checkStringLength(out.length)
     }
+    if (charging !== undefined) chargeConcat(regs[sp - n], out)
     sp -= n
     regs[sp] = out
     return sp + 1
@@ -2219,10 +2296,12 @@ export class Vm {
     const arr = frame.regs[sp - 1] as Arr
     frame.pc = pc
     frame.sp = sp
+    const before = arr.items.length
     for (let step = rec.step(); !step.done; step = rec.step()) {
       checkArrayLength(arr.items.length + 1)
       arr.items.push(step.value)
     }
+    charge(ELEMENT_BYTES * (arr.items.length - before))
     return pc + 1
   }
 
@@ -2375,6 +2454,8 @@ export class Vm {
   }
 
   private finishProgram(frame: Frame, value: Value): boolean {
+    // The body ends: its bindings are measured before they go, with its value.
+    if (this.heap !== undefined) this.heapAtReturn = measureVm(this, [value])
     if (!isThenable(value)) {
       let fast: ReturnType<typeof tryFastBoundaryOrJson>
       try {

@@ -1,6 +1,7 @@
 import type { Expression, MemberExpression, NewExpression, Super } from "acorn"
 import { type AstNode, invalidData, rangeError, typeError } from "./model.js"
 import { UnaryOp } from "../opcodes.js"
+import { chargeConcat } from "./heap.js"
 import { checkBigIntSize, checkStringLength, MAX_BIGINT_BITS } from "./limits.js"
 import { locate } from "./errors.js"
 import { type Builtins, primitivePrototype } from "./intrinsics.js"
@@ -149,7 +150,10 @@ export const applyBinaryOperator = (operator: string, lhs: Value, rhs: Value, no
   switch (operator) {
     case "+": {
       const sum = (lhs as string) + (rhs as string)
-      if (typeof sum === "string") checkStringLength(sum.length)
+      if (typeof sum === "string") {
+        checkStringLength(sum.length)
+        chargeConcat(lhs, sum)
+      }
       return sum
     }
     case "-":

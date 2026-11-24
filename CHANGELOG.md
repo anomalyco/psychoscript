@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `limits.maxHeapBytes`: an optional cap on what a run can still reach, measured in a fixed size model rather than
+  process memory, so garbage never counts and the result is the same everywhere. A run over it stops with the new
+  diagnostic kind `MemoryLimitExceeded`; a suspended run keeps its limit.
 - `JSON.parse` given an object or array, which is most likely already parsed, throws
   `TypeError: JSON.parse expects a string, got an object (is it already parsed?)` at the call, instead of parsing its
   text. Other non-string values are parsed as before.
