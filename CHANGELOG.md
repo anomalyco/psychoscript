@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Installs from git (`github:anomalyco/psychoscript#<commit>`): a `prepare` script installs the dev dependencies and
+  builds `dist/`, since package managers don't install a git dependency's dev dependencies. Bun runs it only for a
+  trusted dependency (`trustedDependencies`).
 - `limits.maxHeapBytes`: an optional cap on what a run can still reach, measured in a fixed size model rather than
   process memory, so garbage never counts and the result is the same everywhere. A run over it stops with the new
   diagnostic kind `MemoryLimitExceeded`; a suspended run keeps its limit.
