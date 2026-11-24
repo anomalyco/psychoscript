@@ -301,13 +301,43 @@ globals by module name. Built-ins: `Object`, `Array`, `String`, `Number`, `BigIn
 and with `typedArrays: true`, `ArrayBuffer`, `Uint16Array`, `Uint32Array`, `Int32Array`, `Float32Array` and
 `Float64Array`.
 
-Not supported: private members (`#x`), static blocks, `new` on plain functions, `Proxy`/`Reflect`, `Symbol()` (only
-`Symbol.iterator`, `Symbol.asyncIterator`, `Symbol.toPrimitive` and `Symbol.toStringTag` exist), `Int8Array`,
-`Int16Array`, `Uint8ClampedArray`, the BigInt and Float16 typed arrays, `DataView`, resizable or shared buffers,
-`WeakRef`/`FinalizationRegistry`, sloppy mode, `eval`, `export`, and TypeScript syntax.
+[`interpreter-support.md`](interpreter-support.md) is the detailed support matrix.
+
+## Not supported
+
+Psychoscript is a language interpreter, not a full JavaScript runtime like Node, Bun, or a browser. Beyond a small set
+of pure-data web/Node helpers (`URL`, `Headers`, `TextEncoder`/`TextDecoder`, `Uint8Array`, `Buffer`, `console`) and a
+Promise microtask scheduler, there is no built-in runtime environment.
+
+### Runtime and execution semantics
+
+- **No timers or persistent event loop.** There is no `setTimeout`, `setInterval`, `setImmediate`, or
+  `queueMicrotask`, and no background event loop that keeps a program alive. A program runs its top-level body to
+  completion and exits; any un-awaited promises or in-flight host calls still pending when it returns are interrupted.
+- **No ambient runtime or I/O APIs.** There is no `fetch`, `fs`, `process`, `AbortController`, `EventTarget`,
+  `Request`/`Response`/`Blob`, `WebSocket`, `Worker`, `crypto.subtle`, `Intl`, or DOM. Anything outside the program
+  must be passed in as a host global.
+- **No module loader or `export`.** `import` and `require` only bind host globals (and configured module aliases) before
+  execution starts. Programs can't load files or packages from disk, and `export` is a syntax error.
+- **No passing program functions to the host (yet).** Host call arguments are copied across the boundary, so guest
+  callbacks can't be passed to host functions today (and host objects aren't classes). Passing program functions to the
+  host will be supported in the future.
+
+### Language and standard library
+
 Unsupported syntax fails before the program runs, with a hint.
 
-[`interpreter-support.md`](interpreter-support.md) is the detailed support matrix.
+- **Dynamic code and sloppy mode:** `eval`, `new Function(...)`, `with`, and non-strict mode.
+- **Prototype mutation and metaprogramming:** `Object.setPrototypeOf`, `__proto__` assignment, legacy
+  `__defineGetter__`/`__defineSetter__`, `Proxy`, and `Reflect`.
+- **Class and constructor features:** private members (`#x`), static blocks, and `new` on plain functions (only classes
+  and host functions marked `constructible` can be constructed).
+- **Symbols:** `Symbol()` (only `Symbol.iterator`, `Symbol.asyncIterator`, `Symbol.toPrimitive`, and
+  `Symbol.toStringTag` exist).
+- **Binary and weak-reference built-ins:** `Int8Array`, `Int16Array`, `Uint8ClampedArray`, the BigInt and Float16
+  typed arrays, `DataView`, resizable or shared buffers, `WeakRef`, and `FinalizationRegistry` (the other typed arrays
+  and `ArrayBuffer` need `typedArrays: true`).
+- **TypeScript syntax:** programs must be plain JavaScript.
 
 ## Determinism
 
