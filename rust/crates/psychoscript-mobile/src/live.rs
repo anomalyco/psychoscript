@@ -31,6 +31,7 @@ use crate::fetch::{self, FetchTransport, Rejection, Request};
 #[cfg(feature = "test-hooks")]
 use crate::gpu::GpuStats;
 use crate::gpu::{GpuCanvasState, GpuSurface};
+use crate::hint;
 use crate::json::{self, Input};
 use crate::timer::{self, Fire};
 
@@ -1295,6 +1296,10 @@ impl Control {
         } {
             Some(message) => {
                 drop(inbox);
+                if message.get("type").and_then(HostValue::as_str) == Some("frame") {
+                    let dt = message.get("frame").and_then(|f| f.get("dt"));
+                    hint::frame(dt.and_then(HostValue::as_f64));
+                }
                 if let Some(mut encoder) = self.encoder() {
                     let bytes = encoder.received(&message);
                     drop(encoder);
@@ -1308,6 +1313,7 @@ impl Control {
             None => {
                 inbox.waker = Some(cx.waker().clone());
                 drop(inbox);
+                hint::idle();
                 self.pending(at);
                 Poll::Pending
             }

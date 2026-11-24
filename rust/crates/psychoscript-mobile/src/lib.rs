@@ -20,6 +20,7 @@ mod encoder;
 mod error;
 mod fetch;
 mod gpu;
+mod hint;
 mod json;
 mod live;
 mod program;
