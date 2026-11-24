@@ -24,8 +24,18 @@ export type Binding = { readonly value: Value }
 
 export type GeneratorRequestKind = "next" | "return" | "throw"
 
-export const AsyncIteratorSymbol: unique symbol = Symbol("psychoscript.async-iterator")
-export const IteratorSymbol: unique symbol = Symbol("psychoscript.iterator")
+export const AsyncIteratorSymbol: unique symbol = Symbol("Symbol.asyncIterator")
+export const IteratorSymbol: unique symbol = Symbol("Symbol.iterator")
+export const ToPrimitiveSymbol: unique symbol = Symbol("Symbol.toPrimitive")
+export const ToStringTagSymbol: unique symbol = Symbol("Symbol.toStringTag")
+
+/** The well-known symbols programs can use as keys; the others throw when read from `Symbol`. */
+export const wellKnownSymbols: ReadonlySet<symbol> = new Set([
+  AsyncIteratorSymbol,
+  IteratorSymbol,
+  ToPrimitiveSymbol,
+  ToStringTagSymbol,
+])
 
 export class Throw {
   constructor(readonly value: Value) {}

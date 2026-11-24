@@ -275,7 +275,7 @@ globals by module name. Built-ins: `Object`, `Array`, `String`, `Number`, `BigIn
 `atob`/`btoa`, `structuredClone`, `crypto.randomUUID`/`getRandomValues`, `Uint8Array`, Node's `Buffer`, and `console`.
 
 Not supported: private members (`#x`), static blocks, `new` on plain functions, `Proxy`/`Reflect`, `Symbol()` (only
-`Symbol.iterator` and `Symbol.asyncIterator` exist), typed arrays other than `Uint8Array` (and
+`Symbol.iterator`, `Symbol.asyncIterator`, `Symbol.toPrimitive` and `Symbol.toStringTag` exist), typed arrays other than `Uint8Array` (and
 `ArrayBuffer`/`DataView`), `WeakRef`/`FinalizationRegistry`, sloppy mode, `eval`, `export`, and TypeScript syntax.
 Unsupported syntax fails before the program runs, with a hint.
 

@@ -2,12 +2,12 @@ import type { Builtins } from "./intrinsics.js"
 import { checkArrayLength } from "./limits.js"
 import {
   type AstNode,
-  AsyncIteratorSymbol,
   IteratorSymbol,
   type PendingThrow,
   rangeError,
   Throw,
   typeError,
+  wellKnownSymbols,
 } from "./model.js"
 import { type Convert, type GeneratorRequest, Invoke, type Prefetch, type Push, type Resume } from "./signals.js"
 import type { Code } from "../code.js"
@@ -1383,11 +1383,11 @@ export const ownKeys = (target: Obj): Array<string | symbol> => {
 
 const enumerable = (target: Obj, key: string | symbol): boolean => own(target, key)?.enumerable === true
 
-/** Own enumerable keys, including the iterator symbols; what spread and `Object.assign` copy. */
+/** Own enumerable keys, including the well-known symbols; what spread and `Object.assign` copy. */
 export const enumerableKeys = (target: Obj): Array<string | symbol> =>
   ownKeys(target).filter(
     (key) =>
-      (typeof key === "string" || key === IteratorSymbol || key === AsyncIteratorSymbol) && enumerable(target, key),
+      (typeof key === "string" || wellKnownSymbols.has(key)) && enumerable(target, key),
   )
 
 /** Own enumerable string keys: `Object.keys`. */
