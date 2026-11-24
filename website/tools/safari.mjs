@@ -4,7 +4,7 @@
 // the page pace itself as it does for a visitor (driven, it otherwise keeps its sharpness) and reports what it decided.
 import { mkdirSync, writeFileSync } from 'node:fs'
 
-const url = process.argv[2] ?? 'https://psychoscript.pages.dev/'
+const url = process.argv[2] ?? 'https://psychoscript.com/'
 const out = new URL('../.preview/safari/', import.meta.url).pathname
 mkdirSync(out, { recursive: true })
 const port = 4477
