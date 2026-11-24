@@ -40,6 +40,12 @@ the ultimate source of truth. Upstream test262 files run verbatim from `test/tes
       Node presents a CommonJS module. Anything else throws, and `import()` of it rejects. `export` is a parse error,
       and an import below the top level throws.
 - [x] Cooperative timeout, output bounding, and unrestricted host-call concurrency.
+- [x] `limits.maxValueDepth` (32 by default, 1 to 256): how deep a value may nest where it crosses between the program
+      and the host, in either direction (the result, a host call's arguments, what it returns), and where
+      `JSON.stringify` copies it. A value nested N + 1 deep fails with a `TypeError` naming where (`Argument 1 to f`,
+      `f.key[0]`), a `RangeError` for the result and `JSON.stringify`. The walk a result takes when it holds a promise
+      or a program `toJSON` (and `JSON.stringify` with a replacer) allows the larger of the limit and 100. A saved run
+      keeps its depth; a saved depth past 256 is refused.
 - [x] An optional heap limit, `limits.maxHeapBytes`: a run stops with an uncatchable `MemoryLimitExceeded` once what
       it can still reach is over it. Garbage never counts. Sizes come from a fixed model, not the process: 64 bytes per
       object the program made, 32 per own property (a function's `name` and `length`, an error's `stack` text and a
