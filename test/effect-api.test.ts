@@ -13,6 +13,21 @@ const counter = () => {
 const run = <A, E>(effect: Effect.Effect<A, E, never>) => Effect.runPromise(effect)
 
 describe("Effect API", () => {
+  test("a host function keeps its own name and length, as through the Promise API", async () => {
+    const runtime = Runtime.make({
+      globals: () => ({
+        double: Host.fn(([n]: ReadonlyArray<number>) => n * 2),
+        named: Host.fn(function given(_args: ReadonlyArray<unknown>) {
+          return Effect.succeed(1)
+        }),
+        none: Host.fn(() => Effect.succeed(0)),
+      }),
+    })
+    expect(
+      await run(runtime.execute("return [double.name, double.length, named.name, named.length, none.name, none.length]")),
+    ).toMatchObject({ ok: true, value: ["double", 1, "given", 1, "none", 0] })
+  })
+
   test("services reach host functions in execute, run and resume", async () => {
     const make = () =>
       Runtime.make({
