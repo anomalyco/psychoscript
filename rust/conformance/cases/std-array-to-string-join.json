@@ -18,10 +18,6 @@
       "TypeError",
       "Array.prototype.toString called on null or undefined."
     ],
-    [
-      "TypeError",
-      "Array.prototype.toString called on null or undefined."
-    ],
     "[object Number]",
     "[object String]",
     "[object Boolean]",

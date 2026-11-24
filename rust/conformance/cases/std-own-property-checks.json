@@ -27,8 +27,14 @@
     true,
     2,
     [
-      "Symbol(psychoscript.iterator)",
-      "Symbol(psychoscript.async-iterator)"
+      [
+        true,
+        false
+      ],
+      [
+        false,
+        true
+      ]
     ],
     0,
     [

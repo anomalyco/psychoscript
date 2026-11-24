@@ -11,7 +11,7 @@ return [
   ({ a: 1 }).propertyIsEnumerable(key), t(() => has.call(null, "x")), t(() => has.call(undefined, { toString() { throw new Error("k") } })),
   has.call(Symbol.iterator, "x"), has.call(1n, "x"), has.call("abc", 1), enumerable.call("abc", 5), has.call(true, "x"),
   Object.hasOwn({ a: 1 }, counted), ({ a: 1 }).hasOwnProperty(counted), reads,
-  Object.getOwnPropertySymbols(o).map(String), Object.getOwnPropertySymbols("ab").length, t(() => Object.getOwnPropertySymbols(null)),
+  Object.getOwnPropertySymbols(o).map((s) => [s === Symbol.iterator, s === Symbol.asyncIterator]), Object.getOwnPropertySymbols("ab").length, t(() => Object.getOwnPropertySymbols(null)),
   Object.getOwnPropertySymbols(arr).length, Object.getOwnPropertySymbols(5).length, t(() => Object.getOwnPropertySymbols(tools)),
   Object.fromEntries(new Map([["fn", Math.max], ["arrow", () => 2], ["p", Promise.resolve(1)]])).fn(1, 3), Object.keys(Object.fromEntries([Math.max])),
   t(() => Object.fromEntries([1])), t(() => Object.fromEntries([tools])), typeof Object.fromEntries([["p", Promise.resolve(1)]]).p.then,
