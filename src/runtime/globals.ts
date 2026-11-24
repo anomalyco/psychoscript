@@ -98,21 +98,6 @@ const listFromArrayLike = (value: Value): Array<Value> => {
   return Array.from({ length }, (_, index) => get(value, String(index)))
 }
 
-// The well-known symbols psychoscript does not implement throw when read, so a computed key never silently becomes "undefined".
-const unsupportedSymbols = [
-  "asyncDispose",
-  "dispose",
-  "hasInstance",
-  "isConcatSpreadable",
-  "match",
-  "matchAll",
-  "replace",
-  "search",
-  "species",
-  "split",
-  "unscopables",
-]
-
 const symbolGlobal = <R>(ctx: Interpreter<R>) => {
   const builtins = ctx.builtins
   const symbol = constructor(builtins, builtins.Symbol, {
@@ -130,11 +115,6 @@ const symbolGlobal = <R>(ctx: Interpreter<R>) => {
     toPrimitive: ToPrimitiveSymbol,
     toStringTag: ToStringTagSymbol,
   })
-  for (const name of unsupportedSymbols) {
-    defineAccessor(symbol, name, () => {
-      throw typeError(`Symbol.${name} is not supported.`)
-    })
-  }
   const self = (thisValue: Value, name: string): symbol => {
     if (typeof thisValue === "symbol") return thisValue
     throw typeError(`Symbol.prototype.${name} requires that 'this' be a Symbol.`)

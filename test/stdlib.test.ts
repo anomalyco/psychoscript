@@ -2459,7 +2459,7 @@ describe("Uint8Array callback methods", () => {
 })
 
 describe("well-known symbols", () => {
-  test("Symbol.toPrimitive and Symbol.toStringTag are honoured; unsupported ones throw when read", async () => {
+  test("Symbol.toPrimitive and Symbol.toStringTag are honoured, and Symbol.prototype works", async () => {
     expect(
       await value(`
       const o = { [Symbol.toPrimitive](hint) { return hint === "number" ? 42 : hint } }
@@ -2483,6 +2483,6 @@ describe("well-known symbols", () => {
     expect((await error(`return +{ [Symbol.toPrimitive]() { return {} } }`)).message).toContain(
       "Cannot convert object to primitive value",
     )
-    expect((await error(`return { [Symbol.species]: 1 }`)).message).toContain("Symbol.species is not supported")
+    expect(await value(`return Symbol.species === undefined`)).toBe(true)
   })
 })

@@ -69,9 +69,7 @@ the ultimate source of truth. Upstream test262 files run verbatim from `test/tes
       `Symbol.iterator` and `Symbol.asyncIterator` for the iterator protocols, `Symbol.toPrimitive` (consulted by
       every ToPrimitive that runs program code, before `valueOf`/`toString`), and `Symbol.toStringTag` (read by
       `Object.prototype.toString`). They have `description` (`"Symbol.iterator"`), `toString`
-      (`"Symbol(Symbol.iterator)"`), `valueOf`, and `Symbol.prototype`. Reading any other well-known symbol
-      (`Symbol.species`, `Symbol.hasInstance`, `Symbol.dispose`, …) throws a `TypeError` rather than giving
-      `undefined`.
+      (`"Symbol(Symbol.iterator)"`), `valueOf`, and `Symbol.prototype`.
 - [x] Getter and setter definitions in object literals (`get x() {}`, `set x(v) {}`, computed and symbol keys), named
       `get x` / `set x`. Every read and write honours program accessors: member and computed reads, method calls,
       destructuring, `=`, compound and logical assignment, `++`/`--`, inherited setters (with a primitive as `this`
