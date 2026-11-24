@@ -52,11 +52,12 @@ impl GpuStats {
 }
 
 /// Destroys the device widget runs share, as a driver reset would lose it (Rust only, for tests): every run is
-/// told, and a new one is made.
+/// told, and a new one is made. A device still being made (after a loss, on a phone in hundreds of ms) is waited for,
+/// then lost.
 #[cfg(feature = "test-hooks")]
 pub fn gpu_lose_device() {
     #[cfg(feature = "widget-gpu")]
-    if let Some(d) = device::current() {
+    if let Ok(d) = device::get() {
         // No replay between the destroy and the poll that tells of it: `destroy` invalidates every resource at
         // once, which a driver's loss doesn't (wgpu reports replay on a lost device as no error).
         let submits = device::submits();
@@ -74,11 +75,12 @@ pub fn gpu_lose_device() {
     }
 }
 
-/// Waits until the GPU is done with everything submitted to the shared device (Rust only, for tests).
+/// Waits until the GPU is done with everything submitted to the shared device, once it is made (Rust only, for
+/// tests).
 #[cfg(feature = "test-hooks")]
 pub fn gpu_wait_idle() {
     #[cfg(feature = "widget-gpu")]
-    if let Some(d) = device::current() {
+    if let Ok(d) = device::get() {
         device::poll(&d.device, true);
     }
 }
