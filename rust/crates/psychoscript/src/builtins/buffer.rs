@@ -85,7 +85,7 @@ fn received(vm: &mut Vm, v: &Value) -> String {
                 format!("an instance of {name}")
             }
         }
-        Value::Sym(_) => "type symbol (Symbol(Symbol.iterator))".into(),
+        Value::Sym(s) => format!("type symbol ({})", crate::ops::symbol_text(*s)),
     }
 }
 

@@ -448,6 +448,11 @@ impl Enc<'_> {
             "inbox": vm.inbox.iter().map(|(p, s)| self.settlement(*p, s)).collect::<R<Vec<_>>>()?,
             "coroutines": vm.coroutines.iter().map(|co| self.coroutine(co)).collect::<R<Vec<_>>>()?,
             "logs": vm.logs,
+            "console": vm.console.as_ref().map(|c| json!({
+                "counts": c.counts,
+                "timers": c.timers,
+                "indent": c.indent,
+            })),
             "rng": vm.rng.to_string(),
             "arraysWalked": vm.arrays_walked,
             "lazyBuiltins": vm.lazy_builtins,
@@ -1485,7 +1490,7 @@ impl Dec<'_> {
                 }
                 t if t.starts_with('y') => {
                     let a = id(t)?;
-                    if a > SYM_ASYNC_ITERATOR {
+                    if a > SYM_LAST {
                         return Err(invalid("a symbol is unknown."));
                     }
                     Value::Sym(a)
@@ -2277,6 +2282,28 @@ pub fn restore(vm: &mut Vm, snapshot: &Snapshot, program_hash: &str) -> R<()> {
         .iter()
         .map(string)
         .collect::<R<_>>()?;
+    vm.console = match st.get("console") {
+        None | Some(J::Null) => None,
+        Some(c) => {
+            let pairs = |key: &str| -> R<Vec<(String, f64)>> {
+                field_list(c, key)?
+                    .iter()
+                    .map(|p| {
+                        let n = at(p, 1)?.as_f64();
+                        Ok((
+                            string(at(p, 0)?)?,
+                            n.ok_or_else(|| invalid("a console count is malformed."))?,
+                        ))
+                    })
+                    .collect()
+            };
+            Some(Box::new(crate::builtins::object::ConsoleState {
+                counts: pairs("counts")?,
+                timers: pairs("timers")?,
+                indent: string(field(c, "indent")?)?,
+            }))
+        }
+    };
     vm.rng = field(st, "rng")?
         .as_str()
         .and_then(|r| r.parse().ok())

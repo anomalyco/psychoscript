@@ -6,7 +6,9 @@ use rustc_hash::FxHashMap;
 
 use crate::DiagnosticKind;
 use crate::bytecode::FuncProto;
-pub use crate::strings::{Atom, SYM_ASYNC_ITERATOR, SYM_ITERATOR};
+pub use crate::strings::{
+    Atom, SYM_ASYNC_ITERATOR, SYM_ITERATOR, SYM_LAST, SYM_TO_PRIMITIVE, SYM_TO_STRING_TAG,
+};
 use crate::value::{Id, Value};
 use crate::vm::{NativeFn, SavedFrame};
 

@@ -190,8 +190,7 @@ impl Vm {
     /// A key as a function's name: `[Symbol.iterator]` for the iterator symbols.
     pub(crate) fn key_shown(&self, key: Atom) -> String {
         match key {
-            SYM_ITERATOR => "[Symbol.iterator]".to_owned(),
-            SYM_ASYNC_ITERATOR => "[Symbol.asyncIterator]".to_owned(),
+            0..=SYM_LAST => crate::ops::symbol_shown(key).to_owned(),
             _ => self.key_text(key),
         }
     }
@@ -525,11 +524,7 @@ impl Vm {
             ..Default::default()
         };
         if !self.define_own_property(id, key, &desc)? {
-            let k = match key {
-                SYM_ITERATOR => "Symbol(Symbol.iterator)".to_owned(),
-                SYM_ASYNC_ITERATOR => "Symbol(Symbol.asyncIterator)".to_owned(),
-                _ => self.key_text(key),
-            };
+            let k = self.key_text(key);
             return Err(self.type_error(&format!("Cannot define property {k}.")));
         }
         Ok(())

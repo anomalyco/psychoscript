@@ -684,7 +684,7 @@ fn push_walk_keys(vm: &mut Vm, id: Id, allow: Option<Id>) -> usize {
                 vm.stack.extend(
                     props
                         .iter()
-                        .filter(|p| p.flags & ENUMERABLE != 0 && p.key > SYM_ASYNC_ITERATOR)
+                        .filter(|p| p.flags & ENUMERABLE != 0 && p.key > SYM_LAST)
                         .map(|p| key_slot(&vm.atoms, p.key)),
                 );
             } else {
@@ -1720,7 +1720,8 @@ pub fn format_value(vm: &mut Vm, v: &Value) -> String {
 
 fn format_inner(vm: &mut Vm, out: &mut String, v: &Value, seen: &mut Vec<Id>) {
     match v {
-        Value::Undef | Value::Uninit | Value::Null => out.push_str("null"),
+        Value::Undef => out.push_str("undefined"),
+        Value::Uninit | Value::Null => out.push_str("null"),
         Value::Str(s) => quote_str(vm, out, *s),
         Value::Num(n) => write_num(out, *n),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),

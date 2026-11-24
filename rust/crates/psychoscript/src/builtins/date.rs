@@ -163,7 +163,7 @@ fn utc(t: f64) -> f64 {
     t - offset_at(guess).0
 }
 
-fn now() -> f64 {
+pub(crate) fn now() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as f64)

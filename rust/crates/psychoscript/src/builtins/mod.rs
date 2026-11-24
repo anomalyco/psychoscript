@@ -605,6 +605,10 @@ pub fn accessor_read(vm: &mut Vm, this: Id, key: Atom) -> Res {
     {
         return Ok(v);
     }
+    // `Symbol.prototype.description` of anything but a symbol.
+    if !vm.restricted_hit && vm.symbol_accessor(this, key) {
+        return Err(object::this_symbol(vm, &Value::Obj(this), "description").unwrap_err());
+    }
     Err(accessor_error(vm, this, key))
 }
 

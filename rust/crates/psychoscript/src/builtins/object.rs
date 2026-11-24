@@ -135,16 +135,36 @@ pub fn setup(vm: &mut Vm) {
 
     let sp = vm.realm.symbol_proto;
     // `Symbol` is neither a callback nor a constructor: `new Symbol()` asks for a call instead, as the reference does.
-    // It has no `prototype`: a symbol's members are not reachable.
     let symbol = vm
         .native_fn("Symbol", 0, symbol_ctor, Value::Undef)
         .as_obj()
         .unwrap_or(0);
+    let (pk, ck) = (vm.names.prototype, vm.names.constructor);
+    vm.heap[symbol as usize]
+        .props
+        .insert(pk, Value::Obj(sp), FIXED);
+    vm.define_hidden(sp, ck, Value::Obj(symbol));
     vm.global("Symbol", Value::Obj(symbol));
     vm.heap[symbol as usize].flags |= NOT_CALLBACK;
-    vm.constant(symbol, "asyncIterator", Value::Sym(1));
-    vm.constant(symbol, "iterator", Value::Sym(0));
-    vm.methods(sp, &[("toString", 0, symbol_to_string)]);
+    vm.constant(symbol, "asyncIterator", Value::Sym(SYM_ASYNC_ITERATOR));
+    vm.constant(symbol, "iterator", Value::Sym(SYM_ITERATOR));
+    vm.constant(symbol, "toPrimitive", Value::Sym(SYM_TO_PRIMITIVE));
+    vm.constant(symbol, "toStringTag", Value::Sym(SYM_TO_STRING_TAG));
+    vm.methods(
+        sp,
+        &[
+            ("toString", 0, symbol_to_string),
+            ("valueOf", 0, symbol_value_of),
+        ],
+    );
+    super::accessors(vm, sp, &["description"]);
+    // Read-only, configurable: the reference's `readonly`.
+    let to_primitive = vm.native_fn("[Symbol.toPrimitive]", 1, symbol_to_primitive, Value::Undef);
+    vm.heap[sp as usize]
+        .props
+        .insert(SYM_TO_PRIMITIVE, to_primitive, 0);
+    let tag = vm.static_str("Symbol");
+    vm.heap[sp as usize].props.insert(SYM_TO_STRING_TAG, tag, 0);
 
     let json = vm.new_object();
     vm.realm.std.json = json;
@@ -165,6 +185,16 @@ pub fn setup(vm: &mut Vm) {
             ("error", 0, console_error),
             ("dir", 0, console_dir),
             ("table", 0, console_table),
+            ("assert", 0, console_assert),
+            ("count", 0, console_count),
+            ("countReset", 0, console_count_reset),
+            ("group", 0, console_group),
+            ("groupCollapsed", 0, console_group),
+            ("groupEnd", 0, console_group_end),
+            ("trace", 0, console_trace),
+            ("time", 0, console_time),
+            ("timeLog", 0, console_time_log),
+            ("timeEnd", 0, console_time_end),
         ],
     );
     vm.global("console", Value::Obj(console));
@@ -760,7 +790,7 @@ fn object_get_own_property_names(vm: &mut Vm, _this: Value, args: &[Value], _: I
     };
     let names: Vec<Value> = keys
         .into_iter()
-        .filter(|k| *k > SYM_ASYNC_ITERATOR)
+        .filter(|k| *k > SYM_LAST)
         .map(|k| vm.atom_val(k))
         .collect();
     Ok(vm.new_array(names))
@@ -773,7 +803,7 @@ fn object_get_own_property_symbols(vm: &mut Vm, _this: Value, args: &[Value], _:
         Value::Obj(id) => vm
             .own_property_keys(id)
             .into_iter()
-            .filter(|k| *k <= SYM_ASYNC_ITERATOR)
+            .filter(|k| *k <= SYM_LAST)
             .map(Value::Sym)
             .collect(),
         _ => Vec::new(),
@@ -791,6 +821,7 @@ fn object_get_prototype_of(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> 
         Value::Num(_) => Value::Obj(vm.realm.number_proto),
         Value::Bool(_) => Value::Obj(vm.realm.boolean_proto),
         Value::Big(_) => Value::Obj(vm.bigint_proto()),
+        Value::Sym(_) => Value::Obj(vm.realm.symbol_proto),
         v => {
             let d = super::describe_value(vm, &v);
             return Err(vm.type_error(&format!(
@@ -944,13 +975,30 @@ pub fn class_tag(vm: &Vm, v: &Value) -> &'static str {
 }
 
 fn proto_to_string(vm: &mut Vm, this: Value, _args: &[Value], _: Id) -> Res {
-    let t = format!("[object {}]", class_tag(vm, &this));
+    // A string `Symbol.toStringTag`, own or inherited, names the value; the program's getters are read ahead.
+    let readable = match this {
+        Value::Obj(id) => !vm.is_namespace(id),
+        Value::Undef | Value::Null | Value::Uninit => false,
+        _ => true,
+    };
+    let tag = match (readable, this) {
+        // A plain read, which a promise's missing key passes as for any object.
+        (true, Value::Obj(id)) => vm.reading(|vm| Ok(vm.get_obj(id, SYM_TO_STRING_TAG)))?,
+        (true, _) => vm.reading(|vm| vm.get(&this, SYM_TO_STRING_TAG))?,
+        (false, _) => Value::Undef,
+    };
+    if vm.reads_pending() {
+        return Ok(Value::Undef);
+    }
+    let t = match tag {
+        Value::Str(s) => format!("[object {}]", vm.text(s)),
+        _ => format!("[object {}]", class_tag(vm, &this)),
+    };
     Ok(vm.static_str(&t))
 }
 
 fn proto_to_locale_string(vm: &mut Vm, this: Value, _args: &[Value], callee: Id) -> Res {
-    // A symbol has no prototype to find the method on, as null and undefined have none.
-    if this.is_nullish() || is_namespace_ref(vm, &this) || matches!(this, Value::Sym(_)) {
+    if this.is_nullish() || is_namespace_ref(vm, &this) {
         return Err(vm.type_error("Object.prototype.toLocaleString called on null or undefined."));
     }
     let k = vm.names.to_string;
@@ -1310,13 +1358,37 @@ fn boolean_value_of(vm: &mut Vm, this: Value, _args: &[Value], _: Id) -> Res {
 
 fn symbol_ctor(vm: &mut Vm, _this: Value, _args: &[Value], _: Id) -> Res {
     Err(vm.type_error(
-        "Symbol is not callable; only Symbol.asyncIterator and Symbol.iterator are available.",
+        "Symbol is not callable; only Symbol.asyncIterator, Symbol.iterator, Symbol.toPrimitive and Symbol.toStringTag are available.",
     ))
 }
 
+/// The symbol a `Symbol.prototype` method is called on.
+pub(crate) fn this_symbol(vm: &mut Vm, this: &Value, name: &str) -> Result<Atom, Value> {
+    match this {
+        Value::Sym(s) => Ok(*s),
+        _ => Err(vm.type_error(&format!(
+            "Symbol.prototype.{name} requires that 'this' be a Symbol."
+        ))),
+    }
+}
+
 fn symbol_to_string(vm: &mut Vm, this: Value, _args: &[Value], _: Id) -> Res {
-    let s = if let Value::Sym(s) = this { s } else { 0 };
+    let s = this_symbol(vm, &this, "toString")?;
     Ok(vm.atom_val(s))
+}
+
+fn symbol_value_of(vm: &mut Vm, this: Value, _args: &[Value], _: Id) -> Res {
+    Ok(Value::Sym(this_symbol(vm, &this, "valueOf")?))
+}
+
+fn symbol_to_primitive(vm: &mut Vm, this: Value, _args: &[Value], _: Id) -> Res {
+    Ok(Value::Sym(this_symbol(vm, &this, "[Symbol.toPrimitive]")?))
+}
+
+/// A symbol's `description`: `Symbol.iterator` for `Symbol(Symbol.iterator)`.
+pub(crate) fn symbol_description(vm: &mut Vm, s: Atom) -> Value {
+    let text = crate::ops::symbol_text(s);
+    vm.static_str(&text["Symbol(".len()..text.len() - 1])
 }
 
 // ---------- JSON ----------
@@ -1552,16 +1624,184 @@ fn json_stringify(vm: &mut Vm, _this: Value, args: &[Value], callee: Id) -> Res 
 
 // ---------- console ----------
 
-fn log_line(vm: &mut Vm, prefix: &str, args: &[Value]) -> Res {
+/// What `console.count`, `group` and `time` remember between calls. Saved with the run.
+#[derive(Clone, Default)]
+pub struct ConsoleState {
+    pub counts: Vec<(String, f64)>,
+    /// The epoch milliseconds each `time` label started at, so the time elapsed survives a save and restore.
+    pub timers: Vec<(String, f64)>,
+    pub indent: String,
+}
+
+fn console_state(vm: &mut Vm) -> &mut ConsoleState {
+    vm.console.get_or_insert_default()
+}
+
+/// Logs `prefix` and `message`, each of the message's lines indented by the groups open.
+fn push_log(vm: &mut Vm, prefix: &str, message: &str) -> Res {
+    let indent = vm.console.as_ref().map_or("", |c| c.indent.as_str());
     let mut line = String::from(prefix);
-    for (i, a) in args.iter().enumerate() {
-        if i > 0 {
-            line.push(' ');
+    if indent.is_empty() {
+        line.push_str(message);
+    } else {
+        // As `message.replace(/^/gm, indent)`: at the start and after each line terminator.
+        line.push_str(indent);
+        for c in message.chars() {
+            line.push(c);
+            if matches!(c, '\n' | '\r' | '\u{2028}' | '\u{2029}') {
+                line.push_str(indent);
+            }
         }
-        line.push_str(&convert::format_value(vm, a));
     }
     vm.logs.push(line);
     Ok(Value::Undef)
+}
+
+fn format_args(vm: &mut Vm, args: &[Value]) -> String {
+    let parts: Vec<String> = args.iter().map(|a| convert::format_value(vm, a)).collect();
+    parts.join(" ")
+}
+
+fn log_line(vm: &mut Vm, prefix: &str, args: &[Value]) -> Res {
+    let message = format_args(vm, args);
+    push_log(vm, prefix, &message)
+}
+
+/// A count's or timer's label: `default` when omitted.
+fn console_label(vm: &mut Vm, args: &[Value]) -> Result<String, Value> {
+    match arg(args, 0) {
+        Value::Undef => Ok("default".to_owned()),
+        v => super::builtin_string(vm, &v),
+    }
+}
+
+fn console_assert(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
+    if vm.truthy(&arg(args, 0)) {
+        return Ok(Value::Undef);
+    }
+    let rest = args.get(1..).unwrap_or_default();
+    if rest.is_empty() {
+        return push_log(vm, "[error] ", "Assertion failed");
+    }
+    let separator = if matches!(rest[0], Value::Str(_)) {
+        ": "
+    } else {
+        " "
+    };
+    let message = format!("Assertion failed{separator}{}", format_args(vm, rest));
+    push_log(vm, "[error] ", &message)
+}
+
+fn console_count(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
+    let name = console_label(vm, args)?;
+    let counts = &mut console_state(vm).counts;
+    let count = match counts.iter_mut().find(|(k, _)| *k == name) {
+        Some((_, n)) => {
+            *n += 1.0;
+            *n
+        }
+        None => {
+            counts.push((name.clone(), 1.0));
+            1.0
+        }
+    };
+    push_log(
+        vm,
+        "",
+        &format!("{name}: {}", crate::value::num_to_string(count)),
+    )
+}
+
+fn console_count_reset(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
+    let name = console_label(vm, args)?;
+    match console_state(vm)
+        .counts
+        .iter_mut()
+        .find(|(k, _)| *k == name)
+    {
+        Some((_, n)) => *n = 0.0,
+        None => return push_log(vm, "[warn] ", &format!("Count for '{name}' does not exist")),
+    }
+    Ok(Value::Undef)
+}
+
+fn console_group(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
+    if !args.is_empty() {
+        log_line(vm, "", args)?;
+    }
+    console_state(vm).indent.push_str("  ");
+    Ok(Value::Undef)
+}
+
+fn console_group_end(vm: &mut Vm, _this: Value, _args: &[Value], _: Id) -> Res {
+    let indent = &mut console_state(vm).indent;
+    *indent = indent.chars().skip(2).collect();
+    Ok(Value::Undef)
+}
+
+fn console_trace(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
+    if args.is_empty() {
+        return push_log(vm, "[error] ", "Trace");
+    }
+    let message = format!("Trace: {}", format_args(vm, args));
+    push_log(vm, "[error] ", &message)
+}
+
+fn console_time(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
+    let name = console_label(vm, args)?;
+    let now = super::date::now();
+    let timers = &mut console_state(vm).timers;
+    if timers.iter().any(|(k, _)| *k == name) {
+        let message = format!("Label '{name}' already exists for console.time()");
+        return push_log(vm, "[warn] ", &message);
+    }
+    timers.push((name, now));
+    Ok(Value::Undef)
+}
+
+/// The time since the label's `time`, as Node shows it, or a warning logged when it has none.
+fn console_elapsed(vm: &mut Vm, name: &str, method: &str) -> Result<Option<String>, Value> {
+    let start = console_state(vm)
+        .timers
+        .iter()
+        .find(|(k, _)| k == name)
+        .map(|(_, t)| *t);
+    let Some(start) = start else {
+        push_log(
+            vm,
+            "[warn] ",
+            &format!("No such label '{name}' for console.{method}()"),
+        )?;
+        return Ok(None);
+    };
+    let ms = super::date::now() - start;
+    Ok(Some(if ms < 1000.0 {
+        format!("{}ms", crate::value::num_to_fixed(ms, 3))
+    } else {
+        format!("{}s", crate::value::num_to_fixed(ms / 1000.0, 3))
+    }))
+}
+
+fn console_time_log(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
+    let name = console_label(vm, args)?;
+    let Some(time) = console_elapsed(vm, &name, "timeLog")? else {
+        return Ok(Value::Undef);
+    };
+    let mut message = format!("{name}: {time}");
+    for a in args.iter().skip(1) {
+        message.push(' ');
+        message.push_str(&convert::format_value(vm, a));
+    }
+    push_log(vm, "", &message)
+}
+
+fn console_time_end(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
+    let name = console_label(vm, args)?;
+    let Some(time) = console_elapsed(vm, &name, "timeEnd")? else {
+        return Ok(Value::Undef);
+    };
+    console_state(vm).timers.retain(|(k, _)| *k != name);
+    push_log(vm, "", &format!("{name}: {time}"))
 }
 
 fn console_log(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
@@ -1578,48 +1818,33 @@ fn console_error(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
 }
 fn console_dir(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
     if args.is_empty() {
-        vm.logs.push("undefined".into());
-        return Ok(Value::Undef);
+        return push_log(vm, "", "undefined");
     }
     log_line(vm, "", &args[..1])
 }
 
-/// Whether a value holds an opaque reference (a function, promise, iterator or namespace path) anywhere in the
-/// data objects and arrays it contains, as the reference's `containsOpaqueReference` walks it.
-fn contains_opaque(vm: &Vm, v: &Value, seen: &mut Vec<Id>) -> bool {
+/// Whether a value is opaque, a reference rather than data: a function, promise, iterator or namespace path (the
+/// reference's `isOpaque`).
+fn is_opaque(vm: &Vm, v: &Value) -> bool {
     let Value::Obj(id) = v else { return false };
-    let o = &vm.heap[*id as usize];
-    match &o.kind {
-        Kind::Ordinary | Kind::Error(_) | Kind::Arguments(_) | Kind::Array(_) => {}
-        Kind::Map(_)
-        | Kind::Set(_)
-        | Kind::WeakMap(_)
-        | Kind::WeakSet(_)
-        | Kind::Date(_)
-        | Kind::RegExp(_)
-        | Kind::Bytes(_)
-        | Kind::Url(_)
-        | Kind::SearchParams(_)
-        | Kind::Headers(_)
-        | Kind::TextDecoder(_) => return false,
-        _ => return true,
-    }
-    if seen.contains(id) {
-        return false;
-    }
-    seen.push(*id);
-    // A structural check, so it never runs program code: accessors are left out.
-    let mut children: Vec<Value> = o
-        .props
-        .items
-        .iter()
-        .filter(|p| p.flags & ACCESSOR == 0)
-        .map(|p| p.value)
-        .collect();
-    if let Kind::Array(items) | Kind::Arguments(items) = &o.kind {
-        children.extend(items.iter().copied());
-    }
-    children.iter().any(|c| contains_opaque(vm, c, seen))
+    !matches!(
+        vm.heap[*id as usize].kind,
+        Kind::Ordinary
+            | Kind::Error(_)
+            | Kind::Arguments(_)
+            | Kind::Array(_)
+            | Kind::Map(_)
+            | Kind::Set(_)
+            | Kind::WeakMap(_)
+            | Kind::WeakSet(_)
+            | Kind::Date(_)
+            | Kind::RegExp(_)
+            | Kind::Bytes(_)
+            | Kind::Url(_)
+            | Kind::SearchParams(_)
+            | Kind::Headers(_)
+            | Kind::TextDecoder(_)
+    )
 }
 
 /// A row's cells: an object's own entries (or the chosen columns), or the value itself under `Value`.
@@ -1675,12 +1900,11 @@ fn record_keys(keys: Vec<String>) -> Vec<String> {
 fn console_table(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
     let data = arg(args, 0);
     if let Value::Undef = data {
-        vm.logs.push("undefined".into());
-        return Ok(Value::Undef);
+        return push_log(vm, "", "undefined");
     }
-    if contains_opaque(vm, &data, &mut Vec::new()) {
-        vm.logs.push("[opaque reference]".into());
-        return Ok(Value::Undef);
+    // An opaque value prints as `console.log` shows it; one inside the data is a cell.
+    if is_opaque(vm, &data) {
+        return log_line(vm, "", &[data]);
     }
     for v in [data, arg(args, 1)] {
         if let Value::Obj(id) = v
@@ -1780,7 +2004,7 @@ fn console_table(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
         }
         lines.push(line.join("\t"));
     }
-    vm.logs.push(lines.join("\n"));
+    push_log(vm, "", &lines.join("\n"))?;
     Ok(Value::Undef)
 }
 

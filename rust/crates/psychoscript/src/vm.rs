@@ -351,6 +351,8 @@ pub struct Vm {
     pub(crate) cpu: Option<Box<crate::cpu::CpuMeter>>,
     /// With `Limits::slice_ms`, the stretch in progress, from the run's start.
     pub(crate) slice: Option<Box<crate::cpu::Slice>>,
+    /// What `console.count`, `group` and `time` remember, once one is called. Saved with the run.
+    pub(crate) console: Option<Box<crate::builtins::object::ConsoleState>>,
 }
 
 impl Vm {
@@ -458,6 +460,7 @@ impl Vm {
             lends: Vec::new(),
             cpu: None,
             slice: None,
+            console: None,
         }
     }
 
@@ -3567,8 +3570,7 @@ impl Vm {
                         // A computed key names the function when the literal runs: `get x`, `set [Symbol.iterator]`.
                         if let Value::Obj(fid) = f {
                             let shown = match a {
-                                SYM_ITERATOR => "[Symbol.iterator]".to_owned(),
-                                SYM_ASYNC_ITERATOR => "[Symbol.asyncIterator]".to_owned(),
+                                0..=SYM_LAST => crate::ops::symbol_shown(a).to_owned(),
                                 _ => self.key_text(a),
                             };
                             let name = format!("{} {shown}", if setter { "set" } else { "get" });
@@ -3753,7 +3755,7 @@ impl Vm {
                             }
                             let a = tri!(self.key_of(&k));
                             self.stack.pop();
-                            let v = if a <= SYM_ASYNC_ITERATOR {
+                            let v = if a <= SYM_LAST {
                                 Value::Sym(a)
                             } else {
                                 self.atom_val(a)

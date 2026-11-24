@@ -1,0 +1,43 @@
+{
+  "bindings": {},
+  "ok": true,
+  "value": [
+    "function",
+    0,
+    []
+  ],
+  "logs": [
+    "{\"a\":undefined} [undefined] [,1] undefined null {\"b\":[undefined,null]}",
+    "(index)\ta\tf\n0\t1\t[opaque reference]",
+    "[opaque reference]",
+    "[Promise (await it to get its value)]",
+    "[error] Assertion failed: x 1",
+    "[error] Assertion failed {\"a\":1}",
+    "[error] Assertion failed",
+    "default: 1",
+    "default: 2",
+    "x: 1",
+    "default: 1",
+    "[warn] Count for 'y' does not exist",
+    "5: 1",
+    "G",
+    "  a\n  b",
+    "[warn]     w",
+    "    (index)\tValue\n    0\t1",
+    "    {\"x\":1}",
+    "out",
+    "[error] Trace: t 1",
+    "[error] Trace",
+    "Symbol(Symbol.iterator) [Symbol(Symbol.toStringTag)] {\"s\":Symbol(Symbol.toPrimitive)}",
+    "[warn] No such label 'default' for console.timeEnd()",
+    "[warn] No such label 'q' for console.timeLog()",
+    "[warn] Label 'z' already exists for console.time()",
+    "H",
+    "  loop: 1",
+    "  loop: 2",
+    "  loop: 3",
+    "  loop: 1",
+    "after"
+  ],
+  "metadata": null
+}
