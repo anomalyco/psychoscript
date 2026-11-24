@@ -125,7 +125,7 @@
     "ABCA",
     "a",
     -1,
-    "abca[object Function][object Object]!",
+    "abca[object GeneratorFunction][object Object]!",
     false,
     "[",
     "ct]",

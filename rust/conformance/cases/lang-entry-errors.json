@@ -14,8 +14,8 @@
     "fromEntries": [
       "TypeError: Object.fromEntries expects [key, value] entry objects.",
       "TypeError: Object.fromEntries expects [key, value] entry objects.",
-      "TypeError: Object.fromEntries expects [key, value] entry objects.",
-      "TypeError: Object.fromEntries expects [key, value] entry objects.",
+      {},
+      {},
       "TypeError: Object.fromEntries expects [key, value] entry objects.",
       [
         "closed"

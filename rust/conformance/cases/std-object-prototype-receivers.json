@@ -5,27 +5,24 @@
     [
       "hasOwnProperty",
       "TypeError",
-      "Object.prototype.hasOwnProperty called on incompatible receiver undefined."
+      "Object.prototype.hasOwnProperty cannot convert undefined to an object."
     ],
     [
       "hasOwnProperty",
       "TypeError",
-      "Object.prototype.hasOwnProperty called on incompatible receiver null."
+      "Object.prototype.hasOwnProperty cannot convert null to an object."
     ],
     [
       "hasOwnProperty",
-      "TypeError",
-      "Object.prototype.hasOwnProperty called on incompatible receiver a string."
+      false
     ],
     [
       "hasOwnProperty",
-      "TypeError",
-      "Object.prototype.hasOwnProperty called on incompatible receiver a number."
+      false
     ],
     [
       "hasOwnProperty",
-      "TypeError",
-      "Object.prototype.hasOwnProperty called on incompatible receiver a boolean."
+      false
     ],
     [
       "hasOwnProperty",
@@ -46,7 +43,7 @@
     [
       "hasOwnProperty",
       "TypeError",
-      "Object.prototype.hasOwnProperty called on incompatible receiver a namespace reference."
+      "Object.prototype.hasOwnProperty cannot read tools: it is a namespace of host functions, not an object."
     ],
     [
       "isPrototypeOf",
@@ -97,27 +94,24 @@
     [
       "propertyIsEnumerable",
       "TypeError",
-      "Object.prototype.propertyIsEnumerable called on incompatible receiver undefined."
+      "Object.prototype.propertyIsEnumerable cannot convert undefined to an object."
     ],
     [
       "propertyIsEnumerable",
       "TypeError",
-      "Object.prototype.propertyIsEnumerable called on incompatible receiver null."
+      "Object.prototype.propertyIsEnumerable cannot convert null to an object."
     ],
     [
       "propertyIsEnumerable",
-      "TypeError",
-      "Object.prototype.propertyIsEnumerable called on incompatible receiver a string."
+      false
     ],
     [
       "propertyIsEnumerable",
-      "TypeError",
-      "Object.prototype.propertyIsEnumerable called on incompatible receiver a number."
+      false
     ],
     [
       "propertyIsEnumerable",
-      "TypeError",
-      "Object.prototype.propertyIsEnumerable called on incompatible receiver a boolean."
+      false
     ],
     [
       "propertyIsEnumerable",
@@ -138,7 +132,7 @@
     [
       "propertyIsEnumerable",
       "TypeError",
-      "Object.prototype.propertyIsEnumerable called on incompatible receiver a namespace reference."
+      "Object.prototype.propertyIsEnumerable cannot read tools: it is a namespace of host functions, not an object."
     ],
     [
       "toString",
@@ -290,17 +284,11 @@
       "Object.prototype.toLocaleString called on null or undefined."
     ],
     "function",
+    true,
+    false,
     [
       "TypeError",
-      "Object.prototype.hasOwnProperty called on incompatible receiver a string."
-    ],
-    [
-      "TypeError",
-      "Object.prototype.propertyIsEnumerable called on incompatible receiver a number."
-    ],
-    [
-      "TypeError",
-      "Object.prototype.hasOwnProperty called on incompatible receiver undefined."
+      "Object.prototype.hasOwnProperty cannot convert undefined to an object."
     ],
     false,
     false

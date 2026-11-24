@@ -854,28 +854,25 @@
     ],
     [
       "toString",
-      "TypeError",
-      "Array.prototype.toString called on incompatible receiver a number."
+      "ok"
+    ],
+    [
+      "toString",
+      "ok"
+    ],
+    [
+      "toString",
+      "ok"
     ],
     [
       "toString",
       "TypeError",
-      "Array.prototype.toString called on incompatible receiver a string."
+      "Array.prototype.toString called on null or undefined."
     ],
     [
       "toString",
       "TypeError",
-      "Array.prototype.toString called on incompatible receiver a data object."
-    ],
-    [
-      "toString",
-      "TypeError",
-      "Array.prototype.toString called on incompatible receiver null."
-    ],
-    [
-      "toString",
-      "TypeError",
-      "Array.prototype.toString called on incompatible receiver undefined."
+      "Array.prototype.toString called on null or undefined."
     ],
     [
       "unshift",

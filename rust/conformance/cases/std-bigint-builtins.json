@@ -73,7 +73,7 @@
     "8",
     ",1",
     "[object Object]",
-    "TypeError: Object.prototype.hasOwnProperty called on incompatible receiver a bigint.",
+    false,
     "2",
     null
   ],

@@ -25,7 +25,7 @@
     "Array.from expects a function callback.",
     "Array.from expects a function callback.",
     "for...of requires an iterable value, received a number.",
-    "Object.fromEntries expects [key, value] entry objects.",
+    "fn ok",
     "[null,null]",
     "[]",
     "[]",
@@ -43,7 +43,6 @@
     "[2,4]",
     "[2,3]",
     "{\"2\":\"b\",\"a\":1}",
-    "Object.fromEntries expects [key, value] entry objects.",
     "{\"5\":6,\"[object Object]\":1,\"1,2\":2,\"null\":3,\"undefined\":4}"
   ],
   "logs": [],

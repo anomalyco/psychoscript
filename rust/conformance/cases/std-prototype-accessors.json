@@ -2,50 +2,20 @@
   "bindings": {},
   "ok": true,
   "value": [
-    [
-      "TypeError",
-      "RegExp.prototype.source called on incompatible receiver a data object."
-    ],
-    [
-      "TypeError",
-      "RegExp.prototype.flags called on incompatible receiver a data object."
-    ],
+    "(?:)",
+    "",
     [
       "TypeError",
       "RegExp.prototype.lastIndex called on incompatible receiver a data object."
     ],
-    [
-      "TypeError",
-      "RegExp.prototype.global called on incompatible receiver a data object."
-    ],
-    [
-      "TypeError",
-      "RegExp.prototype.ignoreCase called on incompatible receiver a data object."
-    ],
-    [
-      "TypeError",
-      "RegExp.prototype.multiline called on incompatible receiver a data object."
-    ],
-    [
-      "TypeError",
-      "RegExp.prototype.dotAll called on incompatible receiver a data object."
-    ],
-    [
-      "TypeError",
-      "RegExp.prototype.unicode called on incompatible receiver a data object."
-    ],
-    [
-      "TypeError",
-      "RegExp.prototype.unicodeSets called on incompatible receiver a data object."
-    ],
-    [
-      "TypeError",
-      "RegExp.prototype.sticky called on incompatible receiver a data object."
-    ],
-    [
-      "TypeError",
-      "RegExp.prototype.hasIndices called on incompatible receiver a data object."
-    ],
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
     [
       "TypeError",
       "Uint8Array.prototype.length called on incompatible receiver a data object."

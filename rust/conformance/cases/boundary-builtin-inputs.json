@@ -126,7 +126,7 @@
         ],
         [
           "TypeError",
-          "new Promise(...) expects an executor function (e.g. new Promise((resolve, reject) => { ... }))."
+          "new Promise(...) cannot use this callable as an executor; wrap it in an arrow function, e.g. (resolve, reject) => fn(resolve, reject)."
         ]
       ],
       [
@@ -189,7 +189,7 @@
         ],
         [
           "TypeError",
-          "new Promise(...) expects an executor function (e.g. new Promise((resolve, reject) => { ... }))."
+          "new Promise(...) cannot use this callable as an executor; wrap it in an arrow function, e.g. (resolve, reject) => fn(resolve, reject)."
         ]
       ],
       [

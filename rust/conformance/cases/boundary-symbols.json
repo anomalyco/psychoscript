@@ -74,7 +74,7 @@
       "TypeError",
       "The 'in' operator requires a data object on the right-hand side."
     ],
-    "[object Object]",
+    "[object Symbol]",
     "{}",
     "{\"s\":{},\"n\":[{}]}",
     "[\n {}\n]",

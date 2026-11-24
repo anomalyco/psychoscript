@@ -6,7 +6,7 @@
     "ArrayBuffer": "length,name,prototype,isView",
     "ArrayBuffer.prototype": "constructor,byteLength,slice",
     "Uint8Array": "length,name,prototype,from,of,fromBase64,fromHex,BYTES_PER_ELEMENT",
-    "Uint8Array.prototype": "constructor,BYTES_PER_ELEMENT,length,byteLength,byteOffset,buffer,at,slice,subarray,set,fill,reverse,sort,indexOf,lastIndexOf,includes,join,toString,toBase64,toHex,keys,values,entries,map,filter,forEach,some,every,find,findIndex,findLast,findLastIndex,reduce,reduceRight",
+    "Uint8Array.prototype": "constructor,BYTES_PER_ELEMENT,length,byteLength,byteOffset,buffer,at,slice,subarray,set,fill,reverse,sort,toSorted,toReversed,with,copyWithin,indexOf,lastIndexOf,includes,join,toString,toBase64,toHex,setFromBase64,setFromHex,keys,values,entries,map,filter,forEach,some,every,find,findIndex,findLast,findLastIndex,reduce,reduceRight",
     "Uint16Array": "length,name,prototype,from,of,BYTES_PER_ELEMENT",
     "Uint16Array.prototype": "constructor,BYTES_PER_ELEMENT,length,byteLength,byteOffset,buffer,at,slice,subarray,set,fill,reverse,indexOf,lastIndexOf,includes,join,toString,keys,values,entries",
     "Uint32Array": "length,name,prototype,from,of,BYTES_PER_ELEMENT",
