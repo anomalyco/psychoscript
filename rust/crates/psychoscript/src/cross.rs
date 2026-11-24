@@ -127,7 +127,7 @@ fn flat(vm: &Vm, v: &Value) -> Option<Json> {
     }
     let mut out = serde_json::Map::new();
     for p in &o.props.items {
-        if p.flags & ENUMERABLE == 0 || p.key <= SYM_ASYNC_ITERATOR {
+        if p.flags & ENUMERABLE == 0 || p.key <= SYM_LAST {
             continue;
         }
         let k = vm.atoms.text(p.key);
@@ -379,7 +379,7 @@ fn plain_json(vm: &Vm, v: &Value) -> Option<Json> {
         _ => {
             let mut out = serde_json::Map::new();
             for p in &vm.heap[id as usize].props.items {
-                if p.flags & ENUMERABLE == 0 || p.key <= SYM_ASYNC_ITERATOR {
+                if p.flags & ENUMERABLE == 0 || p.key <= SYM_LAST {
                     continue;
                 }
                 if let Some(j) = plain_json(vm, &p.value) {

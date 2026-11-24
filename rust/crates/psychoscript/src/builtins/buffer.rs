@@ -85,7 +85,7 @@ fn received(vm: &mut Vm, v: &Value) -> String {
                 format!("an instance of {name}")
             }
         }
-        Value::Sym(_) => "type symbol (Symbol(Symbol.iterator))".into(),
+        Value::Sym(s) => format!("type symbol ({})", crate::ops::symbol_text(*s)),
     }
 }
 
@@ -169,11 +169,16 @@ pub fn setup(vm: &mut Vm) {
     let proto = vm.plain(up);
     vm.realm.std.buffer = proto;
     let ctor = vm.ctor("Buffer", 2, buffer_call, proto, Value::Undef);
-    // Bun inherits this from Uint8Array; Buffer's constructor here does not.
-    vm.constant(ctor, "BYTES_PER_ELEMENT", Value::Num(1.0));
+    // Buffer's statics inherit Uint8Array's (fromHex, fromBase64, BYTES_PER_ELEMENT), made first.
+    let ck = vm.names.constructor;
+    if let Value::Obj(uint8) = vm.get_obj(up, ck) {
+        vm.heap[ctor as usize].proto = Some(uint8);
+    }
     vm.methods(
         ctor,
         &[
+            ("of", 0, buffer_of),
+            ("copyBytesFrom", 3, buffer_copy_bytes_from),
             ("from", 3, buffer_from),
             ("alloc", 3, buffer_alloc),
             ("allocUnsafe", 1, buffer_alloc_unsafe),
@@ -236,23 +241,14 @@ fn this_buf(vm: &mut Vm, this: &Value, name: &str) -> Result<Id, Value> {
     ))
 }
 
-fn bytes_from(vm: &mut Vm, value: &Value, second: &Value, third: &Value) -> Result<Vec<u8>, Value> {
+fn bytes_from(vm: &mut Vm, value: &Value, second: &Value) -> Result<Vec<u8>, Value> {
     if let Value::Str(s) = value {
         let enc = encoding(vm, second)?.unwrap_or(Enc::Utf8);
         return Ok(encode(vm.atoms.sref(*s), enc));
     }
+    // As in Node, the offset and length apply only to an ArrayBuffer, so bytes are copied whole.
     if let Some(data) = bytes_of(vm, value) {
-        let offset = match second {
-            Value::Undef => 0.0,
-            v => vm.number_of(v)?,
-        };
-        let start = to_integer(offset).clamp(0.0, data.len() as f64) as usize;
-        let end = match third {
-            Value::Undef => data.len(),
-            v => (start as f64 + to_integer(vm.number_of(v)?))
-                .clamp(start as f64, data.len() as f64) as usize,
-        };
-        return Ok(data[start..end].to_vec());
+        return Ok(data);
     }
     if let Value::Obj(id) = value {
         let id = *id;
@@ -309,12 +305,102 @@ fn bytes_from(vm: &mut Vm, value: &Value, second: &Value, third: &Value) -> Resu
 }
 
 fn buffer_call(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
-    let data = bytes_from(vm, &arg(args, 0), &arg(args, 1), &arg(args, 2))?;
+    let data = bytes_from(vm, &arg(args, 0), &arg(args, 1))?;
     Ok(wrap(vm, data))
 }
 
 fn buffer_from(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
     buffer_call(vm, Value::Undef, args, 0)
+}
+
+fn buffer_of(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
+    let mut data = Vec::with_capacity(args.len());
+    for a in args {
+        data.push(super::bytes::to_u8(super::builtin_number(vm, a)?));
+    }
+    Ok(wrap(vm, data))
+}
+
+/// Node's `copyBytesFrom`: the bytes of a typed array's elements from `offset`, `length` of them.
+fn buffer_copy_bytes_from(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
+    let view = arg(args, 0);
+    let Some(b) = super::bytes::as_typed(vm, &view) else {
+        let d = super::describe_value(vm, &view);
+        return Err(node_error(
+            vm,
+            "TypeError",
+            &format!("The \"view\" argument must be an instance of TypedArray. Received {d}"),
+            "ERR_INVALID_ARG_TYPE",
+        ));
+    };
+    if b.len == 0 {
+        return Ok(wrap(vm, Vec::new()));
+    }
+    let (offset, length) = (arg(args, 1), arg(args, 2));
+    let (mut start, mut end) = (0, b.len);
+    if !matches!(offset, Value::Undef) || !matches!(length, Value::Undef) {
+        if !matches!(offset, Value::Undef) {
+            start = safe_integer(vm, &offset, "offset")?;
+            if start >= b.len {
+                return Ok(wrap(vm, Vec::new()));
+            }
+        }
+        if !matches!(length, Value::Undef) {
+            end = start
+                .saturating_add(safe_integer(vm, &length, "length")?)
+                .min(b.len);
+        }
+    }
+    let size = b.elem.size();
+    let data = b.to_vec(vm)[start * size..end * size].to_vec();
+    Ok(wrap(vm, data))
+}
+
+/// Node's `validateInteger` from 0 to `Number.MAX_SAFE_INTEGER`, of an argument the reference hands to the host as its
+/// number when it is an object.
+fn safe_integer(vm: &mut Vm, v: &Value, name: &str) -> Result<usize, Value> {
+    let v = match v {
+        Value::Obj(_) if super::bytes::as_typed(vm, v).is_none() => {
+            Value::Num(super::builtin_number(vm, v)?)
+        }
+        v => *v,
+    };
+    let Value::Num(n) = v else {
+        let d = received(vm, &v);
+        return Err(node_error(
+            vm,
+            "TypeError",
+            &format!("The \"{name}\" argument must be of type number. Received {d}"),
+            "ERR_INVALID_ARG_TYPE",
+        ));
+    };
+    let range = if n.fract() != 0.0 || !n.is_finite() {
+        "an integer"
+    } else if !(0.0..=9007199254740991.0).contains(&n) {
+        ">= 0 && <= 9007199254740991"
+    } else {
+        return Ok(n as usize);
+    };
+    let shown = num_to_string(n);
+    // Node groups the digits of an integer past 2^32 in threes, from the right of its text.
+    let shown = if n.fract() == 0.0 && n.abs() > 4294967296.0 {
+        let start = usize::from(shown.starts_with('-'));
+        let mut i = shown.len();
+        let mut rest = String::new();
+        while i >= start + 4 {
+            rest = format!("_{}{rest}", &shown[i - 3..i]);
+            i -= 3;
+        }
+        format!("{}{rest}", &shown[..i])
+    } else {
+        shown
+    };
+    Err(node_error(
+        vm,
+        "RangeError",
+        &format!("The value of \"{name}\" is out of range. It must be {range}. Received {shown}"),
+        "ERR_OUT_OF_RANGE",
+    ))
 }
 
 fn size(vm: &mut Vm, v: &Value) -> Result<usize, Value> {
@@ -385,7 +471,11 @@ fn buffer_byte_length(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
         return Ok(Value::Num(b.len as f64));
     }
     let s = vm.string_of(&v)?;
-    let enc = encoding(vm, &arg(args, 1))?.unwrap_or(Enc::Utf8);
+    // Node and Bun count an unknown or empty encoding as UTF-8 here.
+    let enc = match arg(args, 1) {
+        Value::Str(e) => encoding_of(vm.text(e)).unwrap_or(Enc::Utf8),
+        _ => Enc::Utf8,
+    };
     let text = vm.text(s);
     let n = match enc {
         Enc::Utf8 => crate::strings::host_text(text).len(),
@@ -861,7 +951,7 @@ enum Num {
 }
 
 /// Name, write?, kind, byte width (0: from the byteLength argument), little-endian.
-const NUMERIC: [(&str, bool, Num, usize, bool); 58] = [
+const NUMERIC: [(&str, bool, Num, usize, bool); 62] = [
     ("readUInt8", false, Num::U, 1, true),
     ("readUint8", false, Num::U, 1, true),
     ("readInt8", false, Num::I, 1, true),
@@ -882,7 +972,9 @@ const NUMERIC: [(&str, bool, Num, usize, bool); 58] = [
     ("readDoubleLE", false, Num::F, 8, true),
     ("readDoubleBE", false, Num::F, 8, false),
     ("readUIntLE", false, Num::U, 0, true),
+    ("readUintLE", false, Num::U, 0, true),
     ("readUIntBE", false, Num::U, 0, false),
+    ("readUintBE", false, Num::U, 0, false),
     ("readIntLE", false, Num::I, 0, true),
     ("readIntBE", false, Num::I, 0, false),
     ("readBigInt64LE", false, Num::BigI, 8, true),
@@ -911,7 +1003,9 @@ const NUMERIC: [(&str, bool, Num, usize, bool); 58] = [
     ("writeDoubleLE", true, Num::F, 8, true),
     ("writeDoubleBE", true, Num::F, 8, false),
     ("writeUIntLE", true, Num::U, 0, true),
+    ("writeUintLE", true, Num::U, 0, true),
     ("writeUIntBE", true, Num::U, 0, false),
+    ("writeUintBE", true, Num::U, 0, false),
     ("writeIntLE", true, Num::I, 0, true),
     ("writeIntBE", true, Num::I, 0, false),
     ("writeBigInt64LE", true, Num::BigI, 8, true),

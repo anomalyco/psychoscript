@@ -4,6 +4,7 @@ import { syntaxError, typeError } from "../runtime/model.js"
 import {
   define,
   defineAccessor,
+  get,
   Arr,
   Obj,
   RegExpObj,
@@ -13,6 +14,7 @@ import {
   type Value,
 } from "../runtime/objects.js"
 import type { Interpreter } from "../runtime/interpreter.js"
+import { readsPending, withReads } from "../runtime/callback.js"
 
 const flagProperties = [
   "hasIndices",
@@ -91,11 +93,16 @@ export const regexpGlobal = <R>(ctx: Interpreter<R>) => {
   const regexp = constructor(builtins, proto, {
     name: "RegExp",
     length: 2,
-    // RegExp(r) without new returns r itself when it is a plain RegExp and no flags are given.
-    call: (_, args) =>
-      args[0] instanceof RegExpObj && args[0].proto === proto && args[1] === undefined
-        ? args[0]
-        : constructRegExp(builtins, args),
+    // RegExp(r) without new returns r itself when no flags are given and its constructor is RegExp.
+    call: (_, args) => {
+      const pattern = args[0]
+      if (!(pattern instanceof RegExpObj) || args[1] !== undefined) return constructRegExp(builtins, args)
+      return withReads(() => {
+        const patternConstructor = get(pattern, "constructor")
+        if (readsPending()) return undefined
+        return patternConstructor === regexp ? pattern : constructRegExp(builtins, args)
+      })
+    },
     construct: (args, newTarget) => constructRegExp(builtins, args, prototypeFrom(newTarget, proto)),
   })
   methods(builtins, regexp, [

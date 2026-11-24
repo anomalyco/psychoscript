@@ -2050,22 +2050,34 @@ fn response_from_host(
     let proto = vm.realm.object_proto;
     let result = vm.alloc(Obj::new(Some(proto), Kind::Ordinary));
     let body = match surface.body {
-        Some((cancel, get_reader, iterate, locked)) => {
+        Some(b) => {
             let body = vm.alloc(Obj::new(Some(proto), Kind::Ordinary));
             live_accessor(
                 vm,
                 body,
                 "locked",
-                locked,
+                b.locked,
                 &format!("{label}.body.locked"),
                 place,
             );
+            let [tee, pipe_through, pipe_to] = b.unsupported;
             let methods = [
-                (vm.atoms.intern_static("cancel"), cancel, "cancel"),
-                (vm.atoms.intern_static("getReader"), get_reader, "getReader"),
+                (vm.atoms.intern_static("cancel"), b.cancel, "cancel"),
+                (
+                    vm.atoms.intern_static("getReader"),
+                    get_reader(b.attach, label, place),
+                    "getReader",
+                ),
+                (vm.atoms.intern_static(tee.0), tee.1, tee.0),
+                (
+                    vm.atoms.intern_static(pipe_through.0),
+                    pipe_through.1,
+                    pipe_through.0,
+                ),
+                (vm.atoms.intern_static(pipe_to.0), pipe_to.1, pipe_to.0),
                 (
                     crate::object::SYM_ASYNC_ITERATOR,
-                    iterate,
+                    b.iterate,
                     "[Symbol.asyncIterator]",
                 ),
             ];
@@ -2083,6 +2095,7 @@ fn response_from_host(
         None => Value::Null,
     };
     let fields = [
+        ("type", HostValue::from(response.response_type.as_str())),
         ("url", HostValue::from(response.url.as_str())),
         ("status", HostValue::Number(response.status as f64)),
         ("statusText", HostValue::from(response.status_text.as_str())),
@@ -2118,6 +2131,74 @@ fn response_from_host(
         vm.define(result, key, f);
     }
     Ok(Value::Obj(result))
+}
+
+/// A body's `getReader`, which the reference makes in the program rather than as a host function, so its reader can
+/// hold `closed`, one promise for every read of it.
+fn get_reader(
+    attach: Arc<dyn Fn() -> Option<crate::streaming::Attached> + Send + Sync>,
+    label: &str,
+    place: &Place,
+) -> HostFunction {
+    let (label, place) = (format!("{label}.body.getReader()"), place.child(None));
+    HostFunction::native_body("getReader", 0, move |vm, args| {
+        if let Some(Value::Obj(o)) = args.first()
+            && !vm.is_namespace(*o)
+        {
+            let mk = vm.atoms.intern_static("mode");
+            if !matches!(vm.get(&Value::Obj(*o), mk)?, Value::Undef) {
+                return Err(vm.type_error("Only the default stream reader is supported."));
+            }
+        }
+        let attach = attach.clone();
+        let attached = match crate::offload::home(&vm.host.offload) {
+            Some(home) => home.run(move || attach()).flatten(),
+            None => attach(),
+        };
+        let Some((reader, closed)) = attached else {
+            return Err(vm.type_error("ReadableStream is locked."));
+        };
+        let made = from_host(vm, &reader, &label, &place, 0)?;
+        if let Value::Obj(id) = made {
+            let watch = wrap(
+                vm,
+                Callee::Fn(closed),
+                &format!("{label}.closed"),
+                &place,
+                None,
+            );
+            let data = vm.new_array(vec![watch, Value::Undef]);
+            let getter = native(vm, "get closed", 0, reader_closed, data);
+            let k = vm.atoms.intern_static("closed");
+            vm.define_accessor_half(id, k, false, getter, false);
+        }
+        Ok(made)
+    })
+}
+
+/// `closed` of a host response's reader: the host's promise, asked for at the first read and the same from then on.
+fn reader_closed(vm: &mut Vm, _this: Value, _args: &[Value], callee: Id) -> Res {
+    let Value::Obj(data) = vm.native_data(callee) else {
+        return Ok(Value::Undef);
+    };
+    let (watch, cached) = match &vm.heap[data as usize].kind {
+        Kind::Array(items) if items.len() == 2 => (items[0], items[1]),
+        _ => return Ok(Value::Undef),
+    };
+    if let Value::Obj(_) = cached {
+        return Ok(cached);
+    }
+    let Value::Obj(w) = watch else {
+        return Ok(Value::Undef);
+    };
+    let got = host_native(vm, Value::Undef, &[], w)?;
+    if let Value::Obj(p) = got
+        && vm.is_promise(p)
+        && let Kind::Array(items) = &mut vm.heap[data as usize].kind
+    {
+        items[1] = got;
+    }
+    Ok(got)
 }
 
 /// A live response's state as a hidden accessor whose getter is a host function, the one kind of accessor made after
@@ -2173,13 +2254,14 @@ fn result_from_host(
 }
 
 /// Natives the host makes, which a snapshot names like the built-ins'.
-pub fn snapshot_natives() -> [NativeFn; 5] {
+pub fn snapshot_natives() -> [NativeFn; 6] {
     [
         require_native,
         import_native,
         host_native,
         promise_like_method,
         crate::cross::park,
+        reader_closed,
     ]
 }
 
@@ -2229,6 +2311,12 @@ fn host_native(vm: &mut Vm, _this: Value, args: &[Value], callee: Id) -> Res {
     {
         let message = message.clone();
         return Err(vm.type_error(&message));
+    }
+    if let Callee::Fn(f) = &entry.f
+        && let Body::Native(n) = &f.body
+    {
+        let n = n.clone();
+        return n(vm, args);
     }
     // A live response's state is read where the run is driven, with no host call.
     if let Callee::Fn(f) = &entry.f

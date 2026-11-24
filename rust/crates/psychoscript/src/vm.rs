@@ -351,6 +351,8 @@ pub struct Vm {
     pub(crate) cpu: Option<Box<crate::cpu::CpuMeter>>,
     /// With `Limits::slice_ms`, the stretch in progress, from the run's start.
     pub(crate) slice: Option<Box<crate::cpu::Slice>>,
+    /// What `console.count`, `group` and `time` remember, once one is called. Saved with the run.
+    pub(crate) console: Option<Box<crate::builtins::object::ConsoleState>>,
 }
 
 impl Vm {
@@ -458,6 +460,7 @@ impl Vm {
             lends: Vec::new(),
             cpu: None,
             slice: None,
+            console: None,
         }
     }
 
@@ -483,7 +486,7 @@ impl Vm {
                 }
             }
         }
-        crate::builtins::ensure_globals(self, &program.globals);
+        crate::builtins::ensure_program(self, &program);
         self.template_objs = vec![None; program.templates.len()];
         self.templates = program.templates;
         self.consts = program.consts;
@@ -1795,13 +1798,17 @@ impl Vm {
     fn not_a_constructor(&mut self, callee: Value) -> Value {
         let name = self.callee_name();
         let kind = callee.as_obj().map(|id| &self.heap[id as usize].kind);
+        // `Array.fromAsync` is a function of the reference's prelude.
+        let prelude = callee
+            .as_obj()
+            .is_some_and(|id| crate::builtins::array::is_from_async(self, id));
         let message = match kind {
-            Some(Kind::Closure(_)) => format!(
-                "{name} is not a constructor: only classes can be constructed with new. Use a class, or call it as a function that returns an object."
-            ),
-            Some(Kind::Native { .. }) => {
+            Some(Kind::Native { .. }) if !prelude => {
                 format!("new {name}(...) is not supported; call {name}(...) without new instead.")
             }
+            Some(Kind::Closure(_) | Kind::Native { .. }) => format!(
+                "{name} is not a constructor: only classes can be constructed with new. Use a class, or call it as a function that returns an object."
+            ),
             _ => format!("{name} is not a constructor."),
         };
         self.type_error(&message)
@@ -1898,6 +1905,25 @@ impl Vm {
         {
             let at = pc.saturating_sub(1);
             f.offset = func.site(at, f.site).or_else(|| func.pos.get(at).copied());
+            // Built-in code has no positions (see `builtins::array::from_async_code`): it fails at the program's call
+            // of it, which its function keeps.
+            if func.pos.is_empty()
+                && let Some(fr) = self
+                    .frames
+                    .iter()
+                    .rev()
+                    .find(|f| std::ptr::eq(&*f.func, func))
+                && let Some(Value::Obj(c)) =
+                    self.stack.get(fr.base.wrapping_sub(2)).map(|s| s.get())
+                && let Kind::Closure(c) = &self.heap[c as usize].kind
+                && let Value::Num(o) = c.fields
+                && let Kind::Error(Some(f)) = &mut self.heap[*id as usize].kind
+            {
+                f.offset = Some(o as u32);
+            }
+            let Kind::Error(Some(f)) = &self.heap[*id as usize].kind else {
+                return;
+            };
             if let Some(o) = f.offset {
                 let id = *id;
                 self.locate_stack(id, o);
@@ -2107,7 +2133,7 @@ impl Vm {
     /// frame below, as a built-in that returned the failure would have it.
     #[cold]
     #[inline(never)]
-    fn locate_native(&mut self, e: &Value, fi: usize) {
+    pub(crate) fn locate_native(&mut self, e: &Value, fi: usize) {
         let Some(caller) = self.frames[..fi]
             .iter()
             .rev()
@@ -3544,8 +3570,7 @@ impl Vm {
                         // A computed key names the function when the literal runs: `get x`, `set [Symbol.iterator]`.
                         if let Value::Obj(fid) = f {
                             let shown = match a {
-                                SYM_ITERATOR => "[Symbol.iterator]".to_owned(),
-                                SYM_ASYNC_ITERATOR => "[Symbol.asyncIterator]".to_owned(),
+                                0..=SYM_LAST => crate::ops::symbol_shown(a).to_owned(),
                                 _ => self.key_text(a),
                             };
                             let name = format!("{} {shown}", if setter { "set" } else { "get" });
@@ -3730,7 +3755,7 @@ impl Vm {
                             }
                             let a = tri!(self.key_of(&k));
                             self.stack.pop();
-                            let v = if a <= SYM_ASYNC_ITERATOR {
+                            let v = if a <= SYM_LAST {
                                 Value::Sym(a)
                             } else {
                                 self.atom_val(a)

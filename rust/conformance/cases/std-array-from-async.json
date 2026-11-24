@@ -1,0 +1,94 @@
+{
+  "bindings": {},
+  "ok": true,
+  "value": [
+    "fromAsync",
+    1,
+    "[object AsyncFunction]",
+    "function",
+    "[object AsyncFunction]",
+    [
+      "length",
+      "name",
+      "prototype",
+      "isArray",
+      "of",
+      "from",
+      "fromAsync"
+    ],
+    [
+      1,
+      2
+    ],
+    [
+      10,
+      21
+    ],
+    [
+      "a!",
+      "b!"
+    ],
+    [
+      3,
+      4
+    ],
+    true,
+    [
+      "TypeError",
+      "Array.fromAsync expects a function callback.",
+      "TypeError: Array.fromAsync expects a function callback.\n    at <program>:8:11"
+    ],
+    "Array.fromAsync expects an iterable or array-like value.",
+    "TypeError: Array.fromAsync expects an iterable or array-like value.\n    at <program>:9:13",
+    "Error: x\n    at <anonymous> (<program>:11:47)",
+    "Invalid array length.",
+    "RangeError: Invalid array length.\n    at <program>:13:13",
+    [
+      "a",
+      "b"
+    ],
+    [
+      3,
+      4
+    ],
+    [
+      9
+    ],
+    [],
+    [
+      "t0",
+      "t1",
+      "t2",
+      "m1",
+      "t3",
+      "t4",
+      "t5",
+      "m2",
+      "done"
+    ],
+    [
+      0,
+      1
+    ],
+    "boom",
+    "ret",
+    "Array.fromAsync is not a constructor: only classes can be constructed with new. Use a class, or call it as a function that returns an object.",
+    "rej",
+    "sret",
+    [
+      "Iterator next() result must be an object.",
+      "TypeError: Iterator next() result must be an object.\n    at <program>:26:24"
+    ],
+    [
+      "Iterator next() result must be an object.",
+      "TypeError: Iterator next() result must be an object.\n    at <program>:25:26"
+    ],
+    [
+      "Iterator next must be a function.",
+      "TypeError: Iterator next must be a function.\n    at <program>:26:58"
+    ],
+    5
+  ],
+  "logs": [],
+  "metadata": null
+}

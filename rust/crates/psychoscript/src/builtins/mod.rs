@@ -41,12 +41,17 @@ pub struct StdProtos {
     pub params: Id,
     pub headers: Id,
     pub array_buffer: Id,
+    /// `Math`, `JSON` and `crypto` (with its lazy group), whose `Symbol.toStringTag` objects inheriting from them
+    /// report (see `object::class_tag`).
+    pub math: Id,
+    pub json: Id,
+    pub crypto: Id,
     /// `BigInt.prototype`, made with its lazy group (`LAZY_BIGINT`).
     pub bigint: Id,
     /// The prototypes of the typed arrays other than Uint8Array, in `Elem::TYPED` order.
     pub typed: [Id; 5],
     /// The lazily installed groups already set up (see `LAZY`).
-    pub loaded: u8,
+    pub loaded: u16,
     /// Whether the program has the typed arrays besides Uint8Array: see `Runtime::typed_arrays`.
     pub typed_arrays: bool,
 }
@@ -65,7 +70,7 @@ impl StdProtos {
 /// Built-in groups installed only when a program names one of their globals (or makes one of their values), so a
 /// run pays for what it uses: (bit, globals, setup).
 /// A lazy group: its bit, the globals it defines, and its setup.
-type LazyGroup = (u8, &'static [&'static str], fn(&mut Vm));
+type LazyGroup = (u16, &'static [&'static str], fn(&mut Vm));
 
 const LAZY: &[LazyGroup] = &[
     (1, &["RegExp"], regexp::setup),
@@ -89,7 +94,7 @@ const LAZY: &[LazyGroup] = &[
         setup_bytes,
     ),
     (
-        8,
+        LAZY_COLLECTIONS,
         &["Map", "Set", "Object", "WeakMap", "WeakSet"],
         sets::setup,
     ),
@@ -106,13 +111,20 @@ const LAZY: &[LazyGroup] = &[
     (32, &["URL", "URLSearchParams", "Headers"], web::setup),
     (64, &["crypto", "structuredClone"], web::setup_globals),
     (LAZY_BIGINT, &["BigInt"], bigint::setup),
+    // Members a core global gained, made when a program names their holder (or one that leads to it).
+    (256, &["console"], object::setup_console),
+    (LAZY_SYMBOLS, &["Symbol", "Object"], object::setup_symbols),
+    (LAZY_FROM_ASYNC, &["Array"], array::setup_from_async),
 ];
 
-pub const LAZY_REGEXP: u8 = 1;
-pub const LAZY_DATE: u8 = 2;
-pub const LAZY_BYTES: u8 = 4;
-pub const LAZY_WEB: u8 = 32;
-pub const LAZY_BIGINT: u8 = 128;
+pub const LAZY_REGEXP: u16 = 1;
+pub const LAZY_DATE: u16 = 2;
+pub const LAZY_BYTES: u16 = 4;
+pub const LAZY_COLLECTIONS: u16 = 8;
+pub const LAZY_WEB: u16 = 32;
+pub const LAZY_BIGINT: u16 = 128;
+pub const LAZY_SYMBOLS: u16 = 512;
+pub const LAZY_FROM_ASYNC: u16 = 1024;
 
 fn setup_bytes(vm: &mut Vm) {
     bytes::setup(vm);
@@ -138,7 +150,7 @@ pub const TYPED_GLOBALS: [&str; 6] = [
 ];
 
 /// Installs the lazy group with `bit`, once.
-pub fn ensure(vm: &mut Vm, bit: u8) {
+pub fn ensure(vm: &mut Vm, bit: u16) {
     if vm.realm.std.loaded & bit != 0 {
         return;
     }
@@ -148,14 +160,26 @@ pub fn ensure(vm: &mut Vm, bit: u8) {
     }
 }
 
-/// Installs the lazy group that defines the global `name`; false when no group does.
+/// Installs the lazy groups `name` brings (one defines it, others add to it); false when no group does.
 pub fn ensure_global(vm: &mut Vm, name: &str) -> bool {
-    match LAZY.iter().find(|(_, names, _)| names.contains(&name)) {
-        Some((bit, _, _)) => {
+    let mut found = false;
+    for (bit, names, _) in LAZY {
+        if names.contains(&name) {
             ensure(vm, *bit);
-            true
+            found = true;
         }
-        None => false,
+    }
+    found
+}
+
+/// Installs the lazy groups a program needs: those its globals bring, and the lazy members of `Object` and `Array` when
+/// it names `constructor`, which reaches them from any object or array.
+pub fn ensure_program(vm: &mut Vm, program: &crate::bytecode::Program) {
+    ensure_globals(vm, &program.globals);
+    if program.names_constructor {
+        ensure(vm, LAZY_COLLECTIONS);
+        ensure(vm, LAZY_SYMBOLS);
+        ensure(vm, LAZY_FROM_ASYNC);
     }
 }
 
@@ -163,8 +187,13 @@ pub fn ensure_global(vm: &mut Vm, name: &str) -> bool {
 pub fn ensure_globals(vm: &mut Vm, globals: &[Atom]) {
     for a in globals {
         let name = vm.atoms.text(*a);
-        if let Some((bit, _, _)) = LAZY.iter().find(|(_, names, _)| names.contains(&name)) {
-            ensure(vm, *bit);
+        let bits: Vec<u16> = LAZY
+            .iter()
+            .filter(|(_, names, _)| names.contains(&name))
+            .map(|(bit, _, _)| *bit)
+            .collect();
+        for bit in bits {
+            ensure(vm, bit);
         }
     }
 }
@@ -589,6 +618,30 @@ fn accessors(vm: &mut Vm, proto: Id, names: &[&'static str]) {
         let k = vm.atoms.intern_static(name);
         vm.heap[proto as usize].props.insert(k, Value::Uninit, 0);
     }
+}
+
+/// Reading an accessor of `this` that its kind doesn't answer: `RegExp.prototype` reads as the empty pattern with no
+/// flags set, as in JS; anything else is `accessor_error`.
+#[cold]
+pub fn accessor_read(vm: &mut Vm, this: Id, key: Atom) -> Res {
+    if !vm.restricted_hit
+        && let Some(v) = prototype_read(vm, this, key)
+    {
+        return Ok(v);
+    }
+    // `Symbol.prototype.description` of anything but a symbol.
+    if !vm.restricted_hit && vm.symbol_accessor(this, key) {
+        return Err(object::this_symbol(vm, &Value::Obj(this), "description").unwrap_err());
+    }
+    Err(accessor_error(vm, this, key))
+}
+
+/// A built-in accessor read from the prototype that has it, which answers for itself: `RegExp.prototype`'s.
+pub fn prototype_read(vm: &mut Vm, this: Id, key: Atom) -> Option<Value> {
+    if vm.realm.std.loaded & LAZY_REGEXP != 0 && this == vm.realm.std.regexp {
+        return regexp::prototype_prop(vm, key);
+    }
+    None
 }
 
 /// The error for reading an accessor of `this`, which is not the kind the accessor belongs to.

@@ -6,7 +6,9 @@ use rustc_hash::FxHashMap;
 
 use crate::DiagnosticKind;
 use crate::bytecode::FuncProto;
-pub use crate::strings::{Atom, SYM_ASYNC_ITERATOR, SYM_ITERATOR};
+pub use crate::strings::{
+    Atom, SYM_ASYNC_ITERATOR, SYM_ITERATOR, SYM_LAST, SYM_TO_PRIMITIVE, SYM_TO_STRING_TAG,
+};
 use crate::value::{Id, Value};
 use crate::vm::{NativeFn, SavedFrame};
 
@@ -76,6 +78,23 @@ impl Props {
         if let Some(idx) = &mut self.index {
             idx.insert(key, i as u32);
         } else if self.items.len() > INDEX_THRESHOLD {
+            let map = self
+                .items
+                .iter()
+                .enumerate()
+                .map(|(i, p)| (p.key, i as u32))
+                .collect();
+            self.index = Some(Box::new(map));
+        }
+    }
+
+    /// Puts a key known to be absent just before `before`, or last without it.
+    pub fn insert_before(&mut self, before: Atom, key: Atom, value: Value, flags: u8) {
+        let Some(i) = self.find(before) else {
+            return self.push_new(key, value, flags);
+        };
+        self.items.insert(i, Prop { key, value, flags });
+        if self.index.is_some() || self.items.len() > INDEX_THRESHOLD {
             let map = self
                 .items
                 .iter()
@@ -188,7 +207,8 @@ pub struct Closure {
     pub this: Value,
     /// [[HomeObject]]: the object a method was defined on, which `super` reads from; undefined for others.
     pub home: Value,
-    /// A class constructor's instance field initializer, once its class has one.
+    /// A class constructor's instance field initializer, once its class has one; for a function of built-in code
+    /// (`Array.fromAsync`'s), the source offset of the program's call of it.
     pub fields: Value,
 }
 

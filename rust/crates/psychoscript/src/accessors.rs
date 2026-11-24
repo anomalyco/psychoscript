@@ -174,9 +174,35 @@ impl Vm {
         Value::Undef
     }
 
+    /// Whether `key` read from `id` reaches `Symbol.prototype.description`, the one built-in accessor of a symbol's.
+    pub(crate) fn symbol_accessor(&mut self, id: Id, key: Atom) -> bool {
+        let dk = self.atoms.intern_static("description");
+        if key != dk {
+            return false;
+        }
+        let mut cur = Some(id);
+        while let Some(c) = cur {
+            if c == self.realm.symbol_proto {
+                return true;
+            }
+            if self.heap[c as usize].props.find(key).is_some() {
+                return false;
+            }
+            cur = self.heap[c as usize].proto;
+        }
+        false
+    }
+
     /// The value a built-in accessor's getter gives `receiver`, or `Uninit` for a receiver of another kind (which a
     /// read turns into `accessor_error`).
     pub(crate) fn companion_value(&mut self, receiver: Value, key: Atom) -> Value {
+        if let Value::Sym(s) = receiver {
+            let dk = self.atoms.intern_static("description");
+            return match key == dk {
+                true => crate::builtins::object::symbol_description(self, s),
+                false => Value::Uninit,
+            };
+        }
         let Value::Obj(id) = receiver else {
             return Value::Uninit;
         };
@@ -494,7 +520,8 @@ pub(crate) fn copy_step(vm: &mut Vm, fr: Frame, input: Input) -> Result<Step, Va
         fr.set_index(vm, C_KEY_I, ki + 1);
         let k = key_atom(vm, kv)?;
         let strings_only = matches!(mode, COPY_ENTRIES | COPY_VALUES);
-        if (strings_only && k <= SYM_ASYNC_ITERATOR) || excluded(vm, fr, k)? {
+        // The reference's `$OwnKeys`: strings, or strings and the iterator symbols.
+        if (k <= SYM_LAST && (strings_only || k > SYM_ASYNC_ITERATOR)) || excluded(vm, fr, k)? {
             continue;
         }
         if !vm.own_slot(s, k).is_some_and(|x| x.enumerable) {
@@ -832,6 +859,16 @@ pub(crate) enum WithReads<T> {
 /// "size").get`): its data is the prototype that has the accessor, and its name `get <key>`.
 pub(crate) fn companion_get(vm: &mut Vm, this: Value, _args: &[Value], callee: Id) -> Res {
     let (owner, key) = companion_of(vm, callee);
+    if matches!(this, Value::Obj(id) if id == owner)
+        && let Some(v) = crate::builtins::prototype_read(vm, owner, key)
+    {
+        return Ok(v);
+    }
+    // `Symbol.prototype.description` serves symbols, which inherit it without being objects.
+    if owner == vm.realm.symbol_proto {
+        crate::builtins::object::this_symbol(vm, &this, "description")?;
+        return Ok(vm.companion_value(this, key));
+    }
     if !inherits(vm, &this, owner) {
         return Err(companion_error(vm, owner, key, &this));
     }
@@ -1101,7 +1138,7 @@ impl Vm {
             if leading.contains(&p.key) {
                 continue;
             }
-            if p.key <= SYM_ASYNC_ITERATOR {
+            if p.key <= SYM_LAST {
                 syms.push(p.key);
                 continue;
             }
@@ -1179,7 +1216,7 @@ impl Vm {
             }
             let x = self.get_obj(id, key);
             let x = if let Value::Uninit = x {
-                return Err(crate::builtins::accessor_error(self, id, key));
+                crate::builtins::accessor_read(self, id, key)?
             } else {
                 x
             };

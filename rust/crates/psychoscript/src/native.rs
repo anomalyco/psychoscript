@@ -489,6 +489,26 @@ pub fn enter_for_of_sub(
     vm.enter_native_sub(op, sub, callee, this, &slots)
 }
 
+/// Pushes a `ForOf` frame of one of a family's steps whose values are collected already: it starts at `ForOf::after`.
+pub fn enter_after_loop_sub(
+    vm: &mut Vm,
+    op: NativeOp,
+    sub: u16,
+    callee: crate::value::Id,
+    this: Value,
+    own: &[Value],
+) -> Res {
+    let mut slots = vec![
+        Value::Undef,
+        Value::Undef,
+        Value::Undef,
+        Value::Num(AFTER as f64),
+        Value::Undef,
+    ];
+    slots.extend_from_slice(own);
+    vm.enter_native_sub(op, sub, callee, this, &slots)
+}
+
 /// Pushes a `ForOf` frame over an iterator record already open: `next` is the method to call, or undefined to step
 /// the iterator as the reference steps its own.
 #[allow(clippy::too_many_arguments)]

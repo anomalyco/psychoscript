@@ -1,0 +1,44 @@
+{
+  "bindings": {},
+  "ok": true,
+  "value": [
+    "x",
+    "x",
+    "1,2,3,",
+    "j",
+    "[object Object]",
+    "g",
+    "g",
+    2,
+    [
+      "TypeError",
+      "Array.prototype.toString called on null or undefined."
+    ],
+    "[object Symbol]",
+    [
+      "TypeError",
+      "Array.prototype.toString called on null or undefined."
+    ],
+    "[object Number]",
+    "[object String]",
+    "[object Boolean]",
+    "[object BigInt]",
+    "[object Math]",
+    "[object JSON]",
+    "[object GeneratorFunction]",
+    "[object AsyncFunction]",
+    "x,1",
+    "o,2",
+    null,
+    "[object Object]",
+    "[object Map]",
+    "h",
+    "x",
+    [
+      "TypeError",
+      "Cannot convert object to primitive value."
+    ]
+  ],
+  "logs": [],
+  "metadata": null
+}

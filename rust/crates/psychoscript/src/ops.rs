@@ -20,6 +20,17 @@ pub enum Hint {
     String,
 }
 
+impl Hint {
+    /// The hint a `Symbol.toPrimitive` method gets.
+    pub fn name(self) -> &'static str {
+        match self {
+            Hint::Default => "default",
+            Hint::Number => "number",
+            Hint::String => "string",
+        }
+    }
+}
+
 impl Vm {
     // ---------- property reads ----------
 
@@ -32,7 +43,7 @@ impl Vm {
                 }
                 let v = self.get_obj(*id, key);
                 if let Value::Uninit = v {
-                    return Err(crate::builtins::accessor_error(self, *id, key));
+                    return crate::builtins::accessor_read(self, *id, key);
                 }
                 if matches!(v, Value::Undef)
                     && matches!(self.heap[*id as usize].kind, Kind::Promise(_))
@@ -68,9 +79,17 @@ impl Vm {
                 let p = self.bigint_proto();
                 Ok(self.get_obj(p, key))
             }
-            // A symbol has no wrapper prototype in the reference.
-            Value::Sym(_) => {
-                Err(self.type_error("Cannot access a property on a non-object value."))
+            Value::Sym(s) => {
+                let s = *s;
+                let p = self.realm.symbol_proto;
+                match self.get_obj(p, key) {
+                    // A built-in accessor of `Symbol.prototype` (`description`) serves the symbol.
+                    Value::Uninit => match self.companion_value(Value::Sym(s), key) {
+                        Value::Uninit => crate::builtins::accessor_read(self, p, key),
+                        v => Ok(v),
+                    },
+                    v => Ok(v),
+                }
             }
             Value::Undef | Value::Null | Value::Uninit => {
                 let k = self.key_text(key);
@@ -92,7 +111,7 @@ impl Vm {
         {
             let r = self.get_obj(*id, key);
             if let Value::Uninit = r {
-                return Err(crate::builtins::accessor_error(self, *id, key));
+                return crate::builtins::accessor_read(self, *id, key);
             }
             return Ok(r);
         }
@@ -111,7 +130,7 @@ impl Vm {
     }
 
     pub fn key_text(&self, key: Atom) -> String {
-        if key <= SYM_ASYNC_ITERATOR {
+        if key <= SYM_LAST {
             return symbol_text(key).to_owned();
         }
         self.atoms.text(key).to_owned()
@@ -193,7 +212,7 @@ impl Vm {
                 }
                 Kind::Namespace(_) if cur == id => {
                     // `then` is a path like any other; a namespace is never a thenable (`resolve_promise`).
-                    if key <= SYM_ASYNC_ITERATOR {
+                    if key <= SYM_LAST {
                         return Value::Undef;
                     }
                     return self.ns_ref(NsPath {
@@ -236,6 +255,7 @@ impl Vm {
                 self.realm.object_proto
             }
             Value::Big(_) => self.realm.std.bigint,
+            Value::Sym(_) => self.realm.symbol_proto,
             _ => return None,
         };
         if !self.accessors_on_chain(proto) {
@@ -561,15 +581,12 @@ impl Vm {
                 };
                 Err(self.nullish_read(t, &k))
             }
-            Value::Sym(_) => {
-                Err(self.type_error("Cannot access a property on a non-object value."))
-            }
             // A string's length and indexes are its own values, not fields.
             Value::Str(_) if key == self.names.length || self.atoms.index(key).is_some() => {
                 Err(self.type_error("Only data fields may be assigned."))
             }
             // Only an inherited setter can take a primitive's write, with the primitive as `this`.
-            Value::Str(_) | Value::Num(_) | Value::Bool(_) | Value::Big(_)
+            Value::Str(_) | Value::Num(_) | Value::Bool(_) | Value::Big(_) | Value::Sym(_)
                 if self.primitive_accessor(v, key).is_some() =>
             {
                 let pair = self.primitive_accessor(v, key).unwrap_or_default();
@@ -578,8 +595,13 @@ impl Vm {
             _ => {
                 let k = self.key_text(key);
                 let t = self.type_of(v);
-                let s = self.string_of(v)?;
-                let s = self.text(s).to_owned();
+                let s = match v {
+                    Value::Sym(s) => symbol_text(*s).to_owned(),
+                    v => {
+                        let s = self.string_of(v)?;
+                        self.text(s).to_owned()
+                    }
+                };
                 Err(self.type_error(&format!("Cannot create property '{k}' on {t} '{s}'.")))
             }
         }
@@ -598,7 +620,7 @@ impl Vm {
     pub(crate) fn check_writable(&mut self, v: &Value, key: Atom) -> Result<(), Value> {
         match v {
             Value::Obj(id) if self.is_namespace(*id) => {
-                if key <= SYM_ASYNC_ITERATOR {
+                if key <= SYM_LAST {
                     return Err(self.namespace_key_error(*id));
                 }
                 Err(self.type_error("Only data fields may be assigned."))
@@ -638,7 +660,7 @@ impl Vm {
             Value::Num(_) | Value::Str(_) | Value::Sym(_) => *k,
             k => {
                 let a = self.key_of(k)?;
-                if a <= SYM_ASYNC_ITERATOR {
+                if a <= SYM_LAST {
                     Value::Sym(a)
                 } else {
                     self.atom_val(a)
@@ -1043,9 +1065,6 @@ impl Vm {
                 crate::convert::quote(&mut quoted, self.text(*s));
                 Err(self.type_error(&format!("Cannot delete property '{k}' of {quoted}.")))
             }
-            Value::Sym(_) => {
-                Err(self.type_error("Cannot access a property on a non-object value."))
-            }
             _ => Ok(true),
         }
     }
@@ -1283,7 +1302,7 @@ impl Vm {
         let mut ints = Vec::new();
         let mut strs = Vec::new();
         for p in &props.items {
-            if p.flags & ENUMERABLE == 0 || p.key <= SYM_ASYNC_ITERATOR {
+            if p.flags & ENUMERABLE == 0 || p.key <= SYM_LAST {
                 continue;
             }
             match self.atoms.index(p.key) {
@@ -1321,7 +1340,7 @@ impl Vm {
                 return props
                     .items
                     .iter()
-                    .filter(|p| p.flags & ENUMERABLE != 0 && p.key > SYM_ASYNC_ITERATOR)
+                    .filter(|p| p.flags & ENUMERABLE != 0 && p.key > SYM_LAST)
                     .map(|p| (p.key, p.value))
                     .collect();
             }
@@ -1330,13 +1349,13 @@ impl Vm {
         keys.into_iter().map(|k| (k, self.get_obj(id, k))).collect()
     }
 
-    /// Own enumerable properties keyed by the two confined symbols, which spread and `Object.assign` copy too.
+    /// Own enumerable properties keyed by the well-known symbols, which spread and `Object.assign` copy too.
     pub fn own_symbol_entries(&mut self, id: Id) -> Vec<(Atom, Value)> {
         let keys: Vec<Atom> = self.heap[id as usize]
             .props
             .items
             .iter()
-            .filter(|p| p.key <= SYM_ASYNC_ITERATOR && p.flags & ENUMERABLE != 0)
+            .filter(|p| p.key <= SYM_LAST && p.flags & ENUMERABLE != 0)
             .map(|p| p.key)
             .collect();
         keys.into_iter().map(|k| (k, self.get_obj(id, k))).collect()
@@ -1355,7 +1374,9 @@ impl Vm {
         let keys = self.own_property_keys(src);
         let mut out = Vec::new();
         for k in keys {
-            if (strings_only && k <= SYM_ASYNC_ITERATOR) || excluded.contains(&k) {
+            // The reference's `$OwnKeys`: strings, or strings and the iterator symbols.
+            if (k <= SYM_LAST && (strings_only || k > SYM_ASYNC_ITERATOR)) || excluded.contains(&k)
+            {
                 continue;
             }
             if !self.own_slot(src, k).is_some_and(|s| s.enumerable) {
@@ -1744,6 +1765,19 @@ impl Vm {
         // `$vmToPrimitive` keeps a promise, so that what reads it rejects it as an un-awaited value.
         if self.is_promise(*id) {
             return Ok(*v);
+        }
+        // `Symbol.toPrimitive`, called with the hint, before `valueOf` and `toString`.
+        let f = self.get_calling(*id, SYM_TO_PRIMITIVE)?;
+        if !matches!(f, Value::Undef | Value::Null | Value::Uninit) {
+            if !self.is_callable(&f) {
+                return Err(self.type_error("Symbol.toPrimitive must be a function."));
+            }
+            let h = self.static_str(hint.name());
+            let r = self.call_counted(&f, *v, &[h])?;
+            if matches!(r, Value::Obj(_)) {
+                return Err(self.type_error("Cannot convert object to primitive value."));
+            }
+            return Ok(r);
         }
         let hint = if hint == Hint::Default && exotic::prefers_string(self, *id) {
             Hint::String
@@ -2712,11 +2746,22 @@ pub fn without_holes(items: &[Value]) -> Vec<Value> {
     out
 }
 
-/// How the reference's host names one of its two symbols.
+/// How the reference's host names one of its well-known symbols.
 pub(crate) fn symbol_text(s: Atom) -> &'static str {
-    if s == SYM_ITERATOR {
-        "Symbol(psychoscript.iterator)"
-    } else {
-        "Symbol(psychoscript.async-iterator)"
+    match s {
+        SYM_ITERATOR => "Symbol(Symbol.iterator)",
+        SYM_ASYNC_ITERATOR => "Symbol(Symbol.asyncIterator)",
+        SYM_TO_PRIMITIVE => "Symbol(Symbol.toPrimitive)",
+        _ => "Symbol(Symbol.toStringTag)",
+    }
+}
+
+/// A well-known symbol's key as a function's name shows it: `[Symbol.iterator]`.
+pub(crate) fn symbol_shown(s: Atom) -> &'static str {
+    match s {
+        SYM_ITERATOR => "[Symbol.iterator]",
+        SYM_ASYNC_ITERATOR => "[Symbol.asyncIterator]",
+        SYM_TO_PRIMITIVE => "[Symbol.toPrimitive]",
+        _ => "[Symbol.toStringTag]",
     }
 }

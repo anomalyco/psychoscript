@@ -456,6 +456,7 @@ describe("RegExp", () => {
     expect(await value(`const r = /a/g; return [RegExp(r) === r, RegExp(r, "g") === r, new RegExp(r) === r]`)).toEqual(
       [true, false, false],
     )
+    expect(await value(`const r = /a/; r.constructor = null; return RegExp(r) === r`)).toBe(false)
     expect(await value(`return ["groups" in /a/.exec("a"), [..."a".matchAll(/a/g)].map((m) => "groups" in m)]`)).toEqual(
       [true, [true]],
     )
@@ -1865,9 +1866,10 @@ describe("toLocaleString", () => {
         1234n.toLocaleString("en-US", { style: "currency", currency: "EUR" }),
         [1234.5, new Date(0)].toLocaleString("en-US", { timeZone: "UTC", maximumFractionDigits: 0 }),
         [].toLocaleString.length,
+        [{ toLocaleString: (...args) => args.length }].toLocaleString("en-US", {}),
       ]
     `),
-    ).toEqual(["$1,234.56", "25.6%", "1.234,5", "1234", "12.345.678.901.234.567.890", "€1,234.00", "1,235,1/1/1970, 12:00:00 AM", 0])
+    ).toEqual(["$1,234.56", "25.6%", "1.234,5", "1234", "12.345.678.901.234.567.890", "€1,234.00", "1,235,1/1/1970, 12:00:00 AM", 0, "0"])
     expect(
       await value(`
       const attempt = (f) => { try { return f() } catch (e) { return e.name } }

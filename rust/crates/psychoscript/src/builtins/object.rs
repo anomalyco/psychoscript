@@ -134,18 +134,24 @@ pub fn setup(vm: &mut Vm) {
 
     let sp = vm.realm.symbol_proto;
     // `Symbol` is neither a callback nor a constructor: `new Symbol()` asks for a call instead, as the reference does.
-    // It has no `prototype`: a symbol's members are not reachable.
     let symbol = vm
         .native_fn("Symbol", 0, symbol_ctor, Value::Undef)
         .as_obj()
         .unwrap_or(0);
+    let (pk, ck) = (vm.names.prototype, vm.names.constructor);
+    vm.heap[symbol as usize]
+        .props
+        .insert(pk, Value::Obj(sp), FIXED);
+    vm.define_hidden(sp, ck, Value::Obj(symbol));
     vm.global("Symbol", Value::Obj(symbol));
     vm.heap[symbol as usize].flags |= NOT_CALLBACK;
-    vm.constant(symbol, "asyncIterator", Value::Sym(1));
-    vm.constant(symbol, "iterator", Value::Sym(0));
+    vm.constant(symbol, "asyncIterator", Value::Sym(SYM_ASYNC_ITERATOR));
+    vm.constant(symbol, "iterator", Value::Sym(SYM_ITERATOR));
     vm.methods(sp, &[("toString", 0, symbol_to_string)]);
+    // The rest of `Symbol` and `Symbol.prototype` comes with its lazy group (`setup_symbols`).
 
     let json = vm.new_object();
+    vm.realm.std.json = json;
     vm.methods(
         json,
         &[("parse", 2, json_parse), ("stringify", 3, json_stringify)],
@@ -391,7 +397,7 @@ impl crate::native::ForOf for FromEntries {
     fn item(vm: &mut Vm, fr: crate::native::Frame, x: Value) -> Result<crate::native::Flow, Value> {
         // One entry: `$IsObject`, `String` of its key, `$Define`.
         fuel::native(vm);
-        if !matches!(x, Value::Obj(_)) || contains_opaque(vm, &x, &mut Vec::new()) {
+        if !matches!(x, Value::Obj(id) if !vm.is_namespace(id)) {
             return Err(vm.type_error("Object.fromEntries expects [key, value] entry objects."));
         }
         // `String(entry[0])`, then `entry[1]`, as the prelude's `$Define(result, String(entry[0]), entry[1])`.
@@ -475,19 +481,22 @@ fn define_entry(vm: &mut Vm, fr: crate::native::Frame, k: &Value, v: Value) -> R
 fn object_has_own(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
     let o = arg(args, 0);
     vm.enumerable_source("Object.hasOwn(...)", &o)?;
-    let k = vm.key_of(&arg(args, 1))?;
-    Ok(Value::Bool(match o {
-        Value::Obj(id) => vm.has_own(id, k),
-        // A string reads as the array of its characters.
-        Value::Str(s) => {
-            k == vm.names.length
-                || vm
-                    .atoms
-                    .index(k)
-                    .is_some_and(|i| (i as usize) < vm.atoms.sref(s).len16())
-        }
-        _ => false,
-    }))
+    // ToPropertyKey, which may call the program.
+    fuel::with_primitives(vm, &[Hint::String], [arg(args, 1)], false, |vm, [key]| {
+        let k = vm.key_of(&key)?;
+        Ok(Value::Bool(match o {
+            Value::Obj(id) => vm.has_own(id, k),
+            // A string reads as the array of its characters.
+            Value::Str(s) => {
+                k == vm.names.length
+                    || vm
+                        .atoms
+                        .index(k)
+                        .is_some_and(|i| (i as usize) < vm.atoms.sref(s).len16())
+            }
+            _ => false,
+        }))
+    })
 }
 
 fn set_flags(vm: &mut Vm, args: &[Value], flags: u8) -> Res {
@@ -593,7 +602,7 @@ fn define_properties(vm: &mut Vm, id: Id, props: &Value) -> Res {
                 }
                 let d = vm.get_obj(p, key);
                 let d = if let Value::Uninit = d {
-                    return Err(super::accessor_error(vm, p, key));
+                    super::accessor_read(vm, p, key)?
                 } else {
                     d
                 };
@@ -755,10 +764,25 @@ fn object_get_own_property_names(vm: &mut Vm, _this: Value, args: &[Value], _: I
     };
     let names: Vec<Value> = keys
         .into_iter()
-        .filter(|k| *k > SYM_ASYNC_ITERATOR)
+        .filter(|k| *k > SYM_LAST)
         .map(|k| vm.atom_val(k))
         .collect();
     Ok(vm.new_array(names))
+}
+
+fn object_get_own_property_symbols(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
+    let v = arg(args, 0);
+    require_coercible(vm, &v, "getOwnPropertySymbols")?;
+    let symbols: Vec<Value> = match v {
+        Value::Obj(id) => vm
+            .own_property_keys(id)
+            .into_iter()
+            .filter(|k| *k <= SYM_LAST)
+            .map(Value::Sym)
+            .collect(),
+        _ => Vec::new(),
+    };
+    Ok(vm.new_array(symbols))
 }
 
 fn object_get_prototype_of(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
@@ -771,6 +795,7 @@ fn object_get_prototype_of(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> 
         Value::Num(_) => Value::Obj(vm.realm.number_proto),
         Value::Bool(_) => Value::Obj(vm.realm.boolean_proto),
         Value::Big(_) => Value::Obj(vm.bigint_proto()),
+        Value::Sym(_) => Value::Obj(vm.realm.symbol_proto),
         v => {
             let d = super::describe_value(vm, &v);
             return Err(vm.type_error(&format!(
@@ -809,10 +834,33 @@ fn is_namespace_ref(vm: &Vm, v: &Value) -> bool {
     matches!(v, Value::Obj(id) if matches!(vm.heap[*id as usize].kind, Kind::Namespace(_)))
 }
 
+/// The key of `hasOwnProperty` and `propertyIsEnumerable` (ToPropertyKey, which may call the program), then their
+/// receiver, which a primitive is as its boxed object.
+fn own_check(
+    vm: &mut Vm,
+    this: Value,
+    args: &[Value],
+    method: &str,
+    body: impl FnOnce(&mut Vm, Atom) -> bool,
+) -> Res {
+    fuel::with_primitives(vm, &[Hint::String], [arg(args, 0)], false, |vm, [key]| {
+        let k = vm.key_of(&key)?;
+        require_coercible(vm, &this, method)?;
+        Ok(Value::Bool(body(vm, k)))
+    })
+}
+
 fn proto_has_own_property(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
-    let id = object_receiver(vm, &this, "hasOwnProperty")?;
-    let k = vm.key_of(&arg(args, 0))?;
-    Ok(Value::Bool(vm.has_own(id, k)))
+    own_check(
+        vm,
+        this,
+        args,
+        "prototype.hasOwnProperty",
+        |vm, k| match this {
+            Value::Obj(id) => vm.has_own(id, k),
+            _ => primitive_slot(vm, &this, k).is_some(),
+        },
+    )
 }
 
 pub fn tag_of(vm: &Vm, v: &Value) -> &'static str {
@@ -858,23 +906,73 @@ pub fn tag_of(vm: &Vm, v: &Value) -> &'static str {
     }
 }
 
+/// The tag `Object.prototype.toString` reports for a value (the reference's `classTag`): the `Symbol.toStringTag` JS
+/// puts on `Math`, `JSON`, `crypto` and the TextEncoder and TextDecoder prototypes, which objects inheriting from them
+/// report too, then a generator or async function's, then its kind's.
+pub fn class_tag(vm: &Vm, v: &Value) -> &'static str {
+    let Value::Obj(id) = *v else {
+        return tag_of(vm, v);
+    };
+    let s = &vm.realm.std;
+    let loaded = |bit: u16| s.loaded & bit != 0;
+    let tags = [
+        (Some(s.math), "Math"),
+        (Some(s.json), "JSON"),
+        (loaded(64).then_some(s.crypto), "Crypto"),
+        (
+            loaded(super::LAZY_BYTES).then_some(s.text_encoder),
+            "TextEncoder",
+        ),
+        (
+            loaded(super::LAZY_BYTES).then_some(s.text_decoder),
+            "TextDecoder",
+        ),
+    ];
+    let mut cur = Some(id);
+    while let Some(c) = cur {
+        if let Some((_, tag)) = tags.iter().find(|(t, _)| *t == Some(c)) {
+            return tag;
+        }
+        cur = vm.heap[c as usize].proto;
+    }
+    match &vm.heap[id as usize].kind {
+        Kind::Error(_) => "Error",
+        Kind::Native { .. } if super::array::is_from_async(vm, id) => "AsyncFunction",
+        Kind::Closure(c) => match (c.proto.is_generator, c.proto.is_async) {
+            (true, true) => "AsyncGeneratorFunction",
+            (true, false) => "GeneratorFunction",
+            (false, true) => "AsyncFunction",
+            (false, false) => "Function",
+        },
+        _ => tag_of(vm, v),
+    }
+}
+
 fn proto_to_string(vm: &mut Vm, this: Value, _args: &[Value], _: Id) -> Res {
-    if let Value::Obj(id) = this
-        && let Kind::Error(_) = vm.heap[id as usize].kind
-    {
-        return Ok(vm.static_str("[object Error]"));
+    // A string `Symbol.toStringTag`, own or inherited, names the value; the program's getters are read ahead.
+    let readable = match this {
+        Value::Obj(id) => !vm.is_namespace(id),
+        Value::Undef | Value::Null | Value::Uninit => false,
+        _ => true,
+    };
+    let tag = match (readable, this) {
+        // A plain read, which a promise's missing key passes as for any object.
+        (true, Value::Obj(id)) => vm.reading(|vm| Ok(vm.get_obj(id, SYM_TO_STRING_TAG)))?,
+        (true, _) => vm.reading(|vm| vm.get(&this, SYM_TO_STRING_TAG))?,
+        (false, _) => Value::Undef,
+    };
+    if vm.reads_pending() {
+        return Ok(Value::Undef);
     }
-    // The reference has no tag of its own for a symbol.
-    if let Value::Sym(_) = this {
-        return Ok(vm.static_str("[object Object]"));
-    }
-    let t = format!("[object {}]", tag_of(vm, &this));
+    let t = match tag {
+        Value::Str(s) => format!("[object {}]", vm.text(s)),
+        _ => format!("[object {}]", class_tag(vm, &this)),
+    };
     Ok(vm.static_str(&t))
 }
 
 fn proto_to_locale_string(vm: &mut Vm, this: Value, _args: &[Value], callee: Id) -> Res {
-    // A symbol has no prototype to find the method on, as null and undefined have none.
-    if this.is_nullish() || is_namespace_ref(vm, &this) || matches!(this, Value::Sym(_)) {
+    if this.is_nullish() || is_namespace_ref(vm, &this) {
         return Err(vm.type_error("Object.prototype.toLocaleString called on null or undefined."));
     }
     let k = vm.names.to_string;
@@ -905,23 +1003,24 @@ fn proto_is_prototype_of(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res
 }
 
 fn proto_property_is_enumerable(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
-    let id = object_receiver(vm, &this, "propertyIsEnumerable")?;
-    let k = vm.key_of(&arg(args, 0))?;
-    let o = &vm.heap[id as usize];
-    // A sparse array's far elements are properties, read below.
-    if let Kind::Array(items) = &o.kind
-        && let Some(i) = vm.atoms.index(k)
-        && items
-            .get(i as usize)
-            .is_some_and(|v| !matches!(v, Value::Uninit))
-    {
-        return Ok(Value::Bool(true));
-    }
-    Ok(Value::Bool(
+    own_check(vm, this, args, "prototype.propertyIsEnumerable", |vm, k| {
+        let Value::Obj(id) = this else {
+            return primitive_slot(vm, &this, k).is_some_and(|s| s.enumerable);
+        };
+        let o = &vm.heap[id as usize];
+        // A sparse array's far elements are properties, read below.
+        if let Kind::Array(items) = &o.kind
+            && let Some(i) = vm.atoms.index(k)
+            && items
+                .get(i as usize)
+                .is_some_and(|v| !matches!(v, Value::Uninit))
+        {
+            return true;
+        }
         o.props
             .find(k)
-            .is_some_and(|i| o.props.items[i].flags & ENUMERABLE != 0),
-    ))
+            .is_some_and(|i| o.props.items[i].flags & ENUMERABLE != 0)
+    })
 }
 
 // ---------- Function ----------
@@ -949,7 +1048,7 @@ fn function_call(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
 
 /// Calls `f` as the reference's `call` and `apply` do: they cost a native call before they hand on to `f`, which
 /// costs what a call of it from bytecode costs (see `fuel.rs`). The call is made from a native frame.
-fn invoke(vm: &mut Vm, callee: Id, f: Value, this: Value, args: &[Value]) -> Res {
+pub(crate) fn invoke(vm: &mut Vm, callee: Id, f: Value, this: Value, args: &[Value]) -> Res {
     super::fuel::native(vm);
     let mut slots = vec![f, this, Value::Num(args.len() as f64)];
     slots.extend_from_slice(args);
@@ -1233,13 +1332,97 @@ fn boolean_value_of(vm: &mut Vm, this: Value, _args: &[Value], _: Id) -> Res {
 
 fn symbol_ctor(vm: &mut Vm, _this: Value, _args: &[Value], _: Id) -> Res {
     Err(vm.type_error(
-        "Symbol is not callable; only Symbol.asyncIterator and Symbol.iterator are available.",
+        "Symbol is not callable; only Symbol.asyncIterator, Symbol.iterator, Symbol.toPrimitive and Symbol.toStringTag are available.",
     ))
 }
 
+/// The symbol a `Symbol.prototype` method is called on.
+pub(crate) fn this_symbol(vm: &mut Vm, this: &Value, name: &str) -> Result<Atom, Value> {
+    match this {
+        Value::Sym(s) => Ok(*s),
+        _ => Err(vm.type_error(&format!(
+            "Symbol.prototype.{name} requires that 'this' be a Symbol."
+        ))),
+    }
+}
+
 fn symbol_to_string(vm: &mut Vm, this: Value, _args: &[Value], _: Id) -> Res {
-    let s = if let Value::Sym(s) = this { s } else { 0 };
+    let s = this_symbol(vm, &this, "toString")?;
     Ok(vm.atom_val(s))
+}
+
+fn symbol_value_of(vm: &mut Vm, this: Value, _args: &[Value], _: Id) -> Res {
+    Ok(Value::Sym(this_symbol(vm, &this, "valueOf")?))
+}
+
+fn symbol_to_primitive(vm: &mut Vm, this: Value, _args: &[Value], _: Id) -> Res {
+    Ok(Value::Sym(this_symbol(vm, &this, "[Symbol.toPrimitive]")?))
+}
+
+/// A symbol's `description`: `Symbol.iterator` for `Symbol(Symbol.iterator)`.
+pub(crate) fn symbol_description(vm: &mut Vm, s: Atom) -> Value {
+    let text = crate::ops::symbol_text(s);
+    vm.static_str(&text["Symbol(".len()..text.len() - 1])
+}
+
+/// The members `Symbol`, `Symbol.prototype` and `Object` gained with the well-known symbols, after the others: made
+/// when a program names `Symbol` or `Object`, the only ways it can reach a symbol (see `LAZY`).
+pub(crate) fn setup_symbols(vm: &mut Vm) {
+    let sp = vm.realm.symbol_proto;
+    let ck = vm.names.constructor;
+    if let Value::Obj(symbol) = vm.get_obj(sp, ck) {
+        vm.constant(symbol, "toPrimitive", Value::Sym(SYM_TO_PRIMITIVE));
+        vm.constant(symbol, "toStringTag", Value::Sym(SYM_TO_STRING_TAG));
+    }
+    vm.method(sp, "valueOf", 0, symbol_value_of);
+    super::accessors(vm, sp, &["description"]);
+    // Read-only, configurable: the reference's `readonly`.
+    let to_primitive = vm.native_fn("[Symbol.toPrimitive]", 1, symbol_to_primitive, Value::Undef);
+    vm.heap[sp as usize]
+        .props
+        .insert(SYM_TO_PRIMITIVE, to_primitive, 0);
+    let tag = vm.static_str("Symbol");
+    vm.heap[sp as usize].props.insert(SYM_TO_STRING_TAG, tag, 0);
+    // `Object.getOwnPropertySymbols` in its place, before `getOwnPropertyNames`, as the reference orders them.
+    let op = vm.realm.object_proto;
+    if let Value::Obj(object) = vm.get_obj(op, ck) {
+        let f = vm.native_fn(
+            "getOwnPropertySymbols",
+            1,
+            object_get_own_property_symbols,
+            Value::Undef,
+        );
+        let (key, before) = (
+            vm.atoms.intern_static("getOwnPropertySymbols"),
+            vm.atoms.intern_static("getOwnPropertyNames"),
+        );
+        vm.heap[object as usize]
+            .props
+            .insert_before(before, key, f, HIDDEN);
+    }
+}
+
+/// The console methods added after the first seven, made when a program names `console` (see `LAZY`).
+pub(crate) fn setup_console(vm: &mut Vm) {
+    let ck = vm.atoms.intern_static("console");
+    let Some(Value::Obj(console)) = vm.global_map.get(&ck).copied() else {
+        return;
+    };
+    vm.methods(
+        console,
+        &[
+            ("assert", 0, console_assert),
+            ("count", 0, console_count),
+            ("countReset", 0, console_count_reset),
+            ("group", 0, console_group),
+            ("groupCollapsed", 0, console_group),
+            ("groupEnd", 0, console_group_end),
+            ("trace", 0, console_trace),
+            ("time", 0, console_time),
+            ("timeLog", 0, console_time_log),
+            ("timeEnd", 0, console_time_end),
+        ],
+    );
 }
 
 // ---------- JSON ----------
@@ -1256,11 +1439,11 @@ fn parse(vm: &mut Vm, c: &mut fuel::Conversions, args: &[Value], callee: Id) -> 
     c.convert(vm, &[Hint::String], &mut text, false)?;
     let text = vm.string_of(&text[0])?;
     let text = vm.text(text).to_owned();
-    let v = convert::parse(vm, &text)?;
     let reviver = arg(args, 1);
     if vm.type_of(&reviver) != "function" {
-        return Ok(v);
+        return convert::parse(vm, &text);
     }
+    let (v, snapshot) = convert::parse_revivable(vm, &text)?;
     let reviver = super::require_callback(vm, &reviver, "JSON.parse")?;
     let holder = vm.new_object();
     let empty = vm.atoms.intern_static("");
@@ -1270,31 +1453,50 @@ fn parse(vm: &mut Vm, c: &mut fuel::Conversions, args: &[Value], callee: Id) -> 
     let key = vm.static_str("");
     let op = crate::native::NativeOp::Revive;
     vm.enter_native(op, callee, Value::Undef, &[reviver, Value::Num(0.0)])?;
-    push_level(vm, Value::Obj(holder), key);
+    push_level(vm, Value::Obj(holder), key, snapshot);
     Ok(Value::Undef)
 }
 
 // The slots of a reviving frame: the reviver and how many levels deep it is; then, per level, the holder, the key, the
-// value, the value's keys (an internal array, or undefined for a primitive) and the next of them to revive.
+// value, the value's keys (an internal array, or undefined for a primitive), the next of them to revive, and the
+// value's snapshot (see `convert::parse_revivable`), once an object's visited its children's snapshots.
 const REV_F: usize = 0;
 const REV_DEPTH: usize = 1;
 const REV_LEVELS: usize = 2;
-const LEVEL: usize = 5;
+const LEVEL: usize = 6;
 const L_HOLDER: usize = 0;
 const L_KEY: usize = 1;
 const L_VAL: usize = 2;
 const L_KEYS: usize = 3;
 const L_I: usize = 4;
+const L_SNAP: usize = 5;
 
 /// Pushes a level to revive `key` of `holder`, on top of the frame's slots.
-fn push_level(vm: &mut Vm, holder: Value, key: Value) {
+fn push_level(vm: &mut Vm, holder: Value, key: Value, snapshot: Value) {
     vm.stack.extend(
-        [holder, key, Value::Undef, Value::Undef, Value::Num(0.0)].map(crate::value::Slot::pack),
+        [
+            holder,
+            key,
+            Value::Undef,
+            Value::Undef,
+            Value::Num(0.0),
+            snapshot,
+        ]
+        .map(crate::value::Slot::pack),
     );
 }
 
+/// The two items of a snapshot (an internal array).
+fn snapshot_items(vm: &Vm, snapshot: &Value) -> Option<(Value, Value)> {
+    match &vm.heap[snapshot.as_obj()? as usize].kind {
+        Kind::Array(items) if items.len() == 2 => Some((items[0], items[1])),
+        _ => None,
+    }
+}
+
 /// The step of a reviving frame: the prelude's `revive`, entered once per value; an object's `$IsObject` and
-/// `$Keys`, a back-edge per key, then the reviver, children first.
+/// `$Keys`, a back-edge per key, then the reviver, children first, with a context giving the source text of a
+/// primitive the revivers left as parsed.
 pub(crate) fn revive_step(
     vm: &mut Vm,
     fr: crate::native::Frame,
@@ -1348,6 +1550,12 @@ pub(crate) fn revive_step(
             fuel::native(vm);
             fr.set(vm, at(depth, L_VAL), val);
             if let Value::Obj(id) = val {
+                // The children's snapshots, while the value is the one parsed.
+                let children = match snapshot_items(vm, &fr.get(vm, at(depth, L_SNAP))) {
+                    Some((Value::Obj(parsed), children)) if parsed == id => children,
+                    _ => Value::Undef,
+                };
+                fr.set(vm, at(depth, L_SNAP), children);
                 let keys: Vec<Value> = vm
                     .own_keys(id)
                     .into_iter()
@@ -1367,20 +1575,45 @@ pub(crate) fn revive_step(
             Some(Kind::Array(items)) => items.get(fr.index(vm, at(depth, L_I))).copied(),
             _ => None,
         };
+        let snapshot = fr.get(vm, at(depth, L_SNAP));
         if let Some(k) = next_key {
-            push_level(vm, val, k);
+            let child = match snapshot {
+                Value::Obj(children) => {
+                    let a = vm.key_of(&k)?;
+                    vm.heap[children as usize]
+                        .props
+                        .get(a)
+                        .copied()
+                        .unwrap_or_default()
+                }
+                _ => Value::Undef,
+            };
+            push_level(vm, val, k, child);
             depth += 1;
             fr.set_index(vm, REV_DEPTH, depth);
             visited = false;
             continue;
         }
+        let context = vm.new_object();
+        if !matches!(val, Value::Obj(_)) && !matches!(snapshot, Value::Undef) {
+            // `$IsObject` of the snapshot's first item.
+            fuel::native(vm);
+            if let Some((source, parsed)) = snapshot_items(vm, &snapshot)
+                && !matches!(source, Value::Obj(_))
+                && vm.same_value(&val, &parsed)
+            {
+                let sk = vm.atoms.intern_static("source");
+                vm.define(context, sk, source);
+            }
+        }
         let f = fr.slot(vm, REV_F);
-        let (holder, key, val) = (
+        let (holder, key, val, context) = (
             crate::value::Slot::pack(holder),
             crate::value::Slot::pack(key),
             crate::value::Slot::pack(val),
+            crate::value::Slot::pack(Value::Obj(context)),
         );
-        return fr.call_slots(vm, f, holder, [key, val]);
+        return fr.call_slots(vm, f, holder, [key, val, context]);
     }
 }
 
@@ -1425,16 +1658,184 @@ fn json_stringify(vm: &mut Vm, _this: Value, args: &[Value], callee: Id) -> Res 
 
 // ---------- console ----------
 
-fn log_line(vm: &mut Vm, prefix: &str, args: &[Value]) -> Res {
+/// What `console.count`, `group` and `time` remember between calls. Saved with the run.
+#[derive(Clone, Default)]
+pub struct ConsoleState {
+    pub counts: Vec<(String, f64)>,
+    /// The epoch milliseconds each `time` label started at, so the time elapsed survives a save and restore.
+    pub timers: Vec<(String, f64)>,
+    pub indent: String,
+}
+
+fn console_state(vm: &mut Vm) -> &mut ConsoleState {
+    vm.console.get_or_insert_default()
+}
+
+/// Logs `prefix` and `message`, each of the message's lines indented by the groups open.
+fn push_log(vm: &mut Vm, prefix: &str, message: &str) -> Res {
+    let indent = vm.console.as_ref().map_or("", |c| c.indent.as_str());
     let mut line = String::from(prefix);
-    for (i, a) in args.iter().enumerate() {
-        if i > 0 {
-            line.push(' ');
+    if indent.is_empty() {
+        line.push_str(message);
+    } else {
+        // As `message.replace(/^/gm, indent)`: at the start and after each line terminator.
+        line.push_str(indent);
+        for c in message.chars() {
+            line.push(c);
+            if matches!(c, '\n' | '\r' | '\u{2028}' | '\u{2029}') {
+                line.push_str(indent);
+            }
         }
-        line.push_str(&convert::format_value(vm, a));
     }
     vm.logs.push(line);
     Ok(Value::Undef)
+}
+
+fn format_args(vm: &mut Vm, args: &[Value]) -> String {
+    let parts: Vec<String> = args.iter().map(|a| convert::format_value(vm, a)).collect();
+    parts.join(" ")
+}
+
+fn log_line(vm: &mut Vm, prefix: &str, args: &[Value]) -> Res {
+    let message = format_args(vm, args);
+    push_log(vm, prefix, &message)
+}
+
+/// A count's or timer's label: `default` when omitted.
+fn console_label(vm: &mut Vm, args: &[Value]) -> Result<String, Value> {
+    match arg(args, 0) {
+        Value::Undef => Ok("default".to_owned()),
+        v => super::builtin_string(vm, &v),
+    }
+}
+
+fn console_assert(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
+    if vm.truthy(&arg(args, 0)) {
+        return Ok(Value::Undef);
+    }
+    let rest = args.get(1..).unwrap_or_default();
+    if rest.is_empty() {
+        return push_log(vm, "[error] ", "Assertion failed");
+    }
+    let separator = if matches!(rest[0], Value::Str(_)) {
+        ": "
+    } else {
+        " "
+    };
+    let message = format!("Assertion failed{separator}{}", format_args(vm, rest));
+    push_log(vm, "[error] ", &message)
+}
+
+fn console_count(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
+    let name = console_label(vm, args)?;
+    let counts = &mut console_state(vm).counts;
+    let count = match counts.iter_mut().find(|(k, _)| *k == name) {
+        Some((_, n)) => {
+            *n += 1.0;
+            *n
+        }
+        None => {
+            counts.push((name.clone(), 1.0));
+            1.0
+        }
+    };
+    push_log(
+        vm,
+        "",
+        &format!("{name}: {}", crate::value::num_to_string(count)),
+    )
+}
+
+fn console_count_reset(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
+    let name = console_label(vm, args)?;
+    match console_state(vm)
+        .counts
+        .iter_mut()
+        .find(|(k, _)| *k == name)
+    {
+        Some((_, n)) => *n = 0.0,
+        None => return push_log(vm, "[warn] ", &format!("Count for '{name}' does not exist")),
+    }
+    Ok(Value::Undef)
+}
+
+fn console_group(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
+    if !args.is_empty() {
+        log_line(vm, "", args)?;
+    }
+    console_state(vm).indent.push_str("  ");
+    Ok(Value::Undef)
+}
+
+fn console_group_end(vm: &mut Vm, _this: Value, _args: &[Value], _: Id) -> Res {
+    let indent = &mut console_state(vm).indent;
+    *indent = indent.chars().skip(2).collect();
+    Ok(Value::Undef)
+}
+
+fn console_trace(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
+    if args.is_empty() {
+        return push_log(vm, "[error] ", "Trace");
+    }
+    let message = format!("Trace: {}", format_args(vm, args));
+    push_log(vm, "[error] ", &message)
+}
+
+fn console_time(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
+    let name = console_label(vm, args)?;
+    let now = super::date::now();
+    let timers = &mut console_state(vm).timers;
+    if timers.iter().any(|(k, _)| *k == name) {
+        let message = format!("Label '{name}' already exists for console.time()");
+        return push_log(vm, "[warn] ", &message);
+    }
+    timers.push((name, now));
+    Ok(Value::Undef)
+}
+
+/// The time since the label's `time`, as Node shows it, or a warning logged when it has none.
+fn console_elapsed(vm: &mut Vm, name: &str, method: &str) -> Result<Option<String>, Value> {
+    let start = console_state(vm)
+        .timers
+        .iter()
+        .find(|(k, _)| k == name)
+        .map(|(_, t)| *t);
+    let Some(start) = start else {
+        push_log(
+            vm,
+            "[warn] ",
+            &format!("No such label '{name}' for console.{method}()"),
+        )?;
+        return Ok(None);
+    };
+    let ms = super::date::now() - start;
+    Ok(Some(if ms < 1000.0 {
+        format!("{}ms", crate::value::num_to_fixed(ms, 3))
+    } else {
+        format!("{}s", crate::value::num_to_fixed(ms / 1000.0, 3))
+    }))
+}
+
+fn console_time_log(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
+    let name = console_label(vm, args)?;
+    let Some(time) = console_elapsed(vm, &name, "timeLog")? else {
+        return Ok(Value::Undef);
+    };
+    let mut message = format!("{name}: {time}");
+    for a in args.iter().skip(1) {
+        message.push(' ');
+        message.push_str(&convert::format_value(vm, a));
+    }
+    push_log(vm, "", &message)
+}
+
+fn console_time_end(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
+    let name = console_label(vm, args)?;
+    let Some(time) = console_elapsed(vm, &name, "timeEnd")? else {
+        return Ok(Value::Undef);
+    };
+    console_state(vm).timers.retain(|(k, _)| *k != name);
+    push_log(vm, "", &format!("{name}: {time}"))
 }
 
 fn console_log(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
@@ -1451,48 +1852,33 @@ fn console_error(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
 }
 fn console_dir(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
     if args.is_empty() {
-        vm.logs.push("undefined".into());
-        return Ok(Value::Undef);
+        return push_log(vm, "", "undefined");
     }
     log_line(vm, "", &args[..1])
 }
 
-/// Whether a value holds an opaque reference (a function, promise, iterator or namespace path) anywhere in the
-/// data objects and arrays it contains, as the reference's `containsOpaqueReference` walks it.
-fn contains_opaque(vm: &Vm, v: &Value, seen: &mut Vec<Id>) -> bool {
+/// Whether a value is opaque, a reference rather than data: a function, promise, iterator or namespace path (the
+/// reference's `isOpaque`).
+fn is_opaque(vm: &Vm, v: &Value) -> bool {
     let Value::Obj(id) = v else { return false };
-    let o = &vm.heap[*id as usize];
-    match &o.kind {
-        Kind::Ordinary | Kind::Error(_) | Kind::Arguments(_) | Kind::Array(_) => {}
-        Kind::Map(_)
-        | Kind::Set(_)
-        | Kind::WeakMap(_)
-        | Kind::WeakSet(_)
-        | Kind::Date(_)
-        | Kind::RegExp(_)
-        | Kind::Bytes(_)
-        | Kind::Url(_)
-        | Kind::SearchParams(_)
-        | Kind::Headers(_)
-        | Kind::TextDecoder(_) => return false,
-        _ => return true,
-    }
-    if seen.contains(id) {
-        return false;
-    }
-    seen.push(*id);
-    // A structural check, so it never runs program code: accessors are left out.
-    let mut children: Vec<Value> = o
-        .props
-        .items
-        .iter()
-        .filter(|p| p.flags & ACCESSOR == 0)
-        .map(|p| p.value)
-        .collect();
-    if let Kind::Array(items) | Kind::Arguments(items) = &o.kind {
-        children.extend(items.iter().copied());
-    }
-    children.iter().any(|c| contains_opaque(vm, c, seen))
+    !matches!(
+        vm.heap[*id as usize].kind,
+        Kind::Ordinary
+            | Kind::Error(_)
+            | Kind::Arguments(_)
+            | Kind::Array(_)
+            | Kind::Map(_)
+            | Kind::Set(_)
+            | Kind::WeakMap(_)
+            | Kind::WeakSet(_)
+            | Kind::Date(_)
+            | Kind::RegExp(_)
+            | Kind::Bytes(_)
+            | Kind::Url(_)
+            | Kind::SearchParams(_)
+            | Kind::Headers(_)
+            | Kind::TextDecoder(_)
+    )
 }
 
 /// A row's cells: an object's own entries (or the chosen columns), or the value itself under `Value`.
@@ -1548,12 +1934,11 @@ fn record_keys(keys: Vec<String>) -> Vec<String> {
 fn console_table(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
     let data = arg(args, 0);
     if let Value::Undef = data {
-        vm.logs.push("undefined".into());
-        return Ok(Value::Undef);
+        return push_log(vm, "", "undefined");
     }
-    if contains_opaque(vm, &data, &mut Vec::new()) {
-        vm.logs.push("[opaque reference]".into());
-        return Ok(Value::Undef);
+    // An opaque value prints as `console.log` shows it; one inside the data is a cell.
+    if is_opaque(vm, &data) {
+        return log_line(vm, "", &[data]);
     }
     for v in [data, arg(args, 1)] {
         if let Value::Obj(id) = v
@@ -1653,7 +2038,7 @@ fn console_table(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
         }
         lines.push(line.join("\t"));
     }
-    vm.logs.push(lines.join("\n"));
+    push_log(vm, "", &lines.join("\n"))?;
     Ok(Value::Undef)
 }
 

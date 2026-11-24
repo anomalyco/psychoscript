@@ -1,0 +1,53 @@
+{
+  "bindings": {},
+  "ok": true,
+  "value": [
+    "function",
+    [
+      1,
+      2
+    ],
+    "function",
+    "function",
+    "function",
+    [
+      "length",
+      "name",
+      "prototype",
+      "isArray",
+      "of",
+      "from",
+      "fromAsync"
+    ],
+    [
+      "length",
+      "name",
+      "prototype",
+      "keys",
+      "values",
+      "entries",
+      "hasOwn",
+      "is",
+      "assign",
+      "freeze",
+      "seal",
+      "preventExtensions",
+      "isFrozen",
+      "isSealed",
+      "isExtensible",
+      "getPrototypeOf",
+      "create",
+      "defineProperty",
+      "defineProperties",
+      "getOwnPropertyDescriptor",
+      "getOwnPropertyDescriptors",
+      "getOwnPropertySymbols",
+      "getOwnPropertyNames",
+      "groupBy",
+      "fromEntries"
+    ],
+    25
+  ],
+  "logs": [],
+  "metadata": null
+}

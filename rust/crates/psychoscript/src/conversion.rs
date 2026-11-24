@@ -71,6 +71,9 @@ const WAITING: usize = 1;
 const READING: usize = 2;
 /// Waiting for a program getter of the value's method, `valueOf` or `toString`.
 const GETTING: usize = 3;
+/// Waiting for a program getter of the value's `Symbol.toPrimitive` (the hint in `STAGE`), or for its call.
+const EXOTIC_GETTING: usize = 4;
+const EXOTIC: usize = 5;
 
 /// The operations an instruction converts in (`Vm::op_slow`).
 pub(crate) mod code {
@@ -170,6 +173,15 @@ impl Vm {
         } else {
             hint
         };
+        // `Symbol.toPrimitive`, when the value has one, is the only method ToPrimitive calls.
+        if self.has_program_getter(*id, SYM_TO_PRIMITIVE) {
+            return true;
+        }
+        let exotic = self.get_obj(*id, SYM_TO_PRIMITIVE);
+        if !matches!(exotic, Value::Undef | Value::Null | Value::Uninit) {
+            return self.is_callable(&exotic)
+                && !matches!(&exotic, Value::Obj(m) if matches!(self.heap[*m as usize].kind, Kind::Native { .. }));
+        }
         let names = match hint {
             Hint::String => [self.names.to_string, self.names.value_of],
             _ => [self.names.value_of, self.names.to_string],
@@ -180,6 +192,18 @@ impl Vm {
                 return true;
             }
             let f = self.get_obj(*id, name);
+            if crate::builtins::array::is_builtin_to_string(self, &f) {
+                // `toString` calls the receiver's `join`.
+                let jk = self.atoms.intern_static("join");
+                if self.has_program_getter(*id, jk) {
+                    return true;
+                }
+                let j = self.get_obj(*id, jk);
+                if !crate::builtins::array::is_builtin_join(self, &j) {
+                    return self.is_callable(&j)
+                        && !matches!(&j, Value::Obj(m) if matches!(self.heap[*m as usize].kind, Kind::Native { .. }));
+                }
+            }
             if crate::builtins::array::is_join(self, &f) {
                 // `join` converts each element, as the reference's bytecode calls it: an element that calls the
                 // program makes the array's conversion one that does (an array nested deeper than this is left
@@ -518,7 +542,7 @@ impl Vm {
             WRITE_KEY => self.write_key(&b, &a)?,
             TO_KEY => {
                 let k = self.key_of(&a)?;
-                if k <= SYM_ASYNC_ITERATOR {
+                if k <= SYM_LAST {
                     Value::Sym(k)
                 } else {
                     self.atom_val(k)
@@ -595,6 +619,21 @@ pub(crate) fn step(vm: &mut Vm, sub: u16, fr: Frame, input: Input) -> Result<Ste
             }
             next_method(vm, fr)
         }
+        Input::Returned(r) if fr.index(vm, PHASE) == EXOTIC_GETTING => {
+            let hint = hint_of(fr.index(vm, STAGE));
+            call_exotic(vm, fr, r.get(), hint)
+        }
+        Input::Returned(r) if fr.index(vm, PHASE) == EXOTIC => {
+            fr.set_index(vm, PHASE, CONVERTING);
+            let r = r.get();
+            if matches!(r, Value::Obj(_)) {
+                return Err(unconvertible(vm));
+            }
+            if sub != RETURN && matches!(fr.get(vm, LISTING), Value::Bool(true)) {
+                return listed(vm, fr, r);
+            }
+            answered(vm, sub, fr, r)
+        }
         Input::Returned(r) if fr.index(vm, PHASE) == READING => {
             fr.set_index(vm, PHASE, CONVERTING);
             read_one(vm, fr, r.get());
@@ -618,6 +657,7 @@ pub(crate) fn step(vm: &mut Vm, sub: u16, fr: Frame, input: Input) -> Result<Ste
 /// ToPrimitive of the frame's value, as `Vm::primitive_of` makes it: its fuel, then its first method.
 fn begin(vm: &mut Vm, fr: Frame) -> Result<Step, Value> {
     vm.fuel(1);
+    let hint = hint_of(fr.index(vm, HINT));
     if let Value::Obj(id) = fr.get(vm, VALUE)
         && hint_of(fr.index(vm, HINT)) == Hint::Default
         && crate::builtins::exotic::prefers_string(vm, id)
@@ -626,7 +666,39 @@ fn begin(vm: &mut Vm, fr: Frame) -> Result<Step, Value> {
     }
     fr.set_index(vm, STAGE, 0);
     fr.set_index(vm, PHASE, CONVERTING);
-    next_method(vm, fr)
+    exotic(vm, fr, hint)
+}
+
+/// The value's `Symbol.toPrimitive`, which ToPrimitive calls with the hint before `valueOf` and `toString`.
+fn exotic(vm: &mut Vm, fr: Frame, hint: Hint) -> Result<Step, Value> {
+    let v = fr.get(vm, VALUE);
+    let Value::Obj(id) = v else {
+        return next_method(vm, fr);
+    };
+    vm.op_access = true;
+    let f = vm.get_obj(id, SYM_TO_PRIMITIVE);
+    vm.op_access = false;
+    if let Some(g) = vm.getter_hit.take() {
+        fr.set(vm, STAGE, Value::Num(hint_code(hint)));
+        fr.set_index(vm, PHASE, EXOTIC_GETTING);
+        return fr.call_slots(vm, Slot::pack(g), Slot::pack(v), []);
+    }
+    call_exotic(vm, fr, f, hint)
+}
+
+/// Calls a `Symbol.toPrimitive` method read, or goes on to `valueOf` and `toString` without one.
+fn call_exotic(vm: &mut Vm, fr: Frame, f: Value, hint: Hint) -> Result<Step, Value> {
+    fr.set_index(vm, STAGE, 0);
+    fr.set_index(vm, PHASE, CONVERTING);
+    if matches!(f, Value::Undef | Value::Null | Value::Uninit) {
+        return next_method(vm, fr);
+    }
+    if !vm.is_callable(&f) {
+        return Err(vm.type_error("Symbol.toPrimitive must be a function."));
+    }
+    fr.set_index(vm, PHASE, EXOTIC);
+    let (v, h) = (fr.get(vm, VALUE), vm.static_str(hint.name()));
+    fr.call_slots(vm, Slot::pack(f), Slot::pack(v), [Slot::pack(h)])
 }
 
 /// Calls the next of the value's methods that is callable, as bytecode calls it; none left fails.
@@ -744,7 +816,7 @@ fn convert_next(vm: &mut Vm, fr: Frame) -> Result<Step, Value> {
 
 /// A key as a value, for the frame's slots.
 pub(crate) fn key_value(vm: &Vm, k: Atom) -> Value {
-    if k <= SYM_ASYNC_ITERATOR {
+    if k <= SYM_LAST {
         Value::Sym(k)
     } else {
         vm.atom_val(k)

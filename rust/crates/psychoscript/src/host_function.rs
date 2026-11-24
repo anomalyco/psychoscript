@@ -724,7 +724,14 @@ pub(crate) enum Body {
     Lost(Arc<str>),
     /// A live response's state, read with no call of the host (the reference's `hostGetter`).
     Getter(crate::streaming::Getter),
+    /// A built-in of a live response the reference makes in the program (`getReader`): it runs as a native, with no
+    /// call of the host.
+    Native(Arc<NativeBody>),
 }
+
+/// The work of a `Body::Native` function: the run and the call's arguments.
+pub(crate) type NativeBody =
+    dyn Fn(&mut crate::vm::Vm, &[crate::value::Value]) -> crate::vm::Res + Send + Sync;
 
 /// How a call of a host function reaches the program, the reference's `Host.Type`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -824,6 +831,18 @@ impl HostFunction {
     pub(crate) fn live_getter(name: &str, g: crate::streaming::Getter) -> Self {
         let mut made = Self::with_body(Body::Getter(g));
         made.name = name.into();
+        made.own_name = true;
+        made
+    }
+
+    pub(crate) fn native_body(
+        name: &str,
+        length: u8,
+        f: impl Fn(&mut crate::vm::Vm, &[crate::value::Value]) -> crate::vm::Res + Send + Sync + 'static,
+    ) -> Self {
+        let mut made = Self::with_body(Body::Native(Arc::new(f)));
+        made.name = name.into();
+        made.length = length;
         made.own_name = true;
         made
     }

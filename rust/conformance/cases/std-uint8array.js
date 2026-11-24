@@ -4,7 +4,7 @@ out.push([...b], b.length, b[2], b[9], Object.keys(b), JSON.stringify(b), String
 b[0] = 257; b[10] = 5; out.push([...b], b.length, 0 in b, 9 in b, b.hasOwnProperty("1"), b.hasOwnProperty("length"))
 try { delete b[0] } catch (e) { out.push(e.name) }
 out.push(new Uint8Array(3).join("-"), new Uint8Array().length, new Uint8Array("2").length, new Uint8Array(null).length, Uint8Array.of(1, 256, "3").join(), Uint8Array.from([1, 2], (x, i) => x * 10 + i).join(), Uint8Array.from("12").join(), Uint8Array.from(new Set([5, 6])).join())
-for (const f of [() => new Uint8Array(-1), () => new Uint8Array(1.5), () => Uint8Array(2), () => new Uint8Array({ length: 2 }), () => Uint8Array.fromHex("abc"), () => Uint8Array.fromBase64("@@"), () => Uint8Array.fromBase64(1), () => new Uint8Array(2).set([1, 2, 3]), () => new Uint8Array(2).reduce((a, b) => a), () => new Uint8Array().reduce((a, b) => a), () => new Uint8Array(1).map(5)]) {
+for (const f of [() => new Uint8Array(-1), () => [...new Uint8Array(1.5)], () => Uint8Array(2), () => [...new Uint8Array({ length: 2 })], () => Uint8Array.fromHex("abc"), () => Uint8Array.fromBase64("@@"), () => Uint8Array.fromBase64(1), () => new Uint8Array(2).set([1, 2, 3]), () => new Uint8Array(2).reduce((a, b) => a), () => new Uint8Array().reduce((a, b) => a), () => new Uint8Array(1).map(5)]) {
   try { out.push(f()) } catch (e) { out.push([e.name, e.message]) }
 }
 const s = new Uint8Array([10, 9, 1, 2, 3])

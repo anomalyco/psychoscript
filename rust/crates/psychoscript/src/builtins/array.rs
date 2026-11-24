@@ -383,6 +383,158 @@ fn array_from(vm: &mut Vm, _this: Value, args: &[Value], callee: Id) -> Res {
     Ok(vm.new_array(out))
 }
 
+/// The reference's `Array.fromAsync`, an async function of its bytecode prelude (`src/prelude/source.ts`), compiled
+/// from the same source the first time it is called (see `from_async_code`).
+const FROM_ASYNC: &str = r#"async function Array$fromAsync(items, mapper = undefined, thisArg = undefined) {
+  if (mapper !== undefined) $Callback(mapper, "Array.fromAsync")
+  if (items === null || items === undefined) $Throw("TypeError", "Array.fromAsync expects an iterable or array-like value.")
+  let index = 0
+  if (items[Symbol.asyncIterator] != null || items[Symbol.iterator] != null) {
+    const result = []
+    for await (const item of items) {
+      $ArraySet(result, index, mapper === undefined ? item : await $Call(mapper, thisArg, item, index))
+      index++
+    }
+    return result
+  }
+  const length = Math.min(Math.max(Math.trunc(+items.length) || 0, 0), Number.MAX_SAFE_INTEGER)
+  const result = new Array(length)
+  let item
+  while (index < length) {
+    item = await items[index]
+    $ArraySet(result, index, mapper === undefined ? item : await $Call(mapper, thisArg, item, index))
+    index++
+  }
+  return result
+}"#;
+
+/// `Array.fromAsync`: the prelude function, called as bytecode calls it (its frame costs its unit; this native costs
+/// nothing). The native's data is the function's code in `Vm::protos`, once compiled.
+fn array_from_async(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
+    let at = match vm.native_data(callee) {
+        Value::Num(at) => at as usize,
+        _ => {
+            let Some(at) = from_async_code(vm, true) else {
+                return Err(vm.type_error("Array.fromAsync is not available."));
+            };
+            if let Kind::Native { data, .. } = &mut vm.heap[callee as usize].kind {
+                *data = Value::Num(at as f64);
+            }
+            at
+        }
+    };
+    let proto = vm.protos[at].clone();
+    let fp = vm.realm.async_function_proto;
+    // Its `fields` hold where the program called it, where its failures point (see `Vm::locate`).
+    let origin = vm
+        .call_offset()
+        .map_or(Value::Undef, |o| Value::Num(o as f64));
+    let f = vm.alloc(Obj::new(
+        Some(fp),
+        Kind::Closure(Box::new(Closure {
+            proto,
+            upvals: std::sync::Arc::from(Vec::new()),
+            this: Value::Undef,
+            home: Value::Undef,
+            fields: origin,
+        })),
+    ));
+    let mut slots = vec![Value::Obj(f), this, Value::Num(args.len() as f64)];
+    slots.extend_from_slice(args);
+    vm.enter_native(
+        crate::native::NativeOp::Invoke,
+        callee,
+        Value::Undef,
+        &slots,
+    )
+}
+
+/// `Array.fromAsync`, made when a program names `Array` (see `LAZY`).
+pub(crate) fn setup_from_async(vm: &mut Vm) {
+    let (ap, ck) = (vm.realm.array_proto, vm.names.constructor);
+    if let Value::Obj(array) = vm.get_obj(ap, ck) {
+        vm.method(array, "fromAsync", 1, array_from_async);
+    }
+}
+
+/// Whether `id` is `Array.fromAsync`, an async function in the reference.
+pub(crate) fn is_from_async(vm: &Vm, id: Id) -> bool {
+    matches!(vm.heap[id as usize].kind, Kind::Native { f, .. }
+        if std::ptr::fn_addr_eq(f, array_from_async as crate::vm::NativeFn))
+}
+
+/// Compiles `FROM_ASYNC` into the run's code, after the program's, and gives where its function is. Its code has no
+/// source positions: its failures and `stack` lines point at the program's call. Its `$` helpers are globals only it
+/// reads, bound here for a `live` run; a restored run gets them back with the other globals.
+pub(crate) fn from_async_code(vm: &mut Vm, live: bool) -> Option<usize> {
+    let program = crate::compiler::compile_internal(FROM_ASYNC, &mut vm.atoms).ok()?;
+    if !program.templates.is_empty() || !program.bigints.is_empty() {
+        return None;
+    }
+    let (protos, consts, globals) = (
+        vm.protos.len() as u32,
+        vm.consts.len() as u32,
+        vm.globals.len() as u32,
+    );
+    let mut at = None;
+    for (i, p) in program.protos.into_iter().enumerate() {
+        let mut p = std::sync::Arc::unwrap_or_clone(p);
+        for op in &mut p.code {
+            use crate::bytecode::Op;
+            match op {
+                Op::Closure(i) => *i += protos,
+                Op::Const(i)
+                | Op::ThrowType(i)
+                | Op::ThrowUnsupported(i)
+                | Op::ThrowSyntax(i)
+                | Op::ThrowRange(i)
+                | Op::ThrowReference(i) => *i += consts,
+                Op::GetGlobal(i) | Op::TypeofGlobal(i) => *i += globals,
+                _ => {}
+            }
+        }
+        p.pos.clear();
+        p.sites.clear();
+        if p.is_async && !p.is_program {
+            at = Some(protos as usize + i);
+        }
+        vm.protos.push(std::sync::Arc::new(p));
+    }
+    vm.consts.extend(program.consts);
+    for a in program.globals {
+        let v = match vm.atoms.text(a) {
+            "$Callback" if live => vm.native_fn("$Callback", 2, helper_callback, Value::Undef),
+            "$Throw" if live => vm.native_fn("$Throw", 2, helper_throw, Value::Undef),
+            _ => vm.global_map.get(&a).copied().unwrap_or(Value::Uninit),
+        };
+        vm.global_names.push(a);
+        vm.globals.push(v);
+    }
+    at
+}
+
+/// The prelude's `$Callback`: the callback itself, or the TypeError for one a callback site doesn't admit.
+fn helper_callback(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
+    let label = super::builtin_string(vm, &arg(args, 1))?;
+    super::require_callback(vm, &arg(args, 0), &label)
+}
+
+/// The prelude's `$Throw`: throws a program error of the type named, with the message.
+fn helper_throw(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
+    let message = super::builtin_string(vm, &arg(args, 1))?;
+    let kind = super::builtin_string(vm, &arg(args, 0))?;
+    Err(match kind.as_str() {
+        "RangeError" => vm.range_error(&message),
+        "InvalidData" => vm.invalid_data(&message),
+        _ => vm.type_error(&message),
+    })
+}
+
+/// The natives `from_async_code` binds, which a snapshot saves by position.
+pub(crate) fn snapshot_natives() -> [crate::vm::NativeFn; 2] {
+    [helper_callback, helper_throw]
+}
+
 /// The step of `Array.from` over an array-like value with a mapper: the slots are the mapper, its receiver, the
 /// source, its length, the next index, whether the source has indexes to read, and the result.
 pub(crate) fn from_like_step(vm: &mut Vm, fr: Frame, input: Input) -> Result<Step, Value> {
@@ -630,9 +782,50 @@ pub(crate) fn is_join(vm: &Vm, f: &Value) -> bool {
         if std::ptr::fn_addr_eq(f, a_to_string as crate::vm::NativeFn) || std::ptr::fn_addr_eq(f, a_join as crate::vm::NativeFn))
 }
 
+/// The reference's `toString`: the receiver's `join`, called as `call` calls it, or `Object.prototype.toString`'s
+/// result when it has none.
 fn a_to_string(vm: &mut Vm, this: Value, _args: &[Value], callee: Id) -> Res {
-    let id = arr_id(vm, &this, callee)?;
-    joined(vm, id, None)
+    let readable = match this {
+        Value::Obj(id) => !vm.is_namespace(id),
+        Value::Str(_) | Value::Num(_) | Value::Big(_) | Value::Bool(_) | Value::Sym(_) => true,
+        _ => false,
+    };
+    if !readable {
+        return Err(vm.type_error("Array.prototype.toString called on null or undefined."));
+    }
+    let jk = vm.atoms.intern_static("join");
+    let join = vm.reading(|vm| vm.get(&this, jk))?;
+    if vm.reads_pending() {
+        return Ok(Value::Undef);
+    }
+    if vm.type_of(&join) != "function" {
+        let t = format!("[object {}]", super::object::class_tag(vm, &this));
+        return Ok(vm.static_str(&t));
+    }
+    let join = super::require_callback(vm, &join, "Array.prototype.toString")?;
+    if is_builtin_join(vm, &join) {
+        // The built-in `join`, called here: the call costs a native's fifty, which the reference spends before it
+        // runs, as `toString`'s own.
+        if vm.host.meter.counted {
+            fuel::native(vm);
+        }
+        return a_join(vm, this, &[], callee);
+    }
+    super::object::invoke(vm, callee, join, this, &[])
+}
+
+/// Whether `f` is the arrays' built-in `join`.
+pub(crate) fn is_builtin_join(vm: &Vm, f: &Value) -> bool {
+    let Value::Obj(id) = *f else { return false };
+    matches!(vm.heap[id as usize].kind, Kind::Native { f, .. }
+        if std::ptr::fn_addr_eq(f, a_join as crate::vm::NativeFn))
+}
+
+/// Whether `f` is the arrays' built-in `toString`.
+pub(crate) fn is_builtin_to_string(vm: &Vm, f: &Value) -> bool {
+    let Value::Obj(id) = *f else { return false };
+    matches!(vm.heap[id as usize].kind, Kind::Native { f, .. }
+        if std::ptr::fn_addr_eq(f, a_to_string as crate::vm::NativeFn))
 }
 
 /// The reference's `join` and `toString`: the separator (`join`'s) and the elements, holes and nullish ones as "",
@@ -739,7 +932,7 @@ fn integers(
     c.finish(vm, r)
 }
 
-fn a_to_locale_string(vm: &mut Vm, this: Value, _args: &[Value], callee: Id) -> Res {
+fn a_to_locale_string(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
     fuel::method(vm);
     let id = dense_id(vm, &this, callee)?;
     fuel::native(vm);
@@ -749,12 +942,38 @@ fn a_to_locale_string(vm: &mut Vm, this: Value, _args: &[Value], callee: Id) -> 
         op,
         callee,
         Value::Obj(id),
-        &[empty, Value::Num(0.0), Value::Num(0.0)],
+        &[
+            empty,
+            Value::Num(0.0),
+            Value::Num(0.0),
+            arg(args, 0),
+            arg(args, 1),
+        ],
     )
 }
 
-/// The step of `toLocaleString`: the slots are the text so far, the next index, and whether a result is being
-/// converted by a call.
+/// Whether an element's `toLocaleString` gets the locales and options: without Intl, only the built-in formatters'
+/// do, of primitives, arrays and dates.
+fn formats_locale(vm: &Vm, item: &Value) -> bool {
+    let Value::Obj(id) = *item else { return true };
+    if vm.type_of(item) != "object" || matches!(vm.heap[id as usize].kind, Kind::Array(_)) {
+        return true;
+    }
+    if vm.realm.std.loaded & super::LAZY_DATE == 0 {
+        return false;
+    }
+    let mut cur = vm.heap[id as usize].proto;
+    while let Some(c) = cur {
+        if c == vm.realm.std.date {
+            return true;
+        }
+        cur = vm.heap[c as usize].proto;
+    }
+    false
+}
+
+/// The step of `toLocaleString`: the slots are the text so far, the next index, whether a result is being
+/// converted by a call, and the locales and options.
 pub(crate) fn to_locale_string_step(vm: &mut Vm, fr: Frame, input: Input) -> Result<Step, Value> {
     let id = fr.this_slot(vm).obj().unwrap_or(0);
     let mut i = fr.index(vm, 1);
@@ -797,6 +1016,10 @@ pub(crate) fn to_locale_string_step(vm: &mut Vm, fr: Frame, input: Input) -> Res
         if !item.is_nullish() {
             let f = vm.get(&item, key)?;
             fr.set_index(vm, 1, i);
+            if formats_locale(vm, &item) {
+                let (locales, options) = (fr.slot(vm, 3), fr.slot(vm, 4));
+                return fr.call_slots(vm, Slot::pack(f), Slot::pack(item), [locales, options]);
+            }
             return fr.call_slots(vm, Slot::pack(f), Slot::pack(item), []);
         }
         i += 1;

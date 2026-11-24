@@ -419,6 +419,17 @@ pub fn get_prop(vm: &mut Vm, id: Id, key: Atom) -> Option<Value> {
     Some(Value::Bool(r.has(flag)))
 }
 
+/// An accessor read from `RegExp.prototype` itself, which JS reads as the empty pattern with no flags set.
+pub fn prototype_prop(vm: &mut Vm, key: Atom) -> Option<Value> {
+    Some(match vm.atoms.text(key) {
+        "source" => vm.static_str("(?:)"),
+        "flags" => vm.static_str(""),
+        "hasIndices" | "global" | "ignoreCase" | "multiline" | "dotAll" | "unicode"
+        | "unicodeSets" | "sticky" => Value::Undef,
+        _ => return None,
+    })
+}
+
 pub fn set_prop(vm: &mut Vm, id: Id, key: Atom, val: Value) -> Option<Result<(), Value>> {
     match vm.atoms.text(key) {
         "lastIndex" => {
@@ -556,8 +567,9 @@ fn has_named_groups(m: &regress::Match) -> bool {
     m.named_groups().next().is_some()
 }
 
+/// A match's `groups`: a null-prototype object, as in JS.
 fn groups_object(vm: &mut Vm, subject: &Subject, m: &regress::Match) -> Value {
-    let id = vm.new_object();
+    let id = vm.alloc(Obj::new(None, Kind::Ordinary));
     let named: Vec<(String, Option<regress::Range>)> =
         m.named_groups().map(|(n, r)| (n.to_owned(), r)).collect();
     for (name, range) in named {
@@ -588,12 +600,14 @@ fn match_array(
     vm.define(aid, ik, Value::Num(m.start() as f64));
     let ink = vm.atoms.intern_static("input");
     vm.define(aid, ink, Value::Str(input));
+    // Like JS, `groups` is always present: undefined without named groups.
     let named = has_named_groups(m);
-    if named {
-        let g = groups_object(vm, subject, m);
-        let gk = vm.atoms.intern_static("groups");
-        vm.define(aid, gk, g);
-    }
+    let g = match named {
+        true => groups_object(vm, subject, m),
+        false => Value::Undef,
+    };
+    let gk = vm.atoms.intern_static("groups");
+    vm.define(aid, gk, g);
     if indices {
         let pairs: Vec<Option<regress::Range>> = m.groups().collect();
         let items: Vec<Value> = pairs
@@ -605,7 +619,7 @@ fn match_array(
             .collect();
         let ind = vm.new_array(items);
         let groups = if named {
-            let gid = vm.new_object();
+            let gid = vm.alloc(Obj::new(None, Kind::Ordinary));
             let named: Vec<(String, Option<regress::Range>)> =
                 m.named_groups().map(|(n, r)| (n.to_owned(), r)).collect();
             for (name, r) in named {
@@ -643,8 +657,23 @@ fn exec_value(vm: &mut Vm, id: Id, s: StrId) -> Res {
 
 // ---------- RegExp ----------
 
-fn regexp_ctor(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
+fn regexp_ctor(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
     let first = arg(args, 0);
+    // RegExp(r) without new returns r itself when no flags are given and its constructor is RegExp.
+    if !matches!(this, Value::Uninit)
+        && let Value::Obj(r) = first
+        && matches!(vm.heap[r as usize].kind, Kind::RegExp(_))
+        && matches!(arg(args, 1), Value::Undef)
+    {
+        let ck = vm.names.constructor;
+        let ctor = vm.reading(|vm| vm.get(&first, ck))?;
+        if vm.reads_pending() {
+            return Ok(Value::Undef);
+        }
+        if matches!(ctor, Value::Obj(c) if c == callee) {
+            return Ok(first);
+        }
+    }
     let pattern = match as_regexp(vm, &first) {
         Some(id) => {
             let src = data(vm, id).source.clone();
@@ -738,6 +767,9 @@ fn re_test(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
 }
 
 fn re_to_string(vm: &mut Vm, this: Value, _args: &[Value], _: Id) -> Res {
+    if matches!(this, Value::Obj(id) if id == vm.realm.std.regexp) {
+        return Ok(vm.static_str("/(?:)/"));
+    }
     let id = this_regexp(vm, &this, "toString")?;
     let s = inspect(vm, id);
     Ok(vm.string_val(s))
@@ -836,7 +868,17 @@ pub fn string_match_all(vm: &mut Vm, s: StrId, pat: &Value) -> Res {
             data_mut(vm, cid).last_index = next as f64;
         }
     }
-    Ok(vm.new_array(out))
+    // An iterator over the matches, as an array's `values()` iterates them.
+    let target = vm.new_array(out).as_obj().unwrap_or(id);
+    let proto = vm.realm.iter_proto;
+    Ok(Value::Obj(vm.alloc(Obj::new(
+        Some(proto),
+        Kind::ArrayIter {
+            target,
+            pos: 0,
+            kind: IterKind::Values,
+        },
+    ))))
 }
 
 pub fn string_search(vm: &mut Vm, s: StrId, pat: &Value) -> Res {
@@ -1045,7 +1087,7 @@ pub fn string_replace(
             cargs.push(Value::Num(f.start as f64));
             cargs.push(Value::Str(s));
             if let Some(groups) = &f.groups {
-                let gid = vm.new_object();
+                let gid = vm.alloc(Obj::new(None, Kind::Ordinary));
                 for (name, v) in groups {
                     let k = vm.atoms.intern(name);
                     let v = match v {

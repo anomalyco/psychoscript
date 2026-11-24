@@ -29,6 +29,12 @@ pub type Atom = u32;
 pub const SYM_ITERATOR: Atom = 0;
 /// The atom of `Symbol.asyncIterator`, unreachable from strings.
 pub const SYM_ASYNC_ITERATOR: Atom = 1;
+/// The atom of `Symbol.toPrimitive`, unreachable from strings.
+pub const SYM_TO_PRIMITIVE: Atom = 2;
+/// The atom of `Symbol.toStringTag`, unreachable from strings.
+pub const SYM_TO_STRING_TAG: Atom = 3;
+/// The last of the well-known symbols' atoms, which are the only symbols: every atom up to it is one.
+pub const SYM_LAST: Atom = SYM_TO_STRING_TAG;
 
 #[derive(Clone)]
 pub struct StrBuf {
@@ -226,7 +232,12 @@ impl Strings {
             gc_limit: crate::collector::first_limit(),
             gc: Default::default(),
         };
-        for name in ["Symbol(Symbol.iterator)", "Symbol(Symbol.asyncIterator)"] {
+        for name in [
+            "Symbol(Symbol.iterator)",
+            "Symbol(Symbol.asyncIterator)",
+            "Symbol(Symbol.toPrimitive)",
+            "Symbol(Symbol.toStringTag)",
+        ] {
             let id = s.alloc_static(name);
             s.atom_str.push(id);
             s.atom_index.push(u32::MAX);
