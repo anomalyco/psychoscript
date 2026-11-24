@@ -25,9 +25,11 @@ the ultimate source of truth. Upstream test262 files run verbatim from `test/tes
       The table, where a value cannot be JSON but what the program meant is clear: a promise is awaited (a rejection
       fails the program), a Set crosses as an array, a URLSearchParams as its query string, an Error as
       `{ name, message, ...own enumerable }`, and own `__proto__` keys are dropped so merging results cannot replace a
-      prototype. A Uint8Array in the result is rejected with a hint to encode it as text. Host function arguments
+      prototype. A Uint8Array in the result is rejected with a hint to encode it as text. Under the runtime's
+      `translate: { functions: "mark" }`, a function where the result would leave it out (a value, an item, the
+      result itself, what a `toJSON` gives) is `Host.functionMarker` instead. Host function arguments
       cross as copies (see Host functions); a promise or function inside an argument fails the call unless the runtime's
-      `translate` option awaits promises or drops functions. In-program `JSON.stringify` keeps JS behavior except for the Error form and a
+      `translate` option awaits promises or drops or marks functions. In-program `JSON.stringify` keeps JS behavior except for the Error form and a
       promise, which is a `TypeError` with an await hint rather than a silent `{}`.
 - [x] Live Date, RegExp, Map, Set, URL, URLSearchParams, Headers, and Uint8Array values inside psychoscript.
 - [x] Host access only through the globals a host provides with `Runtime.make`.
@@ -726,6 +728,13 @@ Host functions a host opts in through `Host.fn`, `Host.durableFn`, and `Host.nam
       errors cross as errors with their name, message, `cause`, and own enumerable data, and a `__proto__` key is
       dropped. Functions, generators,
       un-awaited promises, and symbols cannot be passed in; a class instance, a symbol, or a BigInt cannot come out.
+- [x] `translate: { functions: "mark" }`: a program function inside an argument (an object's value, an array's,
+      Map's or Set's item, an error's field, an awaited promise's value, or the argument itself) arrives as
+      `Host.functionMarker`, one symbol with nothing to call and no identity, which `JSON.stringify` leaves out as it
+      would the function. The run's result marks its
+      functions the same way; its JSON, and the bytes `maxOutputBytes` counts, leave
+      them out. A call's arguments keep their markers across a suspend. A marker cannot come back: a host value
+      holding one fails the call.
 - [x] A host function inside a result becomes a program function whose calls cross the same way, so a result can
       carry methods (`res.json()`) whose host closures keep the host state. Diagnostics name it by its path
       (`fetch.json`). Like any program function it vanishes at the data boundary.

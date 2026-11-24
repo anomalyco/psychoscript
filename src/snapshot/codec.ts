@@ -1,4 +1,4 @@
-import type { DurableFn, Fn } from "../runtime/contract.js"
+import { type DurableFn, type Fn, functionMarker } from "../runtime/contract.js"
 import { ELEMENT_BYTES, ENTRY_BYTES, OBJECT_BYTES, PROPERTY_BYTES, STRING_BYTES } from "../runtime/heap.js"
 import { unchanged } from "../runtime/intrinsic-names.js"
 import { Interpreter } from "../runtime/interpreter.js"
@@ -184,6 +184,7 @@ const symbols = new Map<string, symbol>([
   ["toPrimitive", ToPrimitiveSymbol],
   ["toStringTag", ToStringTagSymbol],
   ["deleted", deleted],
+  ["functionMarker", functionMarker],
 ])
 const symbolNames = new Map([...symbols].map(([name, symbol]) => [symbol, name]))
 

@@ -1,6 +1,7 @@
-import { fromJson, type Json } from "../data.js"
+import { type Data, fromJson } from "../data.js"
 import { conversions } from "../runtime/callback.js"
 import type { Builtins } from "../runtime/intrinsics.js"
+import { functionMarker } from "../runtime/contract.js"
 import { checkStringLength, MAX_VALUE_DEPTH } from "../runtime/limits.js"
 import { invalidData, rangeError, typeError } from "../runtime/model.js"
 import {
@@ -420,7 +421,9 @@ export const registerVmIntrinsics = (map: Map<string, unknown>, vm: Vm): void =>
 
   // JSON walk helpers
   add("$JsonClassify", ([val, boundary, ancestors]) => {
-    if (val === undefined || typeofValue(val) === "function") return 0
+    if (val === undefined) return 0
+    // A function the result marks is kept, and `toPlainJson` makes it the marker.
+    if (typeofValue(val) === "function") return boundary && vm.markFunctions ? 1 : 0
     if (typeof val === "number") return Number.isFinite(val) ? 1 : 2
     if (val === null || typeof val === "string" || typeof val === "boolean") return 1
     if (typeof val === "bigint") throw bigintJson(boundary as boolean)
@@ -473,12 +476,14 @@ const bigintJson = (boundary: boolean) =>
     ? invalidData("A BigInt cannot cross to the host; pass text instead, e.g. `String(n)`.")
     : typeError("Do not know how to serialize a BigInt; convert it first, e.g. `String(n)`.")
 
-const toPlainJson = (val: Value): Json | undefined => {
+// A function here is one the result marks: the walk leaves out every other.
+const toPlainJson = (val: Value): Data | undefined => {
   if (val === undefined) return undefined
   if (val === null || typeof val === "string" || typeof val === "number" || typeof val === "boolean") return val
   if (val instanceof Arr) return val.items.map((item) => toPlainJson(item) ?? null)
+  if (val instanceof Callable) return functionMarker
   if (val instanceof Obj) {
-    const out: Record<string, Json> = {}
+    const out: Record<string, Data> = {}
     for (const [k, slot] of val.props) {
       if (typeof k !== "string" || !slot.enumerable || !("value" in slot)) continue
       const v = toPlainJson(slot.value)
@@ -492,7 +497,7 @@ const toPlainJson = (val: Value): Json | undefined => {
     }
     return out
   }
-  return {}
+  return val instanceof HostNamespace ? (functionMarker) : {}
 }
 
 /**
@@ -504,14 +509,16 @@ const toPlainJson = (val: Value): Json | undefined => {
  * become null, and everything else is copied. Two departures from JS so a mistake is not a silent `{}`: an Error
  * serializes as `{ name, message, ...own }`, and a promise throws. At the host boundary a promise is awaited, a Set
  * crosses as an array, a URLSearchParams as its query string, a Uint8Array asks to be encoded as text first, and a
- * `__proto__` key is dropped so host code can never receive one.
+ * `__proto__` key is dropped so host code can never receive one. With `mark` (the boundary under
+ * `translate: { functions: "mark" }`), a function is `Host.functionMarker` instead of vanishing.
  */
 export const tryFastBoundaryOrJson = (
   builtins: Builtins,
   value: Value,
   boundary: boolean,
   revisitBudget = 2048,
-): { readonly ok: true; readonly json: Json | undefined } | { readonly ok: false } => {
+  mark = false,
+): { readonly ok: true; readonly json: Data | undefined } | { readonly ok: false } => {
   if (value === undefined) return { ok: true, json: undefined }
   if (value === null || typeof value === "string" || typeof value === "boolean") return { ok: true, json: value }
   if (typeof value === "number") return { ok: true, json: Number.isFinite(value) ? value : null }
@@ -523,7 +530,7 @@ export const tryFastBoundaryOrJson = (
     value.props.size <= 4 &&
     !value.props.has("toJSON")
   ) {
-    const flatOut: Record<string, Json> = {}
+    const flatOut: Record<string, Data> = {}
     let flatOk = true
     for (const [k, slot] of value.props) {
       if (typeof k !== "string" || !slot.enumerable) continue
@@ -558,9 +565,12 @@ export const tryFastBoundaryOrJson = (
   const visit = (
     cur: Value,
     depth: number,
-  ): { readonly ok: true; readonly json: Json | undefined } | { readonly ok: false } => {
+  ): { readonly ok: true; readonly json: Data | undefined } | { readonly ok: false } => {
     if (depth > MAX_VALUE_DEPTH) throw rangeError(`Value exceeds the maximum depth of ${MAX_VALUE_DEPTH}.`)
-    if (cur === undefined || typeofValue(cur) === "function") return { ok: true, json: undefined }
+    if (cur === undefined) return { ok: true, json: undefined }
+    if (typeofValue(cur) === "function") {
+      return { ok: true, json: mark ? (functionMarker) : undefined }
+    }
     if (typeof cur === "number") return { ok: true, json: Number.isFinite(cur) ? cur : null }
     if (cur === null || typeof cur === "string" || typeof cur === "boolean") return { ok: true, json: cur }
     // A BigInt serializes only through a program's `BigInt.prototype.toJSON`, which the prelude walk calls.
@@ -605,7 +615,7 @@ export const tryFastBoundaryOrJson = (
     try {
       if (cur instanceof Arr || (boundary && cur instanceof SetObj)) {
         const items = cur instanceof Arr ? cur.items : [...cur.set.liveKeys()]
-        const out: Array<Json> = new Array(items.length)
+        const out: Array<Data> = new Array(items.length)
         for (let i = 0; i < items.length; i++) {
           const r = visit(items[i], depth + 1)
           if (!r.ok) return r
@@ -613,7 +623,7 @@ export const tryFastBoundaryOrJson = (
         }
         return { ok: true, json: out }
       }
-      const out: Record<string, Json> = {}
+      const out: Record<string, Data> = {}
       if (cur instanceof ErrorObj) {
         for (const k of ["name", "message"]) {
           const slot = lookup(cur, k)

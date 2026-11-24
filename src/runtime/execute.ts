@@ -1,5 +1,5 @@
 import { parse, type Program } from "acorn"
-import { fromJson, type Json } from "../data.js"
+import { type Data, fromJson, type Json } from "../data.js"
 import { type Call, DurableFn, Interrupted } from "./contract.js"
 import { fromBytes, header, type Snapshot, SnapshotError, toBytes } from "../snapshot/snapshot.js"
 import { normalizeError } from "./errors.js"
@@ -73,7 +73,8 @@ export const checkMaxBytes = (maxBytes: number | undefined): void => {
 export type Result =
   | {
       readonly ok: true
-      readonly value: Json
+      /** Its JSON; only under `translate: { functions: "mark" }` does it hold `Host.functionMarker`, where each function was. */
+      readonly value: Data
       readonly warnings?: ReadonlyArray<Diagnostic>
       readonly logs?: ReadonlyArray<string>
       readonly truncated?: boolean
@@ -260,6 +261,7 @@ const instantiate = <R>(
         : (ctx) => Object.entries(bindings).map(([name, value]) => [name, fromJson(ctx, value)] as const),
   })
   if (roundTrip) ctx.vm.tripEvery = ROUND_TRIP_TICKS
+  ctx.vm.markFunctions = setup.translate?.functions === "mark"
   const maxHeapBytes = setup.limits.maxHeapBytes
   if (maxHeapBytes !== undefined) ctx.vm.heap = new HeapMeter(maxHeapBytes, restored)
   return ctx
@@ -353,7 +355,7 @@ export class Running<R> {
     const metadata = () => this.run_.metadata
     const failed = (error: Diagnostic): Result => ({ ok: false, error, ...logged(), metadata: metadata() })
     // Set only after copy-out so timeouts cannot report invalid values as completed.
-    let returned: { value: Json; warnings: () => Array<Diagnostic> } | undefined
+    let returned: { value: Data; warnings: () => Array<Diagnostic> } | undefined
     const driver = this.driver
 
     const base = async (): Promise<Outcome | typeof CANCELLED> => {
@@ -365,7 +367,7 @@ export class Running<R> {
         if (outcome === SUSPENDED) return this.suspended!
         this.finished = true
         if (!outcome.ok) return failed(normalizeError(outcome.error))
-        const result = (outcome.value as Json | undefined) ?? null
+        const result = (outcome.value as Data | undefined) ?? null
         const vm = this.ctx.vm
         returned = { value: result, warnings: () => vm.diagnostics() }
         // Host work the program left running is interrupted, not awaited.
@@ -632,7 +634,7 @@ const boundOutput = (result: Result, maxOutputBytes: number): Result => {
   const serialized = result.ok ? (JSON.stringify(result.value) ?? "null") : ""
   const valueBytes = result.ok ? utf8ByteLength(serialized) : 0
   const valueTruncated = valueBytes > maxOutputBytes
-  const value: Json = !result.ok
+  const value: Data = !result.ok
     ? null
     : valueTruncated
       ? `${utf8Truncate(serialized, maxOutputBytes)} [result truncated: ${valueBytes} bytes exceeds the ${maxOutputBytes}-byte output limit; return a smaller value]`

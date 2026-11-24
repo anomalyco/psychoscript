@@ -145,7 +145,9 @@ functions act as namespaces (`fs.read(...)`). Arguments reach the host as copies
   body streams (`text()`, `json()`, `bytes()`, `clone()`, `body` readers, `for await`).
 - **`translate`** (runtime option): what happens to a program function or promise inside an argument. By default both
   fail the call; `{ functions: "drop", promises: "await" }` drops functions (as `JSON.stringify` does) and awaits
-  promises.
+  promises. `functions: "mark"` puts `Host.functionMarker` (a symbol)
+  where each function was, in arguments and in the run's result (typed `Data`: JSON
+  plus the marker), so a host can tell which props held one (`onPress`, say) without calling it.
 
 ```ts
 import { Host, Runtime } from "psychoscript"
