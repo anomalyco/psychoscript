@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `JSON.parse` given an object or array, which is most likely already parsed, throws
+  `TypeError: JSON.parse expects a string, got an object (is it already parsed?)` at the call, instead of parsing its
+  text. Other non-string values are parsed as before.
 - `Uint8Array.prototype.byteLength` and `byteOffset`. They were `undefined`, so code that sized bytes with
   `byteLength` (such as a `fetch` response's `arrayBuffer()`) got no size.
 - RegExp: `RegExp(re)` without `new` returns `re`; match results always have `groups`, and group objects (including
