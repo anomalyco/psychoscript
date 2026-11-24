@@ -1748,6 +1748,53 @@ fn two_losses_with_work_in_flight_stop_the_run() {
     assert_eq!(restored.error("a"), Some(&e));
 }
 
+/// The test hooks (feature `test-hooks`): with `work_in_flight`, a loss after the run's work was all seen finished is a
+/// strike, as one with unfinished work is; the hook holds for that one loss.
+#[test]
+fn a_loss_the_hook_finds_work_in_flight_at_is_a_strike() {
+    let _gpu = shared();
+    let (device, queue) = common::device();
+    let mut gpu = Gpu::new(device.clone(), queue.clone(), RGBA).unwrap();
+    gpu.resize("a", 8, 8);
+    let t0 = std::time::Instant::now();
+    let s = |n: u64| t0 + std::time::Duration::from_secs(n);
+    // A pass into `a` from handle `h`, seen finished.
+    let finished = |gpu: &mut Gpu, h: u32| {
+        let mut b = Batch::default();
+        b.op(json!(["context", h, "a", "rgba8unorm", "opaque"]))
+            .op(json!(["view", h + 1, h, {}]));
+        pass_into(&mut b, h + 1, [0.0; 4]);
+        b.op(json!(["end"])).op(json!(["submit"]));
+        gpu.apply(&b.ops, &[]).unwrap();
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        assert_eq!(gpu.poll(), Ok(()));
+    };
+    let loss = |gpu: &mut Gpu, at: u64| {
+        gpu.lost_at(s(at));
+        gpu.reset(device.clone(), queue.clone()).unwrap();
+        gpu.poll()
+    };
+    // Without the hook, no work in flight: no strike, twice.
+    finished(&mut gpu, 1);
+    assert_eq!(loss(&mut gpu, 0), Ok(()));
+    finished(&mut gpu, 3);
+    assert_eq!(loss(&mut gpu, 1), Ok(()));
+    // With it: a first strike, then the second within 30 s stops the run.
+    finished(&mut gpu, 5);
+    gpu.work_in_flight();
+    assert_eq!(loss(&mut gpu, 2), Ok(()));
+    // The hook held for that loss only: this one is none.
+    finished(&mut gpu, 7);
+    assert_eq!(loss(&mut gpu, 3), Ok(()));
+    finished(&mut gpu, 9);
+    gpu.work_in_flight();
+    let e = loss(&mut gpu, 4).unwrap_err();
+    assert_eq!(
+        (e.message.as_str(), &e.canvases),
+        (HANG_MESSAGE, &Stops::All)
+    );
+}
+
 /// A shader with a frame in flight at a loss gets a strike if a frame finished since the last; the second within
 /// 30 s stops it with the hang's placeholder. Losses in a row with no frame finished in between are one strike.
 #[test]

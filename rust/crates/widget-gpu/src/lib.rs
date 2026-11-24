@@ -177,6 +177,9 @@ pub struct Gpu {
     hung: Option<GpuError>,
     /// The device is lost (until [`Gpu::reset`]).
     lost: bool,
+    /// Test hook: the next loss finds the run's work in flight ([`Gpu::work_in_flight`]).
+    #[cfg(feature = "test-hooks")]
+    in_flight_at_loss: bool,
 }
 
 enum Res {
@@ -409,6 +412,8 @@ impl Gpu {
             strikes: hang::Strikes::default(),
             hung: None,
             lost: false,
+            #[cfg(feature = "test-hooks")]
+            in_flight_at_loss: false,
         })
     }
 
@@ -648,6 +653,14 @@ impl Gpu {
         self.strikes.finished();
     }
 
+    /// Test hook (feature `test-hooks`): the next loss finds the run's GPU work in flight, as work submitted and not
+    /// seen finished would be. For a fixture's driver, whose small batch may be seen finished before its loss.
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn work_in_flight(&mut self) {
+        self.in_flight_at_loss = true;
+    }
+
     /// [`Gpu::lost`], the loss at `now` (a test's clock).
     pub fn lost_at(&mut self, now: Instant) {
         if self.lost {
@@ -655,6 +668,8 @@ impl Gpu {
         }
         self.lost = true;
         let in_flight = self.submits.iter().any(|t| !t.submit.done());
+        #[cfg(feature = "test-hooks")]
+        let in_flight = std::mem::take(&mut self.in_flight_at_loss) || in_flight;
         if self.submits.iter().any(|t| t.submit.done()) {
             self.strikes.finished();
         }
