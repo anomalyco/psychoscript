@@ -98,6 +98,12 @@ const programs: Record<string, string> = {
     Object.freeze(Math)
     for (let i = 0; i < 3; i++) console.log("line", i)
     return [[1, 2, 3].extra(), Object.isFrozen(Math)]`,
+  "console counts and groups survive": `
+    console.group("g")
+    for (let i = 0; i < 4; i++) { console.count(); await null }
+    console.groupEnd()
+    console.count()
+    return null`,
   "an error's stack, made before a slice and read after": `
     function make() { return new TypeError("bad") }
     const made = make()

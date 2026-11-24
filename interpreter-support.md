@@ -514,7 +514,12 @@ reject }` object.
       number primitives, and ignore non-string/non-number entries. Primitive wrapper entries remain unsupported.
 - [x] Captured `console.log`, `console.info`, `console.debug`, `console.warn`, and `console.error`. An Error prints as
       `Error.prototype.toString` would show it (`Error: boom`), wherever it appears in the logged value.
-- [x] Captured `console.dir` and `console.table`.
+- [x] Captured `console.dir` and `console.table`. A function or Promise prints as `console.log` shows it, in a table
+      cell too; nested `undefined` prints as `undefined`.
+- [x] Captured `console.assert`, `count`, `countReset`, `group`, `groupCollapsed`, `groupEnd`, `trace`, `time`,
+      `timeLog`, and `timeEnd`, worded as in Node. A group indents later lines by two spaces; `assert` and `trace` log
+      at the error level, and `trace` prints no stack. `time` reads the wall clock, so a saved run's timer counts the
+      time it spent saved. Counters, groups and timers are kept in snapshots.
 
 ## Date
 
