@@ -84,11 +84,9 @@ export class Interpreter<R> {
       hosts,
     )
     // Without typed arrays, they are made all the same, so every runtime's intrinsics have the same ids, but not bound;
-    // and a Uint8Array is as it was before them.
+    // and a Uint8Array has no `buffer`, as before them.
     const bound = this.typedArrays ? intrinsics : intrinsics.filter(([name]) => !typedArrayGlobals.has(name))
-    if (!this.typedArrays) {
-      for (const key of ["byteLength", "byteOffset", "buffer"]) this.builtins.Uint8Array.props.delete(key)
-    }
+    if (!this.typedArrays) this.builtins.Uint8Array.props.delete("buffer")
     for (const [name, value] of [...bound, ...(options.bindings?.(this) ?? []), ...hosts]) {
       this.globalScope.set(name, { value })
     }

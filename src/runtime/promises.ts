@@ -1,5 +1,5 @@
 import { type AstNode, Throw, typeError } from "./model.js"
-import { Callable, changed, define, hidden, Arr, Fn, Obj, PromiseObj, record, Resolver, type Value } from "./objects.js"
+import { Callable, changed, define, hidden, Arr, Obj, PromiseObj, record, Resolver, type Value } from "./objects.js"
 import { constructor, methods, native, receiver, requiresNew } from "./native.js"
 import { createAggregateErrorValue, materialize } from "./errors.js"
 import { describeValue, typeofValue } from "./references.js"
@@ -136,10 +136,12 @@ const invokePromiseMethod = <R>(
     return record(ctx.builtins.Object, { promise: made.promise, resolve: functions.resolve, reject: functions.reject })
   }
   if (name === "try") {
+    const made = capability(ctx, site)
     if (typeofValue(args[0]) !== "function") {
-      throw typeError(`Promise.try expects a function, received ${describeValue(args[0])}.`)
+      made.reject(typeError(`Promise.try expects a function, received ${describeValue(args[0])}.`, site))
+      return made.promise
     }
-    return new Push("Promise.try", [capability(ctx, site), args[0], args.slice(1)])
+    return new Push("Promise.try", [made, args[0], args.slice(1)])
   }
   return new Push("Promise combinator", [capability(ctx, site), name, args[0]])
 }
@@ -255,7 +257,12 @@ const reactionHandler = (value: Value, method: string): Callable | undefined => 
 }
 
 const constructPromise = <R>(ctx: Interpreter<R>, executor: Value, site: AstNode | undefined) => {
-  if (!(executor instanceof Fn)) {
+  if (!isSupportedCallback(executor)) {
+    if (typeofValue(executor) === "function") {
+      throw typeError(
+        "new Promise(...) cannot use this callable as an executor; wrap it in an arrow function, e.g. (resolve, reject) => fn(resolve, reject).",
+      )
+    }
     throw typeError("new Promise(...) expects an executor function (e.g. new Promise((resolve, reject) => { ... })).")
   }
   const made = capability(ctx, site)

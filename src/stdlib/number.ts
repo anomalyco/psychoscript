@@ -6,6 +6,7 @@ import { describeValue } from "../runtime/references.js"
 import type { Interpreter } from "../runtime/interpreter.js"
 import { withPrimitives } from "../runtime/callback.js"
 import { coerce } from "./value.js"
+import { formatLocale, numberFormatOptions } from "./locale.js"
 
 export const numberGlobal = <R>(ctx: Interpreter<R>) => {
   const builtins = ctx.builtins
@@ -50,7 +51,16 @@ export const numberGlobal = <R>(ctx: Interpreter<R>) => {
   ]
   methods(builtins, builtins.Number, [
     formatting("toFixed", (value, digits) => value.toFixed(digits)),
-    ["toLocaleString", 0, (thisValue) => self(thisValue, "toLocaleString").toLocaleString("en-US")],
+    [
+      "toLocaleString",
+      0,
+      (thisValue, args) => {
+        const value = self(thisValue, "toLocaleString")
+        return formatLocale(args[0], args[1], numberFormatOptions, (locales, options) =>
+          value.toLocaleString(locales, options as Intl.NumberFormatOptions | undefined),
+        )
+      },
+    ],
     formatting("toExponential", (value, digits) => value.toExponential(digits)),
     formatting("toPrecision", (value, digits) => (digits === undefined ? value.toString() : value.toPrecision(digits))),
     formatting("toString", (value, radix) => value.toString(radix)),
@@ -110,7 +120,16 @@ export const bigintGlobal = <R>(ctx: Interpreter<R>) => {
     throw typeError(`BigInt.prototype.${name} requires that 'this' be a BigInt.`)
   }
   methods(builtins, builtins.BigInt, [
-    ["toLocaleString", 0, (thisValue) => self(thisValue, "toLocaleString").toLocaleString("en-US")],
+    [
+      "toLocaleString",
+      0,
+      (thisValue, args) => {
+        const value = self(thisValue, "toLocaleString")
+        return formatLocale(args[0], args[1], numberFormatOptions, (locales, options) =>
+          value.toLocaleString(locales, options as BigIntToLocaleStringOptions | undefined),
+        )
+      },
+    ],
     [
       "toString",
       0,

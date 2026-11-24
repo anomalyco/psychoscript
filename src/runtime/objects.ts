@@ -1521,7 +1521,7 @@ export const iteratorResult = (proto: Obj, value: Value, done: boolean): Obj => 
   return target
 }
 
-export const record = (proto: Obj, fields: Record<string, Value>): Obj => {
+export const record = (proto: Obj | null, fields: Record<string, Value>): Obj => {
   const target = new Obj(proto)
   for (const [key, value] of Object.entries(fields)) define(target, key, value)
   return target

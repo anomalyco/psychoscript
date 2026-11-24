@@ -3,8 +3,8 @@ import { requireCallback, withPrimitives } from "../runtime/callback.js"
 import type { Interpreter } from "../runtime/interpreter.js"
 import { syntaxError } from "../runtime/model.js"
 import { typeofValue } from "../runtime/references.js"
-import { fromJson } from "../data.js"
-import { Arr, Obj, coerceToString, record, type Value } from "../runtime/objects.js"
+import { fromJson, type Json } from "../data.js"
+import { Arr, Obj, coerceToString, define, record, type Value } from "../runtime/objects.js"
 import { Invoke, Push } from "../runtime/signals.js"
 
 export const jsonGlobal = <R>(ctx: Interpreter<R>) => {
@@ -21,21 +21,42 @@ const parse = <R>(ctx: Interpreter<R>, args: Array<Value>) =>
   withPrimitives("string", [args[0]], ([text]) => parseText(ctx, coerceToString(text), args[1]))
 
 const parseText = <R>(ctx: Interpreter<R>, text: string, reviverArg: Value) => {
-  const parsed = (() => {
+  const json = (() => {
     try {
-      return fromJson(ctx, JSON.parse(text))
+      return JSON.parse(text)
     } catch (error) {
       throw syntaxError(`JSON.parse received invalid JSON: ${error instanceof Error ? error.message : String(error)}`)
     }
   })()
-  if (typeofValue(reviverArg) !== "function") return parsed
+  if (typeofValue(reviverArg) !== "function") return fromJson(ctx, json)
   const reviver = requireCallback(reviverArg, "JSON.parse")
+  // Each primitive replaced by its source text, for the reviver's context argument.
+  const source = JSON.parse(text, (_, value, context: { source?: string }) => context.source ?? value)
+  const [parsed, snapshot] = revivable(ctx, json, source)
   return new Invoke(
     ctx.prelude.fn("revive"),
     undefined,
-    [record(ctx.builtins.Object, { "": parsed }), "", reviver],
+    [record(ctx.builtins.Object, { "": parsed }), "", reviver, snapshot],
     undefined,
   )
+}
+
+// The parsed value, and its snapshot for `revive`: [object, children's snapshots by key] or [source text, primitive].
+const revivable = <R>(ctx: Interpreter<R>, json: Json, source: Json): readonly [Value, Value] => {
+  if (json === null || typeof json !== "object") return [json, new Arr(ctx.builtins.Array, [source as string, json])]
+  const children = new Obj(null)
+  const entries = Object.entries(json).map(([key, item]) => {
+    const [value, snapshot] = revivable(ctx, item, (source as Record<string, Json>)[key]!)
+    define(children, key, snapshot)
+    return [key, value] as const
+  })
+  const parsed = Array.isArray(json)
+    ? new Arr(
+        ctx.builtins.Array,
+        entries.map((entry) => entry[1]),
+      )
+    : record(ctx.builtins.Object, Object.fromEntries(entries))
+  return [parsed, new Arr(ctx.builtins.Array, [parsed, children])]
 }
 
 const stringify = (args: Array<Value>) => {

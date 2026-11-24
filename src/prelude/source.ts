@@ -11,6 +11,31 @@ function arrayFromIterable(items, mapper, thisArg) {
   return result
 }
 
+// Array.fromAsync: each value of an async iterable, an iterable, or an array-like is awaited, then mapped (and the
+// mapped value awaited).
+async function Array$fromAsync(items, mapper = undefined, thisArg = undefined) {
+  if (mapper !== undefined) $Callback(mapper, "Array.fromAsync")
+  if (items === null || items === undefined) $Throw("TypeError", "Array.fromAsync expects an iterable or array-like value.")
+  let index = 0
+  if (items[Symbol.asyncIterator] != null || items[Symbol.iterator] != null) {
+    const result = []
+    for await (const item of items) {
+      $ArraySet(result, index, mapper === undefined ? item : await $Call(mapper, thisArg, item, index))
+      index++
+    }
+    return result
+  }
+  const length = Math.min(Math.max(Math.trunc(+items.length) || 0, 0), Number.MAX_SAFE_INTEGER)
+  const result = new Array(length)
+  let item
+  while (index < length) {
+    item = await items[index]
+    $ArraySet(result, index, mapper === undefined ? item : await $Call(mapper, thisArg, item, index))
+    index++
+  }
+  return result
+}
+
 // Array.from over an array-like with a mapper: every index is read, holes included.
 function arrayFromLike(source, length, mapper, thisArg) {
   const result = new Array(length)
@@ -249,7 +274,7 @@ function sortDefault(target, into, holes, values, undefs, keys) {
   return $Sorted(target, into, holes, $SortResult(state, values), undefs)
 }
 
-function Array$prototype$toLocaleString() {
+function Array$prototype$toLocaleString(locales = undefined, options = undefined) {
   const array = $Receiver(this, "Array", "Array.prototype.toLocaleString")
   let result = ""
   let index = 0
@@ -257,7 +282,7 @@ function Array$prototype$toLocaleString() {
   while (index < array.length) {
     if (index > 0) result += ","
     item = array[index]
-    if (item !== null && item !== undefined) result += String(item.toLocaleString())
+    if (item !== null && item !== undefined) result += String(item.toLocaleString(locales, options))
     index++
   }
   return result
@@ -377,7 +402,7 @@ function setMethod(target, other, name) {
 function Object$fromEntries(entries) {
   const result = {}
   for (const entry of entries) {
-    if (!$IsObject(entry, true)) $Throw("TypeError", "Object.fromEntries expects [key, value] entry objects.")
+    if (!$IsObject(entry)) $Throw("TypeError", "Object.fromEntries expects [key, value] entry objects.")
     $Define(result, String(entry[0]), entry[1], true)
   }
   return result
@@ -399,12 +424,17 @@ function aggregateError(error, errors) {
   return $Define(error, "errors", list, false)
 }
 
-// A Uint8Array's bytes from an iterable: a new one with prototype into, or set into the Uint8Array into at
-// offset. As in TypedArray.from, a mapper sees the original values, after the source is consumed in full.
+// A Uint8Array's bytes from an iterable or array-like: a new one with prototype into, or set into the Uint8Array into
+// at offset. As in TypedArray.from, a mapper sees the original values, after the source is consumed in full.
 function collectBytes(source, name, mapper, thisArg, into, offset) {
-  if (!$IsIterable(source)) $Throw("TypeError", name + " expects a Uint8Array, an array, or an iterable of numbers, received " + $Describe(source) + ".")
+  if (source === null || source === undefined) $Throw("TypeError", name + " expects a Uint8Array, an array, an iterable, or an array-like of numbers, received " + $Describe(source) + ".")
   const values = []
-  for (const item of source) $ArraySet(values, values.length, item)
+  if ($IsIterable(source)) {
+    for (const item of source) $ArraySet(values, values.length, item)
+  } else {
+    const length = $Length(source.length)
+    while (values.length < length) $ArraySet(values, values.length, source[values.length])
+  }
   let index = 0
   if (mapper !== undefined) {
     while (index < values.length) {
@@ -662,21 +692,32 @@ function iteratorTest(self, callback, name) {
 }
 
 // JSON.parse's reviver: children are revived first, each replacing (or, when the reviver gives undefined, removing)
-// its property; then the reviver sees the value itself.
-function revive(holder, key, reviver) {
+// its property; then the reviver sees the value itself. snapshot is what the text parsed to at this place: an object
+// and its children's snapshots, or a primitive's source text and value. The reviver gets { source } for a primitive
+// it has not changed, inside objects it has not replaced.
+function revive(holder, key, reviver, snapshot) {
   const value = holder[key]
+  const context = {}
   if ($IsObject(value)) {
+    const children = snapshot !== undefined && snapshot[0] === value ? snapshot[1] : undefined
     const names = $Keys(value)
     let index = 0
     let revived
     while (index < names.length) {
-      revived = revive(value, names[index], reviver)
+      revived = revive(value, names[index], reviver, children === undefined ? undefined : children[names[index]])
       if (revived === undefined) delete value[names[index]]
       else value[names[index]] = revived
       index++
     }
+  } else if (
+    snapshot !== undefined &&
+    !$IsObject(snapshot[0]) &&
+    value === snapshot[1] &&
+    (value !== 0 || 1 / value === 1 / snapshot[1])
+  ) {
+    context.source = snapshot[0]
   }
-  return $Call(reviver, holder, key, value)
+  return $Call(reviver, holder, key, value, context)
 }
 
 // String replace with a callback, once the matches are found: each is the text before it and the callback's

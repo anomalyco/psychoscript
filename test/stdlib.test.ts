@@ -354,14 +354,14 @@ describe("RegExp", () => {
       await value(`
         const re = /a/g
         re.lastIndex = 2
-        return ["banana".matchAll(re).map((m) => m.index), re.lastIndex]
+        return ["banana".matchAll(re).map((m) => m.index).toArray(), re.lastIndex]
       `),
     ).toEqual([[3, 5], 2])
     expect(
       await value(`
         const re = /a/gy
         re.lastIndex = 1
-        return ["banana".matchAll(re).map((m) => m.index), re.lastIndex]
+        return ["banana".matchAll(re).map((m) => m.index).toArray(), re.lastIndex]
       `),
     ).toEqual([[1], 1])
   })
@@ -380,8 +380,16 @@ describe("RegExp", () => {
     expect(await value(`return "abc".match(/\\d/)`)).toBeNull()
   })
 
-  test("matchAll materializes match arrays with captures", async () => {
-    expect(await value(`return "a1b22".matchAll(/(\\d+)/g).map((m) => m[1])`)).toEqual(["1", "22"])
+  test("matchAll returns an iterator of match arrays with captures", async () => {
+    expect(await value(`return "a1b22".matchAll(/(\\d+)/g).map((m) => m[1]).toArray()`)).toEqual(["1", "22"])
+    expect(
+      await value(`
+        const it = "a1b2".matchAll(/\\d/g)
+        const first = it.next().value[0]
+        await null
+        return [Array.isArray(it), it[Symbol.iterator]() === it, first, [...it].map((m) => m.index), it.next().done]
+      `),
+    ).toEqual([false, true, "1", [3], true])
   })
 
   test("function replacers receive captures, offsets, input, and named groups", async () => {
@@ -442,6 +450,26 @@ describe("RegExp", () => {
     expect(await value(`return new RegExp("a+", "i").test("AAA")`)).toBe(true)
     expect(await value(`try { new RegExp("("); return "no" } catch { return "caught" }`)).toBe("caught")
     expect(await value(`return [/a/ instanceof RegExp, /a/.source]`)).toEqual([true, "a"])
+  })
+
+  test("RegExp(r) returns r; match groups are always present and have a null prototype", async () => {
+    expect(await value(`const r = /a/g; return [RegExp(r) === r, RegExp(r, "g") === r, new RegExp(r) === r]`)).toEqual(
+      [true, false, false],
+    )
+    expect(await value(`return ["groups" in /a/.exec("a"), [..."a".matchAll(/a/g)].map((m) => "groups" in m)]`)).toEqual(
+      [true, [true]],
+    )
+    expect(
+      await value(`
+        const m = /(?<n>\\d)/d.exec("1")
+        let g
+        "1".replace(/(?<n>\\d)/, (...args) => { g = args.at(-1); return "" })
+        return [m.groups, m.indices.groups, g].map((o) => Object.getPrototypeOf(o) === null)
+      `),
+    ).toEqual([true, true, true])
+    expect(
+      await value(`return [RegExp.prototype.source, RegExp.prototype.flags, RegExp.prototype.global, String(RegExp.prototype)]`),
+    ).toEqual(["(?:)", "", null, "/(?:)/"])
   })
 
   test("invalid patterns fail with actionable messages", async () => {
@@ -1063,9 +1091,45 @@ describe("Uint8Array", () => {
     `),
     ).toEqual([[0, 0], [1, 2, 44], [7, 8], [9, 2, 44], [1, 2, 44], 3, [1, 2]])
     expect((await error(`new Uint8Array(-1)`)).message).toContain("Invalid typed array length: -1")
-    expect((await error(`new Uint8Array(1.5)`)).message).toContain("Invalid typed array length")
     expect((await error(`new Uint8Array(20_000_000)`)).message).toContain("Invalid array length")
-    expect((await error(`Uint8Array.from(/x/)`)).message).toContain("received a RegExp")
+    expect((await error(`Uint8Array.from(null)`)).message).toContain("received null")
+  })
+
+  test("constructs from and sets array-likes, and truncates a fractional length", async () => {
+    expect(
+      await value(`
+      const like = { length: 2, 0: 10, 1: "20" }
+      const into = new Uint8Array(3)
+      into.set(like, 1)
+      return [[...new Uint8Array(like)], [...Uint8Array.from(like, (v) => v * 2)], [...into], new Uint8Array(3.9).length,
+        new Uint8Array(NaN).length, Uint8Array.from(/x/).length]
+    `),
+    ).toEqual([[10, 20], [20, 40], [0, 10, 20], 3, 0, 0])
+  })
+
+  test("toSorted, toReversed, with, copyWithin, setFromHex and setFromBase64 work as in JS", async () => {
+    expect(
+      await value(`
+      const b = new Uint8Array([3, 1, 2])
+      const hex = new Uint8Array(3)
+      const base64 = new Uint8Array(3)
+      return [[...b.toSorted()], [...b.toSorted((x, y) => y - x)], [...b.toReversed()], [...b.with(-1, 300)], [...b],
+        [...new Uint8Array([1, 2, 3, 4, 5]).copyWithin(0, 3)], hex.setFromHex("abcd"), [...hex],
+        base64.setFromBase64("AQID"), [...base64]]
+    `),
+    ).toEqual([
+      [1, 2, 3],
+      [3, 2, 1],
+      [2, 1, 3],
+      [3, 1, 44],
+      [3, 1, 2],
+      [4, 5, 3, 4, 5],
+      { read: 4, written: 2 },
+      [171, 205, 0],
+      { read: 4, written: 3 },
+      [1, 2, 3],
+    ])
+    expect((await error(`new Uint8Array(2).with(2, 1)`)).message).toContain("RangeError")
   })
 
   test("BYTES_PER_ELEMENT is a read-only 1 on Uint8Array, Buffer and their instances", async () => {
@@ -1074,6 +1138,14 @@ describe("Uint8Array", () => {
         return [Uint8Array.BYTES_PER_ELEMENT, new Uint8Array(1).BYTES_PER_ELEMENT, Buffer.BYTES_PER_ELEMENT,
           Buffer.alloc(1).BYTES_PER_ELEMENT, 4 * Uint8Array.BYTES_PER_ELEMENT, d.writable, d.enumerable, Object.keys(Uint8Array)]`),
     ).toEqual([1, 1, 1, 1, 4, false, false, []])
+  })
+
+  test("byteLength is the length and byteOffset is where a view starts, on Uint8Array and Buffer", async () => {
+    expect(
+      await value(`const b = new TextEncoder().encode("héllo")
+        return [b.byteLength, b.subarray(2).byteLength, Buffer.from("abc").byteLength, Object.keys(b).includes("byteLength"),
+          new Uint8Array(4).byteOffset, new Uint8Array(4).subarray(2).subarray(1).byteOffset]`),
+    ).toEqual([6, 4, 3, false, 0, 3])
   })
 
   test("index reads and writes clamp to a byte and ignore out-of-range writes, like JS", async () => {
@@ -1211,6 +1283,14 @@ describe("Uint8Array", () => {
 })
 
 describe("TextEncoder and TextDecoder", () => {
+  test("encodeInto writes into a Uint8Array and reports what it read and wrote", async () => {
+    expect(
+      await value(`const bytes = new Uint8Array(3)
+        return [new TextEncoder().encodeInto("héllo", bytes), [...bytes]]`),
+    ).toEqual([{ read: 2, written: 3 }, [104, 195, 169]])
+    expect((await error(`new TextEncoder().encodeInto("a", [])`)).message).toContain("expects a Uint8Array")
+  })
+
   test("encodes null as text while omitted and undefined inputs stay empty", async () => {
     expect(
       await value(`
@@ -1618,6 +1698,8 @@ describe("Object.prototype.toString", () => {
         new Map().toString(), new Set().toString(), new Headers().toString(), Promise.resolve(1).toString(),
         [1].values().toString(), ({}).toString(), String(new Map()), String(Promise.resolve(1)),
         \`\${new Set([1])}\`, [new Map()] + "", new Map() == "[object Map]",
+        ...[Math, JSON, crypto, new TextEncoder(), new TextDecoder(), Symbol.iterator, function* () {}, async () => {},
+          async function* () {}].map((x) => Object.prototype.toString.call(x)),
       ]
     `),
     ).toEqual([
@@ -1632,7 +1714,28 @@ describe("Object.prototype.toString", () => {
       "[object Set]",
       "[object Map]",
       true,
+      "[object Math]",
+      "[object JSON]",
+      "[object Crypto]",
+      "[object TextEncoder]",
+      "[object TextDecoder]",
+      "[object Symbol]",
+      "[object GeneratorFunction]",
+      "[object AsyncFunction]",
+      "[object AsyncGeneratorFunction]",
     ])
+  })
+})
+
+describe("Array.prototype.toString", () => {
+  test("calls the receiver's join, or falls back to Object.prototype.toString", async () => {
+    expect(
+      await value(`
+      const a = [1, 2]
+      a.join = () => "x"
+      return [a.toString(), \`\${a}\`, String([1, [2, 3], null]), Array.prototype.toString.call({ join: () => "j" }), Array.prototype.toString.call({})]
+    `),
+    ).toEqual(["x", "x", "1,2,3,", "j", "[object Object]"])
   })
 })
 
@@ -1710,6 +1813,33 @@ describe("toLocaleString", () => {
       "15.1.2024",
       "1/15/2024",
     ])
+  })
+
+  test("numbers, BigInts and arrays honor the locale and options, through Intl", async () => {
+    expect(
+      await value(`
+      return [
+        (1234.56).toLocaleString("en-US", { style: "currency", currency: "USD" }),
+        (0.256).toLocaleString("en-US", { style: "percent", maximumFractionDigits: { valueOf() { return 1 } } }),
+        (1234.5).toLocaleString("de-DE"),
+        (1234).toLocaleString("en-US", { useGrouping: false }),
+        12345678901234567890n.toLocaleString("de-DE"),
+        1234n.toLocaleString("en-US", { style: "currency", currency: "EUR" }),
+        [1234.5, new Date(0)].toLocaleString("en-US", { timeZone: "UTC", maximumFractionDigits: 0 }),
+        [].toLocaleString.length,
+      ]
+    `),
+    ).toEqual(["$1,234.56", "25.6%", "1.234,5", "1234", "12.345.678.901.234.567.890", "€1,234.00", "1,235,1/1/1970, 12:00:00 AM", 0])
+    expect(
+      await value(`
+      const attempt = (f) => { try { return f() } catch (e) { return e.name } }
+      return [
+        attempt(() => (1).toLocaleString("en-US", { style: "currency" })),
+        attempt(() => (1).toLocaleString("en-US", { style: "bogus" })),
+        attempt(() => (1).toLocaleString("en-US", null)),
+      ]
+    `),
+    ).toEqual(["TypeError", "RangeError", "TypeError"])
   })
 
   test("date formatting without a timeZone uses the local time, like getHours", async () => {
@@ -1802,17 +1932,19 @@ describe("stdlib integration", () => {
       ],
     ])
     expect(await value(`const match = /a/.exec("ba"); return [Object.values(match), Object.entries(match)]`)).toEqual([
-      ["a", 1, "ba"],
+      ["a", 1, "ba", null],
       [
         ["0", "a"],
         ["index", 1],
         ["input", "ba"],
+        ["groups", null],
       ],
     ])
     expect(await value(`return Object.keys(Object.values({ match: /a/.exec("ba") })[0])`)).toEqual([
       "0",
       "index",
       "input",
+      "groups",
     ])
   })
 
@@ -1836,12 +1968,41 @@ describe("stdlib integration", () => {
       { e: 5 },
       { "[object Object]": 6, "1970-01-01T00:00:00.000Z": 7, null: 8, undefined: 9 },
     ])
-    expect(await value(`try { Object.fromEntries(new Set([Math.max])); return false } catch { return true }`)).toBe(
+    expect(await value(`try { Object.fromEntries([1]); return false } catch (e) { return e instanceof TypeError }`)).toBe(
       true,
     )
     expect(
-      await value(`try { Object.fromEntries(new Map([["fn", Math.max]])); return false } catch { return true }`),
+      await value(`
+        const o = Object.fromEntries(new Map([["fn", Math.max], ["arrow", () => 2], ["p", Promise.resolve(1)]]))
+        return [o.fn(1, 3), o.arrow(), typeof o.p.then, Object.keys(Object.fromEntries([Math.max]))]
+      `),
+    ).toEqual([3, 2, "function", ["undefined"]])
+  })
+
+  test("Object own-property checks box primitive receivers and convert keys with ToPropertyKey", async () => {
+    expect(
+      await value(`
+        const key = { toString() { return "a" } }
+        const has = Object.prototype.hasOwnProperty, enumerable = Object.prototype.propertyIsEnumerable
+        return [
+          has.call("abc", "0"), has.call("abc", "length"), has.call(5, "x"), enumerable.call("abc", "0"),
+          enumerable.call("abc", "length"), Object.hasOwn({ a: 1 }, key), ({ a: 1 }).hasOwnProperty(key),
+          ({ a: 1 }).propertyIsEnumerable(key),
+        ]
+      `),
+    ).toEqual([true, true, false, true, false, true, true, true])
+    expect(
+      await value(`try { Object.prototype.hasOwnProperty.call(null, "x"); return false } catch (e) { return e instanceof TypeError }`),
     ).toBe(true)
+  })
+
+  test("Object.getOwnPropertySymbols lists the own symbol keys", async () => {
+    expect(
+      await value(`
+        const o = { a: 1, [Symbol.iterator]: 1 }
+        return [Object.getOwnPropertySymbols(o)[0] === Symbol.iterator, Object.getOwnPropertySymbols("ab").length]
+      `),
+    ).toEqual([true, 0])
   })
 
   test("deterministic Math methods match the host runtime", async () => {

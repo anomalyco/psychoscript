@@ -68,6 +68,21 @@ describe("Test262 JSON.parse reviver adaptations", () => {
     ).toBe(true)
   })
 
+  test("passes the source text of unchanged primitives as the third argument", async () => {
+    expect(await value(`return JSON.parse("1.0", (key, item, context) => context.source)`)).toBe("1.0")
+    expect(
+      await value(`
+        const seen = []
+        JSON.parse('{"a":[1e1,"x"],"b":2}', function (key, item, context) {
+          if (key === "a") this.b = 3
+          seen.push([key, context.source ?? null])
+          return item
+        })
+        return seen
+      `),
+    ).toEqual([["0", "1e1"], ["1", '"x"'], ["a", null], ["b", null], ["", null]])
+  })
+
   test("test/built-ins/JSON/parse/reviver-call-err.js", async () => {
     expect(
       await value(`try { JSON.parse("0", () => { throw "stop" }) } catch (error) { return error } return "missed"`),

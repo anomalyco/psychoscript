@@ -59,7 +59,7 @@ const replaceWithCallback = <R>(
     if (typeof match !== "string" || typeof offset !== "number") {
       throw typeError(`String.${name} produced an invalid replacement match.`)
     }
-    const args = callbackArgs.map((arg) => (typeof arg === "object" ? record(builtins.Object, arg) : arg))
+    const args = callbackArgs.map((arg) => (typeof arg === "object" ? record(null, arg) : arg))
     matches.push({ match, offset, args })
     return match
   }
@@ -121,7 +121,9 @@ export const stringGlobal = <R>(ctx: Interpreter<R>) => {
       (_, args) =>
         withReads(() => {
           const template = args[0]
-          const raw = template instanceof Obj ? get(template, "raw") : undefined
+          const found = template instanceof Obj ? get(template, "raw") : undefined
+          // Like other array-likes, a string raw reads its code units.
+          const raw = typeof found === "string" ? new Arr(builtins.Array, found.split("")) : found
           if (!(raw instanceof Obj)) throw typeError("String.raw expects a template object with a raw array.")
           const count = Math.max(0, coerceToInteger(get(raw, "length")))
           checkArrayLength(count)
@@ -352,7 +354,7 @@ export const stringGlobal = <R>(ctx: Interpreter<R>) => {
             checkArrayLength(matches.length + 1)
             matches.push(matchToValue(builtins, match))
           }
-          return new Arr(builtins.Array, matches)
+          return positionIterator(builtins, new Arr(builtins.Array, matches), "values")
         }),
       ),
     ),
