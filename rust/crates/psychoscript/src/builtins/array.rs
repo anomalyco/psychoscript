@@ -17,7 +17,6 @@ pub fn setup(vm: &mut Vm) {
             ("isArray", 1, array_is_array),
             ("of", 0, array_of),
             ("from", 1, array_from),
-            ("fromAsync", 1, array_from_async),
         ],
     );
     vm.methods(
@@ -450,6 +449,14 @@ fn array_from_async(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res
     )
 }
 
+/// `Array.fromAsync`, made when a program names `Array` (see `LAZY`).
+pub(crate) fn setup_from_async(vm: &mut Vm) {
+    let (ap, ck) = (vm.realm.array_proto, vm.names.constructor);
+    if let Value::Obj(array) = vm.get_obj(ap, ck) {
+        vm.method(array, "fromAsync", 1, array_from_async);
+    }
+}
+
 /// Whether `id` is `Array.fromAsync`, an async function in the reference.
 pub(crate) fn is_from_async(vm: &Vm, id: Id) -> bool {
     matches!(vm.heap[id as usize].kind, Kind::Native { f, .. }
@@ -780,7 +787,7 @@ pub(crate) fn is_join(vm: &Vm, f: &Value) -> bool {
 fn a_to_string(vm: &mut Vm, this: Value, _args: &[Value], callee: Id) -> Res {
     let readable = match this {
         Value::Obj(id) => !vm.is_namespace(id),
-        Value::Str(_) | Value::Num(_) | Value::Big(_) | Value::Bool(_) => true,
+        Value::Str(_) | Value::Num(_) | Value::Big(_) | Value::Bool(_) | Value::Sym(_) => true,
         _ => false,
     };
     if !readable {

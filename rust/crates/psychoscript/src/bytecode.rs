@@ -319,6 +319,30 @@ pub struct FuncProto {
 }
 
 impl FuncProto {
+    /// The atoms the function's code names: its own name, and the keys and binding names of its instructions.
+    pub fn atoms(&self) -> impl Iterator<Item = Atom> + '_ {
+        std::iter::once(self.name).chain(self.code.iter().filter_map(|op| match *op {
+            Op::GetLocalChk(_, a)
+            | Op::GetCellChk(_, a)
+            | Op::GetUpvalChk(_, a)
+            | Op::ThrowConst(a)
+            | Op::ThrowRef(a)
+            | Op::GetProp(a)
+            | Op::SetProp(a)
+            | Op::DestructProp(a)
+            | Op::GetPropW(a)
+            | Op::GetMethod(a)
+            | Op::DelProp(a)
+            | Op::DefineField(a)
+            | Op::DefineAccessor(a, _)
+            | Op::DefineMethod(a, _)
+            | Op::GetSuper(a, _)
+            | Op::PutSuper(a, _)
+            | Op::DefineClassField(a, _) => Some(a),
+            _ => None,
+        }))
+    }
+
     /// The name of the callee of the call or `new` instruction at `at`.
     pub fn callee(&self, at: usize) -> Option<&str> {
         let i = self
@@ -365,6 +389,9 @@ pub struct Program {
     pub templates: Vec<TemplateSite>,
     /// Whether it assigns to a typed array's global (`ThrowRef`), a constant where programs have them (see `Vm::load`).
     pub typed_consts: bool,
+    /// Whether it names `constructor`, through which it may reach a built-in constructor without its global (see
+    /// `builtins::ensure_program`).
+    pub names_constructor: bool,
 }
 
 /// A tagged template's text: each part cooked (`None` for an invalid escape) and raw, as string constants.

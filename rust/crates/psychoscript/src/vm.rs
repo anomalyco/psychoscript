@@ -486,7 +486,7 @@ impl Vm {
                 }
             }
         }
-        crate::builtins::ensure_globals(self, &program.globals);
+        crate::builtins::ensure_program(self, &program);
         self.template_objs = vec![None; program.templates.len()];
         self.templates = program.templates;
         self.consts = program.consts;

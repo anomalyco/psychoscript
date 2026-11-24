@@ -171,6 +171,7 @@ fn compile_as(source: &str, atoms: &mut Strings, internal: bool) -> R<Program> {
         globals: c.globals,
         templates: c.templates,
         typed_consts: c.typed_consts,
+        names_constructor: c.atoms.lookup("constructor").is_some(),
     })
 }
 

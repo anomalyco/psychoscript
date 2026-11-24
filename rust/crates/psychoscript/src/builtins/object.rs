@@ -39,7 +39,6 @@ pub fn setup(vm: &mut Vm) {
                 1,
                 object_get_own_property_descriptors,
             ),
-            ("getOwnPropertySymbols", 1, object_get_own_property_symbols),
             ("getOwnPropertyNames", 1, object_get_own_property_names),
         ],
     );
@@ -148,23 +147,8 @@ pub fn setup(vm: &mut Vm) {
     vm.heap[symbol as usize].flags |= NOT_CALLBACK;
     vm.constant(symbol, "asyncIterator", Value::Sym(SYM_ASYNC_ITERATOR));
     vm.constant(symbol, "iterator", Value::Sym(SYM_ITERATOR));
-    vm.constant(symbol, "toPrimitive", Value::Sym(SYM_TO_PRIMITIVE));
-    vm.constant(symbol, "toStringTag", Value::Sym(SYM_TO_STRING_TAG));
-    vm.methods(
-        sp,
-        &[
-            ("toString", 0, symbol_to_string),
-            ("valueOf", 0, symbol_value_of),
-        ],
-    );
-    super::accessors(vm, sp, &["description"]);
-    // Read-only, configurable: the reference's `readonly`.
-    let to_primitive = vm.native_fn("[Symbol.toPrimitive]", 1, symbol_to_primitive, Value::Undef);
-    vm.heap[sp as usize]
-        .props
-        .insert(SYM_TO_PRIMITIVE, to_primitive, 0);
-    let tag = vm.static_str("Symbol");
-    vm.heap[sp as usize].props.insert(SYM_TO_STRING_TAG, tag, 0);
+    vm.methods(sp, &[("toString", 0, symbol_to_string)]);
+    // The rest of `Symbol` and `Symbol.prototype` comes with its lazy group (`setup_symbols`).
 
     let json = vm.new_object();
     vm.realm.std.json = json;
@@ -185,16 +169,6 @@ pub fn setup(vm: &mut Vm) {
             ("error", 0, console_error),
             ("dir", 0, console_dir),
             ("table", 0, console_table),
-            ("assert", 0, console_assert),
-            ("count", 0, console_count),
-            ("countReset", 0, console_count_reset),
-            ("group", 0, console_group),
-            ("groupCollapsed", 0, console_group),
-            ("groupEnd", 0, console_group_end),
-            ("trace", 0, console_trace),
-            ("time", 0, console_time),
-            ("timeLog", 0, console_time_log),
-            ("timeEnd", 0, console_time_end),
         ],
     );
     vm.global("console", Value::Obj(console));
@@ -940,7 +914,7 @@ pub fn class_tag(vm: &Vm, v: &Value) -> &'static str {
         return tag_of(vm, v);
     };
     let s = &vm.realm.std;
-    let loaded = |bit: u8| s.loaded & bit != 0;
+    let loaded = |bit: u16| s.loaded & bit != 0;
     let tags = [
         (Some(s.math), "Math"),
         (Some(s.json), "JSON"),
@@ -1389,6 +1363,66 @@ fn symbol_to_primitive(vm: &mut Vm, this: Value, _args: &[Value], _: Id) -> Res 
 pub(crate) fn symbol_description(vm: &mut Vm, s: Atom) -> Value {
     let text = crate::ops::symbol_text(s);
     vm.static_str(&text["Symbol(".len()..text.len() - 1])
+}
+
+/// The members `Symbol`, `Symbol.prototype` and `Object` gained with the well-known symbols, after the others: made
+/// when a program names `Symbol` or `Object`, the only ways it can reach a symbol (see `LAZY`).
+pub(crate) fn setup_symbols(vm: &mut Vm) {
+    let sp = vm.realm.symbol_proto;
+    let ck = vm.names.constructor;
+    if let Value::Obj(symbol) = vm.get_obj(sp, ck) {
+        vm.constant(symbol, "toPrimitive", Value::Sym(SYM_TO_PRIMITIVE));
+        vm.constant(symbol, "toStringTag", Value::Sym(SYM_TO_STRING_TAG));
+    }
+    vm.method(sp, "valueOf", 0, symbol_value_of);
+    super::accessors(vm, sp, &["description"]);
+    // Read-only, configurable: the reference's `readonly`.
+    let to_primitive = vm.native_fn("[Symbol.toPrimitive]", 1, symbol_to_primitive, Value::Undef);
+    vm.heap[sp as usize]
+        .props
+        .insert(SYM_TO_PRIMITIVE, to_primitive, 0);
+    let tag = vm.static_str("Symbol");
+    vm.heap[sp as usize].props.insert(SYM_TO_STRING_TAG, tag, 0);
+    // `Object.getOwnPropertySymbols` in its place, before `getOwnPropertyNames`, as the reference orders them.
+    let op = vm.realm.object_proto;
+    if let Value::Obj(object) = vm.get_obj(op, ck) {
+        let f = vm.native_fn(
+            "getOwnPropertySymbols",
+            1,
+            object_get_own_property_symbols,
+            Value::Undef,
+        );
+        let (key, before) = (
+            vm.atoms.intern_static("getOwnPropertySymbols"),
+            vm.atoms.intern_static("getOwnPropertyNames"),
+        );
+        vm.heap[object as usize]
+            .props
+            .insert_before(before, key, f, HIDDEN);
+    }
+}
+
+/// The console methods added after the first seven, made when a program names `console` (see `LAZY`).
+pub(crate) fn setup_console(vm: &mut Vm) {
+    let ck = vm.atoms.intern_static("console");
+    let Some(Value::Obj(console)) = vm.global_map.get(&ck).copied() else {
+        return;
+    };
+    vm.methods(
+        console,
+        &[
+            ("assert", 0, console_assert),
+            ("count", 0, console_count),
+            ("countReset", 0, console_count_reset),
+            ("group", 0, console_group),
+            ("groupCollapsed", 0, console_group),
+            ("groupEnd", 0, console_group_end),
+            ("trace", 0, console_trace),
+            ("time", 0, console_time),
+            ("timeLog", 0, console_time_log),
+            ("timeEnd", 0, console_time_end),
+        ],
+    );
 }
 
 // ---------- JSON ----------

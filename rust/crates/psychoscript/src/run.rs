@@ -181,7 +181,7 @@ pub fn start(
     vm.start_cpu_meter();
     vm.realm.std.typed_arrays = setup.typed_arrays;
     vm.setup();
-    crate::builtins::ensure_globals(&mut vm, &program.globals);
+    crate::builtins::ensure_program(&mut vm, &program);
     host::install(&mut vm, &program.globals);
     vm.load_bigints(&mut program);
     vm.snapshot_base = crate::snapshot::Base::of(&vm);
@@ -231,7 +231,7 @@ pub fn start_for_resume(
     vm.start_cpu_meter();
     vm.realm.std.typed_arrays = setup.typed_arrays;
     vm.setup();
-    crate::builtins::ensure_globals(&mut vm, &program.globals);
+    crate::builtins::ensure_program(&mut vm, &program);
     host::install(&mut vm, &program.globals);
     vm.load_bigints(&mut program);
     vm.snapshot_base = crate::snapshot::Base::of(&vm);

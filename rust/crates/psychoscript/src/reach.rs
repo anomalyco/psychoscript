@@ -39,6 +39,13 @@ pub fn roots_but(vm: &Vm, measuring: bool, visit: &mut impl FnMut(Ref)) {
     for a in &vm.global_names {
         t.atom(*a);
     }
+    // Built-in code compiled during the run (`Array.fromAsync`'s, which has no positions): its atoms were made after
+    // the permanent ones, so they live by its code.
+    for p in vm.protos.iter().filter(|p| p.pos.is_empty()) {
+        for a in p.atoms() {
+            t.atom(a);
+        }
+    }
     if !measuring {
         t.vals(vm.consts.iter());
     }

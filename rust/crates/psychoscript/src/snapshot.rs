@@ -120,7 +120,7 @@ fn natives() -> &'static Natives {
         );
         vm.setup();
         let base = vm.heap.len();
-        for bit in 0..8 {
+        for bit in 0..16 {
             crate::builtins::ensure(&mut vm, 1 << bit);
         }
         let mut list: Vec<NativeFn> = Vec::new();
@@ -935,7 +935,7 @@ fn baseline(vm: &Vm, code: &str) -> R<Vec<J>> {
     let mut fresh = Vm::new(host, *vm.limits, atoms);
     fresh.realm.std.typed_arrays = vm.realm.std.typed_arrays;
     fresh.setup();
-    crate::builtins::ensure_globals(&mut fresh, &program.globals);
+    crate::builtins::ensure_program(&mut fresh, &program);
     host::install(&mut fresh, &program.globals);
     let mut enc = Enc {
         vm: &fresh,
@@ -2341,7 +2341,7 @@ pub fn restore(vm: &mut Vm, snapshot: &Snapshot, program_hash: &str) -> R<()> {
     realm.url = id(10)?;
     realm.params = id(11)?;
     realm.headers = id(12)?;
-    realm.loaded = id(13)? as u8;
+    realm.loaded = id(13)? as u16;
     realm.array_buffer = id(14)?;
     let typed = std
         .get(15)

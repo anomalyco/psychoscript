@@ -88,6 +88,23 @@ impl Props {
         }
     }
 
+    /// Puts a key known to be absent just before `before`, or last without it.
+    pub fn insert_before(&mut self, before: Atom, key: Atom, value: Value, flags: u8) {
+        let Some(i) = self.find(before) else {
+            return self.push_new(key, value, flags);
+        };
+        self.items.insert(i, Prop { key, value, flags });
+        if self.index.is_some() || self.items.len() > INDEX_THRESHOLD {
+            let map = self
+                .items
+                .iter()
+                .enumerate()
+                .map(|(i, p)| (p.key, i as u32))
+                .collect();
+            self.index = Some(Box::new(map));
+        }
+    }
+
     pub fn remove(&mut self, key: Atom) -> bool {
         let Some(i) = self.find(key) else {
             return false;
