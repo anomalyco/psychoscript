@@ -6,6 +6,9 @@
   default, programs and host functions behave as before they were added (0.2.1): no `ArrayBuffer`, `Uint16Array`,
   `Uint32Array`, `Int32Array`, `Float32Array` or `Float64Array`, a host function returning one fails at the call, and
   `Uint8Array` has no `buffer`; `globalNames` leaves them out.
+- Installs from git (`github:anomalyco/psychoscript#<commit>`): a `prepare` script installs the dev dependencies and
+  builds `dist/`, since package managers don't install a git dependency's dev dependencies. Bun runs it only for a
+  trusted dependency (`trustedDependencies`).
 - `ArrayBuffer`, `Uint16Array`, `Uint32Array`, `Int32Array`, `Float32Array` and `Float64Array`: views of one byte buffer
   with JS conversions, the methods 3D programs need, and fast indexed access. They (and `ArrayBuffer`s) are lent to
   synchronous host functions for the call, without a copy; async and durable ones get a copy. `Uint8Array` gains
