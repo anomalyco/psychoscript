@@ -7,11 +7,55 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use psychoscript::{DiagnosticKind, HostFunction, HostValue, Limits, Runtime};
 use serde_json::json;
 
+mod support;
+
 fn capped(bytes: u64) -> Runtime {
     Runtime::make().limits(Limits {
         max_heap_bytes: Some(bytes),
         ..Limits::default()
     })
+}
+
+/// The programs `tests/cases/heap-limit-*.js`, each under its cap: what it returns or how it fails, and what it logs.
+#[test]
+fn programs() {
+    macro_rules! case {
+        ($name:literal, $cap:expr, $expected:expr, $logs:expr) => {
+            support::check(
+                &capped($cap),
+                $name,
+                include_str!(concat!("cases/", $name, ".js")),
+                $expected,
+                $logs,
+            )
+        };
+    }
+    use DiagnosticKind::MemoryLimitExceeded as Over;
+    case!(
+        "heap-limit-async-calls",
+        262_144,
+        Ok(json!([20000, 20000, 20000, 20000])),
+        &[]
+    );
+    case!("heap-limit-bulk-growth", 4_194_304, Err(Over), &[]);
+    case!("heap-limit-collections", 2_000_000, Err(Over), &[]);
+    case!("heap-limit-exact-over", 216_079, Err(Over), &[]);
+    case!("heap-limit-exact-under", 216_080, Ok(json!(1000)), &[]);
+    case!(
+        "heap-limit-garbage",
+        1_000_000,
+        Ok(json!([150000, 4000])),
+        &[]
+    );
+    case!("heap-limit-growth", 1_000_000, Err(Over), &["start"]);
+    case!("heap-limit-result", 1_000_000, Err(Over), &[]);
+    case!("heap-limit-top-level-over", 16_063, Err(Over), &[]);
+    case!("heap-limit-top-level-under", 16_064, Ok(json!(1)), &[]);
+}
+
+#[test]
+fn programs_in_the_round_trip_mode() {
+    support::in_round_trip_mode("programs");
 }
 
 fn kind(rt: &Runtime, code: &str) -> DiagnosticKind {

@@ -14,8 +14,8 @@
 // PSYCHOSCRIPT_REF, or by default the repository root.
 
 import { join } from "node:path"
-import { writeRecording } from "./recording.ts"
-import { reference } from "./reference.ts"
+import { writeRecording } from "./recording.js"
+import { reference } from "./reference.js"
 
 const ref = await reference(process.argv[2] ?? process.env.PSYCHOSCRIPT_REF)
 const Effect = ref.Effect
@@ -126,7 +126,7 @@ push("toLocaleDateString", undefined, undefined)
 push("toLocaleTimeString", undefined, undefined)
 
 // The widths ICU4X can't render exactly, recorded so they reel in a difference rather than silently diverge.
-for (const bag of [{ weekday: "narrow" }, { month: "narrow" }, { era: "long" }, { era: "narrow" }]) {
+for (const bag of [{ weekday: "narrow" }, { month: "narrow" }, { era: "long" }, { era: "narrow" }] as Array<Bag>) {
   push("toLocaleString", "en-US", { ...bag, timeZone: "UTC" })
 }
 

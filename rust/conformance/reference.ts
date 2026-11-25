@@ -90,7 +90,6 @@ export const toolsGlobal = (ref: Reference) => {
 /**
  * A host value as data, for recordings: what a host function received, in a form JSON keeps. `{ undefined: true }`,
  * `{ number: "NaN" | "Infinity" | "-Infinity" }`, JSON primitives as they are, `{ function: name }`,
- * `{ functionMarker: true }` (`Host.functionMarker`, the only symbol a host function gets),
  * `{ date: ms | "NaN" }`, `{ regexp: [source, flags] }`, `{ url: href }`, `{ params: [[k, v], ...] }`,
  * `{ headers: [[k, v], ...] }`, `{ buffer: [bytes] }`, `{ bytes: [bytes] }`, `{ arrayBuffer: [bytes] }`,
  * `{ map: [[k, v], ...] }`, `{ set: [v, ...] }`, `{ array: [v | { hole: true }, ...] }`, and a string, an object key
@@ -103,7 +102,6 @@ export const describe = (v: unknown): unknown => {
   if (typeof v === "string") return text(v)
   if (v === null || typeof v === "string" || typeof v === "number" || typeof v === "boolean") return v
   if (typeof v === "function") return { function: v.name }
-  if (typeof v === "symbol") return { functionMarker: true }
   if (v instanceof Date) return { date: Number.isNaN(v.getTime()) ? "NaN" : v.getTime() }
   if (v instanceof RegExp) return { regexp: [text(v.source), v.flags] }
   if (v instanceof URL) return { url: v.href }
@@ -112,9 +110,6 @@ export const describe = (v: unknown): unknown => {
   if (Buffer.isBuffer(v)) return { buffer: [...v] }
   if (v instanceof Uint8Array) return { bytes: [...v] }
   if (v instanceof ArrayBuffer) return { arrayBuffer: [...new Uint8Array(v)] }
-  if (ArrayBuffer.isView(v) && !(v instanceof DataView)) {
-    return { typed: [v.constructor.name, [...(v as unknown as Iterable<number>)]] }
-  }
   if (v instanceof Map) return { map: [...v].map(([k, x]) => [describe(k), describe(x)]) }
   if (v instanceof Set) return { set: [...v].map(describe) }
   if (Array.isArray(v))

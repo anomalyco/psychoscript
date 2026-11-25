@@ -38,8 +38,8 @@
 // - `log`: what `fetch`'s bodies, `send` and `refuse` logged, in order.
 
 import { join } from "node:path"
-import { writeRecording } from "./recording.ts"
-import { describe, reference, toolsGlobal } from "./reference.ts"
+import { writeRecording } from "./recording.js"
+import { describe, reference, toolsGlobal } from "./reference.js"
 
 const ref = await reference(process.argv[2] ?? process.env.PSYCHOSCRIPT_REF)
 const Effect = ref.Effect
@@ -133,7 +133,7 @@ const globals = (log: Array<unknown>, wait: { resumed: () => boolean; started: (
     (_: ReadonlyArray<unknown>) =>
       wait.resumed()
         ? Effect.succeed(1)
-        : Effect.callback<number>(() => {
+        : Effect.callback(() => {
             wait.started()
           }),
     { type: "async", idempotent: true },

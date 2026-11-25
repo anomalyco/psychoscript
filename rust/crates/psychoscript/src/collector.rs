@@ -774,7 +774,7 @@ impl Vm {
 
     fn gc_step(&mut self) {
         #[cfg(feature = "gc-stats")]
-        let started = std::time::Instant::now();
+        let started = crate::time::Instant::now();
         let debt = self.gc.debt + self.atoms.gc.debt;
         let budget = if stress() {
             (debt * MUL).max(STRESS_WORK)

@@ -12,9 +12,10 @@
 //! Waiting on host calls takes no CPU time, so waits count on the wall clock instead, against a backstop of
 //! `WAIT_BACKSTOP` times the timeout: a wait that never ends still ends the run.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::thread_clock::ThreadClock;
+use crate::time::Instant;
 
 /// `Limits::slice_ms`: the stretch in progress.
 ///

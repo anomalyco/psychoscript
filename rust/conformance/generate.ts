@@ -10,11 +10,9 @@
 //
 // A case may start with header comments that set its inputs:
 //   // @bindings {"event": {"type": "init"}}            the program's bindings (default `{}`)
-//   // @limits {"timeout_ms": 50, "max_output_bytes": 9, "max_heap_bytes": 9, "max_value_depth": 9}  the runtime's
-//   `limits` (default none)
+//   // @limits {"timeout_ms": 50, "max_output_bytes": 9}  the runtime's `limits` (default none)
 //   // @translate {"functions": "drop", "promises": "await"}  the runtime's `translate` (default the reference's:
 //                                                          both "error")
-//   // @typed_arrays true                               the runtime's `typedArrays` (default off)
 //   // @platform "linux"
 // A case with @platform depends on the system libm or compiler, so it is recorded and checked only on that platform
 // (`process.platform`). Elsewhere this keeps its recorded outcome but rewrites it in the current format, and fails
@@ -26,7 +24,7 @@
 
 import { readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { reference, toolsGlobal } from "./reference.ts"
+import { reference, toolsGlobal } from "./reference.js"
 
 const ref = await reference(process.argv[2] ?? process.env.PSYCHOSCRIPT_REF)
 const Effect = ref.Effect
@@ -90,7 +88,6 @@ for (const name of names) {
   const bindings = header(code, "bindings") ?? {}
   const limits = header(code, "limits")
   const translate = header(code, "translate")
-  const typedArrays = header(code, "typed_arrays")
   if (platform !== undefined && platform !== process.platform) {
     console.log(
       `${name.padEnd(36)} ${refreshSkipped(name, { bindings, limits, translate }) ? "reformatted" : "skipped"} (${platform} only)`,
@@ -105,19 +102,15 @@ for (const name of names) {
           limits: {
             timeoutMs: limits.timeout_ms,
             maxOutputBytes: limits.max_output_bytes,
-            maxHeapBytes: limits.max_heap_bytes,
-            maxValueDepth: limits.max_value_depth,
           },
         }),
     ...(translate === undefined ? {} : { translate }),
-    ...(typedArrays === undefined ? {} : { typedArrays }),
   })
   const result = await Effect.runPromise(runtime.execute(code, { bindings }))
   const expected = {
     bindings,
     ...(limits === undefined ? {} : { limits }),
     ...(translate === undefined ? {} : { translate }),
-    ...(typedArrays === undefined ? {} : { typed_arrays: typedArrays }),
     ...(result.ok ? { ok: true, value: result.value } : { ok: false, kind: result.error.kind }),
     logs: result.logs ?? [],
     metadata: result.metadata,

@@ -54,7 +54,7 @@ fn main() {
     let mut filter = String::new();
     let mut json = false;
     let mut future = false;
-    let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../conformance/cases");
+    let mut dir = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -67,7 +67,7 @@ fn main() {
             "--filter" => filter = args.next().expect("--filter name"),
             "--json" => json = true,
             "--async" => future = true,
-            "--cases" => dir = args.next().expect("--cases DIR").into(),
+            "--cases" => dir = Some(PathBuf::from(args.next().expect("--cases DIR"))),
             other => panic!("unknown argument {other}"),
         }
     }
@@ -94,7 +94,7 @@ fn main() {
         if !(slug.contains(&filter) || name.contains(&filter)) {
             continue;
         }
-        let path = dir.join(format!("bench-{slug}.js"));
+        let path = case_dir(dir.as_deref(), slug).join(format!("bench-{slug}.js"));
         let code =
             std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         let value = match execute(&code).result {
@@ -126,6 +126,20 @@ fn main() {
     }
     if json {
         println!("{}", Json::from(report));
+    }
+}
+
+/// Where a case's program is: in `--cases DIR`, or by default in `bench/typed` for the typed-array cases (Rust only)
+/// and `conformance/cases` for the others.
+fn case_dir(dir: Option<&std::path::Path>, slug: &str) -> PathBuf {
+    if let Some(dir) = dir {
+        return dir.to_owned();
+    }
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let typed = root.join("typed");
+    match typed.join(format!("bench-{slug}.js")).exists() {
+        true => typed,
+        false => root.join("../conformance/cases"),
     }
 }
 

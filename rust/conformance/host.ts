@@ -9,8 +9,8 @@
 // Usage: bun conformance/host.ts [reference] — the reference package directory, from the argument,
 // PSYCHOSCRIPT_REF, or by default the repository root.
 //
-// Every entry runs in its own runtime: `Runtime.make({ globals, translate?, limits?, typedArrays? })` with the entry's
-// `translate`, `limits` and `typedArrays` (absent: the reference's defaults, both translations "error" and no limits),
+// Every entry runs in its own runtime: `Runtime.make({ globals, translate?, limits? })` with the entry's `translate` and
+// `limits` (absent: the reference's defaults, both translations "error" and no limits),
 // no `modules`, and the program made with `{ runId }` (the entry's, "run" by default). `globals(run)` is called when a
 // run starts and again when it resumes; each call counts toward the entry's `made`. It gives (every `run` takes one
 // parameter, `length` 1, except `note`, `post` and the durable function's hooks, which also take the call; each is
@@ -33,8 +33,6 @@
 // - `Box(item)`: sync, `constructible: true`; gives `{ item }`.
 // - `Later(item)`: sync, `constructible: true`; gives `Effect.succeed({ item })`.
 // - `refuse()`: sync; fails with `Host.fail("Refused", "Not today", ["Ask again."])`.
-// - `mistyped(n)`: sync; throws `Host.error("TypeError", "Not a name: <n>")`.
-// - `bounded(n)`: async; fails with `Effect.fail(Host.error(<n>, "Out of range"))`, where `n` names the class.
 // - `api`: `Host.namespace`; `keys([])` is `["issues"]`, `keys` of any other path `["list"]`; `resolve(["issues",
 //   "list"])` is an async function giving `["#1"]`, any other path `Host.missing("No api.<path>", ["Try
 //   api.issues.list."], "NotFound")`.
@@ -44,14 +42,13 @@
 //   `call.key` as its data; `wait(data, call)` logs `["job.wait", data, call.key, call.args.map(describe)]`, never
 //   settles until the entry resumed, then gives 41; `cancel(data, call)` logs `["job.cancel", data, call.key]`.
 //
-// host.json: `{ executes: [{ code, runId, translate?, limits?, typedArrays?, compiled?, compile?, outcome, again?,
-// log }], suspensions: [{ code, runId, translate?, limits?, typedArrays?, compiled?, suspend, resume?, made, log }] }`.
+// host.json: `{ executes: [{ code, runId, translate?, limits?, compiled?, compile?, outcome, again?, log }],
+// suspensions: [{ code, runId, translate?, limits?, compiled?, suspend, resume?, made, log }] }`.
 // - An entry with `compiled: true` runs from `runtime.compile(code)` instead of its source. An execute records
 //   `compile` (`{ ok: true }`, or `{ ok: false, error }` with the diagnostic, when `outcome` is its source's run), and
 //   runs the compiled program twice in the same runtime: `outcome`, then `again`.
 // - `outcome` and `resume`: the run's `Result` as the reference gives it (`ok`, `value` or `error` with `kind`,
-//   `message` and `suggestions?`, `warnings?`, `logs?`, `truncated?`, `metadata`), with each `Host.functionMarker` in
-//   `value` as `{ functionMarker: true }`.
+//   `message` and `suggestions?`, `warnings?`, `logs?`, `truncated?`, `metadata`).
 // - A suspension runs the program until `never`, `grab`, `wait` or the durable `job`'s `wait` is first called,
 //   suspends it (`program.suspend()`), then: on a `SuspendError`, records `suspend: { ok: false, message, running }`
 //   and interrupts the run; on success, records `suspend: { ok: true, metadata, same }` (the saved header's
@@ -62,8 +59,8 @@
 // Everything is recorded twice, and a difference between the two fails the generator.
 
 import { join } from "node:path"
-import { writeRecording } from "./recording.ts"
-import { describe, reference } from "./reference.ts"
+import { writeRecording } from "./recording.js"
+import { describe, reference } from "./reference.js"
 
 const ref = await reference(process.argv[2] ?? process.env.PSYCHOSCRIPT_REF)
 const Effect = ref.Effect
@@ -76,7 +73,6 @@ type Entry = {
   runId?: string
   translate?: unknown
   limits?: unknown
-  typedArrays?: boolean
   compiled?: boolean
 }
 
@@ -86,11 +82,10 @@ const make = (entry: Entry) => {
   const log: Array<unknown> = []
   const state = { resumed: false, made: 0, started: () => {} }
   const waiting = new Promise<void>((done) => (state.started = done))
-  const pending = () => Effect.callback<never>(() => state.started())
+  const pending = () => Effect.callback(() => state.started())
   const runtime = Runtime.make({
     ...(entry.translate === undefined ? {} : { translate: entry.translate }),
     ...(entry.limits === undefined ? {} : { limits: entry.limits }),
-    ...(entry.typedArrays === undefined ? {} : { typedArrays: entry.typedArrays }),
     globals: (run: { id: string; metadata: unknown }) => {
       state.made++
       return {
@@ -99,13 +94,6 @@ const make = (entry: Entry) => {
         promised: Host.fn(([n]: ReadonlyArray<number>) => Promise.resolve(n)),
         load: Host.fn(([n]: ReadonlyArray<unknown>) => Effect.succeed(n), { type: "async" }),
         find: Host.fn((_: ReadonlyArray<unknown>) => ({ items: [1, 2] }), { type: "sync-thenable" }),
-        scale: Host.fn(([data, k]: ReadonlyArray<unknown>, call: { key: string }) => {
-          log.push(["scale", call.key, describe(data)])
-          const view = data as Float32Array
-          for (let i = 0; i < view.length; i++) view[i] = view[i]! * (k as number)
-          return view
-        }),
-        mesh: Host.fn(() => new Float32Array([0.5, 1.5, 2.5])),
         note: Host.fn((args: ReadonlyArray<unknown>, call: { key: string }) => {
           log.push(["note", call.key, args.map(describe)])
         }),
@@ -130,12 +118,6 @@ const make = (entry: Entry) => {
         Box: Host.fn(([item]: ReadonlyArray<unknown>) => ({ item }), { constructible: true }),
         Later: Host.fn(([item]: ReadonlyArray<unknown>) => Effect.succeed({ item }), { constructible: true }),
         refuse: Host.fn((_: ReadonlyArray<unknown>) => Effect.fail(Host.fail("Refused", "Not today", ["Ask again."]))),
-        mistyped: Host.fn(([n]: ReadonlyArray<unknown>) => {
-          throw Host.error("TypeError", `Not a name: ${n}`)
-        }),
-        bounded: Host.fn(([n]: ReadonlyArray<unknown>) => Effect.fail(Host.error(n as "RangeError", "Out of range")), {
-          type: "async",
-        }),
         api: Host.namespace({
           keys: (path: ReadonlyArray<string>) => (path.length === 0 ? ["issues"] : ["list"]),
           resolve: (path: ReadonlyArray<string>) =>
@@ -177,33 +159,21 @@ const make = (entry: Entry) => {
 
 const named = (entry: Entry) => ({ ...entry, runId: entry.runId ?? "run" })
 
-// A result with its function markers spelled out, which JSON would leave out.
-const marks = (v: unknown): unknown =>
-  typeof v === "symbol"
-    ? { functionMarker: true }
-    : Array.isArray(v)
-      ? v.map(marks)
-      : v !== null && typeof v === "object"
-        ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, marks(x)]))
-        : v
-const shown = <T extends { ok: unknown }>(result: T): T =>
-  result.ok === true ? { ...result, value: marks((result as { value?: unknown }).value) } : result
-
 const execute = async (entry: Entry) => {
   const made = make(entry)
   const options = { runId: named(entry).runId }
   if (entry.compiled !== true) {
     const result = await Effect.runPromise(made.runtime.execute(entry.code, options))
-    return { ...named(entry), outcome: shown(result), log: made.log }
+    return { ...named(entry), outcome: result, log: made.log }
   }
   const compiled = made.runtime.compile(entry.code)
   if (!compiled.ok) {
     const result = await Effect.runPromise(made.runtime.execute(entry.code, options))
-    return { ...named(entry), compile: compiled, outcome: shown(result), log: made.log }
+    return { ...named(entry), compile: compiled, outcome: result, log: made.log }
   }
   const outcome = await Effect.runPromise(made.runtime.execute(compiled.compiled, options))
   const again = await Effect.runPromise(made.runtime.execute(compiled.compiled, options))
-  return { ...named(entry), compile: { ok: true }, outcome: shown(outcome), again: shown(again), log: made.log }
+  return { ...named(entry), compile: { ok: true }, outcome, again, log: made.log }
 }
 
 // The program an entry runs: its source, or with `compiled`, what `runtime.compile` made of it.
@@ -232,20 +202,19 @@ const suspend = async (entry: Entry) => {
   const outcome = suspended.success
   const ran = await Effect.runPromise(Fiber.join(fiber))
   if (outcome.ok !== "suspended")
-    return { ...named(entry), suspend: { ok: false, outcome: shown(outcome) }, made: made.state.made, log: made.log }
+    return { ...named(entry), suspend: { ok: false, outcome }, made: made.state.made, log: made.log }
   made.state.resumed = true
   const resumed = await Effect.runPromise(made.runtime.resume(ref.Language.toBytes(outcome.state)).run())
   return {
     ...named(entry),
     suspend: { ok: true, metadata: outcome.state.header.metadata, same: ran === outcome },
-    resume: shown(resumed),
+    resume: resumed,
     made: made.state.made,
     log: made.log,
   }
 }
 
 const drop = { functions: "drop" }
-const mark = { functions: "mark" }
 const wait = { promises: "await" }
 const executes: Array<Entry> = [
   // Sync, async and sync-thenable functions.
@@ -286,13 +255,6 @@ const executes: Array<Entry> = [
   { code: `try { api.nope() } catch (e) { return [e.name, e.message, e instanceof Error] }` },
   { code: `refuse()` },
   { code: `try { refuse() } catch (e) { return [e.name, e.message] }` },
-  // Host.error: an error of its class, located at the call.
-  { code: `const n = 1\n  mistyped(n)` },
-  { code: `await null\nawait bounded("RangeError")` },
-  { code: `try { mistyped(2) } catch (e) { return [e instanceof TypeError, e.constructor === TypeError, e.name, e.message, e.stack, Object.keys(e)] }` },
-  {
-    code: `const kinds = ["Error", "TypeError", "RangeError", "SyntaxError", "ReferenceError", "EvalError", "URIError", "AggregateError", "Other"]\nreturn await Promise.all(kinds.map((k) => bounded(k).catch((e) => [e.constructor.name, e.name, e.message, e.stack, e instanceof Error, Object.keys(e)])))`,
-  },
   {
     code: `const out = []; for (const k in api) out.push(k); const x = api.issues; return [out, api.issues === api.issues, x === x, String(api.issues)]`,
   },
@@ -311,28 +273,7 @@ const executes: Array<Entry> = [
     translate: drop,
   },
   { code: `note({ p: Promise.resolve(1) })`, translate: drop },
-  // functions: "mark": `Host.functionMarker` where each function was; it cannot come back.
-  {
-    code: `const e = new Error("x"); e.f = () => 1
-note({ q: "x", format(v) { return v }, nested: { f: Math.max, list: [class A {}, note.bind(null)] } }, [1, () => 2, note], () => 3, new Map([["k", () => 1]]), new Set([() => 1]), e)`,
-    translate: mark,
-  },
-  { code: `note({ f() {}, p: load(1) }, Promise.resolve([() => 2]))`, translate: { functions: "mark", promises: "await" } },
-  { code: `return await load({ f() {} })`, translate: mark },
-  { code: `try { await load([() => 1]) } catch (e) { return [e.name, e.message] }`, translate: mark },
-  { code: `return [takes({ read: open().read, f() {} }), takes(() => 1)]`, translate: mark },
-  { code: `note({ p: Promise.resolve(1) })`, translate: mark },
-  // The result marks its functions too, on the fast path and in the walk (a promise, a `toJSON`).
-  {
-    code: `const e = new Error("x"); e.f = () => 1
-return { a: 1, f() {}, list: [() => 1, 2, double], s: new Set([() => 1]), e, m: new Map([["k", () => 1]]), api: api.issues.list, read: open().read, n: { g: class {} } }`,
-    translate: mark,
-  },
-  { code: `return () => 1`, translate: mark },
-  { code: `return [{ p: load(1).then(() => ({ f() {} })), t: { toJSON() { return () => 1 } } }, Promise.resolve([() => 1])]`, translate: mark },
   { code: `return { a: 1, f() {}, list: [() => 1] }`, translate: drop },
-  { code: `return { f() {}, list: [() => 1, "x".repeat(20)] }`, translate: mark, limits: { maxOutputBytes: 30 } },
-  { code: `return { f() {}, list: [() => 1, "x".repeat(10)] }`, translate: mark, limits: { maxOutputBytes: 30 } },
   // promises: "await".
   {
     code: `const slow = (async () => { await null; await null; return "slow" })()
@@ -352,25 +293,6 @@ return [thrown instanceof RangeError, thrown.message, sent instanceof Promise, a
   },
   { code: `note({ n: never() })`, translate: wait, limits: { timeoutMs: 50 } },
   { code: `note({ f() {}, p: load(1) }, () => 2)`, translate: { functions: "drop", promises: "await" } },
-  // Typed arrays other than Uint8Array cross as views of the same bytes, which the host reads and writes in place; a
-  // Uint8Array as a copy. What a host function returns stays a view of its bytes.
-  {
-    code: `const v = new Float32Array([1, 2, 3]); const r = scale(v, 2); return [Array.from(v), r instanceof Float32Array, Array.from(r), r === v]`,
-    typedArrays: true,
-  },
-  {
-    code: `const b = new ArrayBuffer(8); const f = new Float32Array(b); scale(f.subarray(1), 3); f[1] = 4; scale(f, 1); note(b, new Int32Array(b, 4, 1)); return Array.from(f)`,
-    typedArrays: true,
-  },
-  { code: `const u = new Uint8Array([1, 2]); scale(u, 2); return Array.from(u)`, typedArrays: true },
-  {
-    code: `const m = mesh(); m[0] = 9; return [m.constructor.name, Array.from(m), m.byteLength, m.buffer.byteLength]`,
-    typedArrays: true,
-  },
-  { code: `return mesh()`, typedArrays: true },
-  // Without typed arrays, a host function's Float32Array fails at the call, as before they were added.
-  { code: `const m = mesh(); return m` },
-  { code: `try { mesh() } catch (e) { return [e.name, e.message, e.stack] }` },
   // Limits.
   { code: `while (true) {}`, limits: { timeoutMs: 50 } },
   { code: `await never()`, limits: { timeoutMs: 50 } },
@@ -379,25 +301,8 @@ return [thrown instanceof RangeError, thrown.message, sent instanceof Promise, a
   { code: `console.log("1"); console.log("2"); console.log("3"); return 1`, limits: { maxOutputBytes: 4 } },
   { code: `count(); console.log("x".repeat(30)); throw new Error("y".repeat(30))`, limits: { maxOutputBytes: 8 } },
   { code: `for (let i = 0; i < 5; i++) Promise.reject(new Error("e" + i)); return 1`, limits: { maxOutputBytes: 100 } },
-  // The heap limit: measured where the calls are handed over, which then never start, and when the body ends.
-  { code: `note(1); const a = new Array(100000); await load(1); return a.length`, limits: { maxHeapBytes: 1000000 } },
-  { code: `const a = []; while (true) a.push(inc(a.length))`, limits: { maxHeapBytes: 1000000 } },
-  { code: `note(1); Math.kept = new Array(1000).fill("y".repeat(100000)); return 1`, limits: { maxHeapBytes: 216080 } },
-  { code: `note(1); Math.kept = new Array(1000).fill("y".repeat(100000)); return 1`, limits: { maxHeapBytes: 216079 } },
-  // limits.maxValueDepth: a value N deep crosses, N + 1 deep fails, each way; the walk the result takes for a promise
-  // allows at least 100; JSON.stringify copies to the same depth. Deep values are recorded by digest, as a recording
-  // must stay within the 128 levels of nesting the Rust JSON reader takes.
-  { code: `const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; note(deep(4)); try { note(deep(5)) } catch (e) { return [e.name, e.message] }`, limits: { maxValueDepth: 4 } },
-  { code: `const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; const a = new Box(deep(3)).item; try { Box(deep(4)) } catch (e) { return [a, e.name, e.message] }`, limits: { maxValueDepth: 4 } },
-  { code: `const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; return deep(4)`, limits: { maxValueDepth: 4 } },
-  { code: `const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; return deep(5)`, limits: { maxValueDepth: 4 } },
-  { code: `const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; return [Promise.resolve(1), deep(60)]`, limits: { maxValueDepth: 4 } },
-  { code: `const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; return [Promise.resolve(1), deep(109)]`, limits: { maxValueDepth: 110 } },
+  // A result that holds a promise takes a walk, which allows at least 100 levels.
   { code: `const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; return [Promise.resolve(1), deep(101)]` },
-  { code: `const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; const ok = JSON.stringify(deep(4)).length; try { JSON.stringify(deep(5)) } catch (e) { return [ok, e.name, e.message] }`, limits: { maxValueDepth: 4 } },
-  { code: `const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; refuses(deep(256)); const back = await load(deep(256)); return [JSON.stringify(back).length, JSON.stringify(deep(256)) === JSON.stringify(back)]`, limits: { maxValueDepth: 256 } },
-  { code: `const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; return deep(100)`, limits: { maxValueDepth: 100 } },
-  { code: `const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; return deep(257)`, limits: { maxValueDepth: 256 } },
   // Warnings: rejections nothing handled.
   { code: `Promise.reject(new Error("x")); return 1` },
   { code: `const p = Promise.reject(1); await null; p.catch(() => 0); return 2` },
@@ -477,18 +382,9 @@ return [thrown instanceof RangeError, thrown.message, sent instanceof Promise, a
   { code: `export const x = 1`, compiled: true },
 ]
 const suspensions: Array<Entry> = [
-  // A resumed run keeps its heap limit: under it when suspended, over it once resumed.
-  {
-    code: `const kept = []; for (let i = 0; i < 1000; i++) kept.push({ i }); await wait(); while (true) kept.push({})`,
-    runId: "h",
-    limits: { maxHeapBytes: 1000000 },
-  },
   // run.metadata across a suspend; the globals are made again on resume.
   { code: `count(); count(); await wait(); return count()`, runId: "m" },
   { code: `count(); count(); await wait(); return count()`, runId: "m", compiled: true },
-  // Host.error located at the call once resumed.
-  { code: `const n = await wait()\ntry { mistyped(n) } catch (e) { return [e.stack, await bounded("RangeError").catch((e) => e.stack)] }`, runId: "m" },
-  { code: `const n = await wait()\nawait bounded("RangeError")`, runId: "m" },
   // An idempotent call in progress runs again on resume, under the same key.
   { code: `note(1); const a = await wait(); note(2); return [a, await wait()]`, runId: "i" },
   { code: `const ps = [wait(), load(1), wait()]; return await Promise.all(ps)`, runId: "i" },
@@ -501,14 +397,6 @@ const suspensions: Array<Entry> = [
   { code: `return (await job()) + 1`, runId: "d" },
   { code: `return (await job()) + 1`, runId: "d", compiled: true },
   { code: `const a = job(1, { b: [2] }); const b = job(); return [await a, await b, count()]`, runId: "d" },
-  // A raised limits.maxValueDepth: a deep argument is saved and the call made again on resume, and the resumed run
-  // keeps the limit.
-    { code: `const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; await wait(deep(200)); return JSON.stringify(await load(deep(200))).length`, runId: "i", limits: { maxValueDepth: 200 } },
-  { code: `const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; await wait(); return deep(201)`, runId: "i", limits: { maxValueDepth: 200 } },
-  // functions: "mark" keeps a call's markers across a suspend.
-  { code: `return (await job({ on() {} }, [() => 1, 2])) + 1`, runId: "d", translate: mark },
-  { code: `return [await wait({ on() {} }, [() => 1]), 1]`, runId: "i", translate: mark },
-  { code: `const on = () => 1; await wait(); return { on, list: [on, await load(1)] }`, runId: "i", translate: mark },
   // promises: "await" keeps waiting across a suspend.
   { code: `return [note({ n: wait() }), await wait()]`, runId: "t", translate: wait },
   // Accessors and their halves are saved with the run.

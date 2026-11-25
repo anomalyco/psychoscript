@@ -77,9 +77,10 @@ fn every_path(depth: usize) {
             (
                 "take",
                 HostFunction::new(move |args, _| {
-                    // A host reads its argument as JSON too.
+                    // A host reads its argument as JSON too. Kept by move: a clone would recurse on this stack too.
                     let json = args[0].to_json();
-                    kept.lock().unwrap().push((args[0].clone(), json));
+                    let arg = args.into_iter().next().unwrap_or_default();
+                    kept.lock().unwrap().push((arg, json));
                     HostValue::Undefined
                 }),
             ),

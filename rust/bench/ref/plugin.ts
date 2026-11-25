@@ -2,7 +2,7 @@
 // Counterpart of `psychoscript-bench --plugin`. Prints one JSON line per source: median, min and mean µs per execute,
 // from the source and from the program `runtime.compile` made of it once (`compiled_*`).
 // Usage: bun bench/ref/plugin.ts [--runs N] <source>...
-import { reference, toolsGlobal } from "../../conformance/reference.ts"
+import { reference, toolsGlobal } from "../../conformance/reference.js"
 
 // The reference: the package from PSYCHOSCRIPT_REF, or by default the repository root. The programs reach one host
 // global, `tools`, the namespace of conformance/reference.ts (`tools.echo`, `tools.git.status`, ... all async).

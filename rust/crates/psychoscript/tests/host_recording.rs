@@ -1,7 +1,9 @@
 //! Host functions against the reference's behaviour recorded in `conformance/host.json` by `bun conformance/host.ts`:
 //! call keys, sync, async and sync-thenable functions, constructible ones, functions that take functions, idempotent
 //! and durable calls across a suspend, failures, namespaces, run metadata, translation, limits and compiled programs.
-//! The globals are the generator's.
+//! The globals are the generator's, with Rust's own (`scale`, `mesh`, `mistyped`, `bounded`) for the Rust-only
+//! features at the end of this file, whose expected results are written here: located host errors, function markers,
+//! typed arrays, the heap limit and the value depth limit.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -437,43 +439,48 @@ fn roundtrip() -> bool {
     std::env::var_os("PSYCHOSCRIPT_ROUNDTRIP").is_some_and(|v| v == "1")
 }
 
-#[test]
-fn host_functions_match_the_reference() {
-    let fixture = fixture();
-    let executes = fixture["executes"].as_array().unwrap();
-    assert!(executes.len() >= 50);
+/// What an `executes` entry gives, as the recording has it: `compile` and `again` for a compiled one, `outcome` and
+/// `log`.
+fn executed(entry: &Json) -> Json {
+    let state = State::default();
+    let rt = runtime(entry, &state);
+    let code = entry["code"].as_str().unwrap();
+    let options = ProgramOptions::new().run_id(entry["runId"].as_str().unwrap_or("run"));
+    let mut actual = json!({});
+    if entry["compiled"] == json!(true) {
+        match rt.compile(code) {
+            Ok(compiled) => {
+                actual["compile"] = json!({ "ok": true });
+                actual["outcome"] = result(&rt.execute_with(&compiled, &options));
+                actual["again"] = result(&rt.execute_with(&compiled, &options));
+            }
+            Err(d) => {
+                actual["compile"] = json!({ "ok": false, "error": diagnostic(&d) });
+                actual["outcome"] = result(&rt.execute_with(code, &options));
+            }
+        }
+    } else {
+        actual["outcome"] = result(&rt.execute_with(code, &options));
+    }
+    actual["log"] = json!(*state.log.lock().unwrap());
+    actual
+}
+
+/// Runs each entry with `run` and compares what it gives with what is expected (without `made` in the round-trip
+/// mode, which makes the globals more often).
+fn check(cases: impl IntoIterator<Item = (Json, Json)>, run: fn(&Json) -> Json) {
     let mut failures = Vec::new();
-    for entry in executes {
-        let state = State::default();
-        let rt = runtime(entry, &state);
-        let code = entry["code"].as_str().unwrap();
-        let options = ProgramOptions::new().run_id(entry["runId"].as_str().unwrap());
-        let mut actual = json!({});
-        if entry["compiled"] == json!(true) {
-            match rt.compile(code) {
-                Ok(compiled) => {
-                    actual["compile"] = json!({ "ok": true });
-                    actual["outcome"] = result(&rt.execute_with(&compiled, &options));
-                    actual["again"] = result(&rt.execute_with(&compiled, &options));
-                }
-                Err(d) => {
-                    actual["compile"] = json!({ "ok": false, "error": diagnostic(&d) });
-                    actual["outcome"] = result(&rt.execute_with(code, &options));
-                }
-            }
-        } else {
-            actual["outcome"] = result(&rt.execute_with(code, &options));
+    for (entry, mut expected) in cases {
+        if roundtrip()
+            && let Some(fields) = expected.as_object_mut()
+        {
+            fields.remove("made");
         }
-        actual["log"] = json!(*state.log.lock().unwrap());
-        let mut expected = json!({});
-        for key in ["compile", "outcome", "again", "log"] {
-            if let Some(v) = entry.get(key) {
-                expected[key] = v.clone();
-            }
-        }
+        let actual = run(&entry);
         if !same(&actual, &expected) {
             failures.push(format!(
-                "{code}\n  expected {expected}\n  actual   {actual}"
+                "{}\n  expected {expected}\n  actual   {actual}",
+                entry["code"].as_str().unwrap()
             ));
         }
     }
@@ -482,6 +489,30 @@ fn host_functions_match_the_reference() {
         "{} mismatches:\n{}",
         failures.len(),
         failures.join("\n")
+    );
+}
+
+/// The recorded fields of an entry that are what it gives.
+fn recorded(entry: &Json, keys: &[&str]) -> (Json, Json) {
+    let mut expected = json!({});
+    for key in keys {
+        if let Some(v) = entry.get(*key) {
+            expected[*key] = v.clone();
+        }
+    }
+    (entry.clone(), expected)
+}
+
+#[test]
+fn host_functions_match_the_reference() {
+    let fixture = fixture();
+    let executes = fixture["executes"].as_array().unwrap();
+    assert!(executes.len() >= 50);
+    check(
+        executes
+            .iter()
+            .map(|e| recorded(e, &["compile", "outcome", "again", "log"])),
+        executed,
     );
 }
 
@@ -494,114 +525,980 @@ impl Wake for Unpark {
     }
 }
 
+/// What a `suspensions` entry gives, as the recording has it: `suspend`, `resume` once resumed, `made` (not in the
+/// round-trip mode) and `log`.
+fn suspended(entry: &Json) -> Json {
+    let state = State::default();
+    let rt = runtime(entry, &state);
+    let code = entry["code"].as_str().unwrap();
+    let options = ProgramOptions::new().run_id(entry["runId"].as_str().unwrap_or("run"));
+    let compiled = (entry["compiled"] == json!(true)).then(|| rt.compile(code).unwrap());
+    let program = match &compiled {
+        Some(c) => rt.program(c, &options),
+        None => rt.program(code, &options),
+    };
+    let suspender = program.suspender();
+    // This thread drives the run, as the reference's fiber; another suspends it once a call reached a point that
+    // never settles before the resume. A failed suspend interrupts the run, which drops it.
+    let (suspend, ran) = std::thread::scope(|s| {
+        let started = state.started.clone();
+        let asking = s.spawn(move || {
+            while !started.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            suspender.suspend(None)
+        });
+        let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
+        let mut cx = Context::from_waker(&waker);
+        let mut run = Box::pin(program.run_resumable_async());
+        loop {
+            if let Poll::Ready(ran) = run.as_mut().poll(&mut cx) {
+                break (asking.join().unwrap(), Some(ran.unwrap()));
+            }
+            if asking.is_finished() {
+                let answer = asking.join().unwrap();
+                if answer.is_err() {
+                    drop(run);
+                    break (answer, None);
+                }
+                let ran = loop {
+                    if let Poll::Ready(ran) = run.as_mut().poll(&mut cx) {
+                        break ran.unwrap();
+                    }
+                    std::thread::park_timeout(Duration::from_millis(1));
+                };
+                break (answer, Some(ran));
+            }
+            std::thread::park_timeout(Duration::from_millis(1));
+        }
+    });
+    let mut actual = json!({});
+    match (&suspend, ran) {
+        (Err(e), _) => {
+            actual["suspend"] = json!({
+                "ok": false,
+                "message": e.message,
+                "running": e.running.iter().map(|c| json!({ "key": c.key, "path": c.path })).collect::<Vec<_>>(),
+            });
+        }
+        (Ok(RunOutcome::Done(o)), _) => {
+            actual["suspend"] = json!({ "ok": false, "outcome": result(o) });
+        }
+        (Ok(RunOutcome::Suspended(answer)), Some(RunOutcome::Suspended(saved))) => {
+            actual["suspend"] = json!({
+                "ok": true,
+                "metadata": answer.state.0["header"]["metadata"],
+                "same": answer.state == saved.state,
+            });
+            state.resumed.store(true, Ordering::SeqCst);
+            for w in state.wakers.lock().unwrap().drain(..) {
+                w.wake();
+            }
+            let resumed = rt
+                .resume_bytes(&to_bytes(&answer.state))
+                .unwrap()
+                .run_resumable()
+                .unwrap();
+            actual["resume"] = match resumed {
+                RunOutcome::Done(o) => result(&o),
+                RunOutcome::Suspended(_) => json!("suspended again"),
+            };
+        }
+        (Ok(_), _) => actual["suspend"] = json!("suspended, but the run went on"),
+    }
+    // The reference's round-trip mode makes the globals more often.
+    if !roundtrip() {
+        actual["made"] = json!(state.made.load(Ordering::SeqCst));
+    }
+    actual["log"] = Json::Array(state.log.lock().unwrap().clone());
+    actual
+}
+
 #[test]
 fn suspending_runs_that_call_host_functions_matches_the_reference() {
     let fixture = fixture();
     let suspensions = fixture["suspensions"].as_array().unwrap();
     assert!(suspensions.len() >= 10);
-    let mut failures = Vec::new();
-    for entry in suspensions {
-        let state = State::default();
-        let rt = runtime(entry, &state);
-        let code = entry["code"].as_str().unwrap();
-        let options = ProgramOptions::new().run_id(entry["runId"].as_str().unwrap());
-        let compiled = (entry["compiled"] == json!(true)).then(|| rt.compile(code).unwrap());
-        let program = match &compiled {
-            Some(c) => rt.program(c, &options),
-            None => rt.program(code, &options),
-        };
-        let suspender = program.suspender();
-        // This thread drives the run, as the reference's fiber; another suspends it once a call reached a point that
-        // never settles before the resume. A failed suspend interrupts the run, which drops it.
-        let (suspend, ran) = std::thread::scope(|s| {
-            let started = state.started.clone();
-            let asking = s.spawn(move || {
-                while !started.load(Ordering::SeqCst) {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                suspender.suspend(None)
-            });
-            let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
-            let mut cx = Context::from_waker(&waker);
-            let mut run = Box::pin(program.run_resumable_async());
-            loop {
-                if let Poll::Ready(ran) = run.as_mut().poll(&mut cx) {
-                    break (asking.join().unwrap(), Some(ran.unwrap()));
-                }
-                if asking.is_finished() {
-                    let answer = asking.join().unwrap();
-                    if answer.is_err() {
-                        drop(run);
-                        break (answer, None);
-                    }
-                    let ran = loop {
-                        if let Poll::Ready(ran) = run.as_mut().poll(&mut cx) {
-                            break ran.unwrap();
-                        }
-                        std::thread::park_timeout(Duration::from_millis(1));
-                    };
-                    break (answer, Some(ran));
-                }
-                std::thread::park_timeout(Duration::from_millis(1));
-            }
-        });
-        let mut actual = json!({});
-        match (&suspend, ran) {
-            (Err(e), _) => {
-                actual["suspend"] = json!({
+    check(
+        suspensions
+            .iter()
+            .map(|e| recorded(e, &["suspend", "resume", "made", "log"])),
+        suspended,
+    );
+}
+
+// Rust only: what the TypeScript implementation doesn't have, so `conformance/host.json` can't record it. The same
+// globals and entries as the recording, with the expected results written here.
+
+/// A value nested `n` levels, as the programs' `deep(n)` builds it: objects and arrays in turn around 0.
+fn nest(n: usize) -> Json {
+    (0..n).fold(json!(0), |v, i| {
+        if i % 2 == 1 {
+            json!([v])
+        } else {
+            json!({ "c": v })
+        }
+    })
+}
+
+/// `HostError::located` (`mistyped`, `bounded`): an error of its class, located at the call, also once resumed.
+#[test]
+fn located_host_errors() {
+    check(
+        [
+            (
+                json!({ "code": "const n = 1\n  mistyped(n)" }),
+                json!({
+                    "outcome": {
+                        "ok": false,
+                        "error": {
+                            "kind": "ExecutionFailure",
+                            "message": "TypeError: Not a name: 1 (line 2, col 3)",
+                            "location": { "line": 2, "column": 3 }
+                        },
+                        "metadata": null
+                    },
+                    "log": []
+                }),
+            ),
+            (
+                json!({ "code": "await null\nawait bounded(\"RangeError\")" }),
+                json!({
+                    "outcome": {
+                        "ok": false,
+                        "error": {
+                            "kind": "ExecutionFailure",
+                            "message": "RangeError: Out of range (line 2, col 7)",
+                            "location": { "line": 2, "column": 7 }
+                        },
+                        "metadata": null
+                    },
+                    "log": []
+                }),
+            ),
+            (
+                json!({
+                    "code": "try { mistyped(2) } catch (e) { return [e instanceof TypeError, e.constructor === TypeError, e.name, e.message, e.stack, Object.keys(e)] }"
+                }),
+                json!({
+                    "outcome": {
+                        "ok": true,
+                        "value": [
+                            true,
+                            true,
+                            "TypeError",
+                            "Not a name: 2",
+                            "TypeError: Not a name: 2\n    at <program>:1:7",
+                            []
+                        ],
+                        "metadata": null
+                    },
+                    "log": []
+                }),
+            ),
+            (
+                json!({
+                    "code": "const kinds = [\"Error\", \"TypeError\", \"RangeError\", \"SyntaxError\", \"ReferenceError\", \"EvalError\", \"URIError\", \"AggregateError\", \"Other\"]\nreturn await Promise.all(kinds.map((k) => bounded(k).catch((e) => [e.constructor.name, e.name, e.message, e.stack, e instanceof Error, Object.keys(e)])))"
+                }),
+                json!({
+                    "outcome": {
+                        "ok": true,
+                        "value": [
+                            [
+                                "Error",
+                                "Error",
+                                "Out of range",
+                                "Error: Out of range\n    at <program>:2:43",
+                                true,
+                                []
+                            ],
+                            [
+                                "TypeError",
+                                "TypeError",
+                                "Out of range",
+                                "TypeError: Out of range\n    at <program>:2:43",
+                                true,
+                                []
+                            ],
+                            [
+                                "RangeError",
+                                "RangeError",
+                                "Out of range",
+                                "RangeError: Out of range\n    at <program>:2:43",
+                                true,
+                                []
+                            ],
+                            [
+                                "SyntaxError",
+                                "SyntaxError",
+                                "Out of range",
+                                "SyntaxError: Out of range\n    at <program>:2:43",
+                                true,
+                                []
+                            ],
+                            [
+                                "ReferenceError",
+                                "ReferenceError",
+                                "Out of range",
+                                "ReferenceError: Out of range\n    at <program>:2:43",
+                                true,
+                                []
+                            ],
+                            [
+                                "EvalError",
+                                "EvalError",
+                                "Out of range",
+                                "EvalError: Out of range\n    at <program>:2:43",
+                                true,
+                                []
+                            ],
+                            [
+                                "URIError",
+                                "URIError",
+                                "Out of range",
+                                "URIError: Out of range\n    at <program>:2:43",
+                                true,
+                                []
+                            ],
+                            [
+                                "AggregateError",
+                                "AggregateError",
+                                "Out of range",
+                                "AggregateError: Out of range\n    at <program>:2:43",
+                                true,
+                                []
+                            ],
+                            [
+                                "Error",
+                                "Error",
+                                "Out of range",
+                                "Error: Out of range\n    at <program>:2:43",
+                                true,
+                                []
+                            ]
+                        ],
+                        "metadata": null
+                    },
+                    "log": []
+                }),
+            ),
+        ],
+        executed,
+    );
+    check(
+        [
+            (
+                json!({
+                    "code": "const n = await wait()\ntry { mistyped(n) } catch (e) { return [e.stack, await bounded(\"RangeError\").catch((e) => e.stack)] }",
+                    "runId": "m"
+                }),
+                json!({
+                    "suspend": { "ok": true, "metadata": null, "same": true },
+                    "resume": {
+                        "ok": true,
+                        "value": [
+                            "TypeError: Not a name: 7\n    at <program>:2:7",
+                            "RangeError: Out of range\n    at <program>:2:56"
+                        ],
+                        "metadata": null
+                    },
+                    "made": 2,
+                    "log": [["wait", "m:0"], ["wait", "m:0"]]
+                }),
+            ),
+            (
+                json!({ "code": "const n = await wait()\nawait bounded(\"RangeError\")", "runId": "m" }),
+                json!({
+                    "suspend": { "ok": true, "metadata": null, "same": true },
+                    "resume": {
+                        "ok": false,
+                        "error": {
+                            "kind": "ExecutionFailure",
+                            "message": "RangeError: Out of range (line 2, col 7)",
+                            "location": { "line": 2, "column": 7 }
+                        },
+                        "metadata": null
+                    },
+                    "made": 2,
+                    "log": [["wait", "m:0"], ["wait", "m:0"]]
+                }),
+            ),
+        ],
+        suspended,
+    );
+}
+
+/// `TranslateFunctions::Mark`: a function marker where each function was, in arguments and results; it cannot come
+/// back, and a call keeps its markers across a suspend.
+#[test]
+fn function_markers() {
+    check(
+        [
+            (
+                json!({
+                    "code": "const e = new Error(\"x\"); e.f = () => 1\nnote({ q: \"x\", format(v) { return v }, nested: { f: Math.max, list: [class A {}, note.bind(null)] } }, [1, () => 2, note], () => 3, new Map([[\"k\", () => 1]]), new Set([() => 1]), e)",
+                    "translate": { "functions": "mark" }
+                }),
+                json!({
+                    "outcome": { "ok": true, "value": null, "metadata": null },
+                    "log": [
+                        [
+                            "note",
+                            "run:0",
+                            [
+                                {
+                                    "object": [
+                                        ["q", "x"],
+                                        ["format", { "functionMarker": true }],
+                                        [
+                                            "nested",
+                                            {
+                                                "object": [
+                                                    ["f", { "functionMarker": true }],
+                                                    [
+                                                        "list",
+                                                        {
+                                                            "array": [
+                                                                { "functionMarker": true },
+                                                                { "functionMarker": true }
+                                                            ]
+                                                        }
+                                                    ]
+                                                ]
+                                            }
+                                        ]
+                                    ]
+                                },
+                                { "array": [1, { "functionMarker": true }, { "functionMarker": true }] },
+                                { "functionMarker": true },
+                                { "map": [["k", { "functionMarker": true }]] },
+                                { "set": [{ "functionMarker": true }] },
+                                {
+                                    "error": {
+                                        "name": "Error",
+                                        "message": "x",
+                                        "fields": [["f", { "functionMarker": true }]]
+                                    }
+                                }
+                            ]
+                        ]
+                    ]
+                }),
+            ),
+            (
+                json!({
+                    "code": "note({ f() {}, p: load(1) }, Promise.resolve([() => 2]))",
+                    "translate": { "functions": "mark", "promises": "await" }
+                }),
+                json!({
+                    "outcome": { "ok": true, "value": null, "metadata": null },
+                    "log": [
+                        [
+                            "note",
+                            "run:1",
+                            [
+                                { "object": [["f", { "functionMarker": true }], ["p", 1]] },
+                                { "array": [{ "functionMarker": true }] }
+                            ]
+                        ]
+                    ]
+                }),
+            ),
+            (
+                json!({ "code": "return await load({ f() {} })", "translate": { "functions": "mark" } }),
+                json!({
+                    "outcome": {
+                        "ok": false,
+                        "error": {
+                            "kind": "ExecutionFailure",
+                            "message": "TypeError: load.f produced a function marker, which the program cannot hold. (line 1, col 14)",
+                            "location": { "line": 1, "column": 14 }
+                        },
+                        "metadata": null
+                    },
+                    "log": []
+                }),
+            ),
+            (
+                json!({
+                    "code": "try { await load([() => 1]) } catch (e) { return [e.name, e.message] }",
+                    "translate": { "functions": "mark" }
+                }),
+                json!({
+                    "outcome": {
+                        "ok": true,
+                        "value": [
+                            "TypeError",
+                            "load[0] produced a function marker, which the program cannot hold."
+                        ],
+                        "metadata": null
+                    },
+                    "log": []
+                }),
+            ),
+            (
+                json!({
+                    "code": "return [takes({ read: open().read, f() {} }), takes(() => 1)]",
+                    "translate": { "functions": "mark" }
+                }),
+                json!({ "outcome": { "ok": true, "value": [true, false], "metadata": null }, "log": [] }),
+            ),
+            (
+                json!({ "code": "note({ p: Promise.resolve(1) })", "translate": { "functions": "mark" } }),
+                json!({
+                    "outcome": {
+                        "ok": false,
+                        "error": {
+                            "kind": "ExecutionFailure",
+                            "message": "TypeError: Argument 1 to note contains an un-awaited Promise, which cannot be passed to the host. (line 1, col 1)",
+                            "location": { "line": 1, "column": 1 }
+                        },
+                        "metadata": null
+                    },
+                    "log": []
+                }),
+            ),
+            (
+                json!({
+                    "code": "const e = new Error(\"x\"); e.f = () => 1\nreturn { a: 1, f() {}, list: [() => 1, 2, double], s: new Set([() => 1]), e, m: new Map([[\"k\", () => 1]]), api: api.issues.list, read: open().read, n: { g: class {} } }",
+                    "translate": { "functions": "mark" }
+                }),
+                json!({
+                    "outcome": {
+                        "ok": true,
+                        "value": {
+                            "a": 1,
+                            "f": { "functionMarker": true },
+                            "list": [{ "functionMarker": true }, 2, { "functionMarker": true }],
+                            "s": [{ "functionMarker": true }],
+                            "e": { "name": "Error", "message": "x", "f": { "functionMarker": true } },
+                            "m": {},
+                            "api": { "functionMarker": true },
+                            "read": { "functionMarker": true },
+                            "n": { "g": { "functionMarker": true } }
+                        },
+                        "metadata": null
+                    },
+                    "log": []
+                }),
+            ),
+            (
+                json!({ "code": "return () => 1", "translate": { "functions": "mark" } }),
+                json!({
+                    "outcome": { "ok": true, "value": { "functionMarker": true }, "metadata": null },
+                    "log": []
+                }),
+            ),
+            (
+                json!({
+                    "code": "return [{ p: load(1).then(() => ({ f() {} })), t: { toJSON() { return () => 1 } } }, Promise.resolve([() => 1])]",
+                    "translate": { "functions": "mark" }
+                }),
+                json!({
+                    "outcome": {
+                        "ok": true,
+                        "value": [
+                            {
+                                "p": { "f": { "functionMarker": true } },
+                                "t": { "functionMarker": true }
+                            },
+                            [{ "functionMarker": true }]
+                        ],
+                        "metadata": null
+                    },
+                    "log": []
+                }),
+            ),
+            (
+                json!({
+                    "code": "return { f() {}, list: [() => 1, \"x\".repeat(20)] }",
+                    "translate": { "functions": "mark" },
+                    "limits": { "maxOutputBytes": 30 }
+                }),
+                json!({
+                    "outcome": {
+                        "ok": true,
+                        "value": "{\"list\":[null,\"xxxxxxxxxxxxxxx [result truncated: 38 bytes exceeds the 30-byte output limit; return a smaller value]",
+                        "truncated": true,
+                        "metadata": null
+                    },
+                    "log": []
+                }),
+            ),
+            (
+                json!({
+                    "code": "return { f() {}, list: [() => 1, \"x\".repeat(10)] }",
+                    "translate": { "functions": "mark" },
+                    "limits": { "maxOutputBytes": 30 }
+                }),
+                json!({
+                    "outcome": {
+                        "ok": true,
+                        "value": {
+                            "f": { "functionMarker": true },
+                            "list": [{ "functionMarker": true }, "xxxxxxxxxx"]
+                        },
+                        "metadata": null
+                    },
+                    "log": []
+                }),
+            ),
+        ],
+        executed,
+    );
+    check(
+        [
+            (
+                json!({
+                    "code": "return (await job({ on() {} }, [() => 1, 2])) + 1",
+                    "runId": "d",
+                    "translate": { "functions": "mark" }
+                }),
+                json!({
+                    "suspend": { "ok": true, "metadata": null, "same": true },
+                    "resume": { "ok": true, "value": 42, "metadata": null },
+                    "made": 2,
+                    "log": [
+                        [
+                            "job.start",
+                            "d:0",
+                            [
+                                { "object": [["on", { "functionMarker": true }]] },
+                                { "array": [{ "functionMarker": true }, 2] }
+                            ]
+                        ],
+                        [
+                            "job.wait",
+                            "d:0",
+                            "d:0",
+                            [
+                                { "object": [["on", { "functionMarker": true }]] },
+                                { "array": [{ "functionMarker": true }, 2] }
+                            ]
+                        ],
+                        [
+                            "job.wait",
+                            "d:0",
+                            "d:0",
+                            [
+                                { "object": [["on", { "functionMarker": true }]] },
+                                { "array": [{ "functionMarker": true }, 2] }
+                            ]
+                        ]
+                    ]
+                }),
+            ),
+            (
+                json!({
+                    "code": "return [await wait({ on() {} }, [() => 1]), 1]",
+                    "runId": "i",
+                    "translate": { "functions": "mark" }
+                }),
+                json!({
+                    "suspend": { "ok": true, "metadata": null, "same": true },
+                    "resume": { "ok": true, "value": [7, 1], "metadata": null },
+                    "made": 2,
+                    "log": [["wait", "i:0"], ["wait", "i:0"]]
+                }),
+            ),
+            (
+                json!({
+                    "code": "const on = () => 1; await wait(); return { on, list: [on, await load(1)] }",
+                    "runId": "i",
+                    "translate": { "functions": "mark" }
+                }),
+                json!({
+                    "suspend": { "ok": true, "metadata": null, "same": true },
+                    "resume": {
+                        "ok": true,
+                        "value": { "on": { "functionMarker": true }, "list": [{ "functionMarker": true }, 1] },
+                        "metadata": null
+                    },
+                    "made": 2,
+                    "log": [["wait", "i:0"], ["wait", "i:0"]]
+                }),
+            ),
+        ],
+        suspended,
+    );
+}
+
+/// Typed arrays (`Runtime::typed_arrays`): other than Uint8Array, they cross to a sync host function (`scale`) as views
+/// of the same bytes, which it reads and writes in place; a Uint8Array as a copy. What a host function returns
+/// (`mesh`) stays a view of its bytes. Without typed arrays, a host function's Float32Array fails at the call.
+#[test]
+fn typed_arrays() {
+    check(
+        [
+            (
+                json!({
+                    "code": "const v = new Float32Array([1, 2, 3]); const r = scale(v, 2); return [Array.from(v), r instanceof Float32Array, Array.from(r), r === v]",
+                    "typedArrays": true
+                }),
+                json!({
+                    "outcome": { "ok": true, "value": [[2, 4, 6], true, [2, 4, 6], false], "metadata": null },
+                    "log": [["scale", "run:0", { "typed": ["Float32Array", [1, 2, 3]] }]]
+                }),
+            ),
+            (
+                json!({
+                    "code": "const b = new ArrayBuffer(8); const f = new Float32Array(b); scale(f.subarray(1), 3); f[1] = 4; scale(f, 1); note(b, new Int32Array(b, 4, 1)); return Array.from(f)",
+                    "typedArrays": true
+                }),
+                json!({
+                    "outcome": { "ok": true, "value": [0, 4], "metadata": null },
+                    "log": [
+                        ["scale", "run:0", { "typed": ["Float32Array", [0]] }],
+                        ["scale", "run:1", { "typed": ["Float32Array", [0, 4]] }],
+                        [
+                            "note",
+                            "run:2",
+                            [
+                                { "arrayBuffer": [0, 0, 0, 0, 0, 0, 128, 64] },
+                                { "typed": ["Int32Array", [1082130432]] }
+                            ]
+                        ]
+                    ]
+                }),
+            ),
+            (
+                json!({
+                    "code": "const u = new Uint8Array([1, 2]); scale(u, 2); return Array.from(u)",
+                    "typedArrays": true
+                }),
+                json!({
+                    "outcome": { "ok": true, "value": [1, 2], "metadata": null },
+                    "log": [["scale", "run:0", { "bytes": [1, 2] }]]
+                }),
+            ),
+            (
+                json!({
+                    "code": "const m = mesh(); m[0] = 9; return [m.constructor.name, Array.from(m), m.byteLength, m.buffer.byteLength]",
+                    "typedArrays": true
+                }),
+                json!({
+                    "outcome": { "ok": true, "value": ["Float32Array", [9, 1.5, 2.5], 12, 12], "metadata": null },
+                    "log": []
+                }),
+            ),
+            (
+                json!({ "code": "return mesh()", "typedArrays": true }),
+                json!({
+                    "outcome": {
+                        "ok": false,
+                        "error": {
+                            "kind": "InvalidDataValue",
+                            "message": "TypeError: A Float32Array cannot cross to the host as data; pass it to a host function, or its values, e.g. `Array.from(values)`."
+                        },
+                        "metadata": null
+                    },
+                    "log": []
+                }),
+            ),
+            (
+                json!({ "code": "const m = mesh(); return m" }),
+                json!({
+                    "outcome": {
+                        "ok": false,
+                        "error": {
+                            "kind": "ExecutionFailure",
+                            "message": "TypeError: mesh produced a Float32Array, which the program cannot hold. (line 1, col 11)",
+                            "location": { "line": 1, "column": 11 }
+                        },
+                        "metadata": null
+                    },
+                    "log": []
+                }),
+            ),
+            (
+                json!({ "code": "try { mesh() } catch (e) { return [e.name, e.message, e.stack] }" }),
+                json!({
+                    "outcome": {
+                        "ok": true,
+                        "value": [
+                            "TypeError",
+                            "mesh produced a Float32Array, which the program cannot hold.",
+                            "TypeError: mesh produced a Float32Array, which the program cannot hold.\n    at <program>:1:7"
+                        ],
+                        "metadata": null
+                    },
+                    "log": []
+                }),
+            ),
+        ],
+        executed,
+    );
+}
+
+/// `Limits::max_heap_bytes`: measured where the calls are handed over, which then never start, and when the body ends;
+/// a resumed run keeps its limit.
+#[test]
+fn heap_limit() {
+    check(
+        [
+            (
+                json!({
+                    "code": "note(1); const a = new Array(100000); await load(1); return a.length",
+                    "limits": { "maxHeapBytes": 1000000 }
+                }),
+                json!({
+                    "outcome": {
+                        "ok": false,
+                        "error": {
+                            "kind": "MemoryLimitExceeded",
+                            "message": "Execution exceeded its memory limit of 1000000 bytes."
+                        },
+                        "metadata": null
+                    },
+                    "log": [["note", "run:0", [1]]]
+                }),
+            ),
+            (
+                json!({
+                    "code": "const a = []; while (true) a.push(inc(a.length))",
+                    "limits": { "maxHeapBytes": 1000000 }
+                }),
+                json!({
+                    "outcome": {
+                        "ok": false,
+                        "error": {
+                            "kind": "MemoryLimitExceeded",
+                            "message": "Execution exceeded its memory limit of 1000000 bytes."
+                        },
+                        "metadata": null
+                    },
+                    "log": []
+                }),
+            ),
+            (
+                json!({
+                    "code": "note(1); Math.kept = new Array(1000).fill(\"y\".repeat(100000)); return 1",
+                    "limits": { "maxHeapBytes": 216080 }
+                }),
+                json!({
+                    "outcome": { "ok": true, "value": 1, "metadata": null },
+                    "log": [["note", "run:0", [1]]]
+                }),
+            ),
+            (
+                json!({
+                    "code": "note(1); Math.kept = new Array(1000).fill(\"y\".repeat(100000)); return 1",
+                    "limits": { "maxHeapBytes": 216079 }
+                }),
+                json!({
+                    "outcome": {
+                        "ok": false,
+                        "error": {
+                            "kind": "MemoryLimitExceeded",
+                            "message": "Execution exceeded its memory limit of 216079 bytes."
+                        },
+                        "metadata": null
+                    },
+                    "log": [["note", "run:0", [1]]]
+                }),
+            ),
+        ],
+        executed,
+    );
+    check(
+        [(
+            json!({
+                "code": "const kept = []; for (let i = 0; i < 1000; i++) kept.push({ i }); await wait(); while (true) kept.push({})",
+                "runId": "h",
+                "limits": { "maxHeapBytes": 1000000 }
+            }),
+            json!({
+                "suspend": { "ok": true, "metadata": null, "same": true },
+                "resume": {
                     "ok": false,
-                    "message": e.message,
-                    "running": e.running.iter().map(|c| json!({ "key": c.key, "path": c.path })).collect::<Vec<_>>(),
-                });
-            }
-            (Ok(RunOutcome::Done(o)), _) => {
-                actual["suspend"] = json!({ "ok": false, "outcome": result(o) });
-            }
-            (Ok(RunOutcome::Suspended(answer)), Some(RunOutcome::Suspended(saved))) => {
-                actual["suspend"] = json!({
-                    "ok": true,
-                    "metadata": answer.state.0["header"]["metadata"],
-                    "same": answer.state == saved.state,
-                });
-                state.resumed.store(true, Ordering::SeqCst);
-                for w in state.wakers.lock().unwrap().drain(..) {
-                    w.wake();
-                }
-                let resumed = rt
-                    .resume_bytes(&to_bytes(&answer.state))
-                    .unwrap()
-                    .run_resumable()
-                    .unwrap();
-                actual["resume"] = match resumed {
-                    RunOutcome::Done(o) => result(&o),
-                    RunOutcome::Suspended(_) => json!("suspended again"),
-                };
-            }
-            (Ok(_), _) => actual["suspend"] = json!("suspended, but the run went on"),
-        }
-        // The reference's round-trip mode makes the globals more often.
-        if !roundtrip() {
-            actual["made"] = json!(state.made.load(Ordering::SeqCst));
-        }
-        actual["log"] = Json::Array(state.log.lock().unwrap().clone());
-        let mut expected = json!({ "suspend": entry["suspend"] });
-        if let Some(resume) = entry.get("resume") {
-            expected["resume"] = resume.clone();
-        }
-        if !roundtrip() {
-            expected["made"] = entry["made"].clone();
-        }
-        expected["log"] = entry["log"].clone();
-        if !same(&actual, &expected) {
-            failures.push(format!(
-                "{code}\n  expected {expected}\n  actual   {actual}"
-            ));
-        }
-    }
-    assert!(
-        failures.is_empty(),
-        "{} mismatches:\n{}",
-        failures.len(),
-        failures.join("\n")
+                    "error": {
+                        "kind": "MemoryLimitExceeded",
+                        "message": "Execution exceeded its memory limit of 1000000 bytes."
+                    },
+                    "metadata": null
+                },
+                "made": 2,
+                "log": [["wait", "h:0"], ["wait", "h:0"]]
+            }),
+        )],
+        suspended,
+    );
+}
+
+/// `Limits::max_value_depth`: a value N deep crosses, N + 1 deep fails, each way; the walk the result takes for a
+/// promise allows at least 100; JSON.stringify copies to the same depth. A raised limit: a deep argument is saved and
+/// the call made again on resume, and the resumed run keeps the limit.
+#[test]
+fn value_depth() {
+    check(
+        [
+            (
+                json!({
+                    "code": "const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; note(deep(4)); try { note(deep(5)) } catch (e) { return [e.name, e.message] }",
+                    "limits": { "maxValueDepth": 4 }
+                }),
+                json!({
+                    "outcome": {
+                        "ok": true,
+                        "value": ["TypeError", "Argument 1 to note exceeds the maximum value depth of 4."],
+                        "metadata": null
+                    },
+                    "log": [
+                        [
+                            "note",
+                            "run:0",
+                            [
+                                {
+                                    "array": [{ "object": [["c", { "array": [{ "object": [["c", 0]] }] }]] }]
+                                }
+                            ]
+                        ]
+                    ]
+                }),
+            ),
+            (
+                json!({
+                    "code": "const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; const a = new Box(deep(3)).item; try { Box(deep(4)) } catch (e) { return [a, e.name, e.message] }",
+                    "limits": { "maxValueDepth": 4 }
+                }),
+                json!({
+                    "outcome": {
+                        "ok": true,
+                        "value": [
+                            { "c": [{ "c": 0 }] },
+                            "TypeError",
+                            "Box.item[0].c[0].c exceeds the maximum value depth of 4."
+                        ],
+                        "metadata": null
+                    },
+                    "log": []
+                }),
+            ),
+            (
+                json!({
+                    "code": "const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; return deep(4)",
+                    "limits": { "maxValueDepth": 4 }
+                }),
+                json!({
+                    "outcome": { "ok": true, "value": [{ "c": [{ "c": 0 }] }], "metadata": null },
+                    "log": []
+                }),
+            ),
+            (
+                json!({
+                    "code": "const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; return deep(5)",
+                    "limits": { "maxValueDepth": 4 }
+                }),
+                json!({
+                    "outcome": {
+                        "ok": false,
+                        "error": {
+                            "kind": "ExecutionFailure",
+                            "message": "RangeError: Value exceeds the maximum depth of 4."
+                        },
+                        "metadata": null
+                    },
+                    "log": []
+                }),
+            ),
+            (
+                json!({
+                    "code": "const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; return [Promise.resolve(1), deep(60)]",
+                    "limits": { "maxValueDepth": 4 }
+                }),
+                json!({ "outcome": { "ok": true, "value": [1, nest(60)], "metadata": null }, "log": [] }),
+            ),
+            (
+                json!({
+                    "code": "const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; return [Promise.resolve(1), deep(109)]",
+                    "limits": { "maxValueDepth": 110 }
+                }),
+                json!({ "outcome": { "ok": true, "value": [1, nest(109)], "metadata": null }, "log": [] }),
+            ),
+            (
+                json!({
+                    "code": "const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; const ok = JSON.stringify(deep(4)).length; try { JSON.stringify(deep(5)) } catch (e) { return [ok, e.name, e.message] }",
+                    "limits": { "maxValueDepth": 4 }
+                }),
+                json!({
+                    "outcome": {
+                        "ok": true,
+                        "value": [17, "RangeError", "Value exceeds the maximum depth of 4."],
+                        "metadata": null
+                    },
+                    "log": []
+                }),
+            ),
+            (
+                json!({
+                    "code": "const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; refuses(deep(256)); const back = await load(deep(256)); return [JSON.stringify(back).length, JSON.stringify(deep(256)) === JSON.stringify(back)]",
+                    "limits": { "maxValueDepth": 256 }
+                }),
+                json!({ "outcome": { "ok": true, "value": [1025, true], "metadata": null }, "log": [] }),
+            ),
+            (
+                json!({
+                    "code": "const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; return deep(100)",
+                    "limits": { "maxValueDepth": 100 }
+                }),
+                json!({ "outcome": { "ok": true, "value": nest(100), "metadata": null }, "log": [] }),
+            ),
+            (
+                json!({
+                    "code": "const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; return deep(257)",
+                    "limits": { "maxValueDepth": 256 }
+                }),
+                json!({
+                    "outcome": {
+                        "ok": false,
+                        "error": {
+                            "kind": "ExecutionFailure",
+                            "message": "RangeError: Value exceeds the maximum depth of 256."
+                        },
+                        "metadata": null
+                    },
+                    "log": []
+                }),
+            ),
+        ],
+        executed,
+    );
+    check(
+        [
+            (
+                json!({
+                    "code": "const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; await wait(deep(200)); return JSON.stringify(await load(deep(200))).length",
+                    "runId": "i",
+                    "limits": { "maxValueDepth": 200 }
+                }),
+                json!({
+                    "suspend": { "ok": true, "metadata": null, "same": true },
+                    "resume": { "ok": true, "value": 801, "metadata": null },
+                    "made": 2,
+                    "log": [["wait", "i:0"], ["wait", "i:0"]]
+                }),
+            ),
+            (
+                json!({
+                    "code": "const deep = (n) => { let v = 0; for (let i = 0; i < n; i++) v = i % 2 ? [v] : { c: v }; return v }; await wait(); return deep(201)",
+                    "runId": "i",
+                    "limits": { "maxValueDepth": 200 }
+                }),
+                json!({
+                    "suspend": { "ok": true, "metadata": null, "same": true },
+                    "resume": {
+                        "ok": false,
+                        "error": {
+                            "kind": "ExecutionFailure",
+                            "message": "RangeError: Value exceeds the maximum depth of 200."
+                        },
+                        "metadata": null
+                    },
+                    "made": 2,
+                    "log": [["wait", "i:0"], ["wait", "i:0"]]
+                }),
+            ),
+        ],
+        suspended,
     );
 }
