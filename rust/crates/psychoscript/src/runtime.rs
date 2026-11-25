@@ -309,7 +309,7 @@ impl Runtime {
     /// A program continuing a suspended run, from its state. It keeps the limits it was saved with, and its globals
     /// are made again for the run with its saved id and metadata. Fails with a [`SnapshotError`] when the state was
     /// saved by another build, with other host globals, from a source that no longer compiles the same, or is
-    /// malformed.
+    /// malformed or changed since it was saved.
     pub fn resume(&self, state: &Snapshot) -> Result<Program<'_>, SnapshotError> {
         Program::resume(self, state)
     }
