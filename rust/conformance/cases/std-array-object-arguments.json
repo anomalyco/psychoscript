@@ -107,21 +107,14 @@
         "abc"
       ],
       "json": [
-        [
-          "TypeError",
-          "JSON.parse expects a string, got an object (is it already parsed?)"
-        ],
+        {},
         [
           "SyntaxError",
           "JSON.parse received invalid JSON: JSON Parse error: Unable to parse JSON string"
         ],
+        {},
         [
-          "TypeError",
-          "JSON.parse expects a string, got an object (is it already parsed?)"
-        ],
-        [
-          "TypeError",
-          "JSON.parse expects a string, got an array (is it already parsed?)"
+          1
         ],
         5
       ]
