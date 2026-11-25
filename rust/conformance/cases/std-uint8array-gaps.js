@@ -20,5 +20,5 @@ return [[...new Uint8Array(like)], [...Uint8Array.from(like, (v) => v * 2)], [..
   t(() => new Uint8Array(4).setFromBase64(" AQ ID ")), t(() => new Uint8Array(4).setFromBase64("AQ", { lastChunkHandling: "strict" })), t(() => new Uint8Array(1).setFromBase64("AQID")),
   t(() => new Uint8Array(2).setFromBase64(1)), t(() => new Uint8Array(2).setFromBase64("AA", null)), t(() => new Uint8Array(4).setFromBase64("-_8", { alphabet: "base64url" })),
   t(() => new Uint8Array(0).setFromHex("zz")), t(() => Uint8Array.prototype.setFromHex.call([], "aa")),
-  new Uint8Array(5).subarray(1, 3).byteOffset, new Uint8Array(5).subarray(1, 3).byteLength, new Uint8Array(2).buffer, "byteLength" in new Uint8Array(1),
+  new Uint8Array(5).subarray(1, 3).byteOffset, new Uint8Array(5).subarray(1, 3).byteLength, "byteLength" in new Uint8Array(1),
   t(() => { const x = new Uint8Array(2); x.byteLength = 1 }), t(() => Uint8Array.prototype.byteOffset)]

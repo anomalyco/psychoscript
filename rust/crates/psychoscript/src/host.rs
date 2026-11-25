@@ -52,6 +52,13 @@ pub const GLOBAL_NAMES: &[&str] = &[
     "Headers",
     "Uint8Array",
     "Buffer",
+    // Rust only: the typed arrays besides Uint8Array.
+    "ArrayBuffer",
+    "Uint16Array",
+    "Uint32Array",
+    "Int32Array",
+    "Float32Array",
+    "Float64Array",
     "TextEncoder",
     "TextDecoder",
     "encodeURI",
@@ -2008,25 +2015,7 @@ fn leaf_from_host(
         }
         HostValue::Bytes(data) => crate::builtins::bytes::new_bytes(vm, data.clone(), false),
         HostValue::Buffer(data) => crate::builtins::bytes::new_bytes(vm, data.clone(), true),
-        HostValue::TypedArray(t) if vm.realm.std.typed_arrays => {
-            crate::builtins::typed::from_host(vm, t, label)?
-        }
-        // Without typed arrays, a Uint8Array's or an ArrayBuffer's bytes are a Uint8Array, and the others can't cross.
-        HostValue::TypedArray(t) => match t.kind() {
-            crate::TypedKind::U8 | crate::TypedKind::ArrayBuffer => {
-                crate::builtins::bytes::new_bytes(vm, t.to_vec(), false)
-            }
-            kind => {
-                let name = kind.name();
-                let a = if name.starts_with(['A', 'E', 'I', 'O']) {
-                    "an"
-                } else {
-                    "a"
-                };
-                let msg = format!("{label} produced {a} {name}, which the program cannot hold.");
-                return Err(vm.type_error(&msg));
-            }
-        },
+        HostValue::TypedArray(t) => crate::builtins::typed::from_host(vm, t, label)?,
         HostValue::Response(response) => response_from_host(vm, response, label, place, depth)?,
         HostValue::Array(_)
         | HostValue::Object(_)

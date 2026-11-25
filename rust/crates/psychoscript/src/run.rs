@@ -179,7 +179,6 @@ pub fn start(
     let host = RunHost::new(globals, setup.modules.clone(), setup.translate, run);
     let mut vm = Vm::new(host, setup.limits, atoms);
     vm.start_cpu_meter();
-    vm.realm.std.typed_arrays = setup.typed_arrays;
     vm.setup();
     crate::builtins::ensure_program(&mut vm, &program);
     host::install(&mut vm, &program.globals);
@@ -221,7 +220,7 @@ pub fn start_for_resume(
     let setup = rt.setup();
     let run = Run::new(restored.run_id, restored.metadata);
     let globals = setup.globals_for(&run);
-    if crate::snapshot::hosts_id(&globals, setup.typed_arrays) != restored.hosts {
+    if crate::snapshot::hosts_id(&globals) != restored.hosts {
         return Err(crate::snapshot::SnapshotError::new(
             "This state was saved by a runtime with other host globals; resume it with the same ones.",
         ));
@@ -229,7 +228,6 @@ pub fn start_for_resume(
     let host = RunHost::new(globals, setup.modules.clone(), setup.translate, run);
     let mut vm = Vm::new(host, restored.limits, atoms);
     vm.start_cpu_meter();
-    vm.realm.std.typed_arrays = setup.typed_arrays;
     vm.setup();
     crate::builtins::ensure_program(&mut vm, &program);
     host::install(&mut vm, &program.globals);

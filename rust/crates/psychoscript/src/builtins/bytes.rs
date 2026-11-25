@@ -380,9 +380,6 @@ pub fn get_prop(vm: &mut Vm, id: Id, key: Atom) -> Option<Value> {
     if key == vm.names.byte_offset {
         return Some(Value::Num(b.start as f64));
     }
-    if !vm.realm.std.typed_arrays {
-        return None;
-    }
     if key == vm.names.buffer {
         return Some(Value::Obj(array_buffer_of(vm, id)));
     }
@@ -416,10 +413,6 @@ pub fn set_prop(vm: &mut Vm, id: Id, key: Atom, val: Value) -> Option<Result<(),
     let names = &vm.names;
     if [names.length, names.byte_length, names.byte_offset].contains(&key) {
         return Some(Err(vm.only_getter(&Value::Obj(id), key)));
-    }
-    // Without typed arrays, a Uint8Array keeps any other key as a property.
-    if !vm.realm.std.typed_arrays {
-        return None;
     }
     if key == vm.names.buffer {
         return Some(Err(vm.only_getter(&Value::Obj(id), key)));
@@ -655,11 +648,7 @@ pub fn setup(vm: &mut Vm) {
     );
     vm.constant(ctor, "BYTES_PER_ELEMENT", Value::Num(1.0));
     vm.constant(proto, "BYTES_PER_ELEMENT", Value::Num(1.0));
-    if vm.realm.std.typed_arrays {
-        super::accessors(vm, proto, &["length", "byteLength", "byteOffset", "buffer"]);
-    } else {
-        super::accessors(vm, proto, &["length", "byteLength", "byteOffset"]);
-    }
+    super::accessors(vm, proto, &["length", "byteLength", "byteOffset", "buffer"]);
     vm.methods(
         proto,
         &[

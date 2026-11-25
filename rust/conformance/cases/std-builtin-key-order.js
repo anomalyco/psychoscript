@@ -1,11 +1,12 @@
 // The own property names of every built-in constructor and prototype, in order (Object.getOwnPropertyNames).
+// Uint8Array.prototype.buffer is left out: only the Rust implementation has it (tests/typed.rs covers its keys).
 const out = {}
 const seen = new Set()
 const visit = (label, o) => {
   if (o === null || (typeof o !== "object" && typeof o !== "function") || seen.has(o)) return
   seen.add(o)
   let keys
-  try { keys = Object.getOwnPropertyNames(o) } catch (e) { return }
+  try { keys = Object.getOwnPropertyNames(o).filter((k) => !(o === Uint8Array.prototype && k === "buffer")) } catch (e) { return }
   out[label] = keys.join(",")
   for (const k of keys) {
     let d

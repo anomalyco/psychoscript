@@ -387,8 +387,6 @@ pub struct Program {
     pub globals: Vec<Atom>,
     /// The strings of each tagged template site, for `Template`.
     pub templates: Vec<TemplateSite>,
-    /// Whether it assigns to a typed array's global (`ThrowRef`), a constant where programs have them (see `Vm::load`).
-    pub typed_consts: bool,
     /// Whether it names `constructor`, through which it may reach a built-in constructor without its global (see
     /// `builtins::ensure_program`).
     pub names_constructor: bool,

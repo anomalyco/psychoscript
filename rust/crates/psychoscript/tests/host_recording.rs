@@ -367,7 +367,6 @@ fn runtime(entry: &Json, state: &State) -> Runtime {
     Runtime::make()
         .translate(translate)
         .limits(limits)
-        .typed_arrays(entry["typedArrays"] == true)
         .globals(move |run| globals(&state, run))
 }
 
@@ -1123,17 +1122,16 @@ fn function_markers() {
     );
 }
 
-/// Typed arrays (`Runtime::typed_arrays`): other than Uint8Array, they cross to a sync host function (`scale`) as views
-/// of the same bytes, which it reads and writes in place; a Uint8Array as a copy. What a host function returns
-/// (`mesh`) stays a view of its bytes. Without typed arrays, a host function's Float32Array fails at the call.
+/// Typed arrays: other than Uint8Array, they cross to a sync host function (`scale`) as views of the same bytes, which
+/// it reads and writes in place; a Uint8Array as a copy. What a host function returns (`mesh`) stays a view of its
+/// bytes.
 #[test]
 fn typed_arrays() {
     check(
         [
             (
                 json!({
-                    "code": "const v = new Float32Array([1, 2, 3]); const r = scale(v, 2); return [Array.from(v), r instanceof Float32Array, Array.from(r), r === v]",
-                    "typedArrays": true
+                    "code": "const v = new Float32Array([1, 2, 3]); const r = scale(v, 2); return [Array.from(v), r instanceof Float32Array, Array.from(r), r === v]"
                 }),
                 json!({
                     "outcome": { "ok": true, "value": [[2, 4, 6], true, [2, 4, 6], false], "metadata": null },
@@ -1142,8 +1140,7 @@ fn typed_arrays() {
             ),
             (
                 json!({
-                    "code": "const b = new ArrayBuffer(8); const f = new Float32Array(b); scale(f.subarray(1), 3); f[1] = 4; scale(f, 1); note(b, new Int32Array(b, 4, 1)); return Array.from(f)",
-                    "typedArrays": true
+                    "code": "const b = new ArrayBuffer(8); const f = new Float32Array(b); scale(f.subarray(1), 3); f[1] = 4; scale(f, 1); note(b, new Int32Array(b, 4, 1)); return Array.from(f)"
                 }),
                 json!({
                     "outcome": { "ok": true, "value": [0, 4], "metadata": null },
@@ -1163,8 +1160,7 @@ fn typed_arrays() {
             ),
             (
                 json!({
-                    "code": "const u = new Uint8Array([1, 2]); scale(u, 2); return Array.from(u)",
-                    "typedArrays": true
+                    "code": "const u = new Uint8Array([1, 2]); scale(u, 2); return Array.from(u)"
                 }),
                 json!({
                     "outcome": { "ok": true, "value": [1, 2], "metadata": null },
@@ -1173,8 +1169,7 @@ fn typed_arrays() {
             ),
             (
                 json!({
-                    "code": "const m = mesh(); m[0] = 9; return [m.constructor.name, Array.from(m), m.byteLength, m.buffer.byteLength]",
-                    "typedArrays": true
+                    "code": "const m = mesh(); m[0] = 9; return [m.constructor.name, Array.from(m), m.byteLength, m.buffer.byteLength]"
                 }),
                 json!({
                     "outcome": { "ok": true, "value": ["Float32Array", [9, 1.5, 2.5], 12, 12], "metadata": null },
@@ -1182,7 +1177,7 @@ fn typed_arrays() {
                 }),
             ),
             (
-                json!({ "code": "return mesh()", "typedArrays": true }),
+                json!({ "code": "return mesh()" }),
                 json!({
                     "outcome": {
                         "ok": false,
@@ -1190,36 +1185,6 @@ fn typed_arrays() {
                             "kind": "InvalidDataValue",
                             "message": "TypeError: A Float32Array cannot cross to the host as data; pass it to a host function, or its values, e.g. `Array.from(values)`."
                         },
-                        "metadata": null
-                    },
-                    "log": []
-                }),
-            ),
-            (
-                json!({ "code": "const m = mesh(); return m" }),
-                json!({
-                    "outcome": {
-                        "ok": false,
-                        "error": {
-                            "kind": "ExecutionFailure",
-                            "message": "TypeError: mesh produced a Float32Array, which the program cannot hold. (line 1, col 11)",
-                            "location": { "line": 1, "column": 11 }
-                        },
-                        "metadata": null
-                    },
-                    "log": []
-                }),
-            ),
-            (
-                json!({ "code": "try { mesh() } catch (e) { return [e.name, e.message, e.stack] }" }),
-                json!({
-                    "outcome": {
-                        "ok": true,
-                        "value": [
-                            "TypeError",
-                            "mesh produced a Float32Array, which the program cannot hold.",
-                            "TypeError: mesh produced a Float32Array, which the program cannot hold.\n    at <program>:1:7"
-                        ],
                         "metadata": null
                     },
                     "log": []
