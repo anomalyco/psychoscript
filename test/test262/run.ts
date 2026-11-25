@@ -47,6 +47,7 @@ export const run = async (file: string): Promise<Outcome> => {
   // Sloppy-only tests are never vendored, so every file runs as the strict half of test262's two-mode run.
   // A host drains the job queue after an async test's script ends; the program end interrupts un-awaited
   // work instead, so drain explicitly.
+  // The trailing `void 0` keeps the script's completion value (a Uint8Array, say) from becoming the result.
   const drain = meta.flags?.includes("async") ? "\nfor (let i = 0; i < 100; i++) await null" : ""
   const result = await finishExecution(
     startProgram<never>(
@@ -57,7 +58,7 @@ export const run = async (file: string): Promise<Outcome> => {
             done ??= { error }
           }),
       },
-      `"use strict"; ${prelude}\n${source}${drain}`,
+      `"use strict"; ${prelude}\n${source}${drain}\nvoid 0`,
     ).run(),
   )
   if (meta.negative !== undefined) {

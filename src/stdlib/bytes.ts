@@ -3,6 +3,8 @@ import { checkArrayLength, checkStringLength } from "../runtime/limits.js"
 import { constructor, methods, prototypeFrom, receiver, requiresNew, iteratorMethods } from "../runtime/native.js"
 import { IteratorSymbol, rangeError, syntaxError, typeError } from "../runtime/model.js"
 import {
+  ArrayBufferObj,
+  binaryBytes,
   define,
   defineAccessor,
   frozen,
@@ -20,6 +22,7 @@ import { describeValue } from "../runtime/references.js"
 import { requireCallback, readsPending, withReads } from "../runtime/callback.js"
 import type { Interpreter } from "../runtime/interpreter.js"
 import { sortArray } from "./array.js"
+import { viewOf } from "./typed-array.js"
 
 /**
  * The bytes a Uint8Array, array, or other iterable of numbers describes, read in the prelude: a new Uint8Array with
@@ -55,6 +58,7 @@ export const finishBytes = (bytes: Uint8Array, into: Obj, offset: number): Value
 
 const constructBytes = <R>(ctx: Interpreter<R>, args: Array<Value>, proto: Obj) => {
   const source = args[0]
+  if (source instanceof ArrayBufferObj) return viewOf(source, args, proto)
   if (source !== null && typeof source === "object") return collectBytes(ctx, source, "new Uint8Array(...)", proto, 0)
   // ToIndex: fractions truncate and NaN is 0.
   const length = source === undefined ? 0 : Math.trunc(coerceToNumber(source)) || 0
@@ -142,6 +146,7 @@ export const uint8ArrayGlobal = <R>(ctx: Interpreter<R>) => {
   const optNumber = (value: Value): number | undefined => (value === undefined ? undefined : coerceToInteger(value))
   // Uint8Array cannot contain NaN, so non-number search values never match a byte.
   const search = (value: Value) => (typeof value === "number" ? value : NaN)
+  defineAccessor(proto, "buffer", (thisValue) => self(thisValue, "buffer").bufferObj(builtins))
   defineAccessor(proto, "length", (thisValue) => self(thisValue, "length").bytes.length)
   defineAccessor(proto, "byteLength", (thisValue) => self(thisValue, "byteLength").bytes.byteLength)
   defineAccessor(proto, "byteOffset", (thisValue) => self(thisValue, "byteOffset").bytes.byteOffset)
@@ -155,13 +160,14 @@ export const uint8ArrayGlobal = <R>(ctx: Interpreter<R>) => {
         return target.derive(builtins, target.bytes.slice(optNumber(args[0]), optNumber(args[1])))
       },
     ],
-    // A view on the same bytes, as in JS: writes through one are visible through the other.
+    // A view on the same memory, as in JS: writes through one are visible through the other.
     [
       "subarray",
       2,
       (thisValue, args) => {
         const target = self(thisValue, "subarray")
-        return target.derive(builtins, target.bytes.subarray(optNumber(args[0]), optNumber(args[1])))
+        const view = target.bytes.subarray(optNumber(args[0]), optNumber(args[1]))
+        return target.view(builtins, view.byteOffset - target.bytes.byteOffset, view.length)
       },
     ],
     [
@@ -431,8 +437,11 @@ export const textDecoderGlobal = <R>(ctx: Interpreter<R>) => {
       0,
       (thisValue, args) => {
         const decoder = self(thisValue, "decode")
-        if (args[0] !== undefined && !(args[0] instanceof Bytes)) {
-          throw typeError(`TextDecoder.decode expects a Uint8Array, received ${describeValue(args[0])}.`)
+        const input = args[0] === undefined ? empty : binaryBytes(args[0])
+        if (input === undefined) {
+          throw typeError(
+            `TextDecoder.decode expects an ArrayBuffer or a Uint8Array, received ${describeValue(args[0])}.`,
+          )
         }
         const options = args[1]
         if (options !== undefined && typeof options !== "object") {
@@ -440,7 +449,7 @@ export const textDecoderGlobal = <R>(ctx: Interpreter<R>) => {
         }
         return withReads(() => {
           const stream = options instanceof Obj && Boolean(get(options, "stream"))
-          return readsPending() ? undefined : decoder.decode((args[0] as Bytes | undefined)?.bytes ?? empty, stream)
+          return readsPending() ? undefined : decoder.decode(input, stream)
         })
       },
     ],

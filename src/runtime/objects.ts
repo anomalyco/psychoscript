@@ -868,14 +868,62 @@ export class URLObj extends Wrapper {
   }
 }
 
-/** A `Uint8Array`: the host array does the byte clamping and ignores out-of-range writes, as JS does. */
-export class Bytes extends Wrapper {
-  override readonly tag = "Uint8Array"
+/** An `ArrayBuffer`: fixed-length memory that views share. Never detached or resized. */
+export class ArrayBufferObj extends Wrapper {
+  override readonly tag = "ArrayBuffer"
   constructor(
     proto: Obj,
-    readonly bytes: Uint8Array,
+    readonly data: ArrayBuffer,
   ) {
     super(proto)
+  }
+  override toString() {
+    return "[object ArrayBuffer]"
+  }
+  override inspect() {
+    return `ArrayBuffer { byteLength: ${this.data.byteLength} }`
+  }
+  /** Host functions get bytes as a Uint8Array, whatever holds them. */
+  override toHost() {
+    return new Uint8Array(this.data.slice(0))
+  }
+}
+
+/**
+ * A `Uint8Array`: the host array does the byte clamping and ignores out-of-range writes, as JS does. It owns its
+ * memory, unless it was made as a view over an `ArrayBuffer` the program has, which is then its `buffer`.
+ */
+export class Bytes extends Wrapper {
+  override readonly tag = "Uint8Array"
+  readonly bytes: Uint8Array
+  /** The program's `ArrayBuffer` for this memory, once one exists: views that share memory share it. */
+  buffer: ArrayBufferObj | undefined
+  constructor(proto: Obj, bytes: Uint8Array, buffer?: ArrayBufferObj) {
+    super(proto)
+    // A host array that is a view (a pooled Buffer, a subarray) would otherwise expose memory the program can't see.
+    const exclusive =
+      buffer !== undefined ||
+      (bytes.constructor === Uint8Array &&
+        bytes.byteOffset === 0 &&
+        bytes.byteLength === bytes.buffer.byteLength &&
+        bytes.buffer instanceof ArrayBuffer)
+    this.bytes = exclusive ? bytes : new Uint8Array(bytes)
+    this.buffer = buffer
+  }
+  get memory(): ArrayBuffer {
+    return this.bytes.buffer as ArrayBuffer
+  }
+  /** The program `ArrayBuffer` for this memory, made when first asked for. */
+  bufferObj(builtins: Builtins): ArrayBufferObj {
+    return (this.buffer ??= new ArrayBufferObj(builtins.ArrayBuffer, this.memory))
+  }
+  /** A view of `count` bytes from `start` on this one's memory, of this one's kind. */
+  view(builtins: Builtins, start: number, count: number): Bytes {
+    return this.derive(
+      builtins,
+      new Uint8Array(this.memory, this.bytes.byteOffset + start, count),
+      this.bufferObj(builtins),
+    )
   }
   override toString() {
     return this.bytes.join(",")
@@ -890,10 +938,20 @@ export class Bytes extends Wrapper {
     if (!builtins.Array.guard!.protector.intact) return undefined
     return new Position(this, "values", builtins.Array)
   }
-  /** New bytes of this one's kind, as `slice`, `subarray`, `map` and `filter` make them (a Buffer's are a Buffer). */
-  derive(builtins: Builtins, bytes: Uint8Array): Bytes {
-    return new Bytes(builtins.Uint8Array, bytes)
+  /**
+   * New bytes of this one's kind, as `slice`, `subarray`, `map` and `filter` make them (a Buffer's are a Buffer);
+   * `buffer` when they view this one's memory.
+   */
+  derive(builtins: Builtins, bytes: Uint8Array, buffer?: ArrayBufferObj): Bytes {
+    return new Bytes(builtins.Uint8Array, bytes, buffer)
   }
+}
+
+/** The memory an ArrayBuffer holds or a Uint8Array views, as bytes (not a copy); undefined for others. */
+export const binaryBytes = (value: Value): Uint8Array | undefined => {
+  if (value instanceof ArrayBufferObj) return new Uint8Array(value.data)
+  if (value instanceof Bytes) return value.bytes
+  return undefined
 }
 
 /**

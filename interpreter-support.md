@@ -25,11 +25,12 @@ the ultimate source of truth. Upstream test262 files run verbatim from `test/tes
       The table, where a value cannot be JSON but what the program meant is clear: a promise is awaited (a rejection
       fails the program), a Set crosses as an array, a URLSearchParams as its query string, an Error as
       `{ name, message, ...own enumerable }`, and own `__proto__` keys are dropped so merging results cannot replace a
-      prototype. A Uint8Array in the result is rejected with a hint to encode it as text. Host function arguments
+      prototype. An ArrayBuffer or Uint8Array in the result is rejected with a hint to encode it as text. Host function arguments
       cross as copies (see Host functions); a promise or function inside an argument fails the call unless the runtime's
       `translate` option awaits promises or drops functions. In-program `JSON.stringify` keeps JS behavior except for the Error form and a
       promise, which is a `TypeError` with an await hint rather than a silent `{}`.
-- [x] Live Date, RegExp, Map, Set, URL, URLSearchParams, Headers, and Uint8Array values inside psychoscript.
+- [x] Live Date, RegExp, Map, Set, URL, URLSearchParams, Headers, ArrayBuffer, and Uint8Array values inside
+      psychoscript.
 - [x] Host access only through the globals a host provides with `Runtime.make`.
 - [x] Imports of globals by Node module name: `import x from "m"`, `import { a, b as c } from "m"`,
       `import * as m from "m"`, `import "m"`, `require("m")`, and `await import("m")`, with `node:fs` naming the
@@ -626,18 +627,27 @@ reject }` object. The resolvers are anonymous (`name` is `""`) with `length` 1, 
 - [x] URL values are their href in `JSON.stringify` and at the host boundary. URLSearchParams are `{}` in
       `JSON.stringify` and their query string at the host boundary.
 
-## Uint8Array
+## ArrayBuffer and Uint8Array
 
-The only binary type. Bytes stay inside the program or cross to host functions as copies; the result boundary rejects them
+The binary types. Bytes stay inside the program or cross to host functions as copies; the result boundary rejects them
 with a hint to encode as text first (`TextDecoder`, `toBase64`, `toHex`).
 
-- [x] `new Uint8Array(length | array | iterable | array-like | Uint8Array)`, `Uint8Array.from`, `Uint8Array.of`, `fromBase64`
+- [x] `ArrayBuffer`: `new ArrayBuffer(length)`, `byteLength`, `slice` (a copy), `ArrayBuffer.isView`, and the
+      `resizable` (always `false`), `maxByteLength` (the length) and `detached` (always `false`) accessors. One buffer
+      holds at most 10,000,000 bytes, the cap on what one built-in may allocate (as for array lengths).
+- [ ] Resizable buffers (`maxByteLength` in the options is a `TypeError`), `resize`, `transfer` and
+      `transferToFixedLength` (no buffer is ever detached), `SharedArrayBuffer`, and `Atomics`.
+- [x] `new Uint8Array(length | array | iterable | array-like | Uint8Array | ArrayBuffer)`, `Uint8Array.from`, `Uint8Array.of`, `fromBase64`
       (with the `alphabet` and `lastChunkHandling` options), and `fromHex`. Lengths are capped like arrays. The
       `Uint8Array.from` mapper and `thisArg` see the original values, so
       `Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))` decodes base64. `BYTES_PER_ELEMENT` is 1 on the
       constructor, its instances, and `Buffer`. A fractional length truncates and `NaN` is 0, as `ToIndex` gives.
 - [x] Index reads and writes with JS byte semantics: values wrap modulo 256, out-of-range writes are ignored, indexes
-      cannot be deleted. `length`, `byteLength` and `byteOffset` are prototype accessors, so `Object.keys` lists only indexes.
+      cannot be deleted. `buffer`, `length`, `byteLength` and `byteOffset` are prototype accessors, so `Object.keys` lists
+      only indexes.
+- [x] Every Uint8Array sits on an `ArrayBuffer`, its `buffer` (always the same one). `new Uint8Array(buffer, offset,
+      length)` and `subarray` make views on its memory: views over one buffer see each other's writes, share its
+      identity (`a.buffer === b.buffer`), and keep both across a suspend and resume.
 - [x] `at`, `slice`, `subarray` (a view on the same bytes), `set`, `fill`, `reverse`, `copyWithin`, `toReversed`,
       `toSorted`, `with`, `indexOf`, `lastIndexOf`, `includes`, `join`, `toString`, `toBase64` (with `alphabet` and
       `omitPadding`), `toHex`, `setFromBase64`, `setFromHex`, and live `keys`, `values`, `entries`, and `[Symbol.iterator]`
@@ -651,7 +661,7 @@ with a hint to encode as text first (`TextDecoder`, `toBase64`, `toHex`).
       `map` and `filter` return new Uint8Arrays with results clamped like index writes (`map((b) => b * 100)` on
       `[1, 2, 3]` is `[100, 200, 44]`); `reduce` on an empty Uint8Array without an initial value is a `TypeError`.
 - [x] `sort` in place, numeric ascending by default (`[10, 9, 1]` sorts to `[1, 9, 10]`) or by comparator.
-- [ ] `ArrayBuffer`, `DataView`, and other typed arrays.
+- [ ] `DataView` and the other typed arrays.
 
 ## Buffer
 
@@ -662,7 +672,8 @@ method works on it, and its text conversions default to UTF-8.
       `alloc`, `allocUnsafe`, `concat`, `byteLength`, `compare`, `isBuffer`, `isEncoding`, `of`, and `copyBytesFrom`, with the encodings
       utf8, hex, base64, base64url, latin1/binary, ascii, and utf16le/ucs2. An unknown encoding is a `TypeError` with
       code `ERR_UNKNOWN_ENCODING`, except in `byteLength`, which counts it as UTF-8 like Node. `Buffer.from(bytes, offset,
-      length)` copies all the bytes, as Node ignores the offset and length for anything but an `ArrayBuffer`. The
+      length)` copies all the bytes, as Node ignores the offset and length for anything but an `ArrayBuffer`;
+      `Buffer.from(arrayBuffer, offset, length)` is a view on its memory. The
       constructor inherits `Uint8Array`'s statics, so `Buffer.fromHex` and `Buffer.fromBase64` make Uint8Arrays.
 - [x] `toString(encoding, start, end)` (so string coercion and templates give UTF-8 text), `toJSON` as
       `{ type: "Buffer", data }`, `slice` and `subarray` as Buffer views on the same bytes, `equals`, `compare`,
@@ -682,12 +693,12 @@ method works on it, and its text conversions default to UTF-8.
 - [x] `crypto.randomUUID()` and `crypto.getRandomValues(uint8Array)`.
 - [x] `structuredClone(value)` deep-copies primitives, plain objects (own enumerable string keys onto a plain object;
       the prototype is not kept), arrays (holes and extra keys kept), Map, Set, Date, RegExp (`lastIndex` reset to 0),
-      Uint8Array, and errors (standard `name`, `message`, `cause`, and `stack`; other names become `Error`, extra
+      ArrayBuffer, Uint8Array (each buffer copied once, so views keep sharing it), and errors (standard `name`, `message`, `cause`, and `stack`; other names become `Error`, extra
       fields drop). Shared references stay shared in the copy, and the copy is extensible even when the source was
       frozen. Functions, symbols, promises, iterators, URL, Headers, and host references cannot be cloned; without a
       `DOMException`, the failure is a `TypeError` whose message starts with `DataCloneError:`.
 - [x] `TextEncoder` and `TextDecoder` for UTF-8 only: any other label is a `RangeError`. `TextDecoder` accepts the
-      `fatal` and `ignoreBOM` options. `decode(chunk, { stream: true })` accepts incremental Uint8Array input;
+      `fatal` and `ignoreBOM` options. `decode` takes an ArrayBuffer or a Uint8Array; `decode(chunk, { stream: true })` accepts incremental input;
       `decode()` flushes the stream. `encodeInto(text, bytes)` returns `{ read, written }`.
 - [x] `new Headers()` from records, synchronous iterables of pairs, and Headers, wrapping the host's `Headers`: names
       fold to lowercase, values are normalized and combined, and invalid names or values throw a `TypeError`.
@@ -713,7 +724,9 @@ Host functions a host opts in through `Host.fn`, `Host.durableFn`, and `Host.nam
       running across a suspend through `start`, `wait`, and `cancel`.
 - [x] Every value crossing in either direction is converted, never shared: plain objects and arrays are copied,
       `Date`, `RegExp`, `URL`, `URLSearchParams`, `Headers`, `Map`, `Set`, and `Uint8Array` become fresh copies with
-      their contents converted (a host `ArrayBuffer` comes in as a `Uint8Array`; other typed arrays cannot come out),
+      their contents converted (a program `ArrayBuffer` or `Uint8Array` reaches a host function as a `Uint8Array` copy
+      of exactly the bytes it holds or views, a `Buffer` as a `Buffer`; a host `ArrayBuffer` comes in as a
+      `Uint8Array`; other typed arrays cannot come out),
       errors cross as errors with their name, message, `cause`, and own enumerable data, and a `__proto__` key is
       dropped. Functions, generators,
       un-awaited promises, and symbols cannot be passed in; a class instance, a symbol, or a BigInt cannot come out.

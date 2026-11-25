@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `ArrayBuffer`: the constructor, `byteLength`, `slice`, `ArrayBuffer.isView`, and the `resizable`, `maxByteLength`
+  and `detached` accessors. `Uint8Array` and `Buffer` sit on real `ArrayBuffer`s: `.buffer` works,
+  `new Uint8Array(arrayBuffer, offset, length)`, `subarray` and `Buffer.from(arrayBuffer, offset, length)` view its
+  memory, and views over one buffer share its memory and its identity, also across a suspend and resume.
+  `TextDecoder.decode` takes an `ArrayBuffer`. A host function gets a program `ArrayBuffer` as a `Uint8Array` copy of
+  its bytes; host `ArrayBuffer`s still come in as `Uint8Array`s. Snapshot format 4: saved runs from earlier builds
+  don't resume.
 - `JSON.parse` given an object or array, which is already parsed, returns it unchanged instead of parsing its text
   (`"[object Object]"`, or the array's elements joined). Other non-string values are parsed as before.
 - A default `sort()` or `toSorted()` over numbers only is numeric: `[10, 9, 1].sort()` is `[1, 9, 10]`, not

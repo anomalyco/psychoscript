@@ -33,6 +33,7 @@ const builtins = [
   "URL",
   "URLSearchParams",
   "Headers",
+  "ArrayBuffer",
   "Uint8Array",
   "Buffer",
   "TextEncoder",
@@ -119,6 +120,7 @@ export const createBuiltins = (): Builtins => {
     URL: plain(),
     URLSearchParams: plain(),
     Headers: plain(),
+    ArrayBuffer: plain(),
     Uint8Array: uint8Array,
     /** Node's Buffer: a Uint8Array whose text conversions default to UTF-8. */
     Buffer: new Obj(uint8Array),
