@@ -9,6 +9,8 @@ description = "Embeddable Rust implementation of the PsychoScript language layer
 readme = "../../README.md"
 keywords = ["javascript", "interpreter", "sandbox", "scripting", "vm"]
 categories = ["compilers"]
+# The tests read the repository's conformance recordings, outside the package: they run from the repository.
+exclude = ["tests/"]
 
 [features]
 # The test262 harness globals, for the parity runner in test262/ only.
