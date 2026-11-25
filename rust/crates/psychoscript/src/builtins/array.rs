@@ -1598,15 +1598,54 @@ pub(super) fn sort_comparator(vm: &mut Vm, cmp: &Value, name: &str) -> Result<()
     Ok(())
 }
 
-/// The default sort of `list`: `undefined` last, the rest by their strings.
-fn sort_default(vm: &mut Vm, list: Vec<Value>) -> Result<Vec<Value>, Value> {
+/// A number's default-sort key: its bits mapped so that they order as the numbers do (-0 is 0, and NaN sorts last),
+/// the reference's `numberKey`.
+fn number_key(n: f64) -> u64 {
+    let n = if n == 0.0 {
+        0.0
+    } else if n.is_nan() {
+        f64::NAN
+    } else {
+        n
+    };
+    let bits = n.to_bits();
+    if bits >> 63 == 1 {
+        !bits
+    } else {
+        bits | 1 << 63
+    }
+}
+
+/// The default sort of `list`: `undefined` last, the rest in numeric order when they are all numbers (a deliberate
+/// difference from JavaScript), otherwise by their strings. One that would compare an object asks for a comparator
+/// (`name` is `sort` or `toSorted`).
+fn sort_default(vm: &mut Vm, list: Vec<Value>, name: &str) -> Result<Vec<Value>, Value> {
     let (defined, undefs): (Vec<Value>, Vec<Value>) =
         list.into_iter().partition(|v| !matches!(v, Value::Undef));
+    if defined.len() > 1 && defined.iter().any(|v| vm.is_convertible_obj(v)) {
+        return Err(vm.type_error(&format!(
+            "{name} without a comparator needs numbers or strings; pass a comparator for objects, e.g. (a, b) => a.age - b.age"
+        )));
+    }
     // The values are one list of conversions with the string hint (see `fuel::Conversions`). Over `SORT_RUN` the
     // reference sorts in bounded native steps in its prelude (`sortDefault`).
     let stepped = defined.len() > SORT_RUN;
     let mut c = fuel::Conversions::default();
     let primitives = c.converted(vm, &[Hint::String], &defined, false)?;
+    if !primitives.is_empty() && primitives.iter().all(|p| matches!(p, Value::Num(_))) {
+        let keys: Vec<u64> = primitives.iter().map(|p| number_key(p.as_num())).collect();
+        drop(primitives);
+        let mut keyed: Vec<(u64, Value)> = keys.into_iter().zip(defined).collect();
+        if stepped {
+            sort_default_fuel(vm, &c, keyed.len());
+        }
+        c.finish(vm, Ok(()))?;
+        // Stable, as the reference's sort.
+        keyed.sort_by_key(|k| k.0);
+        let mut out: Vec<Value> = keyed.into_iter().map(|(_, v)| v).collect();
+        out.extend(undefs);
+        return Ok(out);
+    }
     let mut keys = Vec::with_capacity(primitives.len());
     // Equal BigInts, whose decimal text is slow to make, share one key.
     let mut texts = rustc_hash::FxHashMap::default();
@@ -1936,7 +1975,7 @@ fn a_sort(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
     if !matches!(cmp, Value::Undef) {
         return sort_with(vm, callee, this, list, cmp, holes, SORT_IN_PLACE);
     }
-    let mut sorted = sort_default(vm, list)?;
+    let mut sorted = sort_default(vm, list, "sort")?;
     sorted.resize(sorted.len() + holes, Value::Uninit);
     if let Kind::Array(items) = &mut vm.heap[id as usize].kind {
         *items = sorted;
@@ -1952,7 +1991,7 @@ fn a_to_sorted(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
     if !matches!(cmp, Value::Undef) {
         return sort_with(vm, callee, this, list, cmp, 0, SORT_COPY);
     }
-    let sorted = sort_default(vm, list)?;
+    let sorted = sort_default(vm, list, "toSorted")?;
     Ok(vm.new_array(sorted))
 }
 
