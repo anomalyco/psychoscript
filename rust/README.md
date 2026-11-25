@@ -48,14 +48,30 @@ let mesh = HostFunction::new(|_, _| HostValue::TypedArray(TypedArray::from_f32(&
 | `Runtime.make({ globals, modules, limits, translate })` | `Runtime::make().globals(..).modules(..).limits(..).translate(..)` |
 | `Host.fn`, `Host.durableFn`, `Host.namespace` | `HostFunction`, `DurableFunction`, `Namespace` |
 | `Host.fail`, `Host.missing` | `Failure::new`, `Failure::missing` |
-| `Host.error(name, message)` | `HostError::located(name, message)` (`HostValue::Located`) |
 | `runtime.execute`, `runtime.program`, `runtime.compile`, `runtime.resume` | `execute`/`execute_async`, `program`, `compile`, `resume`/`resume_bytes` |
 | `toBytes`, `fromBytes` | `to_bytes`, `from_bytes` |
-| a host typed array or `ArrayBuffer` (a view of the program's bytes) | `HostValue::TypedArray(TypedArray)` |
-| `limits.maxValueDepth` (at most 256) | `Limits::max_value_depth` (at most `MAX_VALUE_DEPTH_LIMIT`) |
-| `limits.timeoutMs` (wall clock) | `Limits::timeout_ms`, on `Limits::clock`: `Clock::Wall` (the default) or `Clock::ThreadCpu` (Rust only) |
-| (none) | `Limits::slice_ms`: the longest a run may compute without awaiting the host, on `Limits::clock` (Rust only) |
-| `Host.functionMarker` (under `translate: { functions: "mark" }`) | `HostValue::FunctionMarker`, `Data::FunctionMarker` |
+| `limits.timeoutMs`, `limits.maxOutputBytes` | `Limits::timeout_ms`, `Limits::max_output_bytes` |
+| `translate: { functions, promises }` | `Translate { functions, promises }` |
+| an `AbortSignal` | dropping the future or the `Program` |
+
+## Differences from the TypeScript implementation
+
+Only Rust has:
+
+- A heap cap: [`Limits::max_heap_bytes`](crates/psychoscript/src/diagnostic.rs), measured in the size model of [`heap.rs`](crates/psychoscript/src/heap.rs); over it, `MemoryLimitExceeded`.
+- CPU-time budgets: [`Limits::clock`](crates/psychoscript/src/diagnostic.rs) `Clock::ThreadCpu` for `timeout_ms` (also [`thread_clock`](crates/psychoscript/src/thread_clock.rs) for hosts).
+- The interpreter slice: [`Limits::slice_ms`](crates/psychoscript/src/diagnostic.rs), the longest stretch between awaits of the host; past it, `SliceExceeded`.
+- The function marker: [`TranslateFunctions::Mark`](crates/psychoscript/src/runtime.rs), giving `HostValue::FunctionMarker` and `Data::FunctionMarker`.
+- A value depth limit: [`Limits::max_value_depth`](crates/psychoscript/src/diagnostic.rs), at most [`MAX_VALUE_DEPTH_LIMIT`](crates/psychoscript/src/convert.rs).
+- Located host errors: [`HostError::located`](crates/psychoscript/src/host_function.rs) (`HostValue::Located`), caught as a standard error at the call.
+- Always-on typed arrays: `ArrayBuffer`, `Uint16Array`, `Uint32Array`, `Int32Array`, `Float32Array`, `Float64Array`, as [`HostValue::TypedArray`](crates/psychoscript/src/host_function.rs): lent without a copy to sync host functions, copied for async and durable ones.
+- Lazy built-in groups: [`LAZY`](crates/psychoscript/src/builtins/mod.rs) sets up `RegExp`, `Date`, the typed arrays and the other groups only when a program uses them.
+
+Only TypeScript has:
+
+- [`parseProgram`](../src/runtime/execute.ts), the program's ESTree AST; Rust's `Runtime::compile` only reports its errors.
+- [`formatLocation`](../src/runtime/model.ts) and [`moduleName`](../src/runtime/modules.ts), two small exported helpers.
+- Date's locale formatting through the host's ICU4C: Rust uses ICU4X, with [recorded differences](conformance/date-locale.differences.json) (see Parity).
 
 ## Commands
 
@@ -80,21 +96,21 @@ bun conformance/date-locale.ts # the Date locale matrix, its expected output and
 
 ## Parity
 
-Both implementations must stay equally capable: a language feature or host API lands in both or in neither. The
-expectations come only from the reference, never from hand:
+Apart from the differences above, Rust matches `dev`'s TypeScript. The expectations for that come only from the
+reference, never from hand:
 
 - `conformance/cases/*.js` → `.json` (`generate.ts`), replayed by `bench/tests/conformance.rs`, also in round-trip mode,
   which saves and restores every run at each host stop and loop slice.
 - `conformance/host.json` (`host.ts`), `boundary.json` (`boundary.ts`) and `streaming.json` (`streaming.ts`), replayed
   by `crates/psychoscript/tests/`.
-- Rust-only features (the heap cap, typed arrays, function markers, the value depth limit, located host errors) have
-  no reference: their expected results are written in Rust's own tests (`crates/psychoscript/tests/heap.rs`,
-  `typed.rs`, `host_recording.rs`, `value_depth.rs`; the programs of `tests/cases/*.js` also run in round-trip mode).
+- Rust-only features have no reference: their expected results are written in Rust's own tests
+  (`crates/psychoscript/tests/heap.rs`, `clock.rs`, `typed.rs`, `host_recording.rs`, `value_depth.rs`; the programs
+  of `tests/cases/*.js` also run in round-trip mode).
 - test262, both ways: `test262/rust-skipped.txt` (fails here, passes in the reference) and `test262/reference-gaps.txt`
   (passes here, fails in the reference) are empty and may only stay so.
 
-CI regenerates every recording and fails on any difference. The cases marked `@platform "linux"` depend on the system
-libm and are recorded only on Linux.
+There is no Rust CI job: run the commands above, and the generators with no diff, before pushing. The cases marked
+`@platform "linux"` depend on the system libm and are recorded only on Linux.
 
 Known differences:
 
@@ -113,9 +129,8 @@ Known differences:
   run's own while host code is always handed back to the executor, in the same order. On wasm32, without threads, the
   run yields to its executor there instead.
 - **Memory:** an incremental, non-moving mark-sweep collector (`collector.rs`) frees what a run can no longer reach,
-  at safe points only (`bench/GC.md`). `Limits::max_heap_bytes` (the reference's `maxHeapBytes`) caps what a run
-  can reach, measured in the size model both share (`heap.rs`), so a measurement finds the same in both; when the
-  measurements between the first and the last fall differs, as the pacing counts allocations each its own way.
+  at safe points only (`bench/GC.md`). `Limits::max_heap_bytes` caps what a run can reach, in the size model of
+  `heap.rs`.
 - **Time:** `Limits::timeout_ms` counts wall-clock time by default. With `Limits::clock: Clock::ThreadCpu` it counts
   the CPU time of the threads while they run the program (`cpu.rs`), so a loaded machine never times out a program
   that is only waiting for a core. Host work isn't counted. Synchronous host calls are left out by their wall-clock
