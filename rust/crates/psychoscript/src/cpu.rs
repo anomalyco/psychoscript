@@ -14,7 +14,7 @@
 
 use std::time::{Duration, Instant};
 
-use thread_clock::ThreadClock;
+use crate::thread_clock::ThreadClock;
 
 /// `Limits::slice_ms`: the stretch in progress.
 ///

@@ -7,10 +7,10 @@
   isn't counted: synchronous host calls are left out by their wall-clock duration, which can only count too little
   (the CPU time with them may reach ten times the timeout), and waits on host calls count on the wall clock, up to ten
   times the timeout. A saved run keeps its clock. The new
-  `crates/thread-clock` (`ThreadClock::current`, `now`) reads a thread's CPU time on Linux, Android, Apple platforms
-  and Windows, and the wall clock elsewhere. `Limits::slice_ms` bounds how long a run computes without awaiting the
-  host, on the same clock and without its host calls; a run past it stops with `SliceExceeded`. Under `ThreadCpu` it
-  may run up to a sixteenth of the slice past it. The reference is unchanged.
+  `psychoscript::thread_clock` (`ThreadClock::current`, `now`) reads a thread's CPU time on Linux, Android, Apple
+  platforms and Windows, and the wall clock elsewhere. `Limits::slice_ms` bounds how long a run computes without
+  awaiting the host, on the same clock and without its host calls; a run past it stops with `SliceExceeded`. Under
+  `ThreadCpu` it may run up to a sixteenth of the slice past it. The reference is unchanged.
 - Typed arrays are opt-in: `Runtime.make({ typedArrays: true })` (Rust: `Runtime::typed_arrays(true)`). Without it, the
   default, programs and host functions behave as before they were added (0.2.1): no `ArrayBuffer`, `Uint16Array`,
   `Uint32Array`, `Int32Array`, `Float32Array` or `Float64Array`, a host function returning one fails at the call, and

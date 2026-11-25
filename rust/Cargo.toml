@@ -1,10 +1,12 @@
 [workspace]
 resolver = "3"
-members = ["crates/psychoscript", "crates/thread-clock", "bench", "test262"]
+members = ["crates/psychoscript", "bench", "test262"]
 
 [workspace.package]
 edition = "2024"
+rust-version = "1.100"
 license = "MIT"
+repository = "https://github.com/anomalyco/psychoscript"
 
 [profile.release]
 lto = "thin"

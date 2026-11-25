@@ -1,5 +1,7 @@
 # psychoscript (Rust)
 
+An early pre-release (`0.1.0-alpha.1`): the API may still change.
+
 A Rust implementation of psychoscript: the same confined, JavaScript-like language as the TypeScript package in `src/`,
 which is its reference. Programs run in a bytecode VM written in pure Rust, with no Bun, Node or other JavaScript
 engine at build or run time, and reach only the host functions the embedder gives them.
@@ -120,9 +122,10 @@ Known differences:
   awaits of the host the same way, also leaving out host calls, and stops the run with `SliceExceeded`, so a host
   needn't watch the run from outside. Under `ThreadCpu` a stretch's CPU time is measured from when it has run a
   sixteenth of the slice, so it may run up to that much past it.
-- Layout: `crates/psychoscript` (compiler on `oxc_parser`, VM, standard library, host functions, snapshots),
-  `crates/thread-clock` (a thread's CPU time, read on it or from another thread, for hosts too), `conformance/`
-  (generators and recordings), `bench/`, `test262/`.
+- Layout: `crates/psychoscript` (compiler on `oxc_parser`, VM, standard library, host functions, snapshots, and
+  `thread_clock`: a thread's CPU time, read on it or from another thread, for hosts too), `conformance/` (generators
+  and recordings), `bench/`, `test262/`.
 
-Rules: pure Rust and few dependencies, no `unsafe` (outside `crates/thread-clock`, whose blocks are each one documented
-OS call), never panic on user input, and unsupported syntax throws `UnsupportedSyntax` with a location where it runs.
+Rules: pure Rust and few dependencies, no `unsafe` (outside the `thread_clock` module, whose blocks are each one
+documented OS call), never panic on user input, and unsupported syntax throws `UnsupportedSyntax` with a location where
+it runs.
