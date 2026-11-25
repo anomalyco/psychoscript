@@ -7,12 +7,10 @@ import {
   DurableFn,
   type DurableCall,
   Fn,
-  locatedError,
   Namespace,
   type Snapshot,
   type Type,
 } from "../runtime/contract.js"
-import type { ErrorType } from "../runtime/intrinsics.js"
 import { HostFailure } from "../runtime/model.js"
 import { adapt, work } from "./work.js"
 
@@ -23,7 +21,6 @@ import { adapt, work } from "./work.js"
 
 export type { Call, DurableCall, Snapshot, Type }
 export { DurableFn, Fn, Namespace }
-export { functionMarker } from "../runtime/contract.js"
 
 export type Options =
   | {
@@ -58,10 +55,7 @@ export { HostFailure as Failure }
 
 type Requirements<A> = A extends Effect.Effect<infer _A, infer _E, infer R> ? R : never
 
-/**
- * A host function: `f` gets the program's arguments, as they crossed (only under `translate: { functions: "mark" }`
- * with `functionMarker` where a function was), and the call.
- */
+/** A host function: `f` gets the program's arguments, as they crossed, and the call. */
 export const fn = <F extends (args: ReadonlyArray<any>, call: Call) => unknown>(
   f: F,
   options: Options = {},
@@ -107,14 +101,6 @@ export const namespace = <R = never>(options: {
 /** A failure with its own diagnostic `kind` and `suggestions`, to throw or fail with from a host function. */
 export const fail = (kind: string, message: string, suggestions?: ReadonlyArray<string>): HostFailure =>
   new HostFailure(kind, message, suggestions)
-
-/**
- * A failure the program catches as the standard error class `name` (`TypeError`, `RangeError`, `Error`, ...): throw it
- * from a host function, reject with it, or fail an Effect with it. The program's error is located at the call, so its
- * `stack` names the call and, uncaught, the run's message gives the call's line and column. Returned as a value, it is
- * an error like any other.
- */
-export const error = (name: ErrorType, message: string): Error => locatedError(name, message)
 
 /** What `resolve` gives for a path with no function: calling it throws this failure. */
 export const missing = (message: string, suggestions?: ReadonlyArray<string>, kind = "ExecutionFailure"): HostFailure =>

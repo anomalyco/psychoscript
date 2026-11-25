@@ -268,14 +268,12 @@ function sortWith(target, into, holes, comparator, work, undefs, merges) {
 
 // The default sort over more values than one native sort may take at once: native steps of bounded size (see
 // $SortStep), so the run can pause between them like any loop.
-function sortDefault(target, into, holes, values, undefs, keys) {
-  const state = $SortState(keys)
+function sortDefault(target, into, holes, values, undefs) {
+  const state = $SortState(values)
   while ($SortStep(state)) {}
   return $Sorted(target, into, holes, $SortResult(state, values), undefs)
 }
 
-// Without Intl, an element's toLocaleString gets no arguments; the built-in formatters, of primitives, arrays and
-// dates, get the locales and options.
 function Array$prototype$toLocaleString(locales = undefined, options = undefined) {
   const array = $Receiver(this, "Array", "Array.prototype.toLocaleString")
   let result = ""
@@ -284,13 +282,7 @@ function Array$prototype$toLocaleString(locales = undefined, options = undefined
   while (index < array.length) {
     if (index > 0) result += ","
     item = array[index]
-    if (item !== null && item !== undefined) {
-      result += String(
-        typeof item !== "object" || $IsArray(item) || item instanceof Date
-          ? item.toLocaleString(locales, options)
-          : item.toLocaleString(),
-      )
-    }
+    if (item !== null && item !== undefined) result += String(item.toLocaleString(locales, options))
     index++
   }
   return result

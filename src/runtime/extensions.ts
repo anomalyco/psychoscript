@@ -1,22 +1,12 @@
-import {
-  type Call,
-  DurableFn,
-  Fn,
-  functionMarker,
-  HostWork,
-  isLocatedError,
-  Namespace,
-  promiseControllers,
-  type Snapshot,
-} from "./contract.js"
+import { type Call, DurableFn, Fn, HostWork, Namespace, promiseControllers, type Snapshot } from "./contract.js"
 import type { HostTarget } from "../host.js"
 import { BufferObj } from "../stdlib/buffer.js"
 import { StreamingResponse } from "../streaming-response.js"
-import { errorMessage, errorType, locate } from "./errors.js"
+import { errorMessage, errorType } from "./errors.js"
 import type { Interpreter } from "./interpreter.js"
 import { createErrorValue } from "./intrinsics.js"
 import { member } from "./intrinsic-names.js"
-import { DEFAULT_VALUE_DEPTH, MAX_ARRAY_LENGTH } from "./limits.js"
+import { MAX_ARRAY_LENGTH, MAX_VALUE_DEPTH } from "./limits.js"
 import { AsyncIteratorSymbol, HostFailure, PendingThrow, rangeError, Throw, typeError } from "./model.js"
 import { native } from "./native.js"
 import {
@@ -28,9 +18,6 @@ import {
   keys,
   Arr,
   Bytes,
-  type TypedArray,
-  typedArrays,
-  type TypedArrayName,
   DateObj,
   ErrorObj,
   HeadersObj,
@@ -46,7 +33,6 @@ import {
   coerceToString,
   type Value,
   lookup,
-  parseArrayIndex,
   type Slot,
 } from "./objects.js"
 import { describeValue, isOpaque, typeofValue } from "./references.js"
@@ -92,8 +78,6 @@ export const hostGlobals = <R>(
   globals: Readonly<Record<string, unknown>>,
   translate: Required<Translate> = { functions: "error", promises: "error" },
   adapt?: (value: unknown, call: Call) => unknown,
-  // The runtime's `limits.maxValueDepth`.
-  maxDepth = DEFAULT_VALUE_DEPTH,
 ): ReadonlyArray<readonly [string, Value]> => {
   // A plain host function is called like a `sync` host function that takes functions.
   const plain = (value: Function) =>
@@ -127,16 +111,14 @@ export const hostGlobals = <R>(
     waiting: Array<PromiseObj> | undefined,
     back: Array<Function> | undefined,
   ): unknown => {
-    if (depth > maxDepth) throw typeError(`${label} exceeds the maximum value depth of ${maxDepth}.`)
+    if (depth > MAX_VALUE_DEPTH) throw typeError(`${label} exceeds the maximum value depth of ${MAX_VALUE_DEPTH}.`)
     if (isPrimitive(value)) return value
     const host = value instanceof Obj ? hosted.get(value) : undefined
     if (back !== undefined && host !== undefined) {
       back.push(host)
       return host
     }
-    if (translate.functions !== "error" && typeofValue(value) === "function") {
-      return translate.functions === "drop" ? OMITTED : functionMarker
-    }
+    if (translate.functions === "drop" && typeofValue(value) === "function") return OMITTED
     if (seen.has(value as object)) throw typeError(`${label} contains a circular value.`)
     if (waiting !== undefined && value instanceof PromiseObj) {
       if (value.state !== "fulfilled") {
@@ -152,28 +134,6 @@ export const hostGlobals = <R>(
       throw typeError(`${label} contains ${describeValue(value)}, which cannot be passed to the host.`)
     }
     seen.add(value)
-    // Plain data, most of what crosses, is copied here as its own `toHost` would copy it, without its allocations.
-    if (value.constructor === Arr) {
-      const items = (value as Arr).items
-      const copied: Array<unknown> = new Array(items.length)
-      for (let index = 0; index < items.length; index++) {
-        if (!(index in items)) continue
-        const item = toHost(items[index], label, depth + 1, seen, waiting, back)
-        copied[index] = item === OMITTED ? null : item
-      }
-      seen.delete(value)
-      return copied
-    }
-    if (value.constructor === Obj && isPlainData(value)) {
-      const copied: Record<string, unknown> = {}
-      for (const [key, slot] of value.props) {
-        if (typeof key !== "string" || !slot.enumerable || key === "__proto__" || !("value" in slot)) continue
-        const item = toHost(slot.value, label, depth + 1, seen, waiting, back)
-        if (item !== OMITTED) copied[key] = item
-      }
-      seen.delete(value)
-      return copied
-    }
     const next = (item: Value) => {
       const copied = toHost(item, label, depth + 1, seen, waiting, back)
       return copied === OMITTED && (value instanceof MapObj || value instanceof SetObj) ? undefined : copied
@@ -208,7 +168,7 @@ export const hostGlobals = <R>(
     native(builtins, { runtime: "host", name: `get ${name}`, call: () => read() })
 
   const fromHost = (value: unknown, label: string, depth = 0, seen = new Set<object>(), place: Place = {}): Value => {
-    if (depth > maxDepth) throw typeError(`${label} exceeds the maximum value depth of ${maxDepth}.`)
+    if (depth > MAX_VALUE_DEPTH) throw typeError(`${label} exceeds the maximum value depth of ${MAX_VALUE_DEPTH}.`)
     if (isPrimitive(value)) return value
     if (place.global !== undefined) {
       if (value instanceof Namespace) return namespace(value, label, place.global)
@@ -359,14 +319,6 @@ export const hostGlobals = <R>(
       if (typeof Buffer !== "undefined" && Buffer.isBuffer(value))
         return new BufferObj(builtins.Buffer, new Uint8Array(value))
       if (value instanceof Uint8Array) return new Bytes(builtins.Uint8Array, new Uint8Array(value))
-      // The other typed arrays view the same bytes, without a copy; without typed arrays, they can't cross.
-      if (ctx.typedArrays && ArrayBuffer.isView(value)) {
-        const name = (value as unknown as { [Symbol.toStringTag]: string })[Symbol.toStringTag]
-        if (!Object.hasOwn(typedArrays, name) || value instanceof DataView) {
-          throw typeError(`${label} produced ${describeHost(value)}, which the program cannot hold.`)
-        }
-        return new Bytes(builtins[name as TypedArrayName], value as TypedArray)
-      }
       if (value instanceof ArrayBuffer) {
         const view = new Uint8Array(value)
         // Only a real buffer has bytes to view; anything else would be read as array-like and lose them silently.
@@ -494,8 +446,6 @@ export const hostGlobals = <R>(
     ) {
       return reason
     }
-    // `Host.error`'s: an error of its class, which the call locates.
-    if (isLocatedError(reason)) return locate(reason)
     try {
       return new Throw(fromHost(reason, label))
     } catch (error) {
@@ -647,21 +597,6 @@ const hostErrors = new Map<string, ErrorConstructor>([
   ["URIError", URIError],
 ])
 
-/**
- * Whether `value`'s own enumerable string properties are all data, none of them an array index: its property table then
- * lists them, and their values, as `entries` does, and reading them runs nothing.
- */
-const isPlainData = (value: Obj): boolean => {
-  if (value.hasProgramAccessors) return false
-  for (const [key, slot] of value.props) {
-    if (typeof key !== "string" || !slot.enumerable) continue
-    if (!("value" in slot)) return false
-    const first = key.charCodeAt(0)
-    if (first >= 48 && first <= 57 && parseArrayIndex(key) !== undefined) return false
-  }
-  return true
-}
-
 // The primitives the interpreter operates on; symbols and BigInts are not among them.
 const isPrimitive = (value: unknown): value is string | number | boolean | null | undefined =>
   value === null ||
@@ -671,7 +606,6 @@ const isPrimitive = (value: unknown): value is string | number | boolean | null 
   typeof value === "boolean"
 
 const describeHost = (value: unknown): string => {
-  if (value === functionMarker) return "a function marker"
   if (typeof value !== "object" || value === null) return `a ${typeof value}`
   const name = (value as { constructor?: { name?: string } }).constructor?.name
   if (name === undefined || name === "") return "an object"

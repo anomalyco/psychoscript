@@ -1,13 +1,11 @@
-import { type Data, fromJson } from "../data.js"
+import { fromJson, type Json } from "../data.js"
 import { conversions } from "../runtime/callback.js"
 import type { Builtins } from "../runtime/intrinsics.js"
-import { functionMarker } from "../runtime/contract.js"
-import { checkStringLength, DEFAULT_VALUE_DEPTH, WALK_DEPTH } from "../runtime/limits.js"
+import { checkStringLength, MAX_VALUE_DEPTH } from "../runtime/limits.js"
 import { invalidData, rangeError, typeError } from "../runtime/model.js"
 import {
   Arr,
   Builtin,
-  ArrayBufferObj,
   Bytes,
   Callable,
   coerceToNumber,
@@ -57,9 +55,8 @@ export class VmIntrinsic {
 }
 
 export const INTERNAL_SOURCE = String.raw`
-// A promise stays as it is, so that the operator or built-in it reaches rejects it as an un-awaited value.
 function $vmToPrimitive(v, hint) {
-  if (!$IsObj(v) || $IsPromise(v)) return v
+  if (!$IsDataObj(v)) return v
   const exotic = v[Symbol.toPrimitive]
   if (exotic !== undefined && exotic !== null) {
     if (!$IsCallableAny(exotic)) $Throw("TypeError", "Symbol.toPrimitive must be a function.")
@@ -113,11 +110,6 @@ function $vmBinary(op, lhs, rhs) {
   const l = $vmToPrimitive(lhs, hint)
   const r = $vmToPrimitive(rhs, hint)
   return $ApplyBinary(op, l, r)
-}
-
-function $vmSetLength(o, v) {
-  o.length = $vmToPrimitive(v, "number")
-  return v
 }
 
 // A write that reached a program setter: the assignment's value is what was assigned, not what the setter returns.
@@ -202,10 +194,10 @@ function $vmReplay(callable, target, args, constructing, replay, read, req) {
 
 // A JSON walk's step for one value, holder[key]: its JSON as program data, or undefined when it is left out. A promise
 // is yielded at the host boundary, which resumes the walk with its value.
-function $vmJsonVisitor(boundary, replacer, properties, maxDepth) {
+function $vmJsonVisitor(boundary, replacer, properties) {
   const ancestors = []
   function* visit(holder, key, depth) {
-    if (depth > maxDepth) $Throw("RangeError", "Value exceeds the maximum depth of " + maxDepth + ".")
+    if (depth > 100) $Throw("RangeError", "Value exceeds the maximum depth of 100.")
     let val = holder[key]
     if ($IsPromise(val)) {
       if (!boundary) {
@@ -252,8 +244,8 @@ function $vmJsonVisitor(boundary, replacer, properties, maxDepth) {
   return visit
 }
 
-function $vmJsonWalk(replacer, value, properties, indent, maxDepth) {
-  const json = $vmJsonVisitor(false, replacer, properties, maxDepth)({ "": value }, "", 0).next().value
+function $vmJsonWalk(replacer, value, properties, indent) {
+  const json = $vmJsonVisitor(false, replacer, properties)({ "": value }, "", 0).next().value
   return $JsonFinish(false, json, properties, indent)
 }
 
@@ -312,9 +304,9 @@ async function $vmHostWait(promises, callee, args, read) {
   return $vmReplay(callee, undefined, args, false, [], read, undefined)
 }
 
-async function $vmResult(value, maxDepth) {
+async function $vmResult(value) {
   const root = $IsThenable(value) ? await value : value
-  const walk = $vmJsonVisitor(true, undefined, null, maxDepth)({ "": root }, "", 0)
+  const walk = $vmJsonVisitor(true, undefined, null)({ "": root }, "", 0)
   let step = walk.next()
   while (!step.done) step = walk.next(await step.value)
   return $JsonFinish(true, step.value, null, undefined)
@@ -345,6 +337,7 @@ export const registerVmIntrinsics = (map: Map<string, unknown>, vm: Vm): void =>
   }
 
   add("$IsObj", ([v]) => v instanceof Obj)
+  add("$IsDataObj", ([v]) => v instanceof Obj && !isOpaque(v))
   add("$IsDate", ([v]) => v instanceof DateObj)
   add("$IsPromise", ([v]) => v instanceof PromiseObj)
   add("$IsArray", ([v]) => v instanceof Arr)
@@ -427,14 +420,16 @@ export const registerVmIntrinsics = (map: Map<string, unknown>, vm: Vm): void =>
 
   // JSON walk helpers
   add("$JsonClassify", ([val, boundary, ancestors]) => {
-    if (val === undefined) return 0
-    // A function the result marks is kept, and `toPlainJson` makes it the marker.
-    if (typeofValue(val) === "function") return boundary && vm.markFunctions ? 1 : 0
+    if (val === undefined || typeofValue(val) === "function") return 0
     if (typeof val === "number") return Number.isFinite(val) ? 1 : 2
     if (val === null || typeof val === "string" || typeof val === "boolean") return 1
     if (typeof val === "bigint") throw bigintJson(boundary as boolean)
     if (!(val instanceof Obj)) return 3
-    if (boundary && (val instanceof Bytes || val instanceof ArrayBufferObj)) throw invalidData(boundaryMessage(val))
+    if (boundary && val instanceof Bytes) {
+      throw invalidData(
+        "A Uint8Array cannot cross to the host; pass text instead, e.g. `new TextDecoder().decode(bytes)` or `bytes.toBase64()`.",
+      )
+    }
     if ((boundary && val instanceof URLSearchParamsObj) || val instanceof HeadersObj) return 3
     if ((ancestors as Arr).items.includes(val)) throw typeError("Converting circular structure to JSON.")
     if (boundary && val instanceof SetObj) return 4
@@ -478,14 +473,12 @@ const bigintJson = (boundary: boolean) =>
     ? invalidData("A BigInt cannot cross to the host; pass text instead, e.g. `String(n)`.")
     : typeError("Do not know how to serialize a BigInt; convert it first, e.g. `String(n)`.")
 
-// A function here is one the result marks: the walk leaves out every other.
-const toPlainJson = (val: Value): Data | undefined => {
+const toPlainJson = (val: Value): Json | undefined => {
   if (val === undefined) return undefined
   if (val === null || typeof val === "string" || typeof val === "number" || typeof val === "boolean") return val
   if (val instanceof Arr) return val.items.map((item) => toPlainJson(item) ?? null)
-  if (val instanceof Callable) return functionMarker
   if (val instanceof Obj) {
-    const out: Record<string, Data> = {}
+    const out: Record<string, Json> = {}
     for (const [k, slot] of val.props) {
       if (typeof k !== "string" || !slot.enumerable || !("value" in slot)) continue
       const v = toPlainJson(slot.value)
@@ -499,7 +492,7 @@ const toPlainJson = (val: Value): Data | undefined => {
     }
     return out
   }
-  return val instanceof HostNamespace ? (functionMarker) : {}
+  return {}
 }
 
 /**
@@ -511,17 +504,14 @@ const toPlainJson = (val: Value): Data | undefined => {
  * become null, and everything else is copied. Two departures from JS so a mistake is not a silent `{}`: an Error
  * serializes as `{ name, message, ...own }`, and a promise throws. At the host boundary a promise is awaited, a Set
  * crosses as an array, a URLSearchParams as its query string, a Uint8Array asks to be encoded as text first, and a
- * `__proto__` key is dropped so host code can never receive one. With `mark` (the boundary under
- * `translate: { functions: "mark" }`), a function is `Host.functionMarker` instead of vanishing.
+ * `__proto__` key is dropped so host code can never receive one.
  */
 export const tryFastBoundaryOrJson = (
   builtins: Builtins,
   value: Value,
   boundary: boolean,
   revisitBudget = 2048,
-  mark = false,
-  maxDepth = DEFAULT_VALUE_DEPTH,
-): { readonly ok: true; readonly json: Data | undefined } | { readonly ok: false } => {
+): { readonly ok: true; readonly json: Json | undefined } | { readonly ok: false } => {
   if (value === undefined) return { ok: true, json: undefined }
   if (value === null || typeof value === "string" || typeof value === "boolean") return { ok: true, json: value }
   if (typeof value === "number") return { ok: true, json: Number.isFinite(value) ? value : null }
@@ -533,7 +523,7 @@ export const tryFastBoundaryOrJson = (
     value.props.size <= 4 &&
     !value.props.has("toJSON")
   ) {
-    const flatOut: Record<string, Data> = {}
+    const flatOut: Record<string, Json> = {}
     let flatOk = true
     for (const [k, slot] of value.props) {
       if (typeof k !== "string" || !slot.enumerable) continue
@@ -568,12 +558,9 @@ export const tryFastBoundaryOrJson = (
   const visit = (
     cur: Value,
     depth: number,
-  ): { readonly ok: true; readonly json: Data | undefined } | { readonly ok: false } => {
-    if (depth > maxDepth) throw rangeError(`Value exceeds the maximum depth of ${maxDepth}.`)
-    if (cur === undefined) return { ok: true, json: undefined }
-    if (typeofValue(cur) === "function") {
-      return { ok: true, json: mark ? (functionMarker) : undefined }
-    }
+  ): { readonly ok: true; readonly json: Json | undefined } | { readonly ok: false } => {
+    if (depth > MAX_VALUE_DEPTH) throw rangeError(`Value exceeds the maximum depth of ${MAX_VALUE_DEPTH}.`)
+    if (cur === undefined || typeofValue(cur) === "function") return { ok: true, json: undefined }
     if (typeof cur === "number") return { ok: true, json: Number.isFinite(cur) ? cur : null }
     if (cur === null || typeof cur === "string" || typeof cur === "boolean") return { ok: true, json: cur }
     // A BigInt serializes only through a program's `BigInt.prototype.toJSON`, which the prelude walk calls.
@@ -606,7 +593,11 @@ export const tryFastBoundaryOrJson = (
       }
       return { ok: false }
     }
-    if (boundary && (cur instanceof Bytes || cur instanceof ArrayBufferObj)) throw invalidData(boundaryMessage(cur))
+    if (boundary && cur instanceof Bytes) {
+      throw invalidData(
+        "A Uint8Array cannot cross to the host; pass text instead, e.g. `new TextDecoder().decode(bytes)` or `bytes.toBase64()`.",
+      )
+    }
     if (boundary && cur instanceof URLSearchParamsObj) return { ok: true, json: cur.params.toString() }
     if (cur instanceof HeadersObj) return { ok: true, json: Object.fromEntries(cur.headers) }
     if (ancestors.has(cur)) throw typeError("Converting circular structure to JSON.")
@@ -614,7 +605,7 @@ export const tryFastBoundaryOrJson = (
     try {
       if (cur instanceof Arr || (boundary && cur instanceof SetObj)) {
         const items = cur instanceof Arr ? cur.items : [...cur.set.liveKeys()]
-        const out: Array<Data> = new Array(items.length)
+        const out: Array<Json> = new Array(items.length)
         for (let i = 0; i < items.length; i++) {
           const r = visit(items[i], depth + 1)
           if (!r.ok) return r
@@ -622,7 +613,7 @@ export const tryFastBoundaryOrJson = (
         }
         return { ok: true, json: out }
       }
-      const out: Record<string, Data> = {}
+      const out: Record<string, Json> = {}
       if (cur instanceof ErrorObj) {
         for (const k of ["name", "message"]) {
           const slot = lookup(cur, k)
@@ -655,18 +646,4 @@ export const tryFastBoundaryOrJson = (
   }
 
   return visit(value, 0)
-}
-
-/** The depth the walk allows: its own, or the runtime's `limits.maxValueDepth` when that is deeper. */
-export const walkDepth = (valueDepth: number): number => Math.max(WALK_DEPTH, valueDepth)
-
-/** Why a typed array or ArrayBuffer cannot be a result. */
-const boundaryMessage = (value: Bytes | ArrayBufferObj): string => {
-  if (value instanceof ArrayBufferObj) {
-    return "An ArrayBuffer cannot cross to the host as data; pass a typed array of it to a host function, or its values, e.g. `Array.from(new Uint8Array(buffer))`."
-  }
-  if (value.isUint8()) {
-    return "A Uint8Array cannot cross to the host; pass text instead, e.g. `new TextDecoder().decode(bytes)` or `bytes.toBase64()`."
-  }
-  return `A ${value.tag} cannot cross to the host as data; pass it to a host function, or its values, e.g. \`Array.from(values)\`.`
 }

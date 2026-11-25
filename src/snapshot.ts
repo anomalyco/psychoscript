@@ -3,7 +3,7 @@ import type { Interruption } from "./runtime/signals.js"
 import { staticNames, unchanged } from "./runtime/intrinsic-names.js"
 import { Arr, ClassInfo, Fn, Obj } from "./runtime/objects.js"
 import { nodeId, type Source } from "./runtime/source.js"
-import { type ClassSpec, codecShape, decode, encode, type Json, measure, SnapshotError } from "./snapshot/codec.js"
+import { type ClassSpec, codecShape, decode, encode, type Json, SnapshotError } from "./snapshot/codec.js"
 import { FORMAT, type Header, hash, hostsId, type Snapshot, validate } from "./snapshot/snapshot.js"
 import { AsyncFromSyncCloseTarget, FinallyTarget, VmScheduler } from "./async.js"
 import { Code, hashOf } from "./code.js"
@@ -50,20 +50,7 @@ const vmSpecs = (): ReadonlyArray<ClassSpec> =>
       ctor: Vm,
       anchor: "vm",
       fields: ["frames", "templates", "scheduler", "hosts", "depth", "sliced", "outcome"],
-      skip: [
-        "ctx",
-        "pool",
-        "sourceCodes",
-        "intrinsics",
-        "fuel",
-        "sliceStart",
-        "tripEvery",
-        "redo",
-        "heap",
-        "heapAtReturn",
-        "markFunctions",
-        "valueDepth",
-      ],
+      skip: ["ctx", "pool", "sourceCodes", "intrinsics", "fuel", "sliceStart", "tripEvery", "redo"],
       reset: restoreStack,
     },
     {
@@ -216,13 +203,6 @@ export const captureVm = (
     records: encoded.records,
   }
   return { snapshot, lost }
-}
-
-/** What the run can still reach, in the size model of `limits.maxHeapBytes` (see runtime/heap.ts). */
-export const measureVm = (vm: Vm, extra: ReadonlyArray<unknown> = []): number => {
-  vm.compact()
-  const ctx = vm.ctx
-  return measure([vm, ctx, ...ctx.intrinsics.changed(), ...extra], vmSpecs(), [ctx.logs, vm.hosts.runId])
 }
 
 /**

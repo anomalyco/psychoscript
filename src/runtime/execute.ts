@@ -1,11 +1,9 @@
 import { parse, type Program } from "acorn"
-import { type Data, fromJson, type Json } from "../data.js"
+import { fromJson, type Json } from "../data.js"
 import { type Call, DurableFn, Interrupted } from "./contract.js"
 import { fromBytes, header, type Snapshot, SnapshotError, toBytes } from "../snapshot/snapshot.js"
 import { normalizeError } from "./errors.js"
 import { hostGlobals } from "./extensions.js"
-import { HeapMeter } from "./heap.js"
-import { DEFAULT_VALUE_DEPTH } from "./limits.js"
 import { createBuiltins } from "./intrinsics.js"
 import { Interpreter } from "./interpreter.js"
 import type { Value } from "./objects.js"
@@ -74,8 +72,7 @@ export const checkMaxBytes = (maxBytes: number | undefined): void => {
 export type Result =
   | {
       readonly ok: true
-      /** Its JSON; only under `translate: { functions: "mark" }` does it hold `Host.functionMarker`, where each function was. */
-      readonly value: Data
+      readonly value: Json
       readonly warnings?: ReadonlyArray<Diagnostic>
       readonly logs?: ReadonlyArray<string>
       readonly truncated?: boolean
@@ -111,8 +108,6 @@ export type Run = {
 export type Limits = {
   readonly timeoutMs: number | undefined
   readonly maxOutputBytes: number | undefined
-  readonly maxHeapBytes?: number | undefined
-  readonly maxValueDepth?: number | undefined
 }
 
 type Globals<R> = (ctx: Interpreter<R>) => ReadonlyArray<readonly [string, Value]>
@@ -129,8 +124,6 @@ export type Setup<R> = {
   readonly modules?: Readonly<Record<string, string>> | undefined
   /** Globals made as program values (a test harness), made again the same way for a restored run. */
   readonly programGlobals?: Globals<R> | undefined
-  /** Whether programs have typed arrays besides `Uint8Array`; see `Runtime.Options`. */
-  readonly typedArrays?: boolean | undefined
 }
 
 /** Turns a suspended outcome into a failure, for callers that only run programs to their end. */
@@ -207,12 +200,10 @@ export const resumeProgram = <R>(
         limits: {
           timeoutMs: saw.limits.timeoutMs ?? undefined,
           maxOutputBytes: saw.limits.maxOutputBytes ?? undefined,
-          maxHeapBytes: saw.limits.maxHeapBytes ?? undefined,
-          maxValueDepth: saw.limits.maxValueDepth ?? undefined,
         },
       }
       const run: Run = { id: saw.runId, metadata: saw.metadata }
-      const fresh = instantiate(resumed, run, undefined, true)
+      const fresh = instantiate(resumed, run)
       const snapshot = restoreInto(state, fresh.vm)
       for (const call of fresh.vm.calls()) {
         if (call.status !== "started") continue
@@ -246,23 +237,14 @@ const restoreInto = (saved: unknown, vm: Vm): Snapshot =>
   })
 
 // A new runtime for a run: intrinsics, the host globals, the program's bindings, and its VM.
-const instantiate = <R>(
-  setup: Setup<R>,
-  run: Run,
-  bindings?: Readonly<Record<string, Json>>,
-  restored = false,
-): Interpreter<R> => {
-  const valueDepth = setup.limits.maxValueDepth ?? DEFAULT_VALUE_DEPTH
+const instantiate = <R>(setup: Setup<R>, run: Run, bindings?: Readonly<Record<string, Json>>): Interpreter<R> => {
   const ctx = new Interpreter<R>({
     builtins: createBuiltins(),
     logs: [],
     modules: setup.modules,
-    typedArrays: setup.typedArrays,
     globals: (ctx) => [
       ...(setup.programGlobals?.(ctx) ?? []),
-      ...(setup.globals === undefined
-        ? []
-        : hostGlobals(ctx, setup.globals(run), setup.translate, setup.adapt, valueDepth)),
+      ...(setup.globals === undefined ? [] : hostGlobals(ctx, setup.globals(run), setup.translate, setup.adapt)),
     ],
     bindings:
       bindings === undefined
@@ -270,10 +252,6 @@ const instantiate = <R>(
         : (ctx) => Object.entries(bindings).map(([name, value]) => [name, fromJson(ctx, value)] as const),
   })
   if (roundTrip) ctx.vm.tripEvery = ROUND_TRIP_TICKS
-  ctx.vm.markFunctions = setup.translate?.functions === "mark"
-  ctx.vm.valueDepth = valueDepth
-  const maxHeapBytes = setup.limits.maxHeapBytes
-  if (maxHeapBytes !== undefined) ctx.vm.heap = new HeapMeter(maxHeapBytes, restored)
   return ctx
 }
 
@@ -365,7 +343,7 @@ export class Running<R> {
     const metadata = () => this.run_.metadata
     const failed = (error: Diagnostic): Result => ({ ok: false, error, ...logged(), metadata: metadata() })
     // Set only after copy-out so timeouts cannot report invalid values as completed.
-    let returned: { value: Data; warnings: () => Array<Diagnostic> } | undefined
+    let returned: { value: Json; warnings: () => Array<Diagnostic> } | undefined
     const driver = this.driver
 
     const base = async (): Promise<Outcome | typeof CANCELLED> => {
@@ -377,7 +355,7 @@ export class Running<R> {
         if (outcome === SUSPENDED) return this.suspended!
         this.finished = true
         if (!outcome.ok) return failed(normalizeError(outcome.error))
-        const result = (outcome.value as Data | undefined) ?? null
+        const result = (outcome.value as Json | undefined) ?? null
         const vm = this.ctx.vm
         returned = { value: result, warnings: () => vm.diagnostics() }
         // Host work the program left running is interrupted, not awaited.
@@ -482,12 +460,7 @@ export class Running<R> {
     const limits = this.setup.limits
     const saved = attempt(() =>
       vm.capture({
-        limits: {
-          timeoutMs: limits.timeoutMs ?? null,
-          maxOutputBytes: limits.maxOutputBytes ?? null,
-          ...(limits.maxHeapBytes === undefined ? {} : { maxHeapBytes: limits.maxHeapBytes }),
-          ...(limits.maxValueDepth === undefined ? {} : { maxValueDepth: limits.maxValueDepth }),
-        },
+        limits: { timeoutMs: limits.timeoutMs ?? null, maxOutputBytes: limits.maxOutputBytes ?? null },
         activeMs: this.activeBefore + Date.now() - this.startedAt,
         metadata: this.run_.metadata,
         strict: false,
@@ -544,7 +517,7 @@ export class Running<R> {
     if (saved.lost.length > 0) return
     const restored = fromBytes(bytes)
     const run = { id: this.run_.id, metadata: header(restored).metadata }
-    const fresh = instantiate(this.setup, run, undefined, true)
+    const fresh = instantiate(this.setup, run)
     restoreInto(restored, fresh.vm)
     this.ctx = fresh
     this.run_ = run
@@ -645,7 +618,7 @@ const boundOutput = (result: Result, maxOutputBytes: number): Result => {
   const serialized = result.ok ? (JSON.stringify(result.value) ?? "null") : ""
   const valueBytes = result.ok ? utf8ByteLength(serialized) : 0
   const valueTruncated = valueBytes > maxOutputBytes
-  const value: Data = !result.ok
+  const value: Json = !result.ok
     ? null
     : valueTruncated
       ? `${utf8Truncate(serialized, maxOutputBytes)} [result truncated: ${valueBytes} bytes exceeds the ${maxOutputBytes}-byte output limit; return a smaller value]`

@@ -2,41 +2,6 @@
 
 ## Unreleased
 
-- Rust: `Limits::clock` (`Clock::Wall`, the default, or `Clock::ThreadCpu`): with `ThreadCpu`, `timeout_ms` counts the
-  CPU time of the threads running the program, so a loaded machine doesn't time out a well-behaved program. Host work
-  isn't counted: synchronous host calls are left out by their wall-clock duration, which can only count too little
-  (the CPU time with them may reach ten times the timeout), and waits on host calls count on the wall clock, up to ten
-  times the timeout. A saved run keeps its clock. The new
-  `psychoscript::thread_clock` (`ThreadClock::current`, `now`) reads a thread's CPU time on Linux, Android, Apple
-  platforms and Windows, and the wall clock elsewhere. `Limits::slice_ms` bounds how long a run computes without
-  awaiting the host, on the same clock and without its host calls; a run past it stops with `SliceExceeded`. Under
-  `ThreadCpu` it may run up to a sixteenth of the slice past it. The reference is unchanged.
-- Typed arrays are opt-in: `Runtime.make({ typedArrays: true })` (Rust: `Runtime::typed_arrays(true)`). Without it, the
-  default, programs and host functions behave as before they were added (0.2.1): no `ArrayBuffer`, `Uint16Array`,
-  `Uint32Array`, `Int32Array`, `Float32Array` or `Float64Array`, a host function returning one fails at the call, and
-  `Uint8Array` has no `buffer`; `globalNames` leaves them out.
-- `Host.error(name, message)` (Rust: `HostError::located(name, message)`, a new `HostValue::Located`): a host call
-  that fails with it, sync or async, thrown, rejected or as an Effect's failure, throws a real error of that standard
-  class in the program, located at the call: its `stack` names the call, and uncaught the run fails with
-  `TypeError: message (line L, col C)`. Other names make an `Error`. Returned as a value, it is an error like any
-  other.
-- Installs from git (`github:anomalyco/psychoscript#<commit>`): a `prepare` script installs the dev dependencies and
-  builds `dist/`, since package managers don't install a git dependency's dev dependencies. Bun runs it only for a
-  trusted dependency (`trustedDependencies`).
-- `ArrayBuffer`, `Uint16Array`, `Uint32Array`, `Int32Array`, `Float32Array` and `Float64Array`: views of one byte
-  buffer with JS conversions, the methods 3D programs need, and fast indexed access. They (and `ArrayBuffer`s) are
-  lent to synchronous host functions for the call, without a copy. `Uint8Array` gains `byteLength`, `byteOffset`,
-  `buffer` and the `ArrayBuffer` constructor. A typed array ignores writes to numeric keys that are not indexes.
-- `limits.maxHeapBytes`: an optional cap on what a run can still reach, measured in a fixed size model rather than
-  process memory, so garbage never counts and the result is the same everywhere. A run over it stops with the new
-  diagnostic kind `MemoryLimitExceeded`; a suspended run keeps its limit.
-- `limits.maxValueDepth`: how deep a value may nest where it crosses to or from the host (result, arguments, return
-  values) and in `JSON.stringify`; 32 by default as before, at most 256. In the Rust implementation these copies take
-  a fraction of the stack they did (a debug build's argument copy a fifth), and a saved call's argument no longer has
-  a depth past which the state can't be read back; snapshots from earlier builds don't resume.
-- `translate: { functions: "mark" }`: a program function inside a host call's argument, or in the run's result,
-  crosses as `Host.functionMarker` (Rust: `HostValue::FunctionMarker`, `Data::FunctionMarker`) instead of failing
-  the call or being left out.
 - `JSON.parse` given an object or array, which is most likely already parsed, throws
   `TypeError: JSON.parse expects a string, got an object (is it already parsed?)` at the call, instead of parsing its
   text. Other non-string values are parsed as before.
@@ -50,8 +15,7 @@
   `indices.groups` and the replace callback's groups) have a null prototype; `RegExp.prototype.source`/`flags`/flag
   getters read as on an empty pattern instead of throwing.
 - `Number.prototype.toLocaleString` and `BigInt.prototype.toLocaleString` honor their locales and options through
-  the host's Intl instead of ignoring them, and `Array.prototype.toLocaleString` passes both on to each element that
-  is a primitive, an array or a date (without `Intl`, other elements' `toLocaleString` gets no arguments).
+  the host's Intl instead of ignoring them, and `Array.prototype.toLocaleString` passes both on to each element.
 - Uint8Array: `toSorted`, `toReversed`, `with`, `copyWithin`, `setFromBase64`, `setFromHex`, array-like sources, and
   fractional lengths. Buffer: inherits Uint8Array's statics, `of`, `copyBytesFrom`, the `readUint*`/`writeUint*`
   aliases, and `from(bytes, offset, length)` copies the whole input as Node does. `TextEncoder.prototype.encodeInto`.
@@ -71,8 +35,7 @@
   receivers, own-property checks apply ToPropertyKey to object keys, `Object.prototype.toString` reports Math, JSON,
   crypto, TextEncoder/TextDecoder, symbols and async/generator functions, and `Object.getOwnPropertySymbols` exists.
 - A `StreamingResponse` now has `type`, `clone()` and `reader.closed`; `blob()`, `formData()` and the body's `tee`,
-  `pipeTo` and `pipeThrough` throw a TypeError instead of being undefined. Rust: `StreamingResponse::with_type` sets
-  `type` (`"default"` unless set).
+  `pipeTo` and `pipeThrough` throw a TypeError instead of being undefined.
 - Console: nested `undefined` prints as `undefined` (not `null`), `console.table` shows a table holding a function
   instead of `[opaque reference]`, and `console.assert`/`count`/`countReset`/`group`/`groupCollapsed`/`groupEnd`/
   `trace`/`time`/`timeLog`/`timeEnd` exist.

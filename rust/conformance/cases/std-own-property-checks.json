@@ -69,8 +69,11 @@
     "[object Function]",
     "[object AsyncFunction]",
     "[object Function]",
-    "[object GeneratorFunction]",
-    "[object AsyncFunction]"
+    [
+      "TypeError",
+      "Binary operators require data values."
+    ],
+    "[object Function]"
   ],
   "logs": [],
   "metadata": null

@@ -1,0 +1,122 @@
+{
+  "bindings": {},
+  "ok": true,
+  "value": {
+    "repeat": [
+      [
+        "RangeError",
+        "String.repeat expects a finite non-negative count."
+      ],
+      [
+        "RangeError",
+        "String.repeat expects a finite non-negative count."
+      ],
+      [
+        "RangeError",
+        "String.repeat expects a finite non-negative count."
+      ],
+      "",
+      "abab",
+      "abab",
+      [
+        "RangeError",
+        "String.repeat expects a finite non-negative count."
+      ],
+      [
+        "RangeError",
+        "String.repeat expects a finite non-negative count."
+      ],
+      ""
+    ],
+    "holes": [
+      false,
+      "inherited",
+      [
+        0,
+        2
+      ],
+      [
+        0,
+        null,
+        2
+      ],
+      [
+        0,
+        2
+      ],
+      [
+        "0",
+        "2"
+      ],
+      -1,
+      false,
+      "0,,2",
+      "[0,null,2]",
+      [
+        0,
+        null,
+        2
+      ],
+      "inherited"
+    ],
+    "locale": [
+      "1,234.5,1/1/1970, 12:00:00 AM",
+      "spy,spy,1",
+      "spy",
+      [
+        [
+          "de",
+          {}
+        ],
+        [
+          "de",
+          {}
+        ],
+        [
+          null,
+          null
+        ]
+      ]
+    ],
+    "sort": [
+      [
+        1,
+        9,
+        10
+      ],
+      [
+        1,
+        "10",
+        "9"
+      ],
+      [
+        false,
+        true
+      ],
+      [
+        "a",
+        null,
+        null
+      ],
+      [
+        "TypeError",
+        "sort without a comparator needs numbers or strings; pass a comparator for objects, e.g. (a, b) => a.age - b.age"
+      ],
+      [
+        "TypeError",
+        "sort without a comparator needs numbers or strings; pass a comparator for objects, e.g. (a, b) => a.age - b.age"
+      ],
+      [
+        "TypeError",
+        "toSorted without a comparator needs numbers or strings; pass a comparator for objects, e.g. (a, b) => a.age - b.age"
+      ],
+      [
+        "1",
+        "10",
+        "9"
+      ]
+    ]
+  },
+  "logs": [],
+  "metadata": null
+}

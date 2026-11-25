@@ -161,11 +161,8 @@ impl Vm {
 
     fn converts_by_call_at(&mut self, v: &Value, hint: Hint, depth: u32) -> bool {
         let Value::Obj(id) = v else { return false };
-        // A namespace or a promise converts without consulting its methods (see `Vm::primitive_of`).
-        if matches!(
-            self.heap[*id as usize].kind,
-            Kind::Namespace(_) | Kind::Promise(_)
-        ) {
+        // An opaque value converts without consulting its methods (see `Vm::primitive_of`).
+        if self.is_opaque_operand(v) {
             return false;
         }
         let hint = if hint == Hint::Default && crate::builtins::exotic::prefers_string(self, *id) {
@@ -914,7 +911,10 @@ fn next_listed(vm: &mut Vm, fr: Frame) -> Result<Step, Value> {
             Kind::Array(h) => h.get(i).map_or(0, |x| x.as_num() as usize),
             _ => 0,
         };
-        if vm.is_convertible_obj(&v) {
+        if vm.is_opaque_operand(&v) {
+            // ToPrimitive keeps an opaque value, for its call's fuel (see `Vm::primitive_of`).
+            vm.fuel(1);
+        } else if vm.is_convertible_obj(&v) {
             fr.set(vm, VALUE, v);
             fr.set_index(vm, HINT, hint);
             return begin(vm, fr);

@@ -58,8 +58,14 @@
     ],
     "number",
     false,
-    "[object Generator]1",
-    "[object Function]",
+    [
+      "TypeError",
+      "Binary operators require data values."
+    ],
+    [
+      "TypeError",
+      "Binary operators require data values."
+    ],
     [
       "TypeError",
       "Binary operators require data values."
