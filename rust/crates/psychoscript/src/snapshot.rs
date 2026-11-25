@@ -618,6 +618,8 @@ impl Enc<'_> {
             Kind::Bound(b) => json!(["b", val(&b.0), val(&b.1), vals(&b.2)]),
             Kind::Error(f) => match f {
                 None => json!(["e", J::Null]),
+                // A host's failure keeps that it is one: its kind may be named like the language's.
+                Some(f) if f.host => json!(["e", [f.kind.name(), f.message, f.offset, true]]),
                 Some(f) => json!(["e", [f.kind.name(), f.message, f.offset]]),
             },
             Kind::Promise(d) => {
@@ -1880,6 +1882,7 @@ impl Dec<'_> {
                     message: string(at(e, 1)?)?,
                     offset: opt_u32(at(e, 2)?)?,
                     site: Default::default(),
+                    host: e.get(3).is_some_and(|h| h == &J::Bool(true)),
                 })),
             }),
             "p" => {

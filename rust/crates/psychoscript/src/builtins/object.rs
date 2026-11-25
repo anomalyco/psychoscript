@@ -1026,7 +1026,7 @@ fn proto_property_is_enumerable(vm: &mut Vm, this: Value, args: &[Value], _: Id)
 // ---------- Function ----------
 
 fn function_ctor(vm: &mut Vm, _this: Value, _args: &[Value], _: Id) -> Res {
-    Err(vm.type_error("Function() is not supported; write a function expression instead"))
+    Err(vm.type_error("The Function constructor is not supported; write the function inline."))
 }
 
 /// The receiver of `Function.prototype.call`, `apply` or `bind`, which must be callable.
