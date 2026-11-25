@@ -1497,7 +1497,8 @@ impl<'s> Parser<'s> {
         match c {
             b'{' => {
                 self.depth += 1;
-                if self.depth > 512 {
+                // A debug build's frames are larger: its stack budget may run out first.
+                if self.depth > 512 || vm.stack_spent() {
                     return Err(vm.range_error("Maximum call stack size exceeded"));
                 }
                 self.i += 1;
@@ -1541,7 +1542,8 @@ impl<'s> Parser<'s> {
             }
             b'[' => {
                 self.depth += 1;
-                if self.depth > 512 {
+                // A debug build's frames are larger: its stack budget may run out first.
+                if self.depth > 512 || vm.stack_spent() {
                     return Err(vm.range_error("Maximum call stack size exceeded"));
                 }
                 self.i += 1;

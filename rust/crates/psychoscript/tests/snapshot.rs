@@ -736,6 +736,40 @@ fn program_state_of_every_kind_survives_a_suspend() {
 }
 
 #[test]
+fn numbers_survive_a_suspend_through_bytes_bit_for_bit() {
+    // Doubles whose shortest decimal form a best-effort parser reads back a few ulps off.
+    let code = format!(
+        r#"const bits = []
+      let x = 0x9e3779b9
+      for (let i = 0; i < 2000; i++) {{
+        x = (Math.imul(x, 1664525) + 1013904223) >>> 0
+        bits.push((x / 4294967296) * 10 ** ((x % 600) - 300))
+      }}
+      bits.push(9.335744933994957e-17, 5e-324, 1.7976931348623157e308, 2.2250738585072014e-308, 0.1 + 0.2)
+      await step(1)
+      {BUSY}
+      const again = []
+      x = 0x9e3779b9
+      for (let i = 0; i < 2000; i++) {{
+        x = (Math.imul(x, 1664525) + 1013904223) >>> 0
+        again.push((x / 4294967296) * 10 ** ((x % 600) - 300))
+      }}
+      again.push(9.335744933994957e-17, 5e-324, 1.7976931348623157e308, 2.2250738585072014e-308, 0.1 + 0.2)
+      return bits.filter((n, i) => !Object.is(n, again[i])).length"#
+    );
+    let gate = Gate::default();
+    let state = suspend_mid_loop(&stepping(&gate), &gate, &code);
+    let o = done(
+        fresh()
+            .resume_bytes(&psychoscript::to_bytes(&state))
+            .unwrap()
+            .run_resumable()
+            .unwrap(),
+    );
+    assert_eq!(o.result.unwrap(), json!(0));
+}
+
+#[test]
 fn bigints_survive_a_suspend_and_stay_one_value_each() {
     let code = format!(
         r#"let factorial = 1n

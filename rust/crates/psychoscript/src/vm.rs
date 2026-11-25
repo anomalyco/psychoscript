@@ -1,8 +1,9 @@
 //! The stack machine: frames, calls, exceptions, suspension and the run loop.
 
+use crate::time::Instant;
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use rustc_hash::FxHashMap;
 
@@ -385,8 +386,8 @@ impl Vm {
         let char_strs = (0u8..128)
             .map(|c| atoms.alloc((c as char).to_string()))
             .collect();
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let seed = crate::time::SystemTime::now()
+            .duration_since(crate::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(0x9e3779b97f4a7c15);
         Vm {
@@ -1083,7 +1084,7 @@ impl Vm {
         }
         // A long stretch of compute stops to move to a worker thread: see `offload`.
         if let Some(o) = &mut self.host.offload
-            && o.at.is_some_and(|at| std::time::Instant::now() >= at)
+            && o.at.is_some_and(|at| crate::time::Instant::now() >= at)
         {
             o.at = None;
             o.due = true;
@@ -1266,9 +1267,15 @@ impl Vm {
             .map_err(Slot::pack)
     }
 
-    fn call_slow(&mut self, f: &Value, this: Value, args: &[Value]) -> Res {
+    /// Whether the native stack the run may use is spent: a call, or a built-in recursing on it, fails with a
+    /// RangeError then.
+    pub(crate) fn stack_spent(&self) -> bool {
         let probe = 0u8;
-        if self.stack_base.abs_diff(&probe as *const u8 as usize) > self.stack_budget {
+        self.stack_base.abs_diff(&probe as *const u8 as usize) > self.stack_budget
+    }
+
+    fn call_slow(&mut self, f: &Value, this: Value, args: &[Value]) -> Res {
+        if self.stack_spent() {
             return Err(self.range_error("Maximum call stack size exceeded"));
         }
         let Value::Obj(id) = f else {

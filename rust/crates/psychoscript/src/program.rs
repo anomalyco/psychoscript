@@ -5,13 +5,14 @@ use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::task::{Context, Poll, Waker};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::exec;
 use crate::offload;
 use crate::run;
 use crate::runtime::ProgramOptions;
 use crate::snapshot::{self, Refusal, Snapshot};
+use crate::time::Instant;
 use crate::vm::Vm;
 use crate::{Code, Interrupted, Outcome, Runtime};
 
@@ -439,12 +440,22 @@ impl<'a> Program<'a> {
             {
                 r.vm.suspended = false;
                 r.vm.suspend_wanted = false;
-                if self.worker.is_none() {
-                    self.worker = offload::Worker::spawn().ok();
+                // A browser has no threads to move to: the run yields to its executor instead, which polls it
+                // again to continue, so a host on one thread can bound and interleave long stretches of compute.
+                #[cfg(target_arch = "wasm32")]
+                {
+                    cx.waker().wake_by_ref();
+                    return Poll::Pending;
                 }
-                self.move_away = self.worker.is_some();
-                self.offload = self.move_away;
-                continue;
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    if self.worker.is_none() {
+                        self.worker = offload::Worker::spawn().ok();
+                    }
+                    self.move_away = self.worker.is_some();
+                    self.offload = self.move_away;
+                    continue;
+                }
             }
             if r.vm.suspended {
                 match self.checkpoint() {
