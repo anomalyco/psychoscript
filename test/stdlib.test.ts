@@ -1691,6 +1691,29 @@ describe("built-in iterators", () => {
   })
 })
 
+describe("JSON.parse of a value already parsed", () => {
+  test("an object or array is a TypeError at the call, saying it is probably parsed already", async () => {
+    const failure = await run(`const data = { a: 1 }\nconst again = JSON.parse(data)`)
+    expect(failure).toMatchObject({
+      ok: false,
+      error: {
+        kind: "ExecutionFailure",
+        message: "TypeError: JSON.parse expects a string, got an object (is it already parsed?) (line 2, col 15)",
+        location: { line: 2, column: 15 },
+      },
+    })
+    expect(await value(`try { JSON.parse([1, 2]) } catch (e) { return [e.name, e.message] }`)).toEqual([
+      "TypeError",
+      "JSON.parse expects a string, got an array (is it already parsed?)",
+    ])
+  })
+
+  test("other non-string values are parsed as before", async () => {
+    expect(await value(`return [JSON.parse(5), JSON.parse(null), JSON.parse(true), JSON.parse("[1]")]`)).toEqual([5, null, true, [1]])
+    expect((await error(`return JSON.parse(new Date(0))`)).message).toContain("JSON.parse received invalid JSON")
+  })
+})
+
 describe("Object.prototype.toString", () => {
   test("reports the built-in kind it is inherited by, as JS does through Symbol.toStringTag", async () => {
     expect(
@@ -1724,6 +1747,39 @@ describe("Object.prototype.toString", () => {
       "[object GeneratorFunction]",
       "[object AsyncFunction]",
       "[object AsyncGeneratorFunction]",
+    ])
+  })
+})
+
+describe("default sort", () => {
+  test("numbers only sort numerically, as a deliberate difference from JavaScript", async () => {
+    expect(await value(`return [[10, 9, 1].sort(), [10, 9, 1].toSorted()]`)).toEqual([
+      [1, 9, 10],
+      [1, 9, 10],
+    ])
+  })
+
+  test("any other mix keeps the string order", async () => {
+    expect(await value(`return [10, "9", 1].sort()`)).toEqual([1, 10, "9"])
+  })
+
+  test("an object among the elements is a TypeError at the call, asking for a comparator", async () => {
+    const message = "without a comparator needs numbers or strings; pass a comparator for objects, e.g. (a, b) => a.age - b.age"
+    expect(await run(`const people = [{ age: 2 }, { age: 1 }]\npeople.sort()`)).toMatchObject({
+      ok: false,
+      error: { message: `TypeError: sort ${message} (line 2, col 1)`, location: { line: 2, column: 1 } },
+    })
+    for (const items of ["[[2], [1]]", "[new Date(1), new Date(0)]", "[1, new Map()]", "[() => 1, 2]"]) {
+      expect((await error(`return ${items}.toSorted()`)).message).toContain(`toSorted ${message}`)
+    }
+  })
+
+  test("an empty or single-element array never throws", async () => {
+    expect(await value(`return [[].sort(), [{ a: 1 }].sort(), [{ a: 1 }].toSorted(), [{ a: 1 }, undefined].sort().length]`)).toEqual([
+      [],
+      [{ a: 1 }],
+      [{ a: 1 }],
+      2,
     ])
   })
 })

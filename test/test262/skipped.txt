@@ -1347,10 +1347,12 @@ built-ins/Array/prototype/some/15.4.4.17-8-6.js  # TypeError: foo is not a const
 built-ins/Array/prototype/some/15.4.4.17-8-7.js  # TypeError: foo is not a constructor: only classes can be constructed with new. Use a class, or call 
 built-ins/Array/prototype/some/15.4.4.17-8-8.js  # TypeError: foo is not a constructor: only classes can be constructed with new. Use a class, or call 
 built-ins/Array/prototype/some/call-with-boolean.js  # TypeError: Array.prototype.some called on incompatible receiver a boolean.
+built-ins/Array/prototype/sort/S15.4.4.11_A2.1_T3.js  # TypeError: sort without a comparator needs numbers or strings; pass a comparator for objects, e.g. (
 built-ins/Array/prototype/sort/S15.4.4.11_A3_T1.js  # TypeError: Array.prototype.sort called on incompatible receiver a data object.
 built-ins/Array/prototype/sort/S15.4.4.11_A3_T2.js  # TypeError: Array.prototype.sort called on incompatible receiver a data object.
 built-ins/Array/prototype/sort/S15.4.4.11_A4_T3.js  # TypeError: Array.prototype.sort called on incompatible receiver a data object.
 built-ins/Array/prototype/sort/S15.4.4.11_A6_T2.js  # TypeError: Array.prototype.sort called on incompatible receiver a data object.
+built-ins/Array/prototype/sort/bug_596_1.js  # TypeError: sort without a comparator needs numbers or strings; pass a comparator for objects, e.g. (
 built-ins/Array/prototype/sort/precise-comparefn-throws.js  # Expected SameValue(«undefined», «"get"») to be true
 built-ins/Array/prototype/sort/precise-getter-appends-elements.js  # TypeError: Accessor properties are not supported on array elements; store the value or use a plain o
 built-ins/Array/prototype/sort/precise-getter-decreases-length.js  # TypeError: Accessor properties are not supported on array elements; store the value or use a plain o
@@ -1401,6 +1403,7 @@ built-ins/Array/prototype/toReversed/length-increased-while-iterating.js  # Type
 built-ins/Array/prototype/toReversed/length-tolength.js  # TypeError: Array.prototype.toReversed called on incompatible receiver a data object.
 built-ins/Array/prototype/toReversed/this-value-boolean.js  # TypeError: Array.prototype.toReversed called on incompatible receiver a boolean.
 built-ins/Array/prototype/toSorted/comparefn-called-after-get-elements.js  # Expected a Test262Error but got a TypeError
+built-ins/Array/prototype/toSorted/comparefn-default.js  # Actual [1, 2, 3, 11, 22, 33, 111, 222, 333] and expected [1, 11, 111, 2, 22, 222, 3, 33, 333] should
 built-ins/Array/prototype/toSorted/comparefn-stop-after-error.js  # Expected a Test262Error but got a TypeError
 built-ins/Array/prototype/toSorted/frozen-this-value.js  # TypeError: Array.prototype.toSorted called on incompatible receiver a data object.
 built-ins/Array/prototype/toSorted/holes-not-preserved.js  # Actual [1, 3, 4, undefined, undefined] and expected [1, 2, 3, 4, undefined] should have the same con
@@ -1638,6 +1641,8 @@ built-ins/JSON/parse/reviver-array-non-configurable-prop-delete.js  # TypeError:
 built-ins/JSON/parse/reviver-get-name-err.js  # Expected a Test262Error but got a TypeError
 built-ins/JSON/parse/reviver-object-non-configurable-prop-create.js  # Expected SameValue(«22», «2») to be true
 built-ins/JSON/parse/reviver-object-non-configurable-prop-delete.js  # TypeError: Cannot delete property '…'.
+built-ins/JSON/parse/text-object-abrupt.js  # Expected a Test262Error but got a TypeError
+built-ins/JSON/parse/text-object.js  # TypeError: JSON.parse expects a string, got an object (is it already parsed?)
 built-ins/JSON/rawJSON/basic.js  # TypeError: JSON.rawJSON is not a function.
 built-ins/JSON/rawJSON/bigint-raw-json-can-be-stringified.js  # TypeError: JSON.rawJSON is not a function.
 built-ins/JSON/rawJSON/illegal-empty-and-start-end-chars.js  # Expected a SyntaxError but got a TypeError

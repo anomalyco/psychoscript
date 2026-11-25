@@ -37,6 +37,13 @@
 - `translate: { functions: "mark" }`: a program function inside a host call's argument, or in the run's result,
   crosses as `Host.functionMarker` (Rust: `HostValue::FunctionMarker`, `Data::FunctionMarker`) instead of failing
   the call or being left out.
+- `JSON.parse` given an object or array, which is most likely already parsed, throws
+  `TypeError: JSON.parse expects a string, got an object (is it already parsed?)` at the call, instead of parsing its
+  text. Other non-string values are parsed as before.
+- A default `sort()` or `toSorted()` over numbers only is numeric: `[10, 9, 1].sort()` is `[1, 9, 10]`, not
+  JavaScript's `[1, 10, 9]`. Any other mix of elements keeps the string order.
+- A default `sort()` or `toSorted()` that would compare an object throws a `TypeError` at the call asking for a
+  comparator, instead of sorting by `"[object Object]"`.
 - `Uint8Array.prototype.byteLength` and `byteOffset`. They were `undefined`, so code that sized bytes with
   `byteLength` (such as a `fetch` response's `arrayBuffer()`) got no size.
 - RegExp: `RegExp(re)` without `new` returns `re` when its `constructor` is `RegExp`; match results always have `groups`, and group objects (including
