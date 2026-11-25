@@ -6,10 +6,11 @@
 //! [`ThreadClock::current`] takes the calling thread's clock; [`ThreadClock::now`] reads it from any thread, for
 //! instance a host timing another thread's slice.
 //!
-//! - Linux and Android: `clock_gettime` on the thread's CPU clock (`pthread_getcpuclockid`). Once the thread has
-//!   ended the clock is gone and reads as zero. The clock names the thread by its id, which the kernel only resolves
-//!   among the threads of this process: a new thread of this process given the same id (after the ids wrap around at
-//!   `pid_max`) would be read instead.
+//! - Linux and Android: `clock_gettime` on the thread's CPU clock (`pthread_getcpuclockid`). Once the kernel has
+//!   released an ended thread the clock is gone and reads as zero. On Linux that is a moment after `join` returns
+//!   (longer on a busy machine); until then the clock reads the thread's own final time. The clock names the thread
+//!   by its id, which the kernel only resolves among the threads of this process: a new thread of this process given
+//!   the same id (after the ids wrap around at `pid_max`) would be read instead.
 //! - Apple platforms: `thread_info(THREAD_BASIC_INFO)`, user and system time, to the microsecond. Each clock holds its
 //!   own send right to the thread's port (`mach_thread_self`, released on drop), so once the thread has ended its name
 //!   is a dead name that reads as zero, and can't be reused for another port while a clock holds it.
@@ -35,7 +36,8 @@ impl ThreadClock {
         ThreadClock(sys::current())
     }
 
-    /// CPU time (user + system) the thread has used; zero once it has ended.
+    /// CPU time (user + system) the thread has used; zero once it has ended and the OS has released it. On Linux a
+    /// joined thread's clock reads its final time for a moment after `join` returns (see the module docs).
     pub fn now(&self) -> Duration {
         sys::now(&self.0)
     }
