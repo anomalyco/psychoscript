@@ -1,3 +1,5 @@
+//! The CPU clock the [`Clock::ThreadCpu`](crate::Clock::ThreadCpu) budgets use, public for hosts that time threads too.
+//!
 //! The CPU time a thread has used: time the OS scheduled it, not time it waited for a core, slept or blocked. A busy
 //! machine stretches wall-clock time; a thread's CPU time only grows while the thread runs.
 //!
@@ -16,7 +18,7 @@
 //! - Elsewhere (wasm, ...): wall-clock time since the first reading, which is what there is.
 //!
 //! Every `unsafe` block is one OS call, with out pointers to locals of the size the call expects, or handles this
-//! crate owns.
+//! module owns.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 

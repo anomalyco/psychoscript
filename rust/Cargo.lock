@@ -836,7 +836,7 @@ dependencies = [
 
 [[package]]
 name = "psychoscript"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "icu_calendar",
  "icu_collator",
@@ -860,7 +860,6 @@ dependencies = [
  "regress",
  "rustc-hash",
  "serde_json",
- "thread-clock",
  "tz-rs",
  "unicode-normalization",
  "url",
@@ -1045,13 +1044,6 @@ dependencies = [
  "icu_segmenter",
  "smawk",
  "unicode-width",
-]
-
-[[package]]
-name = "thread-clock"
-version = "0.1.0"
-dependencies = [
- "libc",
 ]
 
 [[package]]

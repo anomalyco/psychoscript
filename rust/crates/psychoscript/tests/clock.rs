@@ -73,9 +73,9 @@ fn the_default_clock_is_the_wall_clock() {
 fn a_busy_loop_is_stopped_at_its_cpu_budget() {
     let _quiet = quiet();
     let rt = Runtime::make().limits(limits(300, Clock::ThreadCpu));
-    let before = thread_clock::ThreadClock::current().now();
+    let before = psychoscript::thread_clock::ThreadClock::current().now();
     let o = rt.execute("while (true) {}");
-    let used = thread_clock::ThreadClock::current().now() - before;
+    let used = psychoscript::thread_clock::ThreadClock::current().now() - before;
     assert_eq!(
         o.result.unwrap_err().message_lossy(),
         "Execution timed out after 300ms."
@@ -194,7 +194,7 @@ fn ticking(limits: Limits) -> Runtime {
             (
                 "spend",
                 HostFunction::new(move |args, _| {
-                    let clock = thread_clock::ThreadClock::current();
+                    let clock = psychoscript::thread_clock::ThreadClock::current();
                     let until = clock.now() + Duration::from_millis(ms(&args));
                     while clock.now() < until {
                         std::hint::spin_loop();
@@ -256,7 +256,7 @@ fn host_calls_are_not_counted_in_the_cpu_time() {
     let _quiet = quiet();
     // 400 ms of CPU time in host calls, then a loop that never ends, under a 200 ms timeout: the run stops once the
     // loop alone has used 200 ms.
-    let clock = thread_clock::ThreadClock::current();
+    let clock = psychoscript::thread_clock::ThreadClock::current();
     let before = clock.now();
     let o =
         ticking(limits(200, Clock::ThreadCpu)).execute("spend(200); spend(200); while (true) {}");
@@ -274,7 +274,7 @@ fn host_calls_are_not_counted_in_the_cpu_time() {
 #[test]
 fn a_host_call_off_the_cpu_is_left_out_in_full_and_the_run_still_ends() {
     let _quiet = quiet();
-    let clock = thread_clock::ThreadClock::current();
+    let clock = psychoscript::thread_clock::ThreadClock::current();
     // 150 ms of the program's own CPU time, then a host call that sleeps for 500 ms, then a loop that never ends,
     // under a 200 ms timeout. The host call is left out by its wall time, which can take the program's CPU time in
     // the same interval between readings with it, so the run stops late, never early.
@@ -440,7 +440,7 @@ fn a_run_starved_by_a_cpu_hog_is_not_timed_out() {
             format!("let s = 0; for (let i = 0; i < {n}; i++) s = (s + i * 7) % 1000003; return s")
         };
         let probe = 200_000u64;
-        let clock = thread_clock::ThreadClock::current();
+        let clock = psychoscript::thread_clock::ThreadClock::current();
         let before = clock.now();
         Runtime::make().execute(&program(probe)).result.unwrap();
         let per = (clock.now() - before).as_secs_f64() / probe as f64;
