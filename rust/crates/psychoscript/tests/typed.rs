@@ -1,5 +1,5 @@
-//! Typed arrays and `ArrayBuffer`: their semantics (also in the conformance cases), the heap cap, and the host's
-//! zero-copy access to their bytes (`HostValue::TypedArray`).
+//! Typed arrays and `ArrayBuffer`: their semantics (the programs of `tests/cases/typed-array-*.js` and the typed-array
+//! bench programs), the heap cap, and the host's zero-copy access to their bytes (`HostValue::TypedArray`).
 
 use std::sync::{Arc, Mutex};
 
@@ -8,11 +8,309 @@ use psychoscript::{
 };
 use serde_json::json;
 
+#[path = "../../../conformance/reference.rs"]
+mod reference;
+mod support;
+
 fn value(rt: &Runtime, code: &str) -> psychoscript::Json {
     match rt.execute(code).result {
         Ok(v) => v.to_json(),
         Err(d) => panic!("{code}: {}", d.message_lossy()),
     }
+}
+
+/// The programs `tests/cases/typed-array-*.js` and `bench/typed/*.js`, with typed arrays and the `tools` namespace of
+/// `conformance/reference.rs` (`tools.upload` sums the bytes it borrows), some under a heap cap: what each returns or
+/// how it fails, and what it logs.
+#[test]
+fn programs() {
+    let runtime = |cap: Option<u64>| {
+        Runtime::make()
+            .globals(|_| [("tools", HostValue::from(reference::tools()))])
+            .typed_arrays(true)
+            .limits(Limits {
+                max_heap_bytes: cap,
+                ..Limits::default()
+            })
+    };
+    macro_rules! case {
+        ($path:literal, $cap:expr, $expected:expr, $logs:expr) => {
+            support::check(&runtime($cap), $path, include_str!($path), $expected, $logs)
+        };
+    }
+    case!(
+        "cases/typed-array-construct.js",
+        None,
+        Ok(json!([
+            [
+                ["Uint8Array", 1, 1, 3, 3],
+                ["Uint16Array", 2, 2, 6, 3],
+                ["Uint32Array", 4, 4, 12, 3],
+                ["Int32Array", 4, 4, 12, 3],
+                ["Float32Array", 4, 4, 12, 3],
+                ["Float64Array", 8, 8, 24, 3]
+            ],
+            [1, 2, 3],
+            [4, 5],
+            [4, 0, 16],
+            [3, 4, 6],
+            [1, 8],
+            [10.333333015441895, 11.666666984558105, 13],
+            [1, 2, 1],
+            [0, 0, 0],
+            [16, 1, 2, 0]
+        ])),
+        &[]
+    );
+    case!(
+        "cases/typed-array-convert.js",
+        None,
+        Ok(json!([
+            [
+                "1.100000023841858",
+                "16777216",
+                "Infinity",
+                "-0.10000000149011612",
+                "0",
+                "2.5"
+            ],
+            [3, 65535, 1, 0, 0, 65535],
+            [4294967295u32, 5, 3, 4294967293u32, 0],
+            [-2147483648, 2147483647, -3, -1, 12],
+            ["0.1", "0.3333333333333333", "0", "Infinity"],
+            [44, 255, 1, 255],
+            [1.100000023841858, 2.200000047683716],
+            true
+        ])),
+        &[]
+    );
+    case!(
+        "cases/typed-array-errors.js",
+        None,
+        Ok(json!([
+            [
+                "RangeError: start offset of Float32Array should be a multiple of 4",
+                "RangeError: byte length of Float32Array should be a multiple of 4",
+                "RangeError: Start offset 20 is outside the bounds of the buffer",
+                "RangeError: Start offset -4 is outside the bounds of the buffer",
+                "RangeError: Invalid typed array length: 10",
+                "RangeError: Invalid typed array length: -1",
+                "RangeError: Invalid typed array length: -1",
+                "ok",
+                "ok",
+                "TypeError: Constructor Float32Array requires 'new'.",
+                "TypeError: Constructor ArrayBuffer requires 'new'.",
+                "RangeError: Float32Array.set: the source does not fit at that offset.",
+                "RangeError: Float32Array.set: the source does not fit at that offset.",
+                "RangeError: Invalid array buffer length",
+                "TypeError: Float32Array.prototype.at called on incompatible receiver an array.",
+                "TypeError: Float32Array.prototype.at called on incompatible receiver an ArrayBuffer.",
+                "TypeError: ArrayBuffer.prototype.slice called on incompatible receiver a Float32Array.",
+                "TypeError: Uint8Array.prototype.toHex called on incompatible receiver a Float32Array.",
+                "TypeError: Cannot set property 'length' of a Float32Array which has only a getter.",
+                "TypeError: Cannot set property 'buffer' of a Float32Array which has only a getter.",
+                "TypeError: fa.map is not a function.",
+                "TypeError: fa.forEach is not a function.",
+                "TypeError: TextDecoder.decode expects a Uint8Array, received a Float32Array.",
+                "TypeError: Float32Array.from expects a function callback.",
+                "ok",
+                "TypeError: Cannot delete property '0'.",
+                "TypeError: Accessor properties are not supported on array elements; store the value or use a plain object."
+            ],
+            null,
+            4
+        ])),
+        &[]
+    );
+    case!(
+        "cases/typed-array-from-like.js",
+        None,
+        Ok(json!([
+            [1.5, null],
+            [4],
+            [0, 0],
+            [],
+            [
+                "TypeError",
+                "Uint32Array.from expects a Uint8Array, an array, an iterable, or an array-like of numbers, received null."
+            ],
+            [],
+            ["RangeError", "Invalid typed array length: -1"],
+            [16, 4, 2]
+        ])),
+        &[]
+    );
+    // 64 bytes for the Float32Array, 4000 for its buffer, and 64 for the subarray, which shares the buffer.
+    case!(
+        "cases/typed-array-heap-over.js",
+        Some(4_127),
+        Err(DiagnosticKind::MemoryLimitExceeded),
+        &[]
+    );
+    case!(
+        "cases/typed-array-heap-under.js",
+        Some(4_128),
+        Ok(json!(1000)),
+        &[]
+    );
+    case!(
+        "cases/typed-array-index.js",
+        None,
+        Ok(json!([
+            [1.5, 2.25, 1, null, null, null, 1.5, 1, null, 7, 0, null],
+            204.75,
+            2,
+            ["0", "1", "2"],
+            3
+        ])),
+        &[]
+    );
+    let shared = "constructor,BYTES_PER_ELEMENT,length,byteLength,byteOffset,buffer,at,slice,subarray,set,fill,reverse,indexOf,lastIndexOf,includes,join,toString,keys,values,entries";
+    let statics = "length,name,prototype,from,of,BYTES_PER_ELEMENT";
+    case!(
+        "cases/typed-array-keys.js",
+        None,
+        Ok(json!({
+            "ArrayBuffer": "length,name,prototype,isView",
+            "ArrayBuffer.prototype": "constructor,byteLength,slice",
+            "Uint8Array": "length,name,prototype,from,of,fromBase64,fromHex,BYTES_PER_ELEMENT",
+            "Uint8Array.prototype": "constructor,BYTES_PER_ELEMENT,length,byteLength,byteOffset,buffer,at,slice,subarray,set,fill,reverse,sort,toSorted,toReversed,with,copyWithin,indexOf,lastIndexOf,includes,join,toString,toBase64,toHex,setFromBase64,setFromHex,keys,values,entries,map,filter,forEach,some,every,find,findIndex,findLast,findLastIndex,reduce,reduceRight",
+            "Uint16Array": statics,
+            "Uint16Array.prototype": shared,
+            "Uint32Array": statics,
+            "Uint32Array.prototype": shared,
+            "Int32Array": statics,
+            "Int32Array.prototype": shared,
+            "Float32Array": statics,
+            "Float32Array.prototype": shared,
+            "Float64Array": statics,
+            "Float64Array.prototype": shared
+        })),
+        &[]
+    );
+    case!(
+        "cases/typed-array-methods.js",
+        None,
+        Ok(json!([
+            [4, 0.10000000149011612, 7, 8],
+            [4, 0.5, 0.5, 8],
+            1,
+            2,
+            1,
+            true,
+            -1,
+            false,
+            8,
+            null,
+            null,
+            null,
+            0.5,
+            4,
+            4,
+            ["0", "1", "2", "3"],
+            false,
+            true,
+            "4|0.5|0.5|8",
+            "4,0.5,0.5,8",
+            "1,-2",
+            "4,0.5,0.5,8",
+            [0, 1, 2, 3],
+            [[0, 4], [1, 0.5], [2, 0.5], [3, 8]],
+            [4, 0.5, 0.5, 8],
+            [3, 2, 1],
+            [9, 9],
+            true,
+            -1,
+            6,
+            11,
+            9,
+            [2, 4],
+            "{\"0\":1.5,\"1\":2}",
+            "{\"b\":{}}",
+            "[object Float32Array]",
+            "[object ArrayBuffer]",
+            "object",
+            false,
+            true,
+            true,
+            false,
+            true,
+            "Float32Array",
+            true
+        ])),
+        &[
+            "Float32Array(2) [1.5,-2] Uint16Array(2) [0,0] ArrayBuffer { byteLength: 3 }",
+            "[object ArrayBuffer]"
+        ]
+    );
+    // A typed array cannot be a program's result: it asks for its values instead.
+    case!(
+        "cases/typed-array-result.js",
+        None,
+        Err(DiagnosticKind::InvalidDataValue),
+        &[]
+    );
+    case!(
+        "cases/typed-array-views.js",
+        None,
+        Ok(json!([
+            [0, 0, 128, 63],
+            true,
+            true,
+            2,
+            2,
+            4,
+            true,
+            8,
+            2,
+            false,
+            0,
+            8,
+            7,
+            true,
+            16,
+            257,
+            2147483649u32,
+            "0,0,0,64",
+            false,
+            4,
+            0,
+            true,
+            false,
+            false,
+            false
+        ])),
+        &[]
+    );
+    case!(
+        "../../../bench/typed/bench-host-bytes.js",
+        None,
+        Ok(json!(989211)),
+        &[]
+    );
+    case!(
+        "../../../bench/typed/bench-typed-fill.js",
+        None,
+        Ok(json!(25004250000u64)),
+        &[]
+    );
+    case!(
+        "../../../bench/typed/bench-typed-matrix.js",
+        None,
+        Ok(json!(-2500)),
+        &[]
+    );
+    case!(
+        "../../../bench/typed/bench-vertex-transform.js",
+        None,
+        Ok(json!(81.15693980455399)),
+        &[]
+    );
+}
+
+#[test]
+fn programs_in_the_round_trip_mode() {
+    support::in_round_trip_mode("programs");
 }
 
 #[test]

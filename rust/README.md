@@ -87,6 +87,9 @@ expectations come only from the reference, never from hand:
   which saves and restores every run at each host stop and loop slice.
 - `conformance/host.json` (`host.ts`), `boundary.json` (`boundary.ts`) and `streaming.json` (`streaming.ts`), replayed
   by `crates/psychoscript/tests/`.
+- Rust-only features (the heap cap, typed arrays, function markers, the value depth limit, located host errors) have
+  no reference: their expected results are written in Rust's own tests (`crates/psychoscript/tests/heap.rs`,
+  `typed.rs`, `host_recording.rs`, `value_depth.rs`; the programs of `tests/cases/*.js` also run in round-trip mode).
 - test262, both ways: `test262/rust-skipped.txt` (fails here, passes in the reference) and `test262/reference-gaps.txt`
   (passes here, fails in the reference) are empty and may only stay so.
 

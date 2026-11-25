@@ -1,5 +1,7 @@
 //! The Rust side of `conformance/reference.ts`: the `tools` host global the generators define, and `describe`, which
-//! writes a host value as data the way the recordings do. Each replay includes this file with `#[path]`.
+//! writes a host value as data the way the recordings do. Each replay includes this file with `#[path]`, and so do the
+//! tests of Rust-only features, for which `describe` also writes what only Rust hands a host function: a typed array
+//! as `{ typed: [kind, [values]] }` and a function marker as `{ functionMarker: true }`.
 
 #![allow(dead_code)]
 

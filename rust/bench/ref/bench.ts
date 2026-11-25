@@ -2,6 +2,7 @@
 // one warm-up run that also checks the program succeeds, then N timed runs. Prints one JSON line per program: its
 // value and the median and min ms.
 // Usage: bun bench/ref/bench.ts [--iterations N] <slug>...
+import { existsSync } from "node:fs"
 import { resolve } from "node:path"
 import { reference, toolsGlobal } from "../../conformance/reference.js"
 
@@ -19,7 +20,10 @@ const iterations = flag === -1 ? 11 : Number(process.argv[flag + 1])
 const slugs = process.argv.slice(2).filter((arg, i, all) => arg !== "--iterations" && all[i - 1] !== "--iterations")
 
 for (const slug of slugs) {
-  const code = await Bun.file(resolve(import.meta.dir, `../../conformance/cases/bench-${slug}.js`)).text()
+  // The typed-array cases are in bench/typed, the others in conformance/cases.
+  const typedCase = resolve(import.meta.dir, `../typed/bench-${slug}.js`)
+  const path = existsSync(typedCase) ? typedCase : resolve(import.meta.dir, `../../conformance/cases/bench-${slug}.js`)
+  const code = await Bun.file(path).text()
   const rt = code.includes("// @typed_arrays true") ? typed : runtime
   const warm = await Effect.runPromise(rt.execute(code))
   if (warm.ok !== true) throw new Error(`${slug} failed: ${JSON.stringify(warm)}`)
