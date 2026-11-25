@@ -312,7 +312,8 @@ const cases = [
       [1, 2, 3, 4],
       [1, 2, 3, 4],
       [1, 2, "a", "z"],
-      [1, 11, 111, 2, 22, 222, 3, 33, 333],
+      // Numbers only sort numerically here, a deliberate difference from JavaScript (see interpreter-support.md).
+      [1, 2, 3, 11, 22, 33, 111, 222, 333],
     ],
   },
   {

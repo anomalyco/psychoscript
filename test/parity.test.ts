@@ -1931,17 +1931,24 @@ describe("Array method arguments, lengths, and elements convert through ToPrimit
     expect(await value(`return [].indexOf(1, { valueOf() { throw new Error("never") } })`)).toBe(-1)
   })
 
-  test("length = object converts through valueOf, and a default sort converts each element through toString", async () => {
+  test("length = object converts through valueOf, and a default sort over objects asks for a comparator before converting any", async () => {
     expect(
       await value(`
         const resized = [1, 2, 3]
         resized.length = { valueOf() { return 1 } }
         let calls = 0
         const named = (name) => ({ name, toString() { calls++; return name } })
-        const sorted = [named("c"), named("a"), 2, undefined, named("b")].sort()
-        return [resized, sorted.map((item) => item?.name ?? item), calls]
+        let message
+        try { [named("c"), named("a"), 2, undefined, named("b")].sort() } catch (e) { message = e.message }
+        const alone = [named("a"), undefined].sort()
+        return [resized, message, alone.map((item) => item?.name ?? item), calls]
       `),
-    ).toEqual([[1], [2, "a", "b", "c", null], 3])
+    ).toEqual([
+      [1],
+      "sort without a comparator needs numbers or strings; pass a comparator for objects, e.g. (a, b) => a.age - b.age",
+      ["a", null],
+      1,
+    ])
   })
 })
 
@@ -2024,15 +2031,19 @@ describe("String and Number method arguments convert through ToPrimitive", () =>
     ])
   })
 
-  test("fromCharCode, fromCodePoint, JSON.parse, and the string iterator convert objects; repeat counts NaN as 0", async () => {
+  test("fromCharCode, fromCodePoint, and the string iterator convert objects; repeat counts NaN as 0", async () => {
     expect(
       await value(`
         const n = (value) => ({ valueOf() { return value } })
         const text = (value) => ({ toString() { return value } })
-        return [String.fromCharCode(n(65), "66"), String.fromCodePoint(n(31)), JSON.parse(text("[1]")),
+        return [String.fromCharCode(n(65), "66"), String.fromCodePoint(n(31)),
           [...String.prototype[Symbol.iterator].call(text("xy"))], "ab".repeat(NaN), "ab".repeat(0.9)]
       `),
-    ).toEqual(["AB", "\x1f", [1], ["x", "y"], "", ""])
+    ).toEqual(["AB", "\x1f", ["x", "y"], "", ""])
+    // An object given to JSON.parse is most likely already parsed: it is refused rather than converted.
+    expect((await error(`JSON.parse({ toString() { return "[1]" } })`)).message).toContain(
+      "JSON.parse expects a string, got an object (is it already parsed?)",
+    )
   })
 
   test("conversion failures surface and opaque arguments still reject", async () => {

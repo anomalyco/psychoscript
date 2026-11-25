@@ -1,7 +1,7 @@
 import { methods } from "../runtime/native.js"
 import { requireCallback, withPrimitives } from "../runtime/callback.js"
 import type { Interpreter } from "../runtime/interpreter.js"
-import { syntaxError } from "../runtime/model.js"
+import { syntaxError, typeError } from "../runtime/model.js"
 import { typeofValue } from "../runtime/references.js"
 import { fromJson, type Json } from "../data.js"
 import { Arr, Obj, coerceToString, define, record, type Value } from "../runtime/objects.js"
@@ -16,9 +16,16 @@ export const jsonGlobal = <R>(ctx: Interpreter<R>) => {
   return json
 }
 
-// The text converts through its own toString first, as ToString does.
-const parse = <R>(ctx: Interpreter<R>, args: Array<Value>) =>
-  withPrimitives("string", [args[0]], ([text]) => parseText(ctx, coerceToString(text), args[1]))
+// A plain object or an array is most likely a value that was parsed already: say so, rather than parse its text
+// ("[object Object]", or the array's elements joined). Other values convert through their own toString first, as
+// ToString does.
+const parse = <R>(ctx: Interpreter<R>, args: Array<Value>) => {
+  const input = args[0]
+  if (input instanceof Arr || (input instanceof Obj && Object.getPrototypeOf(input) === Obj.prototype)) {
+    throw typeError(`JSON.parse expects a string, got ${input instanceof Arr ? "an array" : "an object"} (is it already parsed?)`)
+  }
+  return withPrimitives("string", [input], ([text]) => parseText(ctx, coerceToString(text), args[1]))
+}
 
 const parseText = <R>(ctx: Interpreter<R>, text: string, reviverArg: Value) => {
   const json = (() => {

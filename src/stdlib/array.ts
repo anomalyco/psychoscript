@@ -99,6 +99,17 @@ export const sortArray = <R>(
   let holes = 0
   if (target instanceof Arr) for (let index = 0; index < items.length; index++) if (!(index in target.items)) holes++
   const callback = comparator === undefined ? undefined : requireCallback(comparator, into)
+  // Objects have no order of their own: a default sort that would compare one asks for a comparator instead.
+  if (
+    callback === undefined &&
+    items.some((item) => item instanceof Obj) &&
+    items.filter((item) => item !== undefined).length > 1
+  ) {
+    const name = into.endsWith("toSorted") ? "toSorted" : "sort"
+    throw typeError(
+      `${name} without a comparator needs numbers or strings; pass a comparator for objects, e.g. (a, b) => a.age - b.age`,
+    )
+  }
   const defined = new Arr(
     builtins.Array,
     items.filter((item) => item !== undefined),
@@ -131,7 +142,29 @@ export const sortArray = <R>(
 }
 
 /** The default sort's string keys, each value converted once. Equal BigInts, whose decimal text is slow, share one. */
+// A number's sort key: its float64 bits with the order of their values, as hex, so that comparing keys as text
+// compares the numbers (-0 is 0, and NaN, whose bits are above Infinity's, sorts last).
+const numberKeyView = new DataView(new ArrayBuffer(8))
+const numberKey = (n: number): string => {
+  numberKeyView.setFloat64(0, n === 0 ? 0 : Number.isNaN(n) ? NaN : n)
+  let high = numberKeyView.getUint32(0)
+  let low = numberKeyView.getUint32(4)
+  if (high >= 0x80000000) {
+    high = ~high >>> 0
+    low = ~low >>> 0
+  } else high = (high | 0x80000000) >>> 0
+  return high.toString(16).padStart(8, "0") + low.toString(16).padStart(8, "0")
+}
+
+/**
+ * The keys a default sort compares as text: each value's string, or, when the values are all numbers (undefined is
+ * left aside, as the sort puts it last), keys in numeric order. A deliberate difference from JavaScript, whose
+ * default sort compares numbers as text (`[10, 9, 1].sort()` is `[1, 10, 9]` there).
+ */
 export const sortKeys = (items: Array<Value>) => {
+  if (items.some((item) => typeof item === "number") && items.every((item) => item === undefined || typeof item === "number")) {
+    return items.map((item) => (item === undefined ? "" : numberKey(item as number)))
+  }
   const bigints = new Map<bigint, string>()
   return items.map((item) => {
     if (typeof item !== "bigint") return coerceToString(item)

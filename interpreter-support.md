@@ -316,9 +316,10 @@ Math.floor)` is `"3"`). A detached method loses its receiver, as in JS: `values.
 - [x] Array methods, lengths, and elements convert through ToPrimitive: the integer arguments of `at`, `indexOf`,
       `lastIndexOf`, `includes`, `slice`, `splice`, `toSpliced`, `fill`, `copyWithin`, `with`, and `flat` (in order,
       before the array is read, and not at all for an empty array's `indexOf`/`lastIndexOf`/`includes`),
-      `length = object` (number hint), and the elements a default `sort` compares (one ToString each). So do
-      `String.fromCharCode`/`fromCodePoint` arguments, `JSON.parse(text)`, and a `String.prototype[Symbol.iterator]`
-      receiver; `repeat(NaN)` is `""`.
+      `length = object` (number hint), and the elements a default `sort` compares (one ToString each; one over
+      objects asks for a comparator instead, see below). So do `String.fromCharCode`/`fromCodePoint` arguments and a
+      `String.prototype[Symbol.iterator]` receiver; `repeat(NaN)` is `""`. `JSON.parse` refuses an object or array
+      (most likely already parsed) with a `TypeError` rather than converting it.
 - [ ] ToPrimitive elsewhere: `Error.prototype.toString` on an object `message` and numeric arguments of the
       Uint8Array methods (`at`, `indexOf` start, `slice`) still use the built-in form (`NaN`, `"[object Object]"`) and
       ignore own methods.
@@ -451,6 +452,10 @@ reject }` object. The resolvers are anonymous (`name` is `""`) with `length` 1, 
       while `lastIndexOf(1)` is `2`.
 - [x] Aggregation: `reduce` and `reduceRight`.
 - [x] Ordering: `sort`, `toSorted`, `reverse`, and `toReversed`.
+- [x] A default `sort` or `toSorted` over numbers only is numeric: `[10, 9, 1].sort()` is `[1, 9, 10]`. A deliberate
+      difference from JavaScript, which gives `[1, 10, 9]`. Any other mix of elements keeps the string order.
+- [x] A default `sort` or `toSorted` that would compare an object (an array, a date, a function, any non-primitive)
+      throws a `TypeError` asking for a comparator; JavaScript would sort by the objects' strings.
 - [x] Access/copying: `at`, `slice`, `concat`, `flat`, `with`, `join`, and `toLocaleString` (each element's
       `toLocaleString`, holes and nullish elements as empty strings; as there is no `Intl`, only primitives, arrays and
       dates get the same locales and options, other elements' none).
