@@ -102,10 +102,11 @@ pub fn inspect(vm: &mut Vm, id: Id) -> Option<String> {
     }
 }
 
-/// Whether this run may hold a value with its own JSON form: only once the byte or web groups are installed.
+/// Whether this run may hold a value with its own JSON form: only once the byte, typed-array or web groups are
+/// installed.
 #[inline(always)]
 pub fn may_have_json_forms(vm: &Vm) -> bool {
-    vm.realm.std.loaded & (super::LAZY_BYTES | super::LAZY_WEB) != 0
+    vm.realm.std.loaded & (super::LAZY_BYTES | super::LAZY_TYPED | super::LAZY_WEB) != 0
 }
 
 /// Whether a kind serializes through `json_value` rather than as its own keys.

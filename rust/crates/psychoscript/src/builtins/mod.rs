@@ -78,18 +78,26 @@ const LAZY: &[LazyGroup] = &[
         &[
             "Uint8Array",
             "Buffer",
-            "ArrayBuffer",
-            "Uint16Array",
-            "Uint32Array",
-            "Int32Array",
-            "Float32Array",
-            "Float64Array",
             "TextEncoder",
             "TextDecoder",
             "atob",
             "btoa",
         ],
         setup_bytes,
+    ),
+    // The typed arrays besides Uint8Array: also made when a program reaches a typed array's `buffer` or a host
+    // function returns one.
+    (
+        LAZY_TYPED,
+        &[
+            "ArrayBuffer",
+            "Uint16Array",
+            "Uint32Array",
+            "Int32Array",
+            "Float32Array",
+            "Float64Array",
+        ],
+        typed::setup,
     ),
     (
         LAZY_COLLECTIONS,
@@ -123,10 +131,10 @@ pub const LAZY_WEB: u16 = 32;
 pub const LAZY_BIGINT: u16 = 128;
 pub const LAZY_SYMBOLS: u16 = 512;
 pub const LAZY_FROM_ASYNC: u16 = 1024;
+pub const LAZY_TYPED: u16 = 2048;
 
 fn setup_bytes(vm: &mut Vm) {
     bytes::setup(vm);
-    typed::setup(vm);
     buffer::setup(vm);
 }
 

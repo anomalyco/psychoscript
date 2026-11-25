@@ -21,7 +21,7 @@ The API is the Rust form of `src/index.ts`; host work is a `Future` instead of a
 boundary as copies (`HostValue`, with strings as lossless `HostString`s), except typed arrays.
 
 Programs always have `ArrayBuffer`, `Uint16Array`, `Uint32Array`, `Int32Array`, `Float32Array` and `Float64Array`
-besides Uint8Array (Rust only). An `ArrayBuffer` or a typed array other than
+besides Uint8Array (Rust only), set up only when a program uses them. An `ArrayBuffer` or a typed array other than
 Uint8Array crosses as `HostValue::TypedArray(TypedArray)`. A synchronous
 host function borrows the program's own bytes for the duration of the call, with no copy: read them in place with
 `with_bytes(|bytes: &[u8]| ..)` (for instance to upload them to a GPU) or write them with `with_bytes_mut`; `kind()`,

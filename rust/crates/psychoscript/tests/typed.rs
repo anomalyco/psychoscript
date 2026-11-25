@@ -665,3 +665,114 @@ fn async_and_durable_host_functions_get_copies() {
     assert_eq!(kept[0].values(), vec![7.0, 2.0]);
     assert_eq!(kept[1].values(), vec![7.0, 4.0]);
 }
+
+/// The typed arrays besides Uint8Array are a lazy group of built-ins: a run that doesn't name them, reach a typed
+/// array's `buffer` or get one from the host doesn't make them, whatever else it uses.
+#[test]
+fn a_run_that_does_not_use_them_does_not_make_them() {
+    let objects = |code: &str| -> u64 {
+        let slot: Arc<Mutex<Option<psychoscript::Run>>> = Arc::default();
+        let s = slot.clone();
+        let rt = Runtime::make().globals(move |run| {
+            *s.lock().unwrap() = Some(run.clone());
+            [
+                (
+                    "bytes",
+                    HostFunction::new(|_, _| HostValue::Bytes(vec![1, 2])),
+                ),
+                (
+                    "floats",
+                    HostFunction::new(|_, _| HostValue::TypedArray(TypedArray::from_f32(&[1.0]))),
+                ),
+            ]
+        });
+        if let Err(d) = rt.execute(code).result {
+            panic!("{code}: {}", d.message_lossy());
+        }
+        let run = slot.lock().unwrap().clone().unwrap();
+        run.heap_stats().objects
+    };
+    let group = objects("Float32Array; return 1") - objects("return 1");
+    assert!(group > 50, "{group}");
+    for code in [
+        "return 1",
+        "return typeof Map",
+        "return [1].constructor.name",
+        "return JSON.stringify({ a: [1], d: new Date(0) })",
+        "return structuredClone({ a: [1] }).a.length",
+        "return crypto.randomUUID().length",
+        "return new Uint8Array([1, 2]).subarray(1).byteLength",
+        "return Buffer.from('x').toString('hex')",
+        "return new TextDecoder().decode(new TextEncoder().encode('x'))",
+        "return atob(btoa('x'))",
+        "return bytes().length",
+    ] {
+        assert_eq!(
+            objects(&format!("Float32Array; {code}")) - objects(code),
+            group,
+            "{code}"
+        );
+    }
+    // A typed array's `buffer` and a host function's Float32Array make them on the way.
+    let reached = objects("return new Uint8Array(1).buffer.byteLength")
+        - objects("return new Uint8Array(1).byteLength");
+    assert!(reached > group, "{reached}");
+    assert_eq!(
+        objects("Float32Array; return floats().length"),
+        objects("return floats().length")
+    );
+}
+
+/// A run that made them on the way, through a typed array's `buffer`, keeps them and its buffer across a suspend.
+#[test]
+fn a_suspended_run_keeps_the_typed_arrays_it_made_on_the_way() {
+    let (called, resumed) = (
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    );
+    let (c, r) = (called.clone(), resumed.clone());
+    let rt = Runtime::make().globals(move |_| {
+        let (c, r) = (c.clone(), r.clone());
+        [(
+            "wait",
+            HostFunction::new_async(move |_, _| {
+                c.store(true, std::sync::atomic::Ordering::SeqCst);
+                let r = r.clone();
+                async move {
+                    if !r.load(std::sync::atomic::Ordering::SeqCst) {
+                        std::future::pending::<()>().await;
+                    }
+                    Ok(HostValue::Number(1.0))
+                }
+            })
+            .idempotent(),
+        )]
+    });
+    let code = "const u = new Uint8Array([1, 2]); const b = u.buffer; await wait(); new Uint8Array(b)[0] = 5; \
+                return [String(b), b.byteLength, u.buffer === b, u[0], b.constructor.name, new b.constructor(4).byteLength]";
+    let program = rt.program(code, &psychoscript::ProgramOptions::new());
+    let suspender = program.suspender();
+    let asking = std::thread::spawn(move || {
+        while !called.load(std::sync::atomic::Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        suspender.suspend(None)
+    });
+    let psychoscript::RunOutcome::Suspended(saved) = program.run_resumable().unwrap() else {
+        panic!("not suspended")
+    };
+    asking.join().unwrap().unwrap();
+    resumed.store(true, std::sync::atomic::Ordering::SeqCst);
+    let resumed = rt
+        .resume_bytes(&psychoscript::to_bytes(&saved.state))
+        .unwrap()
+        .run_resumable()
+        .unwrap();
+    let psychoscript::RunOutcome::Done(o) = resumed else {
+        panic!("suspended again")
+    };
+    assert_eq!(
+        o.result.unwrap().to_json(),
+        json!(["[object ArrayBuffer]", 2, true, 5, "ArrayBuffer", 4])
+    );
+}

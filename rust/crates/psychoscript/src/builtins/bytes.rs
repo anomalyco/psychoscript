@@ -273,7 +273,7 @@ pub fn to_u8(n: f64) -> u8 {
 
 /// A new typed array (or `ArrayBuffer`) of `elem` over `data`.
 pub fn new_typed(vm: &mut Vm, data: Vec<u8>, elem: Elem) -> Value {
-    super::ensure(vm, super::LAZY_BYTES);
+    super::ensure(vm, group_of(elem));
     let bytes = data.len();
     let store = new_storage(vm, data);
     let proto = vm.realm.std.typed_proto(elem);
@@ -386,12 +386,21 @@ pub fn get_prop(vm: &mut Vm, id: Id, key: Atom) -> Option<Value> {
     None
 }
 
+/// The lazy group that makes the prototype of a typed array of `elem` (see `builtins::LAZY`).
+pub fn group_of(elem: Elem) -> u16 {
+    match elem {
+        Elem::U8 => super::LAZY_BYTES,
+        _ => super::LAZY_TYPED,
+    }
+}
+
 /// The `ArrayBuffer` object of a typed array's buffer, made the first time it is needed.
 pub fn array_buffer_of(vm: &mut Vm, id: Id) -> Id {
     let store = bytes_ref(vm, id).store;
     if let Some(owner) = vm.heap[store as usize].proto {
         return owner;
     }
+    super::ensure(vm, super::LAZY_TYPED);
     let len = storage(vm, store).len();
     let proto = vm.realm.std.array_buffer;
     let b = Bytes::whole(store, len, Elem::ArrayBuffer, false);
