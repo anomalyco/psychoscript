@@ -34,7 +34,42 @@
     "date": "SyntaxError: JSON.parse received invalid JSON: JSON Parse error: Unable to parse JSON string",
     "map": "SyntaxError: JSON.parse received invalid JSON: JSON Parse error: Unexpected identifier \"object\"",
     "fn": "SyntaxError: JSON.parse received invalid JSON: JSON Parse error: Unexpected identifier \"object\"",
-    "boxedText": {}
+    "boxedText": {},
+    "same": [
+      true,
+      true,
+      true
+    ],
+    "revived": [
+      1,
+      {
+        "b": 2
+      }
+    ],
+    "frozen": {
+      "f": 1
+    },
+    "derived": {},
+    "getter": [
+      true,
+      0
+    ],
+    "arrayLike": {
+      "0": "x",
+      "length": 1
+    },
+    "args": "SyntaxError: JSON.parse received invalid JSON: JSON Parse error: Unexpected identifier \"object\"",
+    "math": true,
+    "json": true,
+    "error": "SyntaxError: JSON.parse received invalid JSON: JSON Parse error: Unexpected identifier \"Error\"",
+    "regexp": "SyntaxError: JSON.parse received invalid JSON: JSON Parse error: Unrecognized token '/'",
+    "set": "SyntaxError: JSON.parse received invalid JSON: JSON Parse error: Unexpected identifier \"object\"",
+    "promise": "SyntaxError: JSON.parse received invalid JSON: JSON Parse error: Unexpected identifier \"object\"",
+    "url": "SyntaxError: JSON.parse received invalid JSON: JSON Parse error: Unexpected identifier \"https\"",
+    "headers": "SyntaxError: JSON.parse received invalid JSON: JSON Parse error: Unexpected identifier \"object\"",
+    "bytes": 1,
+    "generator": "SyntaxError: JSON.parse received invalid JSON: JSON Parse error: Unexpected identifier \"object\"",
+    "iterator": "SyntaxError: JSON.parse received invalid JSON: JSON Parse error: Unexpected identifier \"object\""
   },
   "logs": [],
   "metadata": null
