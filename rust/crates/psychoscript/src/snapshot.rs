@@ -9,6 +9,8 @@
 //! - **Natives are named** by their index in a table of every native the VM can make, built once per process.
 //! - **Host calls in flight** are saved by kind: an idempotent call as queued, to run again with the same key; a
 //!   started durable call with its data, to wait on again. Any other one in flight refuses the suspend.
+//! - **The state is hashed.** The header keeps a hash of the state's JSON, so a state damaged or edited since it was
+//!   saved is refused whole; restoring checks what it reads, but trusts the frames and stack to fit the bytecode.
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -30,7 +32,9 @@ use crate::{DiagnosticKind, Json, Limits};
 /// Bumped whenever the shape of saved state changes.
 pub const FORMAT: u64 = 2;
 
-/// A run's saved state: plain JSON, with a `header` that says where it can resume.
+/// A run's saved state: plain JSON, with a `header` that says where it can resume. A state changed since it was saved
+/// is refused, by a hash of it in the header; the hash guards against damage, not forgery, so resume only states your
+/// own runtimes saved.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot(pub Json);
 
@@ -162,14 +166,36 @@ pub fn build_id() -> String {
     format!("{}+{:016x}", env!("CARGO_PKG_VERSION"), natives().shape)
 }
 
-/// FNV-1a, for the build and source hashes.
+/// FNV-1a, for the build, source and state hashes.
 fn hash(bytes: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    fnv(0xcbf2_9ce4_8422_2325, bytes)
+}
+
+fn fnv(mut h: u64, bytes: &[u8]) -> u64 {
     for b in bytes {
         h ^= *b as u64;
         h = h.wrapping_mul(0x0100_0000_01b3);
     }
     h
+}
+
+/// The hash of a state's JSON text, made as it is written: the header keeps it, so a state changed since (truncated,
+/// corrupted, edited) is refused before anything of it is read. It guards against damage, not forgery.
+fn state_hash(state: &J) -> String {
+    struct Fnv(u64);
+    impl std::io::Write for Fnv {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = fnv(self.0, bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut h = Fnv(0xcbf2_9ce4_8422_2325);
+    // Writing to it can't fail, and a `J` always serializes.
+    let _ = serde_json::to_writer(&mut h, state);
+    hex(h.0)
 }
 
 fn hex(h: u64) -> String {
@@ -390,6 +416,7 @@ pub fn capture(vm: &Vm, c: &Capture) -> Result<Snapshot, Refusal> {
         },
         "budget": { "activeMs": c.active_ms },
         "base": base.json(),
+        "state": state_hash(&state),
     });
     if let Some(n) = limits.max_heap_bytes {
         header["limits"]["maxHeapBytes"] = json!(n);
@@ -2114,6 +2141,9 @@ pub fn header(snapshot: &Snapshot) -> R<Restored> {
     let code = string(field(source, "code")?)?;
     if field(source, "hash")?.as_str() != Some(hex(hash(code.as_bytes())).as_str()) {
         return Err(SnapshotError::new("Source main does not match its hash."));
+    }
+    if field(header, "state")?.as_str() != Some(state_hash(field(s, "state")?).as_str()) {
+        return Err(invalid("its state does not match its hash."));
     }
     let limits = field(header, "limits")?;
     let opt = |name: &str| field(limits, name).map(J::as_u64);
