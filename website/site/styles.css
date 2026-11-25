@@ -319,10 +319,198 @@ button {
   fill: currentColor;
 }
 
+/* The Anomaly copyright: its signature, large, and the line small under it (the signature and the words are
+   grimnotes.app's footer's). It has no ground of its own: it lies on whatever it is put on, in that surface's
+   own ink. As it comes it is for a light page; --paper is for the poster's cream, --dark for the picture. */
+.copyright {
+  --sign: 224px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  color: #8f8f8f;
+  font: 500 10.5px/1.2 ui-monospace, "IBM Plex Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  font-variant-numeric: normal;
+  letter-spacing: 0.02em;
+  -webkit-font-smoothing: antialiased;
+}
+.copyright .signature {
+  width: var(--sign);
+  height: calc(var(--sign) * 0.3934);
+  overflow: visible;
+  color: #000;
+  opacity: 0.34;
+  pointer-events: none;
+}
+.copyright p {
+  margin: 0;
+  white-space: nowrap;
+}
+.copyright a {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: rgb(0 0 0 / 0.25);
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.copyright a:hover {
+  color: #5c5c5c;
+}
+.copyright--paper {
+  color: #7d6a55;
+}
+.copyright--paper .signature {
+  color: var(--ink);
+  opacity: 0.8;
+}
+.copyright--paper a:hover {
+  color: var(--ink);
+}
+/* (Over the picture it is under the terminal, on the pale plastic of its base: the poster's ink, with a little of
+   its cream round it so that it reads on whatever else may be behind it.) */
+.copyright--dark {
+  color: var(--ink);
+  font-weight: 700;
+  text-shadow: 0 0 2px var(--cream), 0 0 3px var(--cream), 0 0 6px rgb(246 227 189 / 0.9);
+}
+.copyright--dark .signature {
+  color: var(--ink);
+  opacity: 0.92;
+  filter: drop-shadow(0 0 1.5px var(--cream)) drop-shadow(0 0 4px rgb(246 227 189 / 0.75));
+}
+.copyright--dark a {
+  text-decoration-color: rgb(29 22 20 / 0.45);
+}
+.copyright--dark a:hover {
+  color: #a8380a;
+}
+
+/* With the terminal up close: a link to where Psychoscript lives, and whose it is, along the bottom under it.
+   liquid.js brings it in (.hero.is-near) once the terminal has nearly arrived, and takes it away as it leaves. */
+.dock {
+  position: absolute;
+  right: 16px;
+  bottom: 14px;
+  z-index: 6;
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(12px);
+  transition: opacity 0.3s, transform 0.3s, visibility 0s 0.3s;
+  cursor: auto;
+}
+.hero.is-near .dock {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  transition: opacity 0.35s, transform 0.35s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+html:not(.gpu) .dock,
+html[data-trip="off"] .dock,
+html.melting .dock {
+  display: none;
+}
+.dock__link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 18px 0 14px;
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+  background: var(--cream);
+  box-shadow: 0 3px 0 var(--ink);
+  color: var(--ink);
+  font: 800 15px/1 "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  letter-spacing: 0.02em;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color 0.15s, transform 0.15s, box-shadow 0.15s;
+}
+.dock__link svg {
+  width: 20px;
+  height: 20px;
+  fill: currentColor;
+}
+.dock__link:hover,
+.dock__link:focus-visible {
+  background: var(--yellow);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 0 var(--ink);
+}
+.dock__link:active {
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 var(--ink);
+}
+.dock__copyright {
+  --sign: 150px;
+  gap: 2px;
+  margin: 0 0 -6px 6px;
+}
+
+/* When the sun has said all it has to say: the way back down, along the bottom in the middle. liquid.js brings it
+   in (.hero.is-done) and keeps it away while the terminal is being shown (.is-touring). */
+.comedown {
+  position: absolute;
+  left: 50%;
+  bottom: 22px;
+  z-index: 6;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 52px;
+  padding: 0 26px;
+  border: 2.5px solid var(--ink);
+  border-radius: 999px;
+  background: var(--cream);
+  box-shadow: 0 5px 0 var(--ink);
+  color: var(--ink);
+  font: 800 17px/1 "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  cursor: pointer;
+  opacity: 0;
+  visibility: hidden;
+  translate: -50% 18px;
+  transition: opacity 0.5s, translate 0.5s, visibility 0s 0.5s, background-color 0.15s, box-shadow 0.15s;
+}
+.comedown span {
+  font-size: 20px;
+  transition: translate 0.15s;
+}
+.hero.is-done:not(.is-touring) .comedown {
+  opacity: 1;
+  visibility: visible;
+  translate: -50% 0;
+  transition: opacity 0.6s, translate 0.6s cubic-bezier(0.2, 0.9, 0.3, 1.25), background-color 0.15s, box-shadow 0.15s;
+}
+.comedown:hover,
+.comedown:focus-visible {
+  background: var(--yellow);
+}
+.comedown:hover span {
+  translate: 4px 0;
+}
+.comedown:active {
+  box-shadow: 0 2px 0 var(--ink);
+  translate: -50% 3px;
+}
+.comedown[hidden],
+html:not(.gpu) .comedown,
+html[data-trip="off"] .comedown,
+html.melting .comedown {
+  display: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .sigil,
   .sigil__on,
   .sigil__off,
+  .dock,
+  .dock__link,
+  .comedown,
   .liquid {
     transition: none;
   }
@@ -331,51 +519,83 @@ button {
   }
 }
 
-/* Narrow screens: the title on two lines at the top, the scene at the bottom. */
+/* Narrow screens: the title on two lines at the top, the sun under it in the middle, the scene at the bottom,
+   and all of it in the one screen. (--u is a hundredth of the hero's width, or less when it is squatter than 5 to 8:
+   liquid.js's narrow layout is 600 by at least 960, which is the 0.625.) */
 @media (max-width: 900px) {
   .hero {
     display: flex;
     flex-direction: column;
     align-items: center;
-    container-type: inline-size;
-    --u: 1cqw;
-    height: auto;
-    min-height: 100svh;
+    --u: min(1cqw, 0.625cqh);
+    min-height: 0;
     background-image: url("art/bg-narrow.svg");
   }
   .sky {
-    left: -3cqw;
-    width: 64cqw;
+    left: calc(-3 * var(--u));
+    width: calc(64 * var(--u));
   }
   .flower {
-    left: -8cqw;
-    bottom: -7cqw;
-    width: 30cqw;
+    left: calc(-8 * var(--u));
+    bottom: calc(-7 * var(--u));
+    width: calc(30 * var(--u));
   }
+  /* (The title is small enough to leave the sun the middle of the screen, and smaller again on a short one.) */
   .title {
     position: relative;
     left: auto;
     top: auto;
-    width: 90cqw;
-    margin: 15cqw 0 0;
+    flex: none;
+    width: min(58 * var(--u), 29.5cqh, 100cqh - 120 * var(--u));
+    margin: calc(5 * var(--u)) 0 0;
   }
+  /* (Where liquid.js's narrow layout has the sun: in the sky over the box, and higher the taller the screen.) */
   .sun-still {
-    left: 76%;
-    top: 26%;
+    left: 54.4%;
+    top: calc(97.9% - 51.3cqh);
     width: 47%;
   }
   .scene {
     position: relative;
+    left: calc(-5 * var(--u));
     right: auto;
     bottom: auto;
-    align-self: flex-start;
-    width: 118cqw;
-    margin: auto 0 0 -14cqw;
-    padding-top: 6cqw;
+    flex: none;
+    width: calc(118 * var(--u));
+    margin: auto 0 0;
+    padding-top: calc(6 * var(--u));
   }
+  /* (One over the other, up the corner: the bottom of the screen is then the dock's, or the way down's.) */
   .sigils {
     left: 8px;
     bottom: 8px;
+    flex-direction: column;
+  }
+  /* (Narrow, the links are two short rows under the terminal's glass, between the corner's controls and the edge.) */
+  .dock {
+    left: 50%;
+    right: auto;
+    bottom: 8px;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    width: max-content;
+    translate: -50% 0;
+  }
+  .dock__copyright {
+    --sign: 118px;
+    margin: 0;
+  }
+  /* (Under the terminal's boots, and no wider than the corner's controls leave.) */
+  .comedown {
+    bottom: 13px;
+    gap: 8px;
+    height: 46px;
+    padding: 0 min(20px, 5vw);
+    font-size: min(16px, 4.1vw);
+  }
+  .comedown span {
+    font-size: 1.15em;
   }
 }
 
@@ -419,15 +639,23 @@ html.drawn {
 html.drawn .tab__paper {
   opacity: calc(1 - var(--lens));
 }
+/* (No hole is cut in the page to show the canvas through: whole, the page is all its own, its tab drawn on a
+   little canvas of the tab's own; going, it is the canvas that is seen, and the page is out of the way.) */
+html.drawn[data-trip="on"],
+html.drawn[data-trip="off"] {
+  --hole: 0px;
+  transition: --lens 0.35s ease-out;
+}
 html.drawn .corp {
-  -webkit-mask-image: radial-gradient(circle at var(--trip-x) var(--trip-y), rgb(0 0 0 / calc(1 - var(--lens))) 210px, #000 330px);
-  mask-image: radial-gradient(circle at var(--trip-x) var(--trip-y), rgb(0 0 0 / calc(1 - var(--lens))) 210px, #000 330px);
+  -webkit-mask-image: none;
+  mask-image: none;
   transition: none;
   visibility: visible;
 }
 html.drawn.melting .corp,
 html.drawn[data-trip="on"] .corp {
   opacity: 0;
+  visibility: hidden;
   pointer-events: none;
 }
 /* The picture's own controls wait until the grey page has gone. */
@@ -451,6 +679,15 @@ html[data-trip="skip"] .corp,
 html[data-trip="skip"] .wave {
   display: none;
 }
+/* (Under either of them nothing of the poster moves.) */
+html[data-trip="off"] .cursor {
+  animation: none;
+}
+/* There are two sensible pages, and only ever one of them: NormalScript's, or Psychoscript's own (.home). */
+html[data-front="home"] .corp:not(.home),
+html:not([data-front="home"]) .home {
+  display: none;
+}
 /* Only ever printed. */
 .corp__form {
   display: none;
@@ -469,7 +706,9 @@ html[data-trip="skip"] .wave {
   .corp__nav,
   .corp__bar .corp__button,
   .corp__actions,
-  .corp__logos {
+  .corp__anomaly,
+  .corp__band,
+  .corp__section {
     display: none !important;
   }
   .corp {
@@ -489,16 +728,12 @@ html[data-trip="skip"] .wave {
     transform: none !important;
     filter: none !important;
   }
-  .corp__bar,
-  .corp__foot {
+  .corp__bar {
     padding: 0;
     background: none;
   }
   .corp__main {
     padding: 28px 0;
-  }
-  .corp__foot {
-    order: 3;
   }
   .corp__form {
     display: block;
@@ -538,11 +773,13 @@ html[data-trip="skip"] .wave {
   z-index: 10;
 }
 .corp {
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scroll-behavior: smooth;
   color-scheme: light;
   background: #f1f1f1;
   color: #8b8b8b;
-  font: 400 15px/1.5 "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font: 400 15px/1.55 "Helvetica Neue", Helvetica, Arial, sans-serif;
   cursor: default;
   -webkit-mask-image: radial-gradient(circle at var(--trip-x) var(--trip-y), transparent calc(var(--hole) - 2px), #000 var(--hole));
   mask-image: radial-gradient(circle at var(--trip-x) var(--trip-y), transparent calc(var(--hole) - 2px), #000 var(--hole));
@@ -551,8 +788,22 @@ html[data-trip="skip"] .wave {
 html[data-trip="on"] .corp {
   visibility: hidden;
 }
-html[data-trip="off"] .corp {
+html[data-trip="off"] .corp,
+html:not(.gpu) .corp {
+  -webkit-mask-image: none;
+  mask-image: none;
   transition: none;
+}
+/* Without WebGPU (e.g. Safari) never show the still .poster SVG behind .corp.home; let .corp.home be the document. */
+html:not(.gpu):not([data-trip="skip"]) .poster,
+html:not(.gpu):not([data-trip="skip"]) .wave {
+  display: none;
+}
+html:not(.gpu):not([data-trip="skip"]) .corp.home {
+  position: relative;
+  inset: auto;
+  min-height: 100svh;
+  overflow: visible;
 }
 /* The rim of the hole: the poster's rainbow, inked on both sides. */
 .wave {
@@ -574,9 +825,9 @@ html[data-trip="off"] .corp {
 }
 
 .corp__page {
-  display: grid;
-  grid-template-rows: auto 1fr auto;
-  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
   transform-origin: var(--trip-x) var(--trip-y);
 }
 /* As it takes hold the sensible page swells and tips. */
@@ -588,8 +839,7 @@ html[data-trip="on"] .corp__page {
 html[data-trip="off"] .corp__page {
   transition: transform 1.1s cubic-bezier(0.3, 0, 0.2, 1), filter 0.6s;
 }
-.corp__bar,
-.corp__foot {
+.corp__bar {
   display: flex;
   align-items: center;
   gap: 28px;
@@ -625,6 +875,13 @@ html[data-trip="off"] .corp__page {
   gap: 28px;
   font-size: 14px;
 }
+.corp__nav a {
+  color: inherit;
+  text-decoration: none;
+}
+.corp__nav a:hover {
+  color: #5f5f5f;
+}
 .corp__button {
   display: inline-block;
   padding: 10px 18px;
@@ -635,18 +892,30 @@ html[data-trip="off"] .corp__page {
   font-size: 14px;
   font-weight: 500;
   white-space: nowrap;
+  text-decoration: none;
+  cursor: pointer;
+}
+.corp__button:hover {
+  background: #868686;
+  border-color: #868686;
 }
 .corp__button--quiet {
   border-color: #cfcfcf;
   background: none;
   color: #8b8b8b;
 }
+.corp__button--quiet:hover {
+  background: #eaeaea;
+  border-color: #bdbdbd;
+  color: #666666;
+}
 .corp__main {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 24px 24px 40px;
+  min-height: calc(100svh - 64px);
+  padding: 40px 24px 52px;
   text-align: center;
 }
 .corp__main p,
@@ -684,27 +953,526 @@ html[data-trip="off"] .corp__page {
   font-size: 12px;
   letter-spacing: 0.04em;
 }
-.corp__logos {
-  display: flex;
-  gap: 26px;
-  margin-top: 14px !important;
+.corp__wrap {
+  width: 100%;
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 0 32px;
 }
-.corp__logos i {
-  width: 92px;
-  height: 22px;
-  border-radius: 3px;
-  background: #dcdcdc;
-}
-.corp__logos i:nth-child(even) {
-  width: 64px;
-}
-.corp__foot {
-  height: 52px;
+.corp__band {
   border-top: 1px solid #dedede;
-  font-size: 12px;
+  border-bottom: 1px solid #dedede;
+  background: #f7f7f7;
+  padding: 28px 0;
 }
-.corp__foot span:first-child {
+.corp__metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 20px;
+}
+.corp__metric {
+  padding: 12px 16px;
+  border: 1px solid #e2e2e2;
+  border-radius: 4px;
+  background: #f1f1f1;
+}
+.corp__metric-val {
+  margin: 0;
+  color: #636363;
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.corp__metric-label {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #8b8b8b;
+}
+.corp__section {
+  padding: 72px 0;
+  border-bottom: 1px solid #dedede;
+  background: #f1f1f1;
+  text-align: left;
+}
+.corp__section--alt {
+  background: #f7f7f7;
+}
+.corp__heading {
+  margin: 10px 0 0;
+  max-width: 24em;
+  color: #666666;
+  font-size: clamp(22px, 2.6vw, 30px);
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+.corp__lead {
+  margin: 12px 0 0;
+  max-width: 52em;
+  font-size: 15px;
+  color: #858585;
+}
+.corp__grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px;
+  margin-top: 32px;
+}
+.corp__card {
+  padding: 22px 22px 24px;
+  border: 1px solid #dedede;
+  border-radius: 4px;
+  background: #f7f7f7;
+}
+.corp__card h4 {
+  margin: 0;
+  color: #636363;
+  font-size: 15px;
+  font-weight: 700;
+}
+.corp__card p {
+  margin: 10px 0 0;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: #858585;
+}
+.corp__examples {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+  margin-top: 32px;
+}
+.corp__code-card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #d9d9d9;
+  border-radius: 4px;
+  background: #f1f1f1;
+  overflow: hidden;
+}
+.corp__code-title {
+  margin: 0;
+  padding: 11px 16px;
+  border-bottom: 1px solid #dedede;
+  background: #eaeaea;
+  color: #6b6b6b;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.corp__pre {
+  margin: 0;
+  padding: 16px;
+  overflow-x: auto;
+  color: #686868;
+  font: 400 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+.corp__table {
+  margin-top: 32px;
+  border: 1px solid #dedede;
+  border-radius: 4px;
+  background: #f7f7f7;
+}
+.corp__row {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  border-bottom: 1px solid #e4e4e4;
+}
+.corp__row:last-child {
+  border-bottom: 0;
+}
+.corp__cell {
+  padding: 14px 18px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: #828282;
+}
+.corp__cell--key {
+  border-right: 1px solid #e4e4e4;
+  background: #f2f2f2;
+  color: #636363;
+  font-weight: 600;
+}
+.corp__split {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+  margin-top: 32px;
+}
+.corp__panel {
+  padding: 24px;
+  border: 1px solid #dedede;
+  border-radius: 4px;
+  background: #f1f1f1;
+}
+.corp__panel h4 {
+  margin: 0 0 14px;
+  color: #636363;
+  font-size: 15px;
+  font-weight: 700;
+}
+.corp__list {
+  margin: 0;
+  padding: 0 0 0 18px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: #828282;
+}
+.corp__list li {
+  margin-bottom: 10px;
+}
+.corp__list li:last-child {
+  margin-bottom: 0;
+}
+.corp__list strong {
+  color: #666666;
+  font-weight: 600;
+}
+.corp__cta-box {
+  padding: 40px 36px;
+  border: 1px solid #dedede;
+  border-radius: 4px;
+  background: #f7f7f7;
+  text-align: center;
+}
+.corp__cta-box .corp__heading,
+.corp__cta-box .corp__lead {
+  margin-left: auto;
   margin-right: auto;
+}
+.corp__cta-box .corp__actions {
+  margin: 24px 0 0;
+}
+/* The page's foot: whose all this really is. The Anomaly copyright, on the page's own grey. */
+.corp__anomaly {
+  display: flex;
+  justify-content: center;
+  padding: 36px 0 42px;
+  border-top: 1px solid #dedede;
+  background: #f1f1f1;
+}
+
+/* ---------------------------------------------------------------------------
+   Psychoscript's own page (.corp.home): where anyone who has come down from the trip lands, and anyone whose
+   browser cannot draw the picture live. The poster's colours on its paper; nothing on it moves but the tab.
+   The page is all its own, with no hole in it for the big canvas to show through: its tab is the picture's tab,
+   drawn on a little canvas of the tab's own that lies on the page (.tab__live) and goes wherever the page is
+   scrolled to. The big canvas has no part in it until the tab is taken. (Then liquid.js paints the page as it
+   stands and melts that: flat grounds, borders, hard shadows, words, pictures. So the hero keeps to those.) */
+.home {
+  color-scheme: light;
+  background: #f9eed6;
+  color: var(--ink);
+  font: 500 16px/1.55 "Avenir Next", "Segoe UI", system-ui, -apple-system, sans-serif;
+  cursor: auto;
+}
+.home p,
+.home h2,
+.home h3 {
+  margin: 0;
+}
+.home code {
+  padding: 0.08em 0.36em;
+  border-radius: 4px;
+  background: rgb(29 22 20 / 0.08);
+  font: 600 0.88em/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+/* The first screen: the name, the line under it and the tab, one under another with the same space between them,
+   in the middle of the screen both ways. The button in the top corner and the pictures in the others are laid
+   over it and take up no room. */
+.home__hero {
+  --gap: clamp(28px, 5.4vh, 52px);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--gap);
+  min-height: 100svh;
+  padding: 84px 24px;
+  overflow: hidden;
+  background: #f9eed6;
+  text-align: center;
+}
+.home__sky,
+.home__sun,
+.home__flower {
+  position: absolute;
+  height: auto;
+  pointer-events: none;
+}
+/* (The planet and its stars: as far in from the top as from the left. The drawing has some empty paper of its own
+   round it, 8% of its width on the left and 6% at the top, which is taken off both.) */
+.home__sky {
+  --inset: clamp(22px, 2.6vw, 40px);
+  --wide: clamp(230px, 24vw, 330px);
+  left: calc(var(--inset) - 0.082 * var(--wide));
+  top: calc(var(--inset) - 0.058 * var(--wide));
+  width: var(--wide);
+}
+.home__sun {
+  right: -84px;
+  bottom: -96px;
+  width: min(30vw, 400px);
+}
+.home__flower {
+  left: -52px;
+  bottom: -64px;
+  width: min(17vw, 230px);
+}
+.home__bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 16px;
+  height: 76px;
+  padding: 0 36px;
+}
+.home .home__mark,
+.home .home__tagline,
+.home__trip,
+.home .tab {
+  margin: 0 !important;
+}
+.home__mark {
+  position: relative;
+  width: min(620px, 84vw);
+}
+.home__mark img {
+  width: 100%;
+  height: auto;
+}
+/* (The name's picture has a little clear paper under its letters, which the line under it is brought up by.) */
+.home .home__tagline {
+  position: relative;
+  max-width: 21em;
+  margin-top: -12px !important;
+  font-size: clamp(20px, 2.5vw, 30px);
+  font-weight: 800;
+  line-height: 1.18;
+  letter-spacing: -0.015em;
+  text-wrap: balance;
+}
+.home__trip {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+/* (Where the picture draws the tab, that is the tab. This is the plain one, for where it does not: never grey here.) */
+.home .tab {
+  --near: 1;
+}
+.home .tab:focus-visible {
+  outline-color: var(--ink);
+}
+/* Where the picture cannot be drawn live there is no trip to take, and no tab, and no way back to NormalScript. */
+html:not(.gpu) .home__trip,
+html:not(.gpu) .home__reset {
+  display: none;
+}
+/* (Come down to, the page takes over from the canvas's picture of it gently.) */
+html[data-front="home"]:not(.drawn) .home {
+  transition: opacity 0.3s;
+}
+.home__button {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 54px;
+  padding: 0 28px 0 22px;
+  border: 2.5px solid var(--ink);
+  border-radius: 999px;
+  background: var(--ink);
+  color: var(--cream);
+  font-size: 17px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0;
+  white-space: nowrap;
+  text-decoration: none;
+  cursor: pointer;
+}
+.home__button svg {
+  width: 22px;
+  height: 22px;
+  fill: currentColor;
+}
+.home__button:hover,
+.home__button:focus-visible {
+  background: var(--orange);
+  color: var(--ink);
+}
+.home__button--small {
+  height: 40px;
+  padding: 0 18px 0 14px;
+  font-size: 14px;
+}
+.home__button--small svg {
+  width: 18px;
+  height: 18px;
+}
+.home__body {
+  position: relative;
+}
+/* (Below the first screen the paper has its grain. Not on the hero: the canvas's picture of it, which takes over as the tab is taken, has none.) */
+.home__body::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: url("art/paper.svg");
+  mix-blend-mode: multiply;
+  opacity: 0.22;
+  pointer-events: none;
+}
+.home__wrap {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 0 28px;
+}
+.home__section {
+  padding: 84px 0 88px;
+  border-top: 3px solid var(--ink);
+  background: #f9eed6;
+}
+.home__eyebrow {
+  color: #c44d0c;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.home__heading {
+  max-width: 19em;
+  margin-top: 10px !important;
+  font-size: clamp(26px, 3.4vw, 40px);
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+.home__list h3 {
+  margin-bottom: 8px;
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+}
+.home__split {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 22px;
+  margin-top: 34px;
+}
+.home__list {
+  padding: 22px 24px 24px;
+  border: 2.5px solid var(--ink);
+  border-radius: 14px;
+  background: var(--cream);
+}
+.home__list--yes {
+  box-shadow: 5px 5px 0 #1fa7a0;
+}
+.home__list--no {
+  box-shadow: 5px 5px 0 var(--pink);
+}
+.home__list h3 {
+  margin-bottom: 12px;
+}
+.home__intro {
+  margin-bottom: 14px !important;
+  color: #4a3a30;
+  font-size: 15px;
+}
+.home__list b {
+  color: var(--ink);
+  font-weight: 700;
+}
+.home__list ul {
+  display: grid;
+  gap: 9px;
+  margin: 0;
+  padding: 0 0 0 1.1em;
+  color: #4a3a30;
+  font-size: 15px;
+}
+.home__cta {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 22px;
+  padding: 72px 28px 96px;
+  border-top: 3px solid var(--ink);
+  background: #f9eed6;
+}
+/* Under it, quietly: the way back to NormalScript's page (liquid.js forgets the visitor and loads the page again). */
+.home__reset {
+  padding: 6px 10px;
+  border-radius: 6px;
+  color: #7d6a55;
+  font: 500 14px/1.2 "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  text-decoration: underline;
+  text-decoration-color: rgb(29 22 20 / 0.3);
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.home__reset:hover,
+.home__reset:focus-visible {
+  color: var(--ink);
+  text-decoration-color: currentColor;
+}
+.home__foot {
+  display: flex;
+  justify-content: center;
+  padding: 26px 0 50px;
+  background: #f9eed6;
+}
+@media (max-width: 900px) {
+  .home__split {
+    grid-template-columns: 1fr;
+  }
+  .home__section {
+    padding: 60px 0 64px;
+  }
+}
+@media (max-width: 620px) {
+  .home__hero {
+    padding: 84px 20px;
+  }
+  .home__bar {
+    padding: 0 20px;
+  }
+  .home__mark {
+    width: min(330px, 78vw);
+  }
+  .home .home__tagline {
+    margin-top: -8px !important;
+  }
+  .home__wrap {
+    padding: 0 20px;
+  }
+  /* (The planet in the top corner, level with the button in the other; the sun and the flower tucked into the bottom ones.) */
+  .home__sky {
+    --inset: 16px;
+    --wide: min(40vw, 168px);
+  }
+  .home__sun {
+    right: -44px;
+    bottom: -50px;
+    width: min(38vw, 150px);
+  }
+  .home__flower {
+    left: -32px;
+    bottom: -36px;
+    width: min(27vw, 106px);
+  }
 }
 
 /* The only thing on it with any colour: a little tab, smiling. */
@@ -786,11 +1554,11 @@ html[data-trip="off"] .corp__page {
   outline-offset: 2px;
 }
 /* Where the picture is going to draw the tab, the page shows a photograph of the tab it draws (at rest, grey)
-   until it does, so that the one takes over from the other and nothing is seen to change. */
+   until everything is ready and drawn, so that the one takes over from the other and nothing jumps. */
 .tab__still {
   display: none;
 }
-html.lensing .tab__still {
+html.lensing:not(.stamped) .corp:not(.home) .tab__still {
   display: block;
   position: absolute;
   left: 50%;
@@ -802,8 +1570,40 @@ html.lensing .tab__still {
   pointer-events: none;
 }
 html.lensing .tab::before,
-html.lensing .tab__paper {
+html.lensing .corp:not(.home) .tab__paper {
   visibility: hidden;
+}
+/* If someone clicks before everything has finished loading in the background, show a busy cursor until it starts. */
+html.is-waiting,
+html.is-waiting * {
+  cursor: progress !important;
+}
+/* On Psychoscript's own page there is no grey photograph: show its full-colour paper tab immediately,
+   then hand over seamlessly to the live WebGPU tab once drawn. */
+html.lensing .home .tab__paper {
+  visibility: visible;
+  transition: opacity 0.3s ease-out;
+}
+html.lensing.stamped .home .tab__paper {
+  opacity: 0;
+  pointer-events: none;
+}
+/* The tab as the picture draws it, on a small canvas of its own inside the tab's button (liquid.js makes it):
+   clear but for the tab and its light, it lies on the page and goes wherever the page is scrolled to. */
+.tab__live {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 360px;
+  height: 360px;
+  max-width: none;
+  margin: -180px 0 0 -180px;
+  opacity: 0;
+  transition: opacity 0.3s ease-out;
+  pointer-events: none;
+}
+html.stamped .tab__live {
+  opacity: 1;
 }
 html.lensing:not([data-trip="on"]) .tab {
   animation: none;
@@ -839,18 +1639,45 @@ html[data-trip="on"] .tab {
   }
 }
 
+@media (max-width: 920px) {
+  .corp__metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .corp__grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .corp__examples,
+  .corp__split {
+    grid-template-columns: 1fr;
+  }
+}
 @media (max-width: 760px) {
   .corp__nav,
-  .corp__foot span:not(:first-child),
   .corp__bar .corp__button {
     display: none;
   }
-  .corp__bar,
-  .corp__foot {
+  .corp__bar {
     padding: 0 20px;
   }
-  .corp__logos i:nth-child(n + 4) {
-    display: none;
+  .corp__wrap {
+    padding: 0 20px;
+  }
+  .corp__section {
+    padding: 48px 0;
+  }
+  .corp__metrics,
+  .corp__grid {
+    grid-template-columns: 1fr;
+  }
+  .corp__row {
+    grid-template-columns: 1fr;
+  }
+  .corp__cell--key {
+    border-right: 0;
+    border-bottom: 1px solid #e4e4e4;
+  }
+  .corp__cta-box {
+    padding: 28px 20px;
   }
 }
 @media (prefers-reduced-motion: reduce) {
