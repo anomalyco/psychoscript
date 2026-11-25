@@ -273,7 +273,7 @@ pub fn to_u8(n: f64) -> u8 {
 
 /// A new typed array (or `ArrayBuffer`) of `elem` over `data`.
 pub fn new_typed(vm: &mut Vm, data: Vec<u8>, elem: Elem) -> Value {
-    super::ensure(vm, super::LAZY_BYTES);
+    super::ensure(vm, group_of(elem));
     let bytes = data.len();
     let store = new_storage(vm, data);
     let proto = vm.realm.std.typed_proto(elem);
@@ -380,13 +380,18 @@ pub fn get_prop(vm: &mut Vm, id: Id, key: Atom) -> Option<Value> {
     if key == vm.names.byte_offset {
         return Some(Value::Num(b.start as f64));
     }
-    if !vm.realm.std.typed_arrays {
-        return None;
-    }
     if key == vm.names.buffer {
         return Some(Value::Obj(array_buffer_of(vm, id)));
     }
     None
+}
+
+/// The lazy group that makes the prototype of a typed array of `elem` (see `builtins::LAZY`).
+pub fn group_of(elem: Elem) -> u16 {
+    match elem {
+        Elem::U8 => super::LAZY_BYTES,
+        _ => super::LAZY_TYPED,
+    }
 }
 
 /// The `ArrayBuffer` object of a typed array's buffer, made the first time it is needed.
@@ -395,6 +400,7 @@ pub fn array_buffer_of(vm: &mut Vm, id: Id) -> Id {
     if let Some(owner) = vm.heap[store as usize].proto {
         return owner;
     }
+    super::ensure(vm, super::LAZY_TYPED);
     let len = storage(vm, store).len();
     let proto = vm.realm.std.array_buffer;
     let b = Bytes::whole(store, len, Elem::ArrayBuffer, false);
@@ -416,10 +422,6 @@ pub fn set_prop(vm: &mut Vm, id: Id, key: Atom, val: Value) -> Option<Result<(),
     let names = &vm.names;
     if [names.length, names.byte_length, names.byte_offset].contains(&key) {
         return Some(Err(vm.only_getter(&Value::Obj(id), key)));
-    }
-    // Without typed arrays, a Uint8Array keeps any other key as a property.
-    if !vm.realm.std.typed_arrays {
-        return None;
     }
     if key == vm.names.buffer {
         return Some(Err(vm.only_getter(&Value::Obj(id), key)));
@@ -655,11 +657,7 @@ pub fn setup(vm: &mut Vm) {
     );
     vm.constant(ctor, "BYTES_PER_ELEMENT", Value::Num(1.0));
     vm.constant(proto, "BYTES_PER_ELEMENT", Value::Num(1.0));
-    if vm.realm.std.typed_arrays {
-        super::accessors(vm, proto, &["length", "byteLength", "byteOffset", "buffer"]);
-    } else {
-        super::accessors(vm, proto, &["length", "byteLength", "byteOffset"]);
-    }
+    super::accessors(vm, proto, &["length", "byteLength", "byteOffset", "buffer"]);
     vm.methods(
         proto,
         &[

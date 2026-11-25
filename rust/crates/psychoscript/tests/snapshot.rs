@@ -485,12 +485,9 @@ fn a_suspended_run_keeps_its_typed_arrays_and_the_buffers_their_views_share() {
         return [Array.from(f), Array.from(u), s.buffer === f.buffer, u.buffer === b, f.byteLength]"#
     );
     let gate = Gate::default();
-    let state = suspend_mid_loop(&stepping(&gate).typed_arrays(true), &gate, &code);
-    // Only a runtime with typed arrays resumes it.
-    assert_eq!(fresh().resume(&state).err().unwrap().message, OTHER_GLOBALS);
+    let state = suspend_mid_loop(&stepping(&gate), &gate, &code);
     let o = done(
         fresh()
-            .typed_arrays(true)
             .resume_bytes(&psychoscript::to_bytes(&state))
             .unwrap()
             .run_resumable()
@@ -557,16 +554,6 @@ fn a_state_is_refused_by_another_build_other_host_globals_or_a_changed_source() 
         ]
     });
     assert_eq!(others.resume(&state).err().unwrap().message, OTHER_GLOBALS);
-    // A runtime with typed arrays resumes only its own runs.
-    assert_eq!(
-        fresh()
-            .typed_arrays(true)
-            .resume(&state)
-            .err()
-            .unwrap()
-            .message,
-        OTHER_GLOBALS
-    );
     let mut changed = state.clone();
     let code = changed.0["header"]["source"]["code"]
         .as_str()

@@ -52,8 +52,6 @@ pub struct StdProtos {
     pub typed: [Id; 5],
     /// The lazily installed groups already set up (see `LAZY`).
     pub loaded: u16,
-    /// Whether the program has the typed arrays besides Uint8Array: see `Runtime::typed_arrays`.
-    pub typed_arrays: bool,
 }
 
 impl StdProtos {
@@ -80,18 +78,26 @@ const LAZY: &[LazyGroup] = &[
         &[
             "Uint8Array",
             "Buffer",
-            "ArrayBuffer",
-            "Uint16Array",
-            "Uint32Array",
-            "Int32Array",
-            "Float32Array",
-            "Float64Array",
             "TextEncoder",
             "TextDecoder",
             "atob",
             "btoa",
         ],
         setup_bytes,
+    ),
+    // The typed arrays besides Uint8Array: also made when a program reaches a typed array's `buffer` or a host
+    // function returns one.
+    (
+        LAZY_TYPED,
+        &[
+            "ArrayBuffer",
+            "Uint16Array",
+            "Uint32Array",
+            "Int32Array",
+            "Float32Array",
+            "Float64Array",
+        ],
+        typed::setup,
     ),
     (
         LAZY_COLLECTIONS,
@@ -125,29 +131,12 @@ pub const LAZY_WEB: u16 = 32;
 pub const LAZY_BIGINT: u16 = 128;
 pub const LAZY_SYMBOLS: u16 = 512;
 pub const LAZY_FROM_ASYNC: u16 = 1024;
+pub const LAZY_TYPED: u16 = 2048;
 
 fn setup_bytes(vm: &mut Vm) {
     bytes::setup(vm);
-    typed::setup(vm);
     buffer::setup(vm);
-    // Without typed arrays, they are made all the same, but not bound.
-    if !vm.realm.std.typed_arrays {
-        for name in TYPED_GLOBALS {
-            let a = vm.atoms.intern_static(name);
-            vm.global_map.remove(&a);
-        }
-    }
 }
-
-/// The globals only a runtime with typed arrays binds (see `Runtime::typed_arrays`).
-pub const TYPED_GLOBALS: [&str; 6] = [
-    "ArrayBuffer",
-    "Uint16Array",
-    "Uint32Array",
-    "Int32Array",
-    "Float32Array",
-    "Float64Array",
-];
 
 /// Installs the lazy group with `bit`, once.
 pub fn ensure(vm: &mut Vm, bit: u16) {

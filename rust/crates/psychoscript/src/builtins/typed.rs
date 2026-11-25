@@ -437,7 +437,7 @@ fn t_entries(vm: &mut Vm, this: Value, _args: &[Value], callee: Id) -> Res {
 /// A typed array (or `ArrayBuffer`) over the bytes a host function returned, without copying them: the program's own
 /// buffer again for a handle the call got, or the host's bytes, which become the program's.
 pub fn from_host(vm: &mut Vm, t: &crate::TypedArray, label: &str) -> Res {
-    super::ensure(vm, super::LAZY_BYTES);
+    super::ensure(vm, super::bytes::group_of(t.kind));
     let known = vm.lends.iter().find(|(_, h)| h.same(&t.buf));
     let store = match known {
         Some((store, _)) => *store,

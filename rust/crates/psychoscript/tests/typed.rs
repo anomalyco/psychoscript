@@ -4,7 +4,8 @@
 use std::sync::{Arc, Mutex};
 
 use psychoscript::{
-    DiagnosticKind, HostFunction, HostValue, Limits, Runtime, TypedArray, TypedKind,
+    Data, DiagnosticKind, DurableFunction, HostFunction, HostValue, Limits, Runtime, TypedArray,
+    TypedKind,
 };
 use serde_json::json;
 
@@ -27,7 +28,6 @@ fn programs() {
     let runtime = |cap: Option<u64>| {
         Runtime::make()
             .globals(|_| [("tools", HostValue::from(reference::tools()))])
-            .typed_arrays(true)
             .limits(Limits {
                 max_heap_bytes: cap,
                 ..Limits::default()
@@ -315,7 +315,7 @@ fn programs_in_the_round_trip_mode() {
 
 #[test]
 fn elements_round_and_wrap_and_views_share_their_buffer() {
-    let rt = Runtime::make().typed_arrays(true);
+    let rt = Runtime::make();
     assert_eq!(
         value(
             &rt,
@@ -346,7 +346,7 @@ fn elements_round_and_wrap_and_views_share_their_buffer() {
 #[test]
 fn storage_counts_against_the_heap_cap_once_per_buffer() {
     let capped = |bytes| {
-        Runtime::make().typed_arrays(true).limits(Limits {
+        Runtime::make().limits(Limits {
             max_heap_bytes: Some(bytes),
             ..Limits::default()
         })
@@ -375,7 +375,7 @@ type Kept = Arc<Mutex<Vec<TypedArray>>>;
 fn gpu() -> (Runtime, Kept) {
     let kept: Kept = Arc::default();
     let k = kept.clone();
-    let rt = Runtime::make().typed_arrays(true).globals(move |_| {
+    let rt = Runtime::make().globals(move |_| {
         let (upload, later, mesh, stale) = (k.clone(), k.clone(), k.clone(), k.clone());
         [
             (
@@ -524,7 +524,7 @@ fn a_returned_typed_array_is_the_program_s() {
 fn a_uint8array_crosses_as_a_copy() {
     let seen: Arc<Mutex<Option<HostValue>>> = Arc::default();
     let s = seen.clone();
-    let rt = Runtime::make().typed_arrays(true).globals(move |_| {
+    let rt = Runtime::make().globals(move |_| {
         let s = s.clone();
         [(
             "take",
@@ -539,7 +539,7 @@ fn a_uint8array_crosses_as_a_copy() {
 }
 
 #[test]
-fn without_typed_arrays_programs_and_host_functions_behave_as_before_they_were_added() {
+fn every_runtime_has_them_and_host_functions_return_them_as_views() {
     let rt = Runtime::make().globals(|_| {
         [
             (
@@ -576,54 +576,203 @@ fn without_typed_arrays_programs_and_host_functions_behave_as_before_they_were_a
     let types = names.map(|n| format!("typeof {n}")).join(", ");
     assert_eq!(
         value(&rt, &format!("return [{types}, typeof Uint8Array]")),
-        json!([
-            "undefined",
-            "undefined",
-            "undefined",
-            "undefined",
-            "undefined",
-            "undefined",
-            "function"
-        ])
+        json!(vec!["function"; 7])
     );
-    for (code, column) in [("new Float32Array(1)", 5), ("Float32Array = 1", 1)] {
-        let e = rt.execute(code).result.unwrap_err();
-        assert_eq!(
-            e.message_lossy(),
-            format!("ReferenceError: Unknown identifier 'Float32Array'. (line 1, col {column})")
-        );
-    }
     assert!(
         names
             .iter()
-            .all(|n| !psychoscript::global_names().contains(n))
+            .all(|n| psychoscript::global_names().contains(n))
     );
-    let e = rt.execute("const w = wide()").result.unwrap_err();
+    // A built-in global, which a program cannot assign to.
+    let e = rt.execute("Float32Array = 1").result.unwrap_err();
     assert_eq!(
-        (e.kind.name(), e.message_lossy(), e.location),
-        (
-            DiagnosticKind::ExecutionFailure.name(),
-            "TypeError: wide produced a Uint16Array, which the program cannot hold. (line 1, col 11)".into(),
-            Some((1, 11))
-        )
-    );
-    assert_eq!(
-        value(&rt, "try { nested() } catch (e) { return e.message }"),
-        json!("nested.list[0] produced an Int32Array, which the program cannot hold.")
+        e.message_lossy(),
+        "TypeError: Cannot assign to constant 'Float32Array'. (line 1, col 1)"
     );
     assert_eq!(
         value(
             &rt,
-            "const b = buf(); return [b instanceof Uint8Array, Array.from(b)]"
+            "const w = wide(); return [w.constructor.name, Array.from(w), nested().list[0] instanceof Int32Array]"
         ),
-        json!([true, [5, 6]])
+        json!(["Uint16Array", [7], true])
     );
+    assert_eq!(
+        value(
+            &rt,
+            "const b = buf(); return [b instanceof ArrayBuffer, b.byteLength, Array.from(new Uint8Array(b))]"
+        ),
+        json!([true, 2, [5, 6]])
+    );
+    // A Uint8Array is a typed array too: a view of an ArrayBuffer, with no element at a key such as -1 or 1.5.
     assert_eq!(
         value(
             &rt,
             "const u = new Uint8Array(2); u[-1] = 5; u[1.5] = 6; \
-             return [u.byteLength, u.byteOffset, u.buffer, Object.keys(u), u[-1], 'byteLength' in u]"
+             return [u.byteLength, u.byteOffset, u.buffer instanceof ArrayBuffer, u.buffer.byteLength, Object.keys(u), u[-1], 'byteLength' in u]"
         ),
-        json!([2, 0, null, ["0", "1", "-1", "1.5"], 5, true])
+        json!([2, 0, true, 2, ["0", "1"], null, true])
+    );
+}
+
+#[test]
+fn async_and_durable_host_functions_get_copies() {
+    let kept: Kept = Arc::default();
+    let (a, d) = (kept.clone(), kept.clone());
+    let rt = Runtime::make().globals(move |_| {
+        let (a, d) = (a.clone(), d.clone());
+        // Each keeps its handle and writes 7 into the first element.
+        let take = move |kept: &Kept, arg: &HostValue| {
+            let HostValue::TypedArray(t) = arg.clone() else {
+                panic!("expected a typed array")
+            };
+            kept.lock().unwrap().push(t.clone());
+            t
+        };
+        vec![
+            (
+                "send".to_owned(),
+                HostValue::from(HostFunction::new_async(move |args, _| {
+                    let t = take(&a, &args[0]);
+                    async move {
+                        t.with_bytes_mut(|b| TypedKind::F32.write(7.0, &mut b[..4]));
+                        Ok(HostValue::Undefined)
+                    }
+                })),
+            ),
+            (
+                "job".to_owned(),
+                HostValue::from(DurableFunction::new(
+                    move |args, _| {
+                        let t = take(&d, &args[0]);
+                        t.with_bytes_mut(|b| TypedKind::I32.write(7.0, &mut b[..4]));
+                        async { Ok(Data::Null) }
+                    },
+                    |_, _| async { Ok(HostValue::Undefined) },
+                    |_, _| async {},
+                )),
+            ),
+        ]
+    });
+    let v = value(
+        &rt,
+        "const f = new Float32Array([1, 2]); const g = new Int32Array([3, 4]); \
+         const p = send(f); const q = job(g); f[1] = 9; g[1] = 9; await p; await q; \
+         return [Array.from(f), Array.from(g)]",
+    );
+    // The host's writes went to its copies, and the program's writes after the calls didn't reach them.
+    assert_eq!(v, json!([[1, 9], [3, 9]]));
+    let kept = kept.lock().unwrap();
+    assert_eq!(kept[0].values(), vec![7.0, 2.0]);
+    assert_eq!(kept[1].values(), vec![7.0, 4.0]);
+}
+
+/// The typed arrays besides Uint8Array are a lazy group of built-ins: a run that doesn't name them, reach a typed
+/// array's `buffer` or get one from the host doesn't make them, whatever else it uses.
+#[test]
+fn a_run_that_does_not_use_them_does_not_make_them() {
+    let objects = |code: &str| -> u64 {
+        let slot: Arc<Mutex<Option<psychoscript::Run>>> = Arc::default();
+        let s = slot.clone();
+        let rt = Runtime::make().globals(move |run| {
+            *s.lock().unwrap() = Some(run.clone());
+            [
+                (
+                    "bytes",
+                    HostFunction::new(|_, _| HostValue::Bytes(vec![1, 2])),
+                ),
+                (
+                    "floats",
+                    HostFunction::new(|_, _| HostValue::TypedArray(TypedArray::from_f32(&[1.0]))),
+                ),
+            ]
+        });
+        if let Err(d) = rt.execute(code).result {
+            panic!("{code}: {}", d.message_lossy());
+        }
+        let run = slot.lock().unwrap().clone().unwrap();
+        run.heap_stats().objects
+    };
+    let group = objects("Float32Array; return 1") - objects("return 1");
+    assert!(group > 50, "{group}");
+    for code in [
+        "return 1",
+        "return typeof Map",
+        "return [1].constructor.name",
+        "return JSON.stringify({ a: [1], d: new Date(0) })",
+        "return structuredClone({ a: [1] }).a.length",
+        "return crypto.randomUUID().length",
+        "return new Uint8Array([1, 2]).subarray(1).byteLength",
+        "return Buffer.from('x').toString('hex')",
+        "return new TextDecoder().decode(new TextEncoder().encode('x'))",
+        "return atob(btoa('x'))",
+        "return bytes().length",
+    ] {
+        assert_eq!(
+            objects(&format!("Float32Array; {code}")) - objects(code),
+            group,
+            "{code}"
+        );
+    }
+    // A typed array's `buffer` and a host function's Float32Array make them on the way.
+    let reached = objects("return new Uint8Array(1).buffer.byteLength")
+        - objects("return new Uint8Array(1).byteLength");
+    assert!(reached > group, "{reached}");
+    assert_eq!(
+        objects("Float32Array; return floats().length"),
+        objects("return floats().length")
+    );
+}
+
+/// A run that made them on the way, through a typed array's `buffer`, keeps them and its buffer across a suspend.
+#[test]
+fn a_suspended_run_keeps_the_typed_arrays_it_made_on_the_way() {
+    let (called, resumed) = (
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    );
+    let (c, r) = (called.clone(), resumed.clone());
+    let rt = Runtime::make().globals(move |_| {
+        let (c, r) = (c.clone(), r.clone());
+        [(
+            "wait",
+            HostFunction::new_async(move |_, _| {
+                c.store(true, std::sync::atomic::Ordering::SeqCst);
+                let r = r.clone();
+                async move {
+                    if !r.load(std::sync::atomic::Ordering::SeqCst) {
+                        std::future::pending::<()>().await;
+                    }
+                    Ok(HostValue::Number(1.0))
+                }
+            })
+            .idempotent(),
+        )]
+    });
+    let code = "const u = new Uint8Array([1, 2]); const b = u.buffer; await wait(); new Uint8Array(b)[0] = 5; \
+                return [String(b), b.byteLength, u.buffer === b, u[0], b.constructor.name, new b.constructor(4).byteLength]";
+    let program = rt.program(code, &psychoscript::ProgramOptions::new());
+    let suspender = program.suspender();
+    let asking = std::thread::spawn(move || {
+        while !called.load(std::sync::atomic::Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        suspender.suspend(None)
+    });
+    let psychoscript::RunOutcome::Suspended(saved) = program.run_resumable().unwrap() else {
+        panic!("not suspended")
+    };
+    asking.join().unwrap().unwrap();
+    resumed.store(true, std::sync::atomic::Ordering::SeqCst);
+    let resumed = rt
+        .resume_bytes(&psychoscript::to_bytes(&saved.state))
+        .unwrap()
+        .run_resumable()
+        .unwrap();
+    let psychoscript::RunOutcome::Done(o) = resumed else {
+        panic!("suspended again")
+    };
+    assert_eq!(
+        o.result.unwrap().to_json(),
+        json!(["[object ArrayBuffer]", 2, true, 5, "ArrayBuffer", 4])
     );
 }

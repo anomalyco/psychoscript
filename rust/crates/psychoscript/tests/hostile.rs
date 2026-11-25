@@ -873,71 +873,63 @@ fn hostile_host_values_end_in_diagnostics() {
 fn host_values() {
     let mut failures = Vec::new();
     for (name, value) in hostile_values() {
-        for typed in [false, true] {
-            let v = value.clone();
-            let as_global = Runtime::make()
-                .limits(limits())
-                .typed_arrays(typed)
-                .globals(move |_| {
-                    [
-                        ("v", v.clone()),
-                        (
-                            "echo",
-                            HostValue::Function(HostFunction::new(|args, _| {
-                                args.into_iter().next().unwrap_or_default()
-                            })),
-                        ),
-                    ]
-                });
-            failures.extend(survives(&as_global, &format!("{name} global"), USES));
-            failures.extend(survives(&as_global, &format!("{name} result"), "return v"));
-            let (ok, err) = (value.clone(), value.clone());
-            let returned = Runtime::make()
-                .limits(limits())
-                .typed_arrays(typed)
-                .globals(move |_| {
-                    let (ok, err, aok, aerr) = (ok.clone(), err.clone(), ok.clone(), err.clone());
-                    [
-                        (
-                            "ok",
-                            HostValue::Function(HostFunction::new(move |_, _| {
-                                Ok::<_, HostValue>(ok.clone())
-                            })),
-                        ),
-                        (
-                            "err",
-                            HostValue::Function(HostFunction::new(move |_, _| {
-                                Err::<HostValue, _>(err.clone())
-                            })),
-                        ),
-                        (
-                            "aok",
-                            HostValue::Function(HostFunction::new_async(move |_, _| {
-                                let v = aok.clone();
-                                async move { Ok(v) }
-                            })),
-                        ),
-                        (
-                            "aerr",
-                            HostValue::Function(HostFunction::new_async(move |_, _| {
-                                let v = aerr.clone();
-                                async move { Err(v) }
-                            })),
-                        ),
-                    ]
-                });
-            for code in [
-                "return ok()",
-                "return err()",
-                "try { return err() } catch (e) { return [String(e), e.stack] }",
-                "return await aok()",
-                "return await aerr()",
-                "try { await aerr() } catch (e) { return String(e) }",
-                "const [a, b] = await Promise.allSettled([aok(), aerr()]); return [a, b]",
-                "const v = ok(); return [String(v), JSON.stringify(v), [v].flat(Infinity).length]",
-            ] {
-                failures.extend(survives(&returned, name, code));
-            }
+        let v = value.clone();
+        let as_global = Runtime::make().limits(limits()).globals(move |_| {
+            [
+                ("v", v.clone()),
+                (
+                    "echo",
+                    HostValue::Function(HostFunction::new(|args, _| {
+                        args.into_iter().next().unwrap_or_default()
+                    })),
+                ),
+            ]
+        });
+        failures.extend(survives(&as_global, &format!("{name} global"), USES));
+        failures.extend(survives(&as_global, &format!("{name} result"), "return v"));
+        let (ok, err) = (value.clone(), value.clone());
+        let returned = Runtime::make().limits(limits()).globals(move |_| {
+            let (ok, err, aok, aerr) = (ok.clone(), err.clone(), ok.clone(), err.clone());
+            [
+                (
+                    "ok",
+                    HostValue::Function(HostFunction::new(move |_, _| {
+                        Ok::<_, HostValue>(ok.clone())
+                    })),
+                ),
+                (
+                    "err",
+                    HostValue::Function(HostFunction::new(move |_, _| {
+                        Err::<HostValue, _>(err.clone())
+                    })),
+                ),
+                (
+                    "aok",
+                    HostValue::Function(HostFunction::new_async(move |_, _| {
+                        let v = aok.clone();
+                        async move { Ok(v) }
+                    })),
+                ),
+                (
+                    "aerr",
+                    HostValue::Function(HostFunction::new_async(move |_, _| {
+                        let v = aerr.clone();
+                        async move { Err(v) }
+                    })),
+                ),
+            ]
+        });
+        for code in [
+            "return ok()",
+            "return err()",
+            "try { return err() } catch (e) { return [String(e), e.stack] }",
+            "return await aok()",
+            "return await aerr()",
+            "try { await aerr() } catch (e) { return String(e) }",
+            "const [a, b] = await Promise.allSettled([aok(), aerr()]); return [a, b]",
+            "const v = ok(); return [String(v), JSON.stringify(v), [v].flat(Infinity).length]",
+        ] {
+            failures.extend(survives(&returned, name, code));
         }
     }
     report(failures);
