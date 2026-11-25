@@ -25,11 +25,9 @@ the ultimate source of truth. Upstream test262 files run verbatim from `test/tes
       The table, where a value cannot be JSON but what the program meant is clear: a promise is awaited (a rejection
       fails the program), a Set crosses as an array, a URLSearchParams as its query string, an Error as
       `{ name, message, ...own enumerable }`, and own `__proto__` keys are dropped so merging results cannot replace a
-      prototype. A Uint8Array in the result is rejected with a hint to encode it as text. Under the runtime's
-      `translate: { functions: "mark" }`, a function where the result would leave it out (a value, an item, the
-      result itself, what a `toJSON` gives) is `Host.functionMarker` instead. Host function arguments
+      prototype. A Uint8Array in the result is rejected with a hint to encode it as text. Host function arguments
       cross as copies (see Host functions); a promise or function inside an argument fails the call unless the runtime's
-      `translate` option awaits promises or drops or marks functions. In-program `JSON.stringify` keeps JS behavior except for the Error form and a
+      `translate` option awaits promises or drops functions. In-program `JSON.stringify` keeps JS behavior except for the Error form and a
       promise, which is a `TypeError` with an await hint rather than a silent `{}`.
 - [x] Live Date, RegExp, Map, Set, URL, URLSearchParams, Headers, and Uint8Array values inside psychoscript.
 - [x] Host access only through the globals a host provides with `Runtime.make`.
@@ -40,29 +38,6 @@ the ultimate source of truth. Upstream test262 files run verbatim from `test/tes
       Node presents a CommonJS module. Anything else throws, and `import()` of it rejects. `export` is a parse error,
       and an import below the top level throws.
 - [x] Cooperative timeout, output bounding, and unrestricted host-call concurrency.
-- [x] `limits.maxValueDepth` (32 by default, 1 to 256): how deep a value may nest where it crosses between the program
-      and the host, in either direction (the result, a host call's arguments, what it returns), and where
-      `JSON.stringify` copies it. A value nested N + 1 deep fails with a `TypeError` naming where (`Argument 1 to f`,
-      `f.key[0]`), a `RangeError` for the result and `JSON.stringify`. The walk a result takes when it holds a promise
-      or a program `toJSON` (and `JSON.stringify` with a replacer) allows the larger of the limit and 100. A saved run
-      keeps its depth; a saved depth past 256 is refused. These copies recurse once a level, on the native stack in the
-      Rust implementation. Measured there on Linux x86-64 with `bench/examples/value_stack_probe.rs`, the costliest (a
-      host call's argument, and a saved call's argument) takes 785 bytes a level in a release build and 1713 in a debug
-      build, so depth 200 needs at most 178 KB and 447 KB and 256 at most 221 KB and 543 KB: within the 1 MiB thread of
-      the mobile wrapper and a 512 KiB one at depth 200, and the 768 KiB thread a run moves to at 256, in both builds
-      (`tests/value_depth.rs`). The program's own heap saves and restores without recursing, at any depth.
-- [x] An optional heap limit, `limits.maxHeapBytes`: a run stops with an uncatchable `MemoryLimitExceeded` once what
-      it can still reach is over it. Garbage never counts. Sizes come from a fixed model, not the process: 64 bytes per
-      object the program made, 32 per own property (a function's `name` and `length`, an error's `stack` text and a
-      RegExp's source are part of the object), 16 per array element or argument (holes included), 32 per Map, Set,
-      WeakMap or WeakSet entry, 1 per byte of typed array storage (once per buffer, however many views share it), and
-      16 plus 2 per UTF-16 code unit per distinct string value.
-      Built-ins and host globals count nothing, though what the program stores on them does (except strings set
-      directly as their properties); property keys count with their property. The heap is measured when the body
-      ends, and in between at fuel points and host handovers once the run has allocated about enough to reach the
-      limit (objects, large strings and arrays, and 2 bytes per unit of fuel). A measurement finds the same in the
-      TypeScript and the Rust implementation; when the ones in between fall differs, so a heap that only briefly
-      passes the limit may stop one and not the other.
 - [x] The timeout fires between interpreter steps, so one built-in is bounded in what it may build: strings up to
       2^24 characters (`repeat`, `pad*`, `concat`, `join`, `+`, template literals, `JSON.stringify`), arrays up to
       10,000,000 elements (`Array(n)`, `length =`, `Array.from`, `split`, `matchAll`, `concat`, `flat`; below the JS
@@ -284,11 +259,8 @@ Math.floor)` is `"3"`). A detached method loses its receiver, as in JS: `values.
       creates a hole without changing its length. Deleting a non-configurable property (`length`) or
       assigning a read-only one (`Math.PI`, `fn.name`) throws a `TypeError`, as in strict mode. `delete` of a
       non-reference (`delete 0`, `delete f()`) evaluates the operand and is `true`; `delete x` on a variable throws.
-      A primitive base deletes from its wrapper: `delete "abc"[5]` and `delete (1).x` are `true`, while a string's
-      own index or `length` throws.
 - [x] Coercion helpers and template interpolation accept functions and namespaces: `String(fn)` and `${fn}` give
-      `"[object Function]"` rather than the source text (unless the function has its own `toString` or `valueOf`),
-      `isNaN(fn)` is `true`.
+      `"[object Function]"` rather than the source text, `isNaN(fn)` is `true`.
 - [x] `==` and `!=` follow IsLooselyEqual: objects (including functions and host references) compare by identity, a
       nullish operand never coerces the other side, and a data object facing a primitive converts through its own
       `valueOf`/`toString` (default hint) (`fn == null` is `false`, `fn == fn` is `true`, `[1] == 1` and `[1, 2] == "1,2"` are `true`).
@@ -296,11 +268,9 @@ Math.floor)` is `"3"`). A detached method loses its receiver, as in JS: `values.
       values. Operators inspect only their direct operands, so `rows == null` on a large array costs the same as
       `rows === null`, and an object merely holding a function inside (`[fn] + ""`, `-[fn]`) coerces like any other
       data object (`"[object Function]"`, `NaN`).
-- [x] Functions, generators, and iterators convert through ToPrimitive like any other object, in operators and in
-      built-in arguments: `fn + ""` is `"[object Function]"` (not the source text), `-fn` and `fn++` give `NaN`,
-      `fn == 1` is `false`, and an own `valueOf` or `toString` is used. A promise or host reference is never
-      converted, so a missing `await` cannot hide: `promise + 1`, `-promise`, and `promise == 1` throw
-      `TypeError: Binary operators require data values.` (or the unary/update form).
+- [ ] Coercing a function, promise, generator, or host reference itself: `fn + ""`, `-fn`, `fn++`, and `fn == 1`
+      throw `TypeError: Binary operators require data values.` (or the unary/update form) where JavaScript would use
+      the source text or `NaN`.
 - [x] ToPrimitive on program objects: `+ - * / % **`, the relational and bitwise operators, unary `+ - ~`, `++`/`--`,
       compound assignment, `${x}`, `Number`/`String`/`isNaN`/`isFinite`, `parseInt`/`parseFloat` (text and radix),
       `Math.*` arguments, `Error(message)`, and `Array.prototype.join`/`toString` elements call the object's own
@@ -313,21 +283,14 @@ Math.floor)` is `"3"`). A detached method loses its receiver, as in JS: `values.
       hint (`"abc".indexOf({ toString() { return "b" } })` is `1`, `(255).toString({ valueOf() { return 16 } })` is
       `"ff"`, `String.prototype.trim.call({ toString() { return " a " } })` is `"a"`). Only consumed positions
       convert; a RegExp pattern is used as is, and `includes`/`startsWith`/`endsWith` reject one before converting.
-- [x] Array methods, lengths, and elements convert through ToPrimitive: the integer arguments of `at`, `indexOf`,
-      `lastIndexOf`, `includes`, `slice`, `splice`, `toSpliced`, `fill`, `copyWithin`, `with`, and `flat` (in order,
-      before the array is read, and not at all for an empty array's `indexOf`/`lastIndexOf`/`includes`),
-      `length = object` (number hint), and the elements a default `sort` compares (one ToString each; one over
-      objects asks for a comparator instead, see below). So do `String.fromCharCode`/`fromCodePoint` arguments and a
-      `String.prototype[Symbol.iterator]` receiver; `repeat(NaN)` is `""`. `JSON.parse` refuses an object or array
-      (most likely already parsed) with a `TypeError` rather than converting it.
-- [ ] ToPrimitive elsewhere: `Error.prototype.toString` on an object `message` and numeric arguments of the
+- [ ] ToPrimitive elsewhere: `Error.prototype.toString` on an object `message` and numeric arguments of the Array and
       Uint8Array methods (`at`, `indexOf` start, `slice`) still use the built-in form (`NaN`, `"[object Object]"`) and
       ignore own methods.
 - [x] Property keys follow ToPropertyKey: `x[null]` and `x[true]` become string keys, and a data object key
       converts through its own `toString`/`valueOf` (string hint) exactly once per access, in reads, writes,
       compound assignment, `++`, `delete`, `in`, object literals, and destructuring:
       `o[{ toString() { return "id" } }] += 1` updates `o.id`. A nullish base throws before the key converts, as
-      in JS. Promises and host references keep their built-in string form.
+      in JS. Opaque values (functions, promises, host references) keep their built-in string form.
 
 ## Promises and host calls
 
@@ -442,8 +405,7 @@ reject }` object. The resolvers are anonymous (`name` is `""`) with `length` 1, 
 
 - [x] The `Array` constructor with or without `new`: `Array(a, b)` collects arguments and `Array(n)` creates a sparse
       array of that length; invalid lengths throw `RangeError`. Iteration, spread, join, `flatMap`, and JSON handle
-      holes like JavaScript, and host results normalize holes to `null`. A hole reads, and `in` finds, an index
-      inherited from `Array.prototype`, so the callback methods visit it.
+      holes like JavaScript, and host results normalize holes to `null`.
 - [x] Static methods: `Array.isArray`, `Array.of`, and `Array.from`, including the `Array.from` mapper form with
       `(value, index)` arguments and stepwise synchronous iterator consumption.
 - [x] Iteration/transformation: `map`, `filter`, `flatMap`, and `forEach`.
@@ -457,8 +419,7 @@ reject }` object. The resolvers are anonymous (`name` is `""`) with `length` 1, 
 - [x] A default `sort` or `toSorted` that would compare an object (an array, a date, a function, any non-primitive)
       throws a `TypeError` asking for a comparator; JavaScript would sort by the objects' strings.
 - [x] Access/copying: `at`, `slice`, `concat`, `flat`, `with`, `join`, and `toLocaleString` (each element's
-      `toLocaleString`, holes and nullish elements as empty strings; as there is no `Intl`, only primitives, arrays and
-      dates get the same locales and options, other elements' none).
+      `toLocaleString` with the same locales and options, holes and nullish elements as empty strings).
 - [x] Mutation: `push`, `pop`, `shift`, `unshift`, `splice`, `fill`, and `copyWithin`.
 - [x] `keys`, `values`, `entries`, and `[Symbol.iterator]` (the same function as `values`) return live iterator objects
       with `next()` and `[Symbol.iterator]`, as in JS. Iterator objects are opaque references: they print as
@@ -480,8 +441,8 @@ reject }` object. The resolvers are anonymous (`name` is `""`) with `length` 1, 
       `String.fromCharCode("65")`, and the Uint8Array equivalents. `join(sep)` and `JSON.parse(text)` apply ToString
       (`join(null)` is `"1null2"`, `JSON.parse(123)` is `123`). `Array.from({ length: "2" })` applies ToLength; a
       promise source still throws with an `await` hint rather than JS's silent `[]`. `join`, `Math.*`, `parseInt`,
-      and the String, Number, and Array methods consult a program object's own `valueOf`/`toString`; the Uint8Array
-      methods do not yet (see ToPrimitive above).
+      and the String and Number methods consult a program object's own `valueOf`/`toString`; the array methods do not
+      yet (see ToPrimitive above).
 
 ## Strings
 
@@ -500,7 +461,7 @@ reject }` object. The resolvers are anonymous (`name` is `""`) with `length` 1, 
 - [x] Native argument coercion for supported String methods; for example, `includes(1)` and `slice("1")` coerce like
       native JS, `split(undefined)` returns the whole string, and `includes`/`startsWith`/`endsWith` reject regular
       expressions with a native-style `TypeError`. Data objects convert through their own `toString`/`valueOf` (see
-      ToPrimitive above). Promises and tool references still reject as data errors, and `repeat` still requires a finite
+      ToPrimitive above). Opaque runtime references still reject as data errors, and `repeat` still requires a finite
       non-negative count.
 - [x] Native no-argument parity for `match()`, `matchAll()`, and `search()`; all behave as an empty pattern.
 - [x] `String.raw`, on a template object or any `{ raw }` object, including a string `raw`; raw strings and substitutions coerce through their own
@@ -528,7 +489,7 @@ reject }` object. The resolvers are anonymous (`name` is `""`) with `length` 1, 
 - [x] Native zero-argument behavior for `Number()` and `String()`: they produce `0` and `""`, while
       `Number(undefined)` stays `NaN` and `String(undefined)` stays `"undefined"`.
 - [x] `++` and `--` use psychoscript numeric coercion (numeric strings increment, plain data objects become `NaN`, Dates
-      use their epoch time, functions become `NaN`) and reject promises and host references as data errors.
+      use their epoch time) and reject opaque runtime references as data errors.
 - [x] Unknown static members on global namespaces and on `Number`/`String`/the coercion functions read as `undefined`
       for feature detection. Calling any undefined value reports a native-style `TypeError` naming the callee, for
       example `Math.sum is not a function.` or `JSON.rawJSON is not a function.` Unknown `Promise` statics keep
@@ -667,8 +628,8 @@ reject }` object. The resolvers are anonymous (`name` is `""`) with `length` 1, 
 
 ## Uint8Array
 
-Bytes stay inside the program or cross to host functions as copies; the result boundary rejects them with a hint to
-encode as text first (`TextDecoder`, `toBase64`, `toHex`). The other typed arrays are below.
+The only binary type. Bytes stay inside the program or cross to host functions as copies; the result boundary rejects them
+with a hint to encode as text first (`TextDecoder`, `toBase64`, `toHex`).
 
 - [x] `new Uint8Array(length | array | iterable | array-like | Uint8Array)`, `Uint8Array.from`, `Uint8Array.of`, `fromBase64`
       (with the `alphabet` and `lastChunkHandling` options), and `fromHex`. Lengths are capped like arrays. The
@@ -690,46 +651,7 @@ encode as text first (`TextDecoder`, `toBase64`, `toHex`). The other typed array
       `map` and `filter` return new Uint8Arrays with results clamped like index writes (`map((b) => b * 100)` on
       `[1, 2, 3]` is `[100, 200, 44]`); `reduce` on an empty Uint8Array without an initial value is a `TypeError`.
 - [x] `sort` in place, numeric ascending by default (`[10, 9, 1]` sorts to `[1, 9, 10]`) or by comparator.
-- [x] `byteLength`, `byteOffset`, `buffer`, and `new Uint8Array(buffer, byteOffset, length)`, as for the typed arrays
-      below.
-
-## Typed arrays and ArrayBuffer
-
-`ArrayBuffer`, `Uint16Array`, `Uint32Array`, `Int32Array`, `Float32Array` and `Float64Array`, for 3D programs that
-fill vertex, index and uniform data in script and hand it to the host. A typed array is a view of elements on one
-contiguous byte buffer, little-endian. They are opt-in, with the runtime option `typedArrays: true`: without it,
-programs don't have them, a host function that returns one fails at the call, and a `Uint8Array` is as it was before
-them (no `byteLength`, `byteOffset` or `buffer`; other numeric keys are properties; a read past its end looks at its
-prototypes). A run resumes only in a runtime with the same setting.
-
-- [x] `new X(length | array | iterable | typed array)`, `new X(buffer, byteOffset, length)` (offsets that are not a
-      multiple of the element size, and views past the buffer, are `RangeError`s), `X.from` (with a mapper and
-      `thisArg`), `X.of`, and `BYTES_PER_ELEMENT`. `new ArrayBuffer(length)`, `byteLength`, `slice`, and
-      `ArrayBuffer.isView`. Lengths are capped like arrays; a buffer at 80,000,000 bytes.
-- [x] Index reads and writes with JS conversions: float32 rounding, integer wrapping modulo 2^16 or 2^32, NaN and
-      infinities as 0 for the integer kinds. Out-of-range reads are `undefined` and writes are ignored, as are writes to
-      other numeric keys (`-1`, `1.5`); elements cannot be deleted or made accessors. A NaN written to a float array
-      reads back as NaN (its bytes are the canonical quiet NaN in Rust; the reference's engine may keep others).
-- [x] `length`, `byteLength`, `byteOffset`, and `buffer` (the same `ArrayBuffer` for every view of one buffer).
-      Views share their bytes: a write through one shows through every other; `subarray` is a view, `slice` a copy.
-- [x] `at`, `slice`, `subarray`, `set` (from a typed array, array or iterable, at an offset), `fill`, `reverse`,
-      `indexOf`, `lastIndexOf`, `includes` (only numbers match; `includes` finds NaN), `join`, `toString`, and live
-      `keys`, `values`, `entries`, and `[Symbol.iterator]`.
-- [x] Spread, destructuring, `for...of`, and `Array.from`. `Array.isArray` is false; `Object.prototype.toString` gives
-      `[object Float32Array]`; `JSON.stringify` gives `{"0":1.5,...}` and an `ArrayBuffer` `{}`; `console.log` prints
-      `Float32Array(n) [...]` and `ArrayBuffer { byteLength: n }`; `structuredClone` copies.
-- [x] Host functions get the typed arrays other than Uint8Array, and `ArrayBuffer`s, as the program's own bytes, lent
-      for the duration of the call (the host's typed array or ArrayBuffer; in Rust `HostValue::TypedArray`, empty once
-      the call returns, and a copy for an async or durable function). A typed array a host function returns becomes
-      the program's: bytes it made, or one the same call got, which is the program's buffer again. The result boundary
-      rejects them with a hint to pass the values instead. Their
-      storage counts against `maxHeapBytes` once per buffer. Snapshots keep them, and which views share a buffer.
-- [x] Fast element access: an indexed read or write with a number goes straight to the bytes, in Rust and in the
-      reference.
-- [ ] The Array callback methods (`map`, `forEach`, `reduce`, ...), `sort`, `copyWithin`, `toReversed`, `toSorted`,
-      `with`, and `findIndex` on the typed arrays other than Uint8Array; a call fails as calling a missing method does.
-- [ ] `Int8Array`, `Int16Array`, `Uint8ClampedArray`, `Float16Array`, `BigInt64Array`, `BigUint64Array`, `DataView`,
-      and resizable or shared buffers. A shared `%TypedArray%` prototype: each kind's prototype holds its own methods.
+- [ ] `ArrayBuffer`, `DataView`, and other typed arrays.
 
 ## Buffer
 
@@ -795,13 +717,6 @@ Host functions a host opts in through `Host.fn`, `Host.durableFn`, and `Host.nam
       errors cross as errors with their name, message, `cause`, and own enumerable data, and a `__proto__` key is
       dropped. Functions, generators,
       un-awaited promises, and symbols cannot be passed in; a class instance, a symbol, or a BigInt cannot come out.
-- [x] `translate: { functions: "mark" }`: a program function inside an argument (an object's value, an array's,
-      Map's or Set's item, an error's field, an awaited promise's value, or the argument itself) arrives as
-      `Host.functionMarker`, one symbol with nothing to call and no identity, which `JSON.stringify` leaves out as it
-      would the function; Rust's `HostValue::FunctionMarker`, which `to_json` leaves out. The run's result marks its
-      functions the same way (Rust's `Data::FunctionMarker`); its JSON, and the bytes `maxOutputBytes` counts, leave
-      them out. A call's arguments keep their markers across a suspend. A marker cannot come back: a host value
-      holding one fails the call.
 - [x] A host function inside a result becomes a program function whose calls cross the same way, so a result can
       carry methods (`res.json()`) whose host closures keep the host state. Diagnostics name it by its path
       (`fetch.json`). Like any program function it vanishes at the data boundary.
@@ -845,8 +760,6 @@ Host functions a host opts in through `Host.fn`, `Host.durableFn`, and `Host.nam
 - [x] Source locations on unsupported-syntax diagnostics. The diagnostic names the rejected node type and attaches a
       short orientation to the supported subset; this matrix is the full reference.
 - [x] Host failure messages and underlying causes reach the diagnostic.
-- [x] `Host.error(name, message)`: a host call that fails with it throws a real error of that standard class, located
-      at the call (its `stack`, and the uncaught diagnostic's line and column), from sync and async calls alike.
 - [x] Caught errors do not distinguish user throws, interpreter failures, and host failures; a program sees one
       Error-shaped value in `catch`, rejection handlers, and `Promise.allSettled` reasons. It always has `name` and
       `message`, plus `cause` and own data when the failure carried them. This is deliberate: the program should

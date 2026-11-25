@@ -18,5 +18,5 @@ return [
   ...[Math, JSON, crypto, new TextEncoder(), new TextDecoder(), Symbol.iterator, function* () {}, async () => {}, async function* () {},
     Object.create(Math), Object.create(new TextDecoder()), new Error("x"), class {}, async function f() {}, async function () {}.bind(null)]
     .map((x) => Object.prototype.toString.call(x)),
-  "" + function* () {}, `${async () => {}}`,
+  t(() => "" + function* () {}), `${async () => {}}`,
 ]

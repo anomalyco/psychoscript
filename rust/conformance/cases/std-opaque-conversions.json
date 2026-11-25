@@ -1,0 +1,637 @@
+{
+  "bindings": {},
+  "ok": true,
+  "value": {
+    "operators": [
+      [
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Unary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Unary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Unary operators require data values."
+        ],
+        false
+      ],
+      [
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Unary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Unary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Unary operators require data values."
+        ],
+        false
+      ],
+      [
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Unary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Unary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Unary operators require data values."
+        ],
+        false
+      ],
+      [
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Unary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Unary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Unary operators require data values."
+        ],
+        false
+      ],
+      [
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Unary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Unary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Unary operators require data values."
+        ],
+        false
+      ],
+      [
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Unary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Unary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Unary operators require data values."
+        ],
+        false
+      ],
+      [
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Unary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Unary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Unary operators require data values."
+        ],
+        false
+      ],
+      [
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Unary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Unary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Unary operators require data values."
+        ],
+        false
+      ],
+      [
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Binary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Unary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Unary operators require data values."
+        ],
+        [
+          "TypeError",
+          "Unary operators require data values."
+        ],
+        false
+      ]
+    ],
+    "update": [
+      [
+        "TypeError",
+        "'++' requires a data value."
+      ],
+      [
+        "TypeError",
+        "'--' requires a data value."
+      ],
+      [
+        "TypeError",
+        "Binary operators require data values."
+      ]
+    ],
+    "identity": [
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      [
+        "TypeError",
+        "Binary operators require data values."
+      ]
+    ],
+    "strings": [
+      [
+        "[object Function]",
+        "[object Function]",
+        "[object Function]",
+        "1[object Function]2"
+      ],
+      [
+        "[object Function]",
+        "[object Function]",
+        "[object Function]",
+        "1[object Function]2"
+      ],
+      [
+        "[object Generator]",
+        "[object Generator]",
+        "[object Generator]",
+        "1[object Generator]2"
+      ],
+      [
+        "[object Function]",
+        "[object Function]",
+        "[object Function]",
+        "1[object Function]2"
+      ],
+      [
+        "[object Array Iterator]",
+        "[object Array Iterator]",
+        "[object Array Iterator]",
+        "1[object Array Iterator]2"
+      ],
+      [
+        "[object Map Iterator]",
+        "[object Map Iterator]",
+        "[object Map Iterator]",
+        "1[object Map Iterator]2"
+      ],
+      [
+        "[object String Iterator]",
+        "[object String Iterator]",
+        "[object String Iterator]",
+        "1[object String Iterator]2"
+      ],
+      [
+        "[object Generator]",
+        "[object Generator]",
+        "[object Generator]",
+        "1[object Generator]2"
+      ],
+      [
+        "[object Promise]",
+        "[object Promise]",
+        "[object Promise]",
+        "1[object Promise]2"
+      ]
+    ],
+    "numbers": [
+      [
+        null,
+        null,
+        true,
+        null
+      ],
+      [
+        null,
+        null,
+        true,
+        null
+      ],
+      [
+        null,
+        null,
+        true,
+        null
+      ],
+      [
+        null,
+        null,
+        true,
+        null
+      ],
+      [
+        null,
+        null,
+        true,
+        null
+      ],
+      [
+        null,
+        null,
+        true,
+        null
+      ],
+      [
+        null,
+        null,
+        true,
+        null
+      ],
+      [
+        null,
+        null,
+        true,
+        null
+      ],
+      [
+        null,
+        null,
+        true,
+        null
+      ]
+    ],
+    "keys": [
+      [
+        [
+          "[object Function]"
+        ],
+        1,
+        true,
+        []
+      ],
+      [
+        [
+          "[object Function]"
+        ],
+        1,
+        true,
+        []
+      ],
+      [
+        [
+          "[object Generator]"
+        ],
+        1,
+        true,
+        []
+      ],
+      [
+        [
+          "[object Function]"
+        ],
+        1,
+        true,
+        []
+      ],
+      [
+        [
+          "[object Array Iterator]"
+        ],
+        1,
+        true,
+        []
+      ],
+      [
+        [
+          "[object Map Iterator]"
+        ],
+        1,
+        true,
+        []
+      ],
+      [
+        [
+          "[object String Iterator]"
+        ],
+        1,
+        true,
+        []
+      ],
+      [
+        [
+          "[object Generator]"
+        ],
+        1,
+        true,
+        []
+      ],
+      [
+        [
+          "[object Promise]"
+        ],
+        1,
+        true,
+        []
+      ]
+    ],
+    "methods": [
+      [
+        "TypeError",
+        "String.includes expects argument 1 to be a data value."
+      ],
+      [
+        "TypeError",
+        "String.indexOf expects argument 1 to be a data value."
+      ],
+      [
+        "TypeError",
+        "String.concat expects argument 1 to be a data value."
+      ],
+      false,
+      true,
+      -1
+    ],
+    "collections": [
+      "[object Map]",
+      "[object Set]",
+      null,
+      false,
+      null,
+      {
+        "[object Map]": 1
+      }
+    ]
+  },
+  "logs": [],
+  "metadata": null
+}

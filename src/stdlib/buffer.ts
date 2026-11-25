@@ -2,7 +2,7 @@ import { type Builtins, createErrorValue } from "../runtime/intrinsics.js"
 import { readsPending, withReads } from "../runtime/callback.js"
 import type { Interpreter } from "../runtime/interpreter.js"
 import { Throw, typeError } from "../runtime/model.js"
-import { constructor, type Method, methods, prototypeFrom, typedReceiver } from "../runtime/native.js"
+import { constructor, type Method, methods, prototypeFrom, receiver } from "../runtime/native.js"
 import {
   Arr,
   Bytes,
@@ -18,7 +18,7 @@ import {
 import { describeValue } from "../runtime/references.js"
 
 /** A Node Buffer: a Uint8Array whose text conversions default to UTF-8. */
-export class BufferObj extends Bytes<Uint8Array> {
+export class BufferObj extends Bytes {
   override toString() {
     return host(this.bytes).toString("utf8")
   }
@@ -128,7 +128,7 @@ export const bufferGlobal = <R>(ctx: Interpreter<R>) => {
   const builtins = ctx.builtins
   const proto = builtins.Buffer
   const wrap = (bytes: Uint8Array) => new BufferObj(proto, bytes)
-  const self = (thisValue: Value, name: string) => typedReceiver(thisValue, `Buffer.prototype.${name}`, true)
+  const self = (thisValue: Value, name: string) => receiver(Bytes, thisValue, `Buffer.prototype.${name}`)
 
   const fail = (type: "Error" | "TypeError" | "RangeError", message: string, code?: string) => {
     const value = createErrorValue(builtins[type], message)

@@ -46,7 +46,7 @@
     "TypeError: Object.defineProperty called on non-object",
     "TypeError: Cannot create property 'x' on bigint '1'.",
     null,
-    true,
+    "TypeError: Only data fields may be deleted.",
     true,
     "TypeError: Object(bigint) wrapper objects are not supported; use the primitive value directly."
   ],

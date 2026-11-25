@@ -38,13 +38,13 @@
     ],
     "arrayLength": "TypeError: Cannot delete property 'length'.",
     "strings": [
-      "TypeError: Cannot delete property 'length' of \"abc\".",
-      "TypeError: Cannot delete property '0' of \"abc\".",
-      true,
-      true
+      "TypeError: Only data fields may be deleted.",
+      "TypeError: Only data fields may be deleted.",
+      "TypeError: Only data fields may be deleted.",
+      "TypeError: Only data fields may be deleted."
     ],
     "primitives": [
-      true,
+      "TypeError: Only data fields may be deleted.",
       "TypeError: Cannot read properties of null (reading 'a')."
     ],
     "bytes": [

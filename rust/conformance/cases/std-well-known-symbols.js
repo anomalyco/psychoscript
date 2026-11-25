@@ -12,7 +12,7 @@ return [+o, `${o}`, o + "", Object.keys(o), String(tagged), Object.prototype.toS
   d + 1, `${d}`, d - 0, t(() => Symbol()), t(() => new Symbol()), Object.getOwnPropertyNames(Symbol), Object.getPrototypeOf(s) === Symbol.prototype,
   s.toString(), s.valueOf() === s, s[Symbol.toPrimitive]("x") === s, Symbol.prototype[Symbol.toStringTag], t(() => Symbol.prototype.description),
   t(() => Symbol.prototype.toString.call(1)), t(() => Object.getOwnPropertyDescriptor(Symbol.prototype, "description").get.call(5)),
-  Object.getOwnPropertyDescriptor(Symbol.prototype, "description").get.call(s), t(() => { s.x = 1 }), delete s.x, s.foo, "x" in Object.create(null),
+  Object.getOwnPropertyDescriptor(Symbol.prototype, "description").get.call(s), t(() => { s.x = 1 }), t(() => delete s.x), s.foo, "x" in Object.create(null),
   Object.keys({ ...o, ...tagged }), Object.getOwnPropertySymbols({ ...o, ...tagged }).length, Object.assign({}, tagged)[Symbol.toStringTag],
   [s].join(), t(() => [s].join()), t(() => `${s}`), t(() => s + ""), JSON.stringify({ [Symbol.toPrimitive]: 1, a: 2 }), Object.prototype.toString.call(5),
   Object.prototype.toString.call(null), Object.prototype.toString.call(Object.create(Math)), Object.prototype.toString.call(Object.assign(Object.create(Math), { [Symbol.toStringTag]: 7 })),

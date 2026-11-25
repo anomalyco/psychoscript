@@ -81,10 +81,7 @@
     "single": [
       2,
       3,
-      [
-        3,
-        20
-      ]
+      []
     ],
     "emptyish": [
       [],
@@ -103,7 +100,7 @@
     "dates": "TypeError: toSorted without a comparator needs numbers or strings; pass a comparator for objects, e.g. (a, b) => a.age - b.age",
     "noConversion": [
       "TypeError: sort without a comparator needs numbers or strings; pass a comparator for objects, e.g. (a, b) => a.age - b.age",
-      2
+      0
     ],
     "unchanged": [
       "TypeError: sort without a comparator needs numbers or strings; pass a comparator for objects, e.g. (a, b) => a.age - b.age",
