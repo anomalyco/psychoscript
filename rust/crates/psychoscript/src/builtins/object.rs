@@ -1435,6 +1435,19 @@ fn json_parse(vm: &mut Vm, _this: Value, args: &[Value], callee: Id) -> Res {
 
 /// `JSON.parse` after its text, a list of conversions of its own.
 fn parse(vm: &mut Vm, c: &mut fuel::Conversions, args: &[Value], callee: Id) -> Res {
+    // A plain object or an array is most likely a value that was parsed already: say so, rather than parse its text.
+    if let Value::Obj(id) = arg(args, 0) {
+        let got = match vm.heap[id as usize].kind {
+            Kind::Array(_) => "an array",
+            Kind::Ordinary => "an object",
+            _ => "",
+        };
+        if !got.is_empty() {
+            return Err(vm.type_error(&format!(
+                "JSON.parse expects a string, got {got} (is it already parsed?)"
+            )));
+        }
+    }
     let mut text = [arg(args, 0)];
     c.convert(vm, &[Hint::String], &mut text, false)?;
     let text = vm.string_of(&text[0])?;

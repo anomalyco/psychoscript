@@ -1,0 +1,28 @@
+{
+  "bindings": {},
+  "ok": true,
+  "value": {
+    "array": "TypeError: JSON.parse expects a string, got an array (is it already parsed?)",
+    "empty": "TypeError: JSON.parse expects a string, got an array (is it already parsed?)",
+    "object": "TypeError: JSON.parse expects a string, got an object (is it already parsed?)",
+    "nested": "TypeError: JSON.parse expects a string, got an array (is it already parsed?)",
+    "instance": "TypeError: JSON.parse expects a string, got an object (is it already parsed?)",
+    "nullProto": "TypeError: JSON.parse expects a string, got an object (is it already parsed?)",
+    "withToString": [
+      "TypeError: JSON.parse expects a string, got an object (is it already parsed?)",
+      0
+    ],
+    "withReviver": "TypeError: JSON.parse expects a string, got an array (is it already parsed?)",
+    "string": "[1]",
+    "number": 12,
+    "boolean": true,
+    "nul": null,
+    "date": "SyntaxError: JSON.parse received invalid JSON: JSON Parse error: Unable to parse JSON string",
+    "map": "SyntaxError: JSON.parse received invalid JSON: JSON Parse error: Unexpected identifier \"object\"",
+    "fn": "SyntaxError: JSON.parse received invalid JSON: JSON Parse error: Unexpected identifier \"object\"",
+    "boxedText": "TypeError: JSON.parse expects a string, got an object (is it already parsed?)",
+    "stack": "TypeError: JSON.parse expects a string, got an object (is it already parsed?)\n    at <program>:25:25"
+  },
+  "logs": [],
+  "metadata": null
+}
