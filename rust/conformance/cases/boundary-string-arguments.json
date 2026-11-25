@@ -124,9 +124,18 @@
     ],
     "ABCA",
     "a",
-    -1,
-    "abca[object GeneratorFunction][object Object]!",
-    false,
+    [
+      "TypeError",
+      "String.indexOf expects argument 1 to be a data value."
+    ],
+    [
+      "TypeError",
+      "String.concat expects argument 1 to be a data value."
+    ],
+    [
+      "TypeError",
+      "String.includes expects argument 1 to be a data value."
+    ],
     "[",
     "ct]",
     [

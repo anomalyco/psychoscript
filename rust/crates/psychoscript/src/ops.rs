@@ -334,6 +334,16 @@ impl Vm {
         self.inherited_elem(id, i).unwrap_or_default()
     }
 
+    /// A sparse array's own element `i` past its dense items, which it keeps as a property.
+    #[cold]
+    pub(crate) fn own_far_elem(&mut self, id: Id, i: usize) -> Option<Value> {
+        if self.heap[id as usize].flags & SPARSE == 0 {
+            return None;
+        }
+        let key = self.atoms.lookup(&i.to_string())?;
+        self.heap[id as usize].props.get(key).copied()
+    }
+
     /// Element `i` of `id`'s prototypes, if one has it. An index never used as a key can still sit in an array
     /// prototype's items (`Array.prototype[0] = x`), which store it without interning it.
     #[cold]
@@ -467,9 +477,37 @@ impl Vm {
         matches!(v, Value::Obj(id) if !self.is_namespace(*id))
     }
 
-    /// Promises and namespace paths are not data: operators reject them, as the reference does.
+    /// The reference's `isOpaque`: a function, a promise, a generator, an iterator or a namespace path. It is not
+    /// data: ToPrimitive keeps it as it is, without consulting its methods, and operators reject it.
     pub fn is_opaque_operand(&self, v: &Value) -> bool {
-        matches!(v, Value::Obj(id) if matches!(self.heap[*id as usize].kind, Kind::Promise(_) | Kind::Namespace(_)))
+        matches!(v, Value::Obj(id) if {
+            let o = &self.heap[*id as usize];
+            o.is_callable() || crate::cross::opaque(&o.kind)
+        })
+    }
+
+    /// The text an opaque value converts to without consulting its methods: `[object <tag>]`, by the reference's
+    /// class tags (every function is a `Function`, a helper's iterator an `Iterator`).
+    fn opaque_text(&self, id: Id) -> &'static str {
+        match &self.heap[id as usize].kind {
+            Kind::Namespace(_) => "[object Object]",
+            Kind::Promise(_) => "[object Promise]",
+            // An iterator helper, and `Iterator.from`'s wrapper, are generators in the reference.
+            Kind::Generator(_) | Kind::AsyncGenerator(_) | Kind::IterHelper(_) => {
+                "[object Generator]"
+            }
+            Kind::AsyncFromSync { .. } => "[object AsyncFromSyncIterator]",
+            _ if self.heap[id as usize].is_callable() => "[object Function]",
+            _ => match crate::builtins::object::tag_of(self, &Value::Obj(id)) {
+                "Array Iterator" => "[object Array Iterator]",
+                "Map Iterator" => "[object Map Iterator]",
+                "Set Iterator" => "[object Set Iterator]",
+                "String Iterator" => "[object String Iterator]",
+                "URLSearchParams Iterator" => "[object URLSearchParams Iterator]",
+                "Headers Iterator" => "[object Headers Iterator]",
+                _ => "[object Iterator]",
+            },
+        }
     }
 
     pub fn data_operand(&mut self, v: &Value, msg: &str) -> Result<(), Value> {
@@ -728,9 +766,10 @@ impl Vm {
                     if flags & FROZEN != 0 {
                         return Err(self.read_only(key));
                     }
+                    // An object converts without consulting its own methods (the reference's `coerceToNumber`).
                     let n = match val {
                         Value::Num(n) => n,
-                        _ => self.number_of(&val)?,
+                        _ => crate::builtins::builtin_number(self, &val)?,
                     };
                     if n < 0.0 || n.fract() != 0.0 || n as usize > MAX_ARRAY_LEN {
                         return Err(self.range_error("Invalid array length"));
@@ -1041,12 +1080,12 @@ impl Vm {
         Ok(true)
     }
 
-    /// `delete` on a primitive deletes from its wrapper, whose only own properties are a string's indexes and
-    /// length.
+    /// `delete` on a primitive: it has no data field of its own to delete (the reference resolves the member on its
+    /// prototype), so it fails as a delete of anything but a data field does.
     fn delete_primitive(&mut self, v: &Value, key: Atom) -> Result<bool, Value> {
-        let k = self.key_text(key);
         match v {
             Value::Undef | Value::Null | Value::Uninit => {
+                let k = self.key_text(key);
                 let t = if let Value::Null = v {
                     "null"
                 } else {
@@ -1054,44 +1093,38 @@ impl Vm {
                 };
                 Err(self.nullish_read(t, &k))
             }
-            Value::Str(s)
-                if key == self.names.length
-                    || self
-                        .atoms
-                        .index(key)
-                        .is_some_and(|i| (i as usize) < self.atoms.sref(*s).len16()) =>
-            {
-                let mut quoted = String::new();
-                crate::convert::quote(&mut quoted, self.text(*s));
-                Err(self.type_error(&format!("Cannot delete property '{k}' of {quoted}.")))
-            }
-            _ => Ok(true),
+            _ => Err(self.invalid_data("Only data fields may be deleted.")),
         }
     }
 
     #[inline(never)]
     pub fn has_property(&mut self, o: &Value, k: &Value) -> Result<bool, Value> {
-        // The reference's `in`: a data object on the right and no namespace on the left, else an opaque operand is
+        // A small non-negative integer in an array is one of its own elements or nothing, as the reference tests it
+        // on the array's items: a hole is not inherited.
+        if let (Value::Obj(id), Value::Num(n)) = (o, k)
+            && *n >= 0.0
+            && *n == (*n as i32) as f64
+            && let Kind::Array(items) = &self.heap[*id as usize].kind
+        {
+            let i = *n as usize;
+            if items.get(i).is_some_and(|v| !matches!(v, Value::Uninit)) {
+                return Ok(true);
+            }
+            return Ok(self.own_far_elem(*id, i).is_some());
+        }
+        // The reference's `in`: an object on the right and no opaque value on the left, else an opaque operand is
         // not data, else the right side is no object.
         if let Value::Obj(id) = o
             && !self.is_namespace(*id)
-            && !matches!(k, Value::Obj(kid) if self.is_namespace(*kid))
+            && !self.is_opaque_operand(k)
         {
             let key = self.key_of(k)?;
             return Ok(self.has_key(*id, key));
         }
-        if self.is_opaque_value(o) || self.is_opaque_value(k) {
+        if self.is_opaque_operand(o) || self.is_opaque_operand(k) {
             return Err(self.invalid_data("Binary operators require data values."));
         }
         Err(self.type_error("The 'in' operator requires a data object on the right-hand side."))
-    }
-
-    /// The reference's `isOpaque`: a function, a promise, a generator, an iterator or a namespace.
-    fn is_opaque_value(&self, v: &Value) -> bool {
-        matches!(v, Value::Obj(id) if {
-            let o = &self.heap[*id as usize];
-            o.is_callable() || crate::cross::opaque(&o.kind)
-        })
     }
 
     pub fn has_key(&self, id: Id, key: Atom) -> bool {
@@ -1656,9 +1689,9 @@ impl Vm {
             Value::Big(_) => {
                 return Err(self.type_error("Cannot convert a BigInt value to a number."));
             }
-            Value::Obj(id) => {
-                // A namespace is not an object to the reference: it converts without a call, as "[object Object]".
-                if self.is_namespace(*id) || self.is_promise(*id) {
+            Value::Obj(_) => {
+                // An opaque value converts without a call, to its text: never a number.
+                if self.is_opaque_operand(v) {
                     return Ok(f64::NAN);
                 }
                 let p = self.primitive_of(v, Hint::Number)?;
@@ -1693,12 +1726,10 @@ impl Vm {
                 });
             }
             Value::Obj(id) => {
-                if self.is_namespace(*id) {
-                    return Ok(self.static_id("[object Object]"));
-                }
-                // A promise converts without consulting its methods (`$vmToPrimitive` keeps it).
-                if self.is_promise(*id) {
-                    return Ok(self.static_id("[object Promise]"));
+                // An opaque value converts without consulting its methods (`$vmToPrimitive` keeps it).
+                if self.is_opaque_operand(v) {
+                    let text = self.opaque_text(*id);
+                    return Ok(self.static_id(text));
                 }
                 let p = self.primitive_of(v, Hint::String)?;
                 return self.string_of(&p);
@@ -1762,8 +1793,9 @@ impl Vm {
             return r;
         }
         self.fuel(1);
-        // `$vmToPrimitive` keeps a promise, so that what reads it rejects it as an un-awaited value.
-        if self.is_promise(*id) {
+        // `$vmToPrimitive` keeps an opaque value, so that what reads it rejects it (a promise as an un-awaited value)
+        // or converts it without consulting its methods.
+        if self.is_opaque_operand(v) {
             return Ok(*v);
         }
         // `Symbol.toPrimitive`, called with the hint, before `valueOf` and `toString`.

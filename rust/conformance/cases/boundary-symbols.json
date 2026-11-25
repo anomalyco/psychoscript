@@ -56,7 +56,10 @@
       "TypeError",
       "Cannot create property 'x' on symbol 'Symbol(Symbol.iterator)'."
     ],
-    true,
+    [
+      "TypeError",
+      "Only data fields may be deleted."
+    ],
     null,
     [
       "TypeError",

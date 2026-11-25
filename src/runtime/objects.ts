@@ -1,5 +1,4 @@
 import type { Builtins } from "./intrinsics.js"
-import { charge, charging, ELEMENT_BYTES, OBJECT_BYTES, PROPERTY_BYTES } from "./heap.js"
 import { checkArrayLength } from "./limits.js"
 import {
   type AstNode,
@@ -138,13 +137,10 @@ export class Obj {
   intrinsic = 0
   /** Whether a program accessor was ever defined here: the bulk readers' cue to take their slow paths. */
   hasProgramAccessors = false
-  /** The last heap measurement that reached it (see `measure` in snapshot/codec.ts). */
-  visited = 0
   /** Only on `Array.prototype` and the built-in iterators' prototype: the key whose change clears the protector. */
   declare guard?: { readonly key: PropertyKey; readonly protector: Protector }
   constructor(public proto: Obj | null) {
     if (making !== undefined) making.push(this)
-    if (charging !== undefined) charging.debt += OBJECT_BYTES
   }
 
   /** The class name `Object.prototype.toString` reports: `[object Map]`. */
@@ -232,7 +228,6 @@ export class Arr extends Obj {
     readonly items: Array<Value> = [],
   ) {
     super(proto)
-    if (charging !== undefined) charging.debt += ELEMENT_BYTES * items.length
   }
   override get describe() {
     return "an array"
@@ -873,98 +868,33 @@ export class URLObj extends Wrapper {
   }
 }
 
-/** The host arrays a typed array is: they do the float32 rounding and integer wrapping, and ignore out-of-range writes. */
-export type TypedArray = Uint8Array | Uint16Array | Uint32Array | Int32Array | Float32Array | Float64Array
-
-/** The typed arrays' constructors, by name, in the order their globals are made. */
-export const typedArrays = {
-  Uint8Array,
-  Uint16Array,
-  Uint32Array,
-  Int32Array,
-  Float32Array,
-  Float64Array,
-} as const
-
-export type TypedArrayName = keyof typeof typedArrays
-
-/** A typed array's name: `Float32Array`. A Node Buffer is a Uint8Array. */
-export const typedArrayName = (array: TypedArray): TypedArrayName =>
-  array instanceof Uint8Array ? "Uint8Array" : (array[Symbol.toStringTag] as TypedArrayName)
-
-/**
- * A typed array: `Uint8Array` (whose byte built-ins take only it), `Float32Array`, ... A view of a host buffer that its
- * `ArrayBuffer` and its other views share.
- */
-export class Bytes<A extends TypedArray = TypedArray> extends Wrapper {
-  override readonly tag: string
+/** A `Uint8Array`: the host array does the byte clamping and ignores out-of-range writes, as JS does. */
+export class Bytes extends Wrapper {
+  override readonly tag = "Uint8Array"
   constructor(
     proto: Obj,
-    readonly bytes: A,
+    readonly bytes: Uint8Array,
   ) {
     super(proto)
-    this.tag = typedArrayName(bytes)
   }
   override toString() {
     return this.bytes.join(",")
   }
   override inspect() {
-    return `${this.tag}(${this.bytes.length}) [${this.bytes.join(",")}]`
+    return `Uint8Array(${this.bytes.length}) [${this.bytes.join(",")}]`
   }
   override toHost() {
-    // A Uint8Array crosses as a copy; the other typed arrays as views of the same bytes, which the host reads in place.
-    return this.bytes instanceof Uint8Array ? new Uint8Array(this.bytes) : this.bytes
+    return new Uint8Array(this.bytes)
   }
   override iterator(builtins: Builtins) {
     if (!builtins.Array.guard!.protector.intact) return undefined
     return new Position(this, "values", builtins.Array)
   }
   /** New bytes of this one's kind, as `slice`, `subarray`, `map` and `filter` make them (a Buffer's are a Buffer). */
-  derive(builtins: Builtins, bytes: TypedArray): Bytes {
-    return new Bytes(builtins[typedArrayName(bytes)], bytes)
-  }
-  /** Whether it is a Uint8Array (or Buffer), which the byte built-ins take. */
-  isUint8(): this is Bytes<Uint8Array> {
-    return this.bytes instanceof Uint8Array
+  derive(builtins: Builtins, bytes: Uint8Array): Bytes {
+    return new Bytes(builtins.Uint8Array, bytes)
   }
 }
-
-// The ArrayBuffer object of each host buffer a program reached, so every view of one gives the same one.
-const arrayBuffers = new WeakMap<ArrayBuffer, ArrayBufferObj>()
-
-/** An `ArrayBuffer`: the host buffer that typed arrays view. */
-export class ArrayBufferObj extends Wrapper {
-  override readonly tag = "ArrayBuffer"
-  constructor(
-    proto: Obj,
-    readonly buffer: ArrayBuffer,
-  ) {
-    super(proto)
-    arrayBuffers.set(buffer, this)
-  }
-  override toString() {
-    return "[object ArrayBuffer]"
-  }
-  override inspect() {
-    return `ArrayBuffer { byteLength: ${this.buffer.byteLength} }`
-  }
-  override toHost() {
-    return this.buffer
-  }
-}
-
-/** The `ArrayBuffer` of a typed array's buffer, made the first time it is needed. */
-export const arrayBufferOf = (builtins: Builtins, bytes: TypedArray): ArrayBufferObj =>
-  arrayBuffers.get(bytes.buffer as ArrayBuffer) ?? new ArrayBufferObj(builtins.ArrayBuffer, bytes.buffer as ArrayBuffer)
-
-/** Records a restored `ArrayBuffer` as its host buffer's. */
-export const rememberArrayBuffer = (value: ArrayBufferObj): void => {
-  arrayBuffers.set(value.buffer, value)
-}
-
-/** The `ArrayBuffer` already made for a host buffer, if there is one. */
-export const knownArrayBuffer = (buffer: ArrayBufferLike): ArrayBufferObj | undefined =>
-  arrayBuffers.get(buffer as ArrayBuffer)
 
 /**
  * A path into a host namespace (see `Host.namespace`): the global it is under, `root`, and the property names read
@@ -1013,15 +943,12 @@ export const parseArrayIndex = (key: string | number): number | undefined => {
 
 const canonical = (key: PropertyKey): string | symbol => (typeof key === "symbol" ? key : String(key))
 
-/** Whether a key is a number's own text, as `-1`, `1.5` and `-0` are: a typed array's elements are only its indexes. */
-const isCanonicalNumeric = (key: string): boolean => key === "-0" || String(Number(key)) === key
-
 /** Objects whose integer keys are live elements rather than own property slots. */
 type Indexed = Arr | Bytes
 
 const isIndexed = (target: Obj): target is Indexed => target instanceof Arr || target instanceof Bytes
 
-const elements = (target: Indexed): Array<Value> | TypedArray => (target instanceof Arr ? target.items : target.bytes)
+const elements = (target: Indexed): Array<Value> | Uint8Array => (target instanceof Arr ? target.items : target.bytes)
 
 const index = (target: Obj, key: string | number | symbol): number | undefined =>
   isIndexed(target) && typeof key !== "symbol" ? parseArrayIndex(key) : undefined
@@ -1168,25 +1095,8 @@ export const hasPrototype = (value: Value, proto: Obj): boolean => {
   return false
 }
 
-/** Whether the running program has typed arrays besides `Uint8Array` (see `Runtime.Options`); `Vm.run` sets it. */
-export let typedKeys = true
-
-export const setTypedKeys = (on: boolean): void => {
-  typedKeys = on
-}
-
 const writeElement = (target: Indexed, name: string | number | symbol, value: Value): boolean | undefined => {
   const at = index(target, name)
-  // A typed array has no element at another numeric key (-1, 1.5, 2 ** 32): writing one does nothing. Without typed
-  // arrays, a Uint8Array keeps it as a property, as it did before them.
-  if (
-    at === undefined &&
-    typedKeys &&
-    target instanceof Bytes &&
-    (typeof name === "number" || (typeof name === "string" && isCanonicalNumeric(name)))
-  ) {
-    return true
-  }
   if (at !== undefined) {
     if (target instanceof Bytes) {
       target.bytes[at] = typeof value === "number" ? value : coerceToNumber(value)
@@ -1194,8 +1104,6 @@ const writeElement = (target: Indexed, name: string | number | symbol, value: Va
     }
     if (!(at in target.items)) rejectAddition(target, at)
     changed(target)
-    // An append is covered by the fuel allowance; a write past a gap is charged its holes too.
-    if (at > target.items.length) charge(ELEMENT_BYTES * (at + 1 - target.items.length))
     target.items[at] = value
     return true
   }
@@ -1206,7 +1114,6 @@ const writeElement = (target: Indexed, name: string | number | symbol, value: Va
   if (length < target.items.length && !target.elements.configurable) return false
   checkArrayLength(length)
   changed(target)
-  if (length > target.items.length) charge(ELEMENT_BYTES * (length - target.items.length))
   target.items.length = length
   return true
 }
@@ -1436,10 +1343,7 @@ const defineElement = (target: Indexed, at: number, current: Slot | undefined, d
   if (current === undefined || "value" in desc) {
     changed(target)
     if (target instanceof Bytes) target.bytes[at] = coerceToNumber(desc.value)
-    else {
-      if (at > target.items.length) charge(ELEMENT_BYTES * (at + 1 - target.items.length))
-      target.items[at] = desc.value
-    }
+    else target.items[at] = desc.value
   }
   return true
 }
@@ -1540,15 +1444,8 @@ export const record = (proto: Obj | null, fields: Record<string, Value>): Obj =>
  * on its chain runs.
  */
 export const copyDataProperties = (target: Obj, source: Obj, skip?: ReadonlySet<PropertyKey>): void => {
-  const before = target.props.size
   for (const key of enumerableKeys(source)) {
     if (skip?.has(key)) continue
     define(target, key, getOwn(source, key))
   }
-  chargeProps(target, before)
-}
-
-/** Charges a running run's meter with the own properties `target` gained since it had `before`. */
-export const chargeProps = (target: Obj, before: number): void => {
-  if (target.props.size > before) charge(PROPERTY_BYTES * (target.props.size - before))
 }

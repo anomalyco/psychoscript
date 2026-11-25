@@ -168,9 +168,19 @@ fn read(vm: &mut Vm, id: Id, i: usize) -> Value {
     }
 }
 
-/// Element `i` when `i in array`, which a hole or an index past the end may still be through the prototypes.
+/// Element `i` when the array has it as its own, as the reference's callback methods test `i in array`: a hole is
+/// skipped even where a prototype has that index.
 #[inline]
 fn present(vm: &mut Vm, id: Id, i: usize) -> Option<Value> {
+    match items(vm, id).get(i) {
+        Some(v) if !matches!(v, Value::Uninit) => Some(*v),
+        _ => vm.own_far_elem(id, i),
+    }
+}
+
+/// Element `i` when `i in array` through the prototypes too, as `copyWithin`'s `HasProperty` tests it.
+#[inline]
+fn present_inherited(vm: &mut Vm, id: Id, i: usize) -> Option<Value> {
     match items(vm, id).get(i) {
         Some(v) if !matches!(v, Value::Uninit) => Some(*v),
         _ => inherited(vm, id, i),
@@ -905,8 +915,8 @@ fn check_join_length(vm: &mut Vm, list: &[Value], sep: &str) -> Result<(), Value
     Ok(())
 }
 
-/// The reference's `integers`: the arguments at `positions`, `undefined` where missing, are one list of conversions
-/// with the number hint (see `fuel::Conversions`) before `body` reads them.
+/// The arguments at `positions` as the reference's `optNumber` reads them before `body` does: an object converts
+/// without consulting its own methods (`coerceToNumber`), so it is no number unless it is an array or a Date.
 fn integers(
     vm: &mut Vm,
     args: &[Value],
@@ -919,17 +929,13 @@ fn integers(
     {
         return body(vm, args);
     }
-    let mut listed: Vec<Value> = positions.iter().map(|&p| arg(args, p)).collect();
-    let mut c = fuel::Conversions::default();
-    c.convert(vm, &[Hint::Number], &mut listed, false)?;
     let mut converted = args.to_vec();
-    for (&p, v) in positions.iter().zip(listed) {
-        if p < args.len() {
-            converted[p] = v;
+    for &p in positions {
+        if let Some(v @ Value::Obj(_)) = args.get(p) {
+            converted[p] = Value::Num(super::builtin_number(vm, v)?);
         }
     }
-    let r = body(vm, &converted);
-    c.finish(vm, r)
+    body(vm, &converted)
 }
 
 fn a_to_locale_string(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
@@ -950,26 +956,6 @@ fn a_to_locale_string(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> R
             arg(args, 1),
         ],
     )
-}
-
-/// Whether an element's `toLocaleString` gets the locales and options: without Intl, only the built-in formatters'
-/// do, of primitives, arrays and dates.
-fn formats_locale(vm: &Vm, item: &Value) -> bool {
-    let Value::Obj(id) = *item else { return true };
-    if vm.type_of(item) != "object" || matches!(vm.heap[id as usize].kind, Kind::Array(_)) {
-        return true;
-    }
-    if vm.realm.std.loaded & super::LAZY_DATE == 0 {
-        return false;
-    }
-    let mut cur = vm.heap[id as usize].proto;
-    while let Some(c) = cur {
-        if c == vm.realm.std.date {
-            return true;
-        }
-        cur = vm.heap[c as usize].proto;
-    }
-    false
 }
 
 /// The step of `toLocaleString`: the slots are the text so far, the next index, whether a result is being
@@ -1016,11 +1002,9 @@ pub(crate) fn to_locale_string_step(vm: &mut Vm, fr: Frame, input: Input) -> Res
         if !item.is_nullish() {
             let f = vm.get(&item, key)?;
             fr.set_index(vm, 1, i);
-            if formats_locale(vm, &item) {
-                let (locales, options) = (fr.slot(vm, 3), fr.slot(vm, 4));
-                return fr.call_slots(vm, Slot::pack(f), Slot::pack(item), [locales, options]);
-            }
-            return fr.call_slots(vm, Slot::pack(f), Slot::pack(item), []);
+            // Every element's `toLocaleString` gets the locales and options, as the reference passes them.
+            let (locales, options) = (fr.slot(vm, 3), fr.slot(vm, 4));
+            return fr.call_slots(vm, Slot::pack(f), Slot::pack(item), [locales, options]);
         }
         i += 1;
         fuel::step(vm);
@@ -1627,11 +1611,21 @@ fn sort_default(vm: &mut Vm, list: Vec<Value>, name: &str) -> Result<Vec<Value>,
             "{name} without a comparator needs numbers or strings; pass a comparator for objects, e.g. (a, b) => a.age - b.age"
         )));
     }
-    // The values are one list of conversions with the string hint (see `fuel::Conversions`). Over `SORT_RUN` the
-    // reference sorts in bounded native steps in its prelude (`sortDefault`).
+    // The keys never call the program: a lone object's is its text without consulting its own methods (the
+    // reference's `coerceToString`). Over `SORT_RUN` the reference sorts in bounded native steps in its prelude
+    // (`sortDefault`).
     let stepped = defined.len() > SORT_RUN;
-    let mut c = fuel::Conversions::default();
-    let primitives = c.converted(vm, &[Hint::String], &defined, false)?;
+    let c = fuel::Conversions::default();
+    let mut primitives = Vec::with_capacity(defined.len());
+    for v in &defined {
+        primitives.push(match v {
+            Value::Obj(_) => {
+                let text = super::builtin_string(vm, v)?;
+                vm.string_val(text)
+            }
+            v => *v,
+        });
+    }
     if !primitives.is_empty() && primitives.iter().all(|p| matches!(p, Value::Num(_))) {
         let keys: Vec<u64> = primitives.iter().map(|p| number_key(p.as_num())).collect();
         drop(primitives);
@@ -2186,7 +2180,7 @@ fn a_copy_within(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
         for _ in 0..count {
             let from_i = from as usize;
             let to_i = to as usize;
-            if let Some(v) = present(vm, id, from_i) {
+            if let Some(v) = present_inherited(vm, id, from_i) {
                 vm.set_elem(&Value::Obj(id), &Value::Num(to_i as f64), v)?;
             } else {
                 let key = vm.atoms.intern(&to_i.to_string());

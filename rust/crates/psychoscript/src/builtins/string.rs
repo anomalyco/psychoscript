@@ -254,13 +254,12 @@ fn string_from_char_code(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Re
         let c = (to_uint32(n) & 0xffff) as u16;
         return Ok(vm.char_str(c));
     }
-    fuel::with_primitive_list(vm, &[Hint::Number], args, true, |vm, args| {
-        let mut units = Vec::with_capacity(args.len());
-        for a in args {
-            units.push((to_uint32(vm.number_of(a)?) & 0xffff) as u16);
-        }
-        Ok(Value::Str(vm.atoms.alloc_units(&units)))
-    })
+    // Each argument converts without consulting its own methods (the reference's `coerceToNumber`).
+    let mut units = Vec::with_capacity(args.len());
+    for a in args {
+        units.push((to_uint32(super::builtin_number(vm, a)?) & 0xffff) as u16);
+    }
+    Ok(Value::Str(vm.atoms.alloc_units(&units)))
 }
 
 fn string_raw(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
@@ -324,22 +323,21 @@ fn raw_parts(vm: &mut Vm, args: &[Value]) -> Result<Vec<Value>, Value> {
 }
 
 fn string_from_code_point(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
-    fuel::with_primitive_list(vm, &[Hint::Number], args, true, |vm, args| {
-        let mut out = String::new();
-        for a in args {
-            let n = vm.number_of(a)?;
-            match char::from_u32(n as u32) {
-                Some(c) if n.fract() == 0.0 && n >= 0.0 => out.push(c),
-                // The reference's host words every invalid code point alike.
-                _ => {
-                    return Err(vm.range_error(
-                        "Arguments contain a value that is out of range of code points",
-                    ));
-                }
+    // Each argument converts without consulting its own methods (the reference's `coerceToNumber`).
+    let mut out = String::new();
+    for a in args {
+        let n = super::builtin_number(vm, a)?;
+        match char::from_u32(n as u32) {
+            Some(c) if n.fract() == 0.0 && n >= 0.0 => out.push(c),
+            // The reference's host words every invalid code point alike.
+            _ => {
+                return Err(
+                    vm.range_error("Arguments contain a value that is out of range of code points")
+                );
             }
         }
-        Ok(vm.string_val(crate::strings::external_text(out)))
-    })
+    }
+    Ok(vm.string_val(crate::strings::external_text(out)))
 }
 
 fn pos_arg(vm: &mut Vm, name: &str, args: &[Value], i: usize) -> Result<f64, Value> {
@@ -695,10 +693,13 @@ fn s_pad_end(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
 
 fn s_repeat(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
     simple(vm, callee, this, args, &[Hint::Number], |vm, _, s, args| {
-        let n = pos_arg(vm, "repeat", args, 0)?;
-        if n < 0.0 || n.is_infinite() {
+        // The count as a number, not an integer: NaN (`undefined` too) is no count, as a negative fraction is not.
+        let v = data_arg(vm, "repeat", args, 0)?;
+        let n = vm.number_of(&v)?;
+        if !n.is_finite() || n < 0.0 {
             return Err(vm.range_error("String.repeat expects a finite non-negative count."));
         }
+        let n = n.trunc();
         if vm.text(s).len() as f64 * n > MAX_STRING_LEN as f64 {
             return Err(vm.range_error("Invalid string length"));
         }
@@ -1310,10 +1311,19 @@ fn s_to_well_formed(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res
     })
 }
 
-fn s_iterator(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
-    simple(vm, callee, this, args, &[], |vm, _, s, _| {
-        vm.get_iterator(&Value::Str(s))
-    })
+/// The receiver converts without consulting its own methods (the reference's `self`, `coerceToString`).
+fn s_iterator(vm: &mut Vm, this: Value, _args: &[Value], callee: Id) -> Res {
+    let s = match this {
+        Value::Obj(_) => {
+            let text = super::builtin_string(vm, &this)?;
+            match vm.string_val(text) {
+                Value::Str(s) => s,
+                _ => vm.static_id(""),
+            }
+        }
+        v => this_str(vm, &v, callee)?,
+    };
+    vm.get_iterator(&Value::Str(s))
 }
 
 // ---------- Number ----------

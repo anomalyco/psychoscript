@@ -1,6 +1,4 @@
-import { type DurableFn, type Fn, functionMarker } from "../runtime/contract.js"
-import { ELEMENT_BYTES, ENTRY_BYTES, OBJECT_BYTES, PROPERTY_BYTES, STRING_BYTES } from "../runtime/heap.js"
-import { unchanged } from "../runtime/intrinsic-names.js"
+import type { DurableFn, Fn } from "../runtime/contract.js"
 import { Interpreter } from "../runtime/interpreter.js"
 import {
   type AstNode,
@@ -24,14 +22,7 @@ import {
   type Getter,
   isProgramAccessor,
   type Setter,
-  ArrayBufferObj,
   Bytes,
-  knownArrayBuffer,
-  rememberArrayBuffer,
-  type TypedArray,
-  typedArrayName,
-  typedArrays,
-  type TypedArrayName,
   changed,
   DateObj,
   ErrorObj,
@@ -191,7 +182,6 @@ const symbols = new Map<string, symbol>([
   ["toPrimitive", ToPrimitiveSymbol],
   ["toStringTag", ToStringTagSymbol],
   ["deleted", deleted],
-  ["functionMarker", functionMarker],
 ])
 const symbolNames = new Map([...symbols].map(([name, symbol]) => [symbol, name]))
 
@@ -281,24 +271,7 @@ const builtinSpecs = (): ReadonlyArray<ClassSpec> => [
   },
   { name: "HeadersObj", ctor: HeadersObj, fields: ["headers"], obj: true, constants: { tag: "Headers" } },
   { name: "URLObj", ctor: URLObj, fields: ["searchParams", "url"], obj: true, constants: { tag: "URL" } },
-  {
-    name: "Bytes",
-    ctor: Bytes,
-    fields: ["bytes"],
-    obj: true,
-    // Its tag is its host array's kind.
-    reset: (value: { tag: string; bytes: TypedArray }) => {
-      value.tag = typedArrayName(value.bytes)
-    },
-  },
-  {
-    name: "ArrayBufferObj",
-    ctor: ArrayBufferObj,
-    fields: ["buffer"],
-    obj: true,
-    constants: { tag: "ArrayBuffer" },
-    reset: (value: ArrayBufferObj) => rememberArrayBuffer(value),
-  },
+  { name: "Bytes", ctor: Bytes, fields: ["bytes"], obj: true, constants: { tag: "Uint8Array" } },
   { name: "BufferObj", ctor: BufferObj, fields: ["bytes"], obj: true, constants: { tag: "Uint8Array" } },
   {
     name: "TextDecoderObj",
@@ -365,17 +338,7 @@ const builtinSpecs = (): ReadonlyArray<ClassSpec> => [
     ctor: Interpreter,
     anchor: "ctx",
     fields: ["logs", "globalScope", "modules", "namespaces", "protector", "consoleState"],
-    skip: [
-      "builtins",
-      "vm",
-      "intrinsics",
-      "hosts",
-      "hostNamespaces",
-      "moduleGlobals",
-      "sources",
-      "prelude",
-      "typedArrays",
-    ],
+    skip: ["builtins", "vm", "intrinsics", "hosts", "hostNamespaces", "moduleGlobals", "sources", "prelude"],
   },
 ]
 
@@ -584,10 +547,6 @@ class Encoder {
     if (object instanceof Uint8Array) {
       return { t: "Uint8Array", b: this.ref(object.buffer), o: object.byteOffset, l: object.length }
     }
-    if (ArrayBuffer.isView(object) && Object.hasOwn(typedArrays, typedArrayName(object as TypedArray))) {
-      const view = object as TypedArray
-      return { t: "TypedArray", c: typedArrayName(view), b: this.ref(view.buffer), o: view.byteOffset, l: view.length }
-    }
     if (object instanceof ArrayBuffer) return { t: "ArrayBuffer", d: base64(new Uint8Array(object)) }
     if (object instanceof TextDecoder) return { t: "TextDecoder", f: object.fatal, i: object.ignoreBOM }
     const what = typeof object === "function" ? "a host function" : `a host ${object.constructor?.name ?? "object"}`
@@ -628,7 +587,7 @@ class Encoder {
       for (const key of Object.keys(object)) {
         if (fields.includes(key) || spec.skip?.includes(key) || (spec.constants !== undefined && key in spec.constants))
           continue
-        if (spec.obj && (objFields.includes(key) || key === "tag" || key === "hasProgramAccessors" || key === "guard" || key === "visited")) continue
+        if (spec.obj && (objFields.includes(key) || key === "tag" || key === "hasProgramAccessors" || key === "guard")) continue
         throw new SnapshotError(`Codec gap: ${spec.name}.${key} is not saved.`)
       }
     }
@@ -688,166 +647,6 @@ class Encoder {
     }
     return { t: "Error", c: name, m: error.message, e: fields }
   }
-}
-
-// --- Measuring ---
-
-// Each measurement marks the objects it reaches with its own number (`Obj.visited`), as a set of half a million
-// objects costs far more than the walk itself.
-let measurements = 0
-
-/**
- * The size of everything reachable from `roots` that the program made, in the model of `limits.maxHeapBytes` (see
- * runtime/heap.ts). It follows the edges `encode` saves, without saving anything: a built-in or host global unchanged
- * since the runtime was made is not followed, and `exclude` (the logs, the run id) neither. A function's own `name` and
- * `length` count as part of it.
- */
-export const measure = (
-  roots: ReadonlyArray<unknown>,
-  specs: ReadonlyArray<ClassSpec>,
-  exclude: ReadonlyArray<object | string>,
-): number => {
-  const { byCtor } = registry(specs)
-  const mark = ++measurements
-  const seen = new Set<object>()
-  const texts = new Set<string>()
-  const buffers = new Set<ArrayBufferLike>()
-  for (const item of exclude) {
-    if (typeof item === "string") texts.add(item)
-    else seen.add(item)
-  }
-  const work: Array<object> = []
-  let bytes = 0
-  const visit = (value: unknown): void => {
-    if (typeof value === "string") {
-      if (texts.has(value)) return
-      texts.add(value)
-      bytes += STRING_BYTES + 2 * value.length
-      return
-    }
-    if (typeof value !== "object" || value === null) return
-    if (value instanceof Obj) {
-      if (value.visited === mark) return
-      value.visited = mark
-    } else {
-      if (seen.has(value)) return
-      seen.add(value)
-    }
-    work.push(value)
-  }
-  const table = (entries: OrderedTable) => {
-    for (const key of entries.keys) visit(key)
-    for (const item of entries.values) visit(item)
-  }
-  for (const root of roots) visit(root)
-  for (let object = work.pop(); object !== undefined; object = work.pop()) {
-    if (object instanceof Obj) {
-      if (unchanged(object)) continue
-      if (object.intrinsic === 0) bytes += objectBytes(object)
-      // A typed array's storage counts once, whole, however many views and ArrayBuffers share it.
-      const storage =
-        object instanceof Bytes ? object.bytes.buffer : object instanceof ArrayBufferObj ? object.buffer : undefined
-      if (storage !== undefined && !buffers.has(storage)) {
-        buffers.add(storage)
-        bytes += storage.byteLength
-      }
-      if (object instanceof Bytes) visit(knownArrayBuffer(object.bytes.buffer))
-      if (object.props.size > 0) {
-        const callable = object instanceof Callable
-        const builtin = object.intrinsic !== 0
-        for (const [key, slot] of object.props) {
-          if (callable && (key === "name" || key === "length")) continue
-          // A built-in: what the program stored on it counts, its own names and texts do not.
-          if (builtin && "value" in slot && typeof slot.value === "string") continue
-          // An error's `stack` text counts as part of the error, and reading one not read yet would format it now.
-          if (slot instanceof StackSlot) continue
-          if ("value" in slot) visit(slot.value)
-          else {
-            visit(accessorFunction(slot.get))
-            visit(accessorFunction(slot.set))
-          }
-        }
-      }
-      visit(object.proto)
-      // The kinds most of a heap is made of, without their parts entering `seen`.
-      const ctor = object.constructor
-      if (ctor === Obj) continue
-      if (ctor === Arr) {
-        for (const item of (object as Arr).items) visit(item)
-        continue
-      }
-      if (ctor === MapObj) {
-        table((object as MapObj).map)
-        continue
-      }
-      if (ctor === SetObj) {
-        table((object as SetObj).set)
-        continue
-      }
-      // Its source and flags count as part of it.
-      if (ctor === RegExpObj) {
-        visit((object as RegExpObj).lastIndex)
-        continue
-      }
-    } else if (Array.isArray(object)) {
-      for (const item of object) visit(item)
-      continue
-    } else if (object instanceof Map) {
-      // Keys of the VM's own maps are names, which count as part of what they name.
-      for (const [key, item] of object) {
-        if (typeof key === "object") visit(key)
-        visit(item)
-      }
-      continue
-    } else if (object instanceof Set) {
-      for (const item of object) visit(item)
-      continue
-    }
-    if (object instanceof HostCall) {
-      // Its arguments are the host's copies; only the promise it settles is the program's.
-      visit(object.resolving)
-      continue
-    }
-    if (object instanceof HostNamespace) continue
-    const spec = byCtor.get(object.constructor)
-    if (spec !== undefined) {
-      const record = object as { readonly [field: string]: unknown }
-      if (spec.view !== undefined) for (const item of spec.view(object as never)) visit(item)
-      else {
-        for (const field of spec.fields) {
-          const item = record[field]
-          if (typeof item !== "string" || !labels.has(field)) visit(item)
-        }
-      }
-      continue
-    }
-    if (object instanceof Obj) continue
-    const proto = Object.getPrototypeOf(object)
-    if (proto === Object.prototype || proto === null) {
-      for (const item of Object.values(object)) visit(item)
-    }
-    // Anything else (an AST node, compiled code, a host error or URL) holds no program values.
-  }
-  return bytes
-}
-
-// The VM's own fields that hold a label rather than a program's string: a promise's state, a failure's error type.
-const labels = new Set(["state", "type", "kind", "status", "key", "label", "policy", "tag"])
-
-const objectBytes = (object: Obj): number => {
-  let props = object.props.size
-  if (object instanceof Callable) props -= (object.props.has("name") ? 1 : 0) + (object.props.has("length") ? 1 : 0)
-  if (object instanceof Arguments) {
-    // Its arguments are elements, as an array's are.
-    let elements = 0
-    for (const key of object.props.keys()) if (typeof key === "string" && /^(0|[1-9]\d*)$/.test(key)) elements++
-    return OBJECT_BYTES + PROPERTY_BYTES * (props - elements) + ELEMENT_BYTES * elements
-  }
-  const own = OBJECT_BYTES + PROPERTY_BYTES * props
-  if (object instanceof Arr) return own + ELEMENT_BYTES * object.items.length
-  if (object instanceof MapObj || object instanceof WeakMapObj) return own + ENTRY_BYTES * object.map.size
-  if (object instanceof SetObj || object instanceof WeakSetObj) return own + ENTRY_BYTES * object.set.size
-  return own
 }
 
 // --- Decoding ---
@@ -988,19 +787,6 @@ class Decoder {
         if (offset + length > buffer.byteLength) return invalid(`record ${id} reaches past its buffer.`)
         return new Uint8Array(buffer, offset, length)
       }
-      case "TypedArray": {
-        const name = text(record.c, "a typed array kind")
-        if (!Object.hasOwn(typedArrays, name)) return invalid(`record ${id} names no typed array kind.`)
-        const kind = typedArrays[name as TypedArrayName]
-        const buffer = this.value(record.b)
-        if (!(buffer instanceof ArrayBuffer)) return invalid(`record ${id} names no buffer.`)
-        const offset = count(record.o, "a byte offset")
-        const length = count(record.l, "a length")
-        if (offset % kind.BYTES_PER_ELEMENT !== 0 || offset + length * kind.BYTES_PER_ELEMENT > buffer.byteLength) {
-          return invalid(`record ${id} reaches past its buffer.`)
-        }
-        return new kind(buffer, offset, length)
-      }
       case "TextDecoder":
         return new TextDecoder("utf-8", { fatal: record.f === true, ignoreBOM: record.i === true })
     }
@@ -1104,7 +890,6 @@ class Decoder {
       case "Headers":
       case "ArrayBuffer":
       case "Uint8Array":
-      case "TypedArray":
       case "TextDecoder":
         return
     }

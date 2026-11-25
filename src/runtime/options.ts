@@ -1,6 +1,5 @@
 import type { Json } from "../data.js"
 import type { Run, Setup } from "./execute.js"
-import { MAX_VALUE_DEPTH_LIMIT } from "./limits.js"
 
 /** Budgets enforced on each run. Time counts active time only, across every resume of a run. */
 export type Limits = {
@@ -11,32 +10,18 @@ export type Limits = {
    * are additional.
    */
   readonly maxOutputBytes?: number
-  /**
-   * The most bytes the run's heap may hold: everything it can still reach, in a size model that is the same on every
-   * platform (objects, properties, elements, entries and strings at fixed sizes; see `interpreter-support.md`), not
-   * the process's memory. A run over it stops with `MemoryLimitExceeded`. No default: absent means no limit.
-   */
-  readonly maxHeapBytes?: number
-  /**
-   * The deepest nesting a value may have where it crosses between the program and the host: the result, a host call's
-   * arguments and what it returns. `JSON.stringify` copies to the same depth. 32 by default; from 1 to 256, as the
-   * copies recurse once a level (on the native stack in the Rust implementation, where 256 fits the stack a run has).
-   * A value nested deeper fails with a `TypeError` (a `RangeError` for the result and `JSON.stringify`).
-   */
-  readonly maxValueDepth?: number
 }
 
 /**
  * How a host call's arguments carry program values the host can't hold. Every host function in the runtime gets its
- * arguments this way; the run's result only takes `functions: "mark"`.
+ * arguments this way; results are not affected.
  */
 export type Translate = {
   /**
    * A program function inside an argument: `"error"` (the default) fails the call; `"drop"` leaves it out, as
-   * `JSON.stringify` does: an object's key is left out, an array's item is `null`, and an argument is `undefined`;
-   * `"mark"` puts `Host.functionMarker` in its place, and in the run's result where a function would vanish too.
+   * `JSON.stringify` does: an object's key is left out, an array's item is `null`, and an argument is `undefined`.
    */
-  readonly functions?: "error" | "drop" | "mark" | undefined
+  readonly functions?: "error" | "drop" | undefined
   /**
    * A program promise inside an argument: `"error"` (the default) fails the call; `"await"` makes the call wait for it
    * to settle and use its value. A rejection fails the call with its reason.
@@ -60,14 +45,6 @@ export type Options<G extends Globals = Globals> = {
   readonly limits?: Limits | undefined
   /** How host calls receive program functions and promises inside arguments; both fail the call by default. */
   readonly translate?: Translate | undefined
-  /**
-   * Whether programs have the typed arrays besides `Uint8Array` (`ArrayBuffer`, `Uint16Array`, `Uint32Array`,
-   * `Int32Array`, `Float32Array`, `Float64Array`), and host functions may return them; off by default. Off, as before
-   * they were added, a host function that returns one fails at the call, and a `Uint8Array` has no `byteLength`,
-   * `byteOffset` or `buffer`, keeps other numeric keys as properties, and reads one out of range from its prototypes.
-   * A run resumes only in a runtime with the same setting.
-   */
-  readonly typedArrays?: boolean | undefined
 }
 
 /** Options for `Runtime.program`. */
@@ -89,29 +66,17 @@ export const makeSetup = <R>(options: Options<Globals>): Setup<R> => ({
   limits: {
     timeoutMs: validateLimit("timeoutMs", options.limits?.timeoutMs, 1),
     maxOutputBytes: validateLimit("maxOutputBytes", options.limits?.maxOutputBytes, 0),
-    maxHeapBytes: validateLimit("maxHeapBytes", options.limits?.maxHeapBytes, 1),
-    maxValueDepth: validateLimit("maxValueDepth", options.limits?.maxValueDepth, 1, MAX_VALUE_DEPTH_LIMIT),
   },
   globals: options.globals,
   modules: options.modules,
-  typedArrays: options.typedArrays === true,
   translate: {
     functions: options.translate?.functions ?? "error",
     promises: options.translate?.promises ?? "error",
   },
 })
 
-const validateLimit = (
-  name: string,
-  value: number | undefined,
-  minimum: number,
-  maximum?: number,
-): number | undefined => {
-  if (value === undefined) return value
-  if (maximum !== undefined && (!Number.isSafeInteger(value) || value < minimum || value > maximum)) {
-    throw new RangeError(`${name} must be an integer from ${minimum} to ${maximum}.`)
-  }
-  if (!Number.isSafeInteger(value) || value < minimum) {
+const validateLimit = (name: string, value: number | undefined, minimum: number): number | undefined => {
+  if (value !== undefined && (!Number.isSafeInteger(value) || value < minimum)) {
     throw new RangeError(`${name} must be a safe integer greater than or equal to ${minimum}.`)
   }
   return value
