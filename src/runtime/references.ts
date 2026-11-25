@@ -1,5 +1,6 @@
 import { invalidData } from "./model.js"
 import {
+  Arr,
   Callable,
   getOwn,
   HostNamespace,
@@ -59,8 +60,21 @@ export const rejectCircularInsertion = (
   if (hasCircularReference(container, value, seen)) throw circularValue(label)
 }
 
-export const hasCircularReference = (container: Obj, value: Value, seen = new Set<object>()): boolean =>
-  find(value, (current) => current === container, isRuntimeReference, seen)
+export const hasCircularReference = (container: Obj, value: Value, seen?: Set<object>): boolean => {
+  if (value === container) return true
+  if (!(value instanceof Obj) || isRuntimeReference(value) || holdsNoObjects(value)) return false
+  return find(value, (current) => current === container, isRuntimeReference, seen ?? new Set())
+}
+
+// A plain object or array whose own data slots and elements are all primitives reaches nothing, so it cannot close a
+// cycle: the walk would find nothing, and skipping it saves its Set, iterators and key lists on every insertion.
+const holdsNoObjects = (value: Obj): boolean => {
+  if (value.constructor === Arr) {
+    for (const item of (value as Arr).items) if (item instanceof Obj) return false
+  } else if (value.constructor !== Obj) return false
+  for (const slot of value.props.values()) if (!("value" in slot) || slot.value instanceof Obj) return false
+  return true
+}
 
 export const circularValue = (label: string) => invalidData(`${label} contains a circular value.`)
 
