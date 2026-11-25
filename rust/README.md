@@ -141,6 +141,16 @@ Known differences:
   `NaN` in every locale (ICU4X has no localized name for it), a numbering system other than the locale's keeps the
   locale's separators, and a few regions whose CLDR data is newer in ICU4X (`de-AT`, `fr-CH`, `bn-BD`).
 
+## Known issues
+
+- A regular expression's backtracking can't be interrupted: one match (`/(a|a)*b/` on a long run of `a`s) runs past
+  `timeout_ms` and `slice_ms`, as in the reference. `regress` has no step budget; bound untrusted patterns or inputs.
+- A saved state changed since it was saved is refused (its header holds a hash of it), but resuming doesn't validate a
+  forged one in full and may panic (in safe Rust): store saved states as you would code.
+- On wasm32, a run driven as a future that waits on a host call notices its timeout only when it is next polled.
+- The round-trip conformance run (`PSYCHOSCRIPT_ROUNDTRIP=1`) failed once on a heavily loaded machine and didn't
+  reproduce in 52 runs since; its quiet panic hook doesn't name the failing case.
+
 ## Design
 
 - **Threading:** a run stays on the thread that drives it; as a future, compute past 1 ms moves to a worker of the
