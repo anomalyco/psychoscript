@@ -26,7 +26,7 @@
 
 import { readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { reference, toolsGlobal } from "./reference.ts"
+import { reference, toolsGlobal } from "./reference.js"
 
 const ref = await reference(process.argv[2] ?? process.env.PSYCHOSCRIPT_REF)
 const Effect = ref.Effect
