@@ -262,7 +262,8 @@ mod sys {
     windows
 )))]
 mod sys {
-    use std::time::{Duration, Instant};
+    use crate::time::Instant;
+    use std::time::Duration;
 
     #[derive(Clone, Copy, Debug)]
     pub struct Handle;

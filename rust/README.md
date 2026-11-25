@@ -110,7 +110,8 @@ Known differences:
 ## Design
 
 - **Threading:** a run stays on the thread that drives it; as a future, compute past 1 ms moves to a worker of the
-  run's own while host code is always handed back to the executor, in the same order.
+  run's own while host code is always handed back to the executor, in the same order. On wasm32, without threads, the
+  run yields to its executor there instead.
 - **Memory:** an incremental, non-moving mark-sweep collector (`collector.rs`) frees what a run can no longer reach,
   at safe points only (`bench/GC.md`). `Limits::max_heap_bytes` (the reference's `maxHeapBytes`) caps what a run
   can reach, measured in the size model both share (`heap.rs`), so a measurement finds the same in both; when the
@@ -124,7 +125,8 @@ Known differences:
   wall time since its last reading could have used up the budget. `Limits::slice_ms` bounds each stretch between
   awaits of the host the same way, also leaving out host calls, and stops the run with `SliceExceeded`, so a host
   needn't watch the run from outside. Under `ThreadCpu` a stretch's CPU time is measured from when it has run a
-  sixteenth of the slice, so it may run up to that much past it.
+  sixteenth of the slice, so it may run up to that much past it. On wasm32 the clocks are `performance.now()` and
+  `Date.now()` (`web-time`), and `ThreadCpu` counts wall-clock time.
 - Layout: `crates/psychoscript` (compiler on `oxc_parser`, VM, standard library, host functions, snapshots, and
   `thread_clock`: a thread's CPU time, read on it or from another thread, for hosts too), `conformance/` (generators
   and recordings), `bench/`, `test262/`.

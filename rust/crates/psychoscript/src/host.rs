@@ -226,8 +226,8 @@ pub(crate) fn call_key(run_id: &RunId, call: u64) -> String {
 pub fn random_run_id() -> String {
     use std::sync::atomic::AtomicU64;
     static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let seed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let seed = crate::time::SystemTime::now()
+        .duration_since(crate::time::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0)
         ^ COUNTER.fetch_add(0x9e37_79b9_7f4a_7c15, Ordering::Relaxed);
@@ -1029,9 +1029,9 @@ fn block(vm: &mut Vm, work: BoxFuture<'static, HostResult>) -> HostResult {
     // Under `Clock::ThreadCpu`, the wait counts on the wall clock, against the backstop (see `cpu.rs`).
     let deadline = vm.limits.timeout_ms.map(|ms| match &vm.cpu {
         None => vm.start + std::time::Duration::from_millis(ms),
-        Some(c) => std::time::Instant::now() + c.wait_left(std::time::Duration::from_millis(ms)),
+        Some(c) => crate::time::Instant::now() + c.wait_left(std::time::Duration::from_millis(ms)),
     });
-    let began = std::time::Instant::now();
+    let began = crate::time::Instant::now();
     let (settled, done) = match home_of(vm) {
         None => wait(&mut vm.host.tasks, work, deadline),
         Some(home) => {
@@ -1067,7 +1067,7 @@ fn block(vm: &mut Vm, work: BoxFuture<'static, HostResult>) -> HostResult {
 fn wait(
     tasks: &mut crate::exec::Tasks<'static, Settlement>,
     mut work: BoxFuture<'static, HostResult>,
-    deadline: Option<std::time::Instant>,
+    deadline: Option<crate::time::Instant>,
 ) -> (Vec<(Id, Settlement)>, Option<HostResult>) {
     let mut settled = Vec::new();
     let mut armed = false;
@@ -1078,7 +1078,7 @@ fn wait(
             return Poll::Ready(Some(r));
         }
         match deadline {
-            Some(at) if std::time::Instant::now() >= at => Poll::Ready(None),
+            Some(at) if crate::time::Instant::now() >= at => Poll::Ready(None),
             Some(at) if !armed => {
                 armed = true;
                 crate::exec::wake_at(at, cx.waker());

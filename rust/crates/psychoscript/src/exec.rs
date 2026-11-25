@@ -2,12 +2,12 @@
 //! a thread-parking `block_on`, and one shared timer thread that wakes runs at their deadline.
 
 use crate::offload::Home;
+use crate::time::Instant;
 use std::collections::BinaryHeap;
 use std::future::Future;
 use std::pin::pin;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::task::{Context, Poll, Wake, Waker};
-use std::time::Instant;
 
 /// A boxed future a host hands the runtime. `Send`, so a run can move between threads.
 pub type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;

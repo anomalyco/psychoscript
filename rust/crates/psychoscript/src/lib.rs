@@ -48,6 +48,7 @@ mod strings;
 pub mod test262;
 #[allow(unsafe_code)]
 pub mod thread_clock;
+mod time;
 mod value;
 mod vm;
 

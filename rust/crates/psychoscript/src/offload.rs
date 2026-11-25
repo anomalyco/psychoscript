@@ -4,16 +4,19 @@
 //! of a host future the worker meets is handed back and runs there while the worker waits, so host code runs on the
 //! same thread, in the same order, as before. A handed-back call costs a few microseconds, which only stretches already
 //! past the budget pay.
+// A browser starts no worker threads: a run yields to its executor instead (`Program::advance`).
+#![cfg_attr(target_arch = "wasm32", allow(dead_code))]
 
 use std::panic::AssertUnwindSafe;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll, Waker};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::program::Running;
 use crate::run::{RUN_STACK_BUDGET, THREAD_STACK_BASE};
+use crate::time::Instant;
 
 /// How long a run may compute on the thread driving it, without stopping, before it moves to a worker thread.
 pub const OFFLOAD_AFTER: Duration = Duration::from_millis(1);
