@@ -33,6 +33,7 @@
 // - `Box(item)`: sync, `constructible: true`; gives `{ item }`.
 // - `Later(item)`: sync, `constructible: true`; gives `Effect.succeed({ item })`.
 // - `refuse()`: sync; fails with `Host.fail("Refused", "Not today", ["Ask again."])`.
+// - `refuseAs(kind)`: sync; fails with `Host.fail(kind, "Not today")`, a kind that may be named like the language's.
 // - `api`: `Host.namespace`; `keys([])` is `["issues"]`, `keys` of any other path `["list"]`; `resolve(["issues",
 //   "list"])` is an async function giving `["#1"]`, any other path `Host.missing("No api.<path>", ["Try
 //   api.issues.list."], "NotFound")`.
@@ -118,6 +119,7 @@ const make = (entry: Entry) => {
         Box: Host.fn(([item]: ReadonlyArray<unknown>) => ({ item }), { constructible: true }),
         Later: Host.fn(([item]: ReadonlyArray<unknown>) => Effect.succeed({ item }), { constructible: true }),
         refuse: Host.fn((_: ReadonlyArray<unknown>) => Effect.fail(Host.fail("Refused", "Not today", ["Ask again."]))),
+        refuseAs: Host.fn(([kind]: ReadonlyArray<unknown>) => Effect.fail(Host.fail(kind as string, "Not today"))),
         api: Host.namespace({
           keys: (path: ReadonlyArray<string>) => (path.length === 0 ? ["issues"] : ["list"]),
           resolve: (path: ReadonlyArray<string>) =>
@@ -255,6 +257,17 @@ const executes: Array<Entry> = [
   { code: `try { api.nope() } catch (e) { return [e.name, e.message, e instanceof Error] }` },
   { code: `refuse()` },
   { code: `try { refuse() } catch (e) { return [e.name, e.message] }` },
+  // A host failure named like a language kind is still the host's: not located, and uncaught it is its message.
+  { code: `refuseAs("InvalidDataValue")` },
+  { code: `await null\nrefuseAs("ExecutionFailure")` },
+  // Once the program receives one (a handler, a rejection callback, allSettled's reason), it is the program's error.
+  { code: `try { refuseAs("UnsupportedSyntax") } catch (e) { throw e }` },
+  { code: `try { refuse() } finally { 1 }` },
+  { code: `const e = await Promise.resolve().then(() => refuse()).catch((x) => x)\nthrow e` },
+  { code: `await Promise.resolve().then(() => refuseAs("InvalidDataValue")).finally(() => 1)` },
+  { code: `await new Promise((r) => r(Promise.resolve().then(() => refuseAs("ExecutionFailure"))))` },
+  { code: `await Promise.allSettled([Promise.resolve().then(() => refuse())]).then(([r]) => { throw r.reason })` },
+  { code: `try { refuseAs("InvalidDataValue") } catch (e) { return [e.name, e.message, String(e), e instanceof Error] }` },
   {
     code: `const out = []; for (const k in api) out.push(k); const x = api.issues; return [out, api.issues === api.issues, x === x, String(api.issues)]`,
   },
@@ -385,6 +398,8 @@ const suspensions: Array<Entry> = [
   // run.metadata across a suspend; the globals are made again on resume.
   { code: `count(); count(); await wait(); return count()`, runId: "m" },
   { code: `count(); count(); await wait(); return count()`, runId: "m", compiled: true },
+  // A host failure stays the host's across a suspend.
+  { code: `let e\ntry { refuseAs("InvalidDataValue") } catch (x) { e = x }\nawait wait()\nthrow e`, runId: "m" },
   // An idempotent call in progress runs again on resume, under the same key.
   { code: `note(1); const a = await wait(); note(2); return [a, await wait()]`, runId: "i" },
   { code: `const ps = [wait(), load(1), wait()]; return await Promise.all(ps)`, runId: "i" },

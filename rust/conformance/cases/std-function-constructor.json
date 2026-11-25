@@ -1,0 +1,26 @@
+{
+  "bindings": {},
+  "ok": true,
+  "value": [
+    [
+      "TypeError",
+      "The Function constructor is not supported; write the function inline."
+    ],
+    [
+      "TypeError",
+      "The Function constructor is not supported; write the function inline."
+    ],
+    [
+      "TypeError",
+      "The Function constructor is not supported; write the function inline."
+    ],
+    [
+      "TypeError",
+      "The Function constructor is not supported; write the function inline."
+    ],
+    true,
+    "function"
+  ],
+  "logs": [],
+  "metadata": null
+}

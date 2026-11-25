@@ -673,9 +673,32 @@ impl Vm {
                 message: msg.to_owned(),
                 offset: None,
                 site: Default::default(),
+                host: false,
             })));
         }
         e
+    }
+
+    /// A host's failure that program code receives, in a handler or as a promise's rejection, becomes the program's
+    /// own error, as the reference makes its `HostFailure` a program value there: thrown again, it fails as an
+    /// ordinary error does, its kind and suggestions left behind.
+    pub(crate) fn receive_host_failure(&mut self, e: &Value) {
+        if let Value::Obj(id) = *e
+            && let Kind::Error(Some(f)) = &self.heap[id as usize].kind
+            && f.host
+        {
+            self.heap[id as usize].kind = Kind::Error(None);
+            self.host.suggestions.remove(&id);
+        }
+    }
+
+    /// Whether `f` is one of a promise's resolving functions, which pass a value on rather than receive it.
+    pub(crate) fn is_resolver(&self, f: &Value) -> bool {
+        matches!(f, Value::Obj(id) if matches!(
+            &self.heap[*id as usize].kind,
+            Kind::Native { data: Value::Obj(state), .. }
+                if matches!(self.heap[*state as usize].kind, Kind::Resolvers { .. })
+        ))
     }
 
     pub fn type_error(&mut self, msg: &str) -> Value {
@@ -1891,6 +1914,7 @@ impl Vm {
         if let Value::Obj(id) = e
             && let Kind::Error(Some(f)) = &mut self.heap[*id as usize].kind
             && f.offset.is_none()
+            && !f.host
             && matches!(
                 f.kind,
                 DiagnosticKind::ExecutionFailure
@@ -2152,6 +2176,13 @@ impl Vm {
             };
             if !fatal && self.handlers.len() > f.hbase as usize {
                 self.stack_caught(&e, self.frames.len() - 1);
+                // A handler in bytecode receives it (the reference's prelude too); a native frame's passes it on.
+                if !matches!(
+                    self.frames.last().expect("frame").kind,
+                    FrameKind::Native(..)
+                ) {
+                    self.receive_host_failure(&e);
+                }
                 let f = self.frames.last_mut().expect("frame");
                 let h = self.handlers.pop().expect("handler");
                 let sp = f.base + h.sp as usize;
