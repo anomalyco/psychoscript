@@ -439,8 +439,8 @@ impl OrderedMap {
         let mut slots = vec![0; self.entries.len()];
         let mut positions = Vec::with_capacity(self.live);
         let mut kept = 0;
-        for i in 0..self.entries.len() {
-            slots[i] = kept as u32;
+        for (i, slot) in slots.iter_mut().enumerate() {
+            *slot = kept as u32;
             if let Some(e) = self.entries[i] {
                 self.entries[kept] = Some(e);
                 positions.push(match &old {
