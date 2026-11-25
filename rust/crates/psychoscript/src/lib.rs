@@ -3,7 +3,7 @@
 //! This crate is the Rust implementation of the language whose reference is the TypeScript package in `src/` of
 //! this repository: [`Runtime`] is `Runtime.make`, [`HostFunction`] is `Host.fn`, [`DurableFunction`] is `Host.durableFn`,
 //! [`Namespace`] is `Host.namespace`, [`Failure`] is `Host.fail` and `Host.missing`, and [`Program`] is
-//! `runtime.program`. Host work is a [`Future`](std::future::Future) instead of an Effect; [`Runtime::execute_async`]
+//! `runtime.program`. Host work is a [`Future`] instead of an Effect; [`Runtime::execute_async`]
 //! runs on any executor, and [`Runtime::execute`] drives it on the calling thread.
 //!
 //! The public API below is shared with the benchmark and conformance harnesses, so change it only together with them.
