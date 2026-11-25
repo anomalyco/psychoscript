@@ -11,6 +11,9 @@
 // written to the differences file. The styles and notations Rust refuses (percent, currency, unit; scientific,
 // engineering, compact) are not here: crates/psychoscript/tests/number_locale.rs pins that refusal.
 //
+// The recordings were made on macOS, whose ICU the reference uses there; date-locale.ts is run on Linux, whose ICU may
+// render a few locales otherwise: regenerate both on the same platform.
+//
 // Usage: bun conformance/number-locale.ts [reference] — the reference package directory, from the argument,
 // PSYCHOSCRIPT_REF, or by default the repository root.
 
