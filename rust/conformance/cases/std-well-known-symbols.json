@@ -1,0 +1,115 @@
+{
+  "bindings": {},
+  "ok": true,
+  "value": [
+    42,
+    "string",
+    "default",
+    [],
+    "[object X]",
+    "[object Symbol]",
+    "[object G]",
+    1,
+    "[object C!]",
+    "Symbol.iterator",
+    "Symbol(Symbol.iterator)",
+    "Symbol(Symbol.asyncIterator)",
+    "Symbol(Symbol.toPrimitive)",
+    "Symbol.toStringTag",
+    true,
+    [
+      "TypeError",
+      "Cannot convert object to primitive value."
+    ],
+    [
+      "TypeError",
+      "Symbol.toPrimitive must be a function."
+    ],
+    3,
+    "d:default1",
+    "d:string",
+    null,
+    [
+      "TypeError",
+      "Symbol is not callable; only Symbol.asyncIterator, Symbol.iterator, Symbol.toPrimitive and Symbol.toStringTag are available."
+    ],
+    [
+      "TypeError",
+      "new Symbol(...) is not supported; call Symbol(...) without new instead."
+    ],
+    [
+      "length",
+      "name",
+      "prototype",
+      "asyncIterator",
+      "iterator",
+      "toPrimitive",
+      "toStringTag"
+    ],
+    true,
+    "Symbol(Symbol.iterator)",
+    true,
+    true,
+    "Symbol",
+    [
+      "TypeError",
+      "Symbol.prototype.description requires that 'this' be a Symbol."
+    ],
+    [
+      "TypeError",
+      "Symbol.prototype.toString requires that 'this' be a Symbol."
+    ],
+    [
+      "TypeError",
+      "Symbol.prototype.description requires that 'this' be a Symbol."
+    ],
+    "Symbol.iterator",
+    [
+      "TypeError",
+      "Cannot create property 'x' on symbol 'Symbol(Symbol.iterator)'."
+    ],
+    [
+      "TypeError",
+      "Only data fields may be deleted."
+    ],
+    null,
+    false,
+    [],
+    2,
+    "X",
+    "Symbol(Symbol.iterator)",
+    "Symbol(Symbol.iterator)",
+    "Symbol(Symbol.iterator)",
+    [
+      "TypeError",
+      "Cannot convert a symbol to a string"
+    ],
+    "{\"a\":2}",
+    "[object Number]",
+    "[object Null]",
+    "[object Math]",
+    "[object Math]",
+    "[object Q]",
+    "string",
+    true,
+    2,
+    "Symbol(Symbol.iterator)",
+    [
+      "constructor",
+      "toString",
+      "valueOf",
+      "description"
+    ],
+    2,
+    "function",
+    "[Symbol.toPrimitive]",
+    "k",
+    null,
+    1,
+    42,
+    42,
+    "string"
+  ],
+  "logs": [],
+  "metadata": null
+}

@@ -1,0 +1,73 @@
+{
+  "bindings": {},
+  "ok": true,
+  "value": [
+    true,
+    false,
+    false,
+    true,
+    false,
+    false,
+    true,
+    1,
+    "/b/",
+    true,
+    [
+      true
+    ],
+    [
+      "0",
+      "index",
+      "input",
+      "groups"
+    ],
+    [
+      "a",
+      1,
+      "ba",
+      null
+    ],
+    [
+      true,
+      true,
+      true
+    ],
+    [
+      0,
+      1
+    ],
+    "{\"n\":\"1\"}",
+    "(?:)",
+    "",
+    null,
+    null,
+    null,
+    null,
+    null,
+    "/(?:)/",
+    "/(?:)/",
+    [
+      "TypeError",
+      "RegExp.prototype.lastIndex called on incompatible receiver a data object."
+    ],
+    [
+      "TypeError",
+      "RegExp.prototype.source called on incompatible receiver a data object."
+    ],
+    null,
+    "a",
+    [
+      "a",
+      "b"
+    ],
+    [
+      "TypeError",
+      "RegExp.prototype.toString called on incompatible receiver a data object."
+    ],
+    "[object Object]",
+    "/[object Object]/",
+    "1"
+  ],
+  "logs": [],
+  "metadata": null
+}

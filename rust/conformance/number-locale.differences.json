@@ -1,0 +1,15 @@
+{
+  "differences": [
+    {"index":95,"reference":"не число","rust":"NaN"},
+    {"index":139,"reference":"ليس رقمًا","rust":"NaN"},
+    {"index":1067,"reference":"١٬٢٣٤٫٥٦٨","rust":"١,٢٣٤.٥٦٨"},
+    {"index":1069,"reference":"١٬٢٣٤٫٥٦٨","rust":"١,٢٣٤.٥٦٨"},
+    {"index":1074,"reference":"๑,๒๓๔.๕๖๘","rust":"๑٬๒๓๔٫๕๖๘"},
+    {"index":1077,"reference":"一,二三四.五六八","rust":"一٬二三四٫五六八"},
+    {"index":1080,"reference":"१,२३४.५६८","rust":"१٬२३४٫५६८"},
+    {"index":1087,"reference":"١٬٢٣٤٫٥٦٨","rust":"١,٢٣٤.٥٦٨"},
+    {"index":1099,"reference":"-1.234.567,891","rust":"-1 234 567,891"},
+    {"index":1100,"reference":"-1'234'567.891","rust":"-1'234'567,891"},
+    {"index":1104,"reference":"-12,34,567.891","rust":"-১২,৩৪,৫৬৭.৮৯১"}
+  ]
+}

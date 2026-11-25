@@ -1,0 +1,80 @@
+{
+  "bindings": {},
+  "ok": true,
+  "value": [
+    true,
+    true,
+    false,
+    true,
+    false,
+    true,
+    true,
+    true,
+    [
+      "TypeError",
+      "Object.prototype.hasOwnProperty cannot convert null to an object."
+    ],
+    [
+      "Error",
+      "k"
+    ],
+    false,
+    false,
+    true,
+    false,
+    false,
+    true,
+    true,
+    2,
+    [
+      "Symbol(Symbol.iterator)",
+      "Symbol(Symbol.asyncIterator)"
+    ],
+    0,
+    [
+      "TypeError",
+      "Object.getOwnPropertySymbols cannot convert null to an object."
+    ],
+    1,
+    0,
+    [
+      "TypeError",
+      "Object.getOwnPropertySymbols cannot read tools: it is a namespace of host functions, not an object."
+    ],
+    3,
+    [
+      "undefined"
+    ],
+    [
+      "TypeError",
+      "Object.fromEntries expects [key, value] entry objects."
+    ],
+    [
+      "TypeError",
+      "Object.fromEntries expects [key, value] entry objects."
+    ],
+    "function",
+    "[object Math]",
+    "[object JSON]",
+    "[object Crypto]",
+    "[object TextEncoder]",
+    "[object TextDecoder]",
+    "[object Symbol]",
+    "[object GeneratorFunction]",
+    "[object AsyncFunction]",
+    "[object AsyncGeneratorFunction]",
+    "[object Math]",
+    "[object TextDecoder]",
+    "[object Error]",
+    "[object Function]",
+    "[object AsyncFunction]",
+    "[object Function]",
+    [
+      "TypeError",
+      "Binary operators require data values."
+    ],
+    "[object Function]"
+  ],
+  "logs": [],
+  "metadata": null
+}

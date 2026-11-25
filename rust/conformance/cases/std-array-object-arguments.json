@@ -1,0 +1,132 @@
+{
+  "bindings": {},
+  "ok": true,
+  "value": [
+    {
+      "read": [
+        1,
+        [
+          1,
+          2,
+          3,
+          4
+        ],
+        [],
+        true,
+        2,
+        -1,
+        [
+          9,
+          2,
+          3,
+          4
+        ],
+        [
+          2,
+          3,
+          4
+        ],
+        [
+          1,
+          2,
+          3,
+          4
+        ],
+        [
+          [
+            1,
+            [
+              2
+            ]
+          ]
+        ]
+      ],
+      "write": [
+        [
+          2,
+          3
+        ],
+        [
+          0,
+          0,
+          0
+        ],
+        [
+          1,
+          2,
+          1
+        ]
+      ],
+      "length": [
+        [
+          "RangeError",
+          "Invalid array length"
+        ],
+        [
+          "RangeError",
+          "Invalid array length"
+        ],
+        [
+          "RangeError",
+          "Invalid array length"
+        ]
+      ],
+      "fromCharCode": [
+        "\u0000",
+        "\u0000A",
+        0,
+        "A"
+      ],
+      "iterator": [
+        [
+          "[",
+          "o",
+          "b",
+          "j",
+          "e",
+          "c",
+          "t",
+          " ",
+          "O",
+          "b",
+          "j",
+          "e",
+          "c",
+          "t",
+          "]"
+        ],
+        [
+          "1",
+          "2"
+        ]
+      ],
+      "strings": [
+        "c",
+        "c",
+        "c",
+        "abc"
+      ],
+      "json": [
+        {},
+        [
+          "SyntaxError",
+          "JSON.parse received invalid JSON: JSON Parse error: Unable to parse JSON string"
+        ],
+        {},
+        [
+          1
+        ],
+        5
+      ]
+    },
+    [
+      "valueOf",
+      "valueOf",
+      "valueOf",
+      "valueOf",
+      "valueOf"
+    ]
+  ],
+  "logs": [],
+  "metadata": null
+}

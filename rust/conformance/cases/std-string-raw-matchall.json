@@ -1,0 +1,48 @@
+{
+  "bindings": {},
+  "ok": true,
+  "value": [
+    [
+      "0",
+      "1"
+    ],
+    true,
+    [
+      "0",
+      "1"
+    ],
+    [
+      "0",
+      "1"
+    ],
+    1,
+    2,
+    "x1y2z",
+    [
+      55357,
+      45,
+      56832
+    ],
+    "",
+    false,
+    true,
+    "1",
+    [
+      3
+    ],
+    true,
+    "[object Array Iterator]",
+    "function",
+    [
+      3,
+      5
+    ],
+    2,
+    [
+      "1",
+      "22"
+    ]
+  ],
+  "logs": [],
+  "metadata": null
+}

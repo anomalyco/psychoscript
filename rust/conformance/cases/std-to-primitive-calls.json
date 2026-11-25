@@ -1,0 +1,70 @@
+{
+  "bindings": {},
+  "ok": true,
+  "value": [
+    [
+      8,
+      "7",
+      14,
+      "7",
+      "7",
+      7,
+      [
+        "TypeError",
+        "Symbol.toPrimitive must be a function."
+      ],
+      [
+        "TypeError",
+        "Cannot convert object to primitive value."
+      ],
+      [
+        "TypeError",
+        "Cannot convert object to primitive value."
+      ],
+      "b",
+      [
+        1,
+        2,
+        3
+      ],
+      1,
+      5,
+      true,
+      [
+        "key"
+      ],
+      [
+        "TypeError",
+        "Cannot convert object to primitive value."
+      ],
+      [
+        "TypeError",
+        "Cannot convert object to primitive value."
+      ],
+      "key"
+    ],
+    [
+      "get",
+      "default",
+      "get",
+      "string",
+      "get",
+      "number",
+      "get",
+      "string",
+      "get",
+      "string",
+      "get",
+      "number",
+      "pstring",
+      "pnumber",
+      "get",
+      "string",
+      "k",
+      "k",
+      "k"
+    ]
+  ],
+  "logs": [],
+  "metadata": null
+}

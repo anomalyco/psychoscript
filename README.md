@@ -338,6 +338,8 @@ bun run build            # dist/
 bun run script/sync-test262.ts ~/development/test262 && bun test test/test262.test.ts
 ```
 
+A Rust implementation of the language lives in [`rust/`](rust/README.md).
+
 ## License
 
 MIT. Files under `test/test262` come from test262 under its own license (`test/test262/LICENSE.test262`), and

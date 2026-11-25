@@ -1,0 +1,31 @@
+{
+  "bindings": {},
+  "ok": true,
+  "value": [
+    true,
+    [
+      "TypeError",
+      "Promise.try expects a function, received a number.",
+      "TypeError: Promise.try expects a function, received a number.\n    at <program>:1:14"
+    ],
+    7,
+    2,
+    3,
+    "ok",
+    "ok",
+    "ok",
+    "new Promise(...) cannot use this callable as an executor; wrap it in an arrow function, e.g. (resolve, reject) => fn(resolve, reject).",
+    "new Promise(...) cannot use this callable as an executor; wrap it in an arrow function, e.g. (resolve, reject) => fn(resolve, reject).",
+    "ok",
+    "new Promise(...) cannot use this callable as an executor; wrap it in an arrow function, e.g. (resolve, reject) => fn(resolve, reject).",
+    "new Promise(...) expects an executor function (e.g. new Promise((resolve, reject) => { ... })).",
+    "new Promise(...) expects an executor function (e.g. new Promise((resolve, reject) => { ... })).",
+    "new Promise(...) expects an executor function (e.g. new Promise((resolve, reject) => { ... })).",
+    "Promise.try expects a function, received a namespace reference.",
+    "Promise.try expects a function, received null."
+  ],
+  "logs": [
+    "[opaque reference] [opaque reference]"
+  ],
+  "metadata": null
+}

@@ -1,0 +1,32 @@
+{
+  "bindings": {},
+  "ok": true,
+  "value": [
+    null,
+    [
+      "SyntaxError",
+      true,
+      "Syntax 'WithStatement' is not supported"
+    ],
+    [
+      "SyntaxError",
+      true,
+      "Syntax 'DebuggerStatement' is not supported"
+    ],
+    [
+      "SyntaxError",
+      true,
+      "new"
+    ],
+    null,
+    [
+      "TypeError",
+      false,
+      "The called value is not a function"
+    ]
+  ],
+  "logs": [
+    "done"
+  ],
+  "metadata": null
+}

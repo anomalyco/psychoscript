@@ -1,0 +1,47 @@
+{
+  "bindings": {},
+  "ok": true,
+  "value": [
+    "-_8=",
+    "+/8",
+    "-_8",
+    "+/8=",
+    "-_8=",
+    1,
+    [
+      251,
+      255
+    ],
+    [
+      251,
+      255
+    ],
+    [],
+    [],
+    [
+      1
+    ],
+    [
+      1
+    ],
+    [
+      1
+    ],
+    "-_8",
+    [
+      251,
+      255
+    ],
+    "SyntaxError: Uint8Array.fromBase64: the string is not valid base64.",
+    "SyntaxError: Uint8Array.fromBase64: the string is not valid base64.",
+    "SyntaxError: Uint8Array.fromBase64: the string is not valid base64.",
+    "SyntaxError: Uint8Array.fromBase64: the string is not valid base64.",
+    "SyntaxError: Uint8Array.fromBase64: the string is not valid base64.",
+    "TypeError: Uint8Array.prototype.toBase64 requires that alphabet be \"base64\" or \"base64url\".",
+    "TypeError: Uint8Array.prototype.toBase64 requires that options be an object.",
+    "TypeError: Uint8Array.fromBase64 requires that options be an object.",
+    "TypeError: Uint8Array.fromBase64 requires that lastChunkHandling be \"loose\" or \"strict\" or \"stop-before-partial\"."
+  ],
+  "logs": [],
+  "metadata": null
+}

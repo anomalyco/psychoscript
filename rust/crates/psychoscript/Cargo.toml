@@ -1,0 +1,70 @@
+[package]
+name = "psychoscript"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Embeddable Rust implementation of the PsychoScript language layer"
+readme = "../../README.md"
+keywords = ["javascript", "interpreter", "sandbox", "scripting", "vm"]
+categories = ["compilers"]
+# The tests read the repository's conformance recordings, outside the package: they run from the repository.
+exclude = ["tests/"]
+
+[features]
+# The test262 harness globals, for the parity runner in test262/ only.
+test262 = []
+# Per-run heap counts and collection pauses through `Run::heap_stats`, for the memory benchmarks in bench/ only.
+gc-stats = []
+
+[dependencies]
+icu_calendar = { version = "2.4", default-features = false }
+icu_collator = { version = "2.4", default-features = false, features = ["compiled_data"] }
+# Locale-aware date and time formatting for `Date.prototype.toLocale*String`.
+icu_datetime = { version = "2.4", default-features = false, features = ["compiled_data"] }
+# Number and BigInt `toLocaleString`; already dependencies of icu_datetime.
+icu_decimal = { version = "2.4", default-features = false, features = ["compiled_data"] }
+fixed_decimal = { version = "0.7", default-features = false }
+# Parses the locale tags `localeCompare` takes; already a dependency of icu_collator.
+icu_locale_core = { version = "2.4", default-features = false }
+# Time zone inputs (`ZonedDateTime`, `ZoneNameTimestamp`) for `icu_datetime`.
+icu_time = { version = "2.4", default-features = false }
+writeable = "0.6"
+idna_adapter = "~1.1"
+# BigInt arithmetic; already a dependency of oxc.
+num-bigint = "0.5"
+num-traits = "0.2"
+oxc_allocator = "0.159"
+oxc_ast = "0.159"
+oxc_ast_visit = "0.159"
+oxc_diagnostics = "0.159"
+oxc_parser = { version = "0.159", default-features = false }
+oxc_semantic = "0.159"
+oxc_span = "0.159"
+oxc_str = "0.159"
+oxc_syntax = "0.159"
+regress = { version = "0.12.0", default-features = false, features = ["std", "utf16"] }
+rustc-hash = "2"
+# `float_roundtrip`: a saved state's numbers read back from `to_bytes` exactly, not to the nearest few ulps.
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+tz-rs = "0.7"
+unicode-normalization = "0.1"
+url = "2.5"
+
+# A thread's CPU time, for `Clock::ThreadCpu` (src/thread_clock.rs, the one module here with `unsafe`, each block one
+# OS call).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# `std::time` panics in a browser: the clocks come from `performance.now()` and `Date.now()` there (`src/time.rs`).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-time = "1.1"
+
+# The crate's own tests read `Run::heap_stats` (tests/gc.rs), so they build it with `gc-stats`; normal builds don't.
+[dev-dependencies]
+psychoscript = { path = ".", features = ["gc-stats"] }
+
+# Pinning threads to one core, for the CPU-time budget's starvation test (tests/clock.rs).
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libc = "0.2"
