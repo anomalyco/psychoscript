@@ -199,6 +199,9 @@ pub struct Failure {
     pub offset: Option<u32>,
     /// The part of the raising member expression the offset is taken from when it is filled in.
     pub site: crate::bytecode::Site,
+    /// A host's failure (`Failure`, the reference's `HostFailure`): whatever its kind's name, it is not located, and
+    /// uncaught it fails with its message as it is.
+    pub host: bool,
 }
 
 pub struct Closure {

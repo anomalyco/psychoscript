@@ -382,6 +382,10 @@ impl Vm {
                     Err(e) => (on_rej, e, false),
                 };
                 if self.is_callable(&handler) {
+                    // A program's rejection handler receives the reason; a promise adopting another passes it on.
+                    if !ok && !self.is_resolver(&handler) {
+                        self.receive_host_failure(&arg);
+                    }
                     let d = Value::Obj(derived);
                     enter_settle(
                         self,
@@ -493,6 +497,13 @@ impl Vm {
         let status = self.names.status;
         let value_key = self.names.value;
         let reason = self.names.reason;
+        // A reason `allSettled` or `any` keeps for the program is the program's own.
+        if let (Err(e), Kind::Combinator(c)) = (&outcome, &self.heap[comb as usize].kind)
+            && c.kind != CombKind::All
+        {
+            let e = *e;
+            self.receive_host_failure(&e);
+        }
         let record = match (&self.heap[comb as usize].kind, &outcome) {
             (Kind::Combinator(c), _) if c.kind == CombKind::AllSettled => {
                 let o = self.new_object();

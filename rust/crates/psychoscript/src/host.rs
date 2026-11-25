@@ -738,6 +738,9 @@ fn failure_value(
     let proto = vm.realm.error_proto;
     let e = vm.failure(proto, &message.to_run_text(), kind);
     if let Value::Obj(id) = e {
+        if let Kind::Error(Some(f)) = &mut vm.heap[id as usize].kind {
+            f.host = true;
+        }
         // A host's failure has no site of its own: its `stack` names where a handler catches it.
         vm.stack_at_handler(id);
     }
