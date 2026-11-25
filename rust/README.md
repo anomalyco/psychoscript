@@ -6,6 +6,9 @@ A Rust implementation of psychoscript: the same confined, JavaScript-like langua
 which is its reference. Programs run in a bytecode VM written in pure Rust, with no Bun, Node or other JavaScript
 engine at build or run time, and reach only the host functions the embedder gives them.
 
+Against `dev`'s TypeScript: 34x faster to start, 4.3x faster per program on a 429-program corpus, 2.0x on the bench
+programs ([`bench/TYPESCRIPT.md`](https://github.com/anomalyco/psychoscript/blob/dev/rust/bench/TYPESCRIPT.md)).
+
 ## Use
 
 ```rust
