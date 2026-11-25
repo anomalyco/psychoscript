@@ -482,8 +482,9 @@ impl RunHost {
                 continue;
             }
             let data = data.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            // On wasm32, a cancel that can't finish on this thread is dropped: the thread can't wait for it.
             if let Some(data) = data {
-                block_on((f.cancel)(data, durable.clone()));
+                let _ = block_on((f.cancel)(data, durable.clone()));
             }
         }
     }
@@ -1061,21 +1062,30 @@ fn block(vm: &mut Vm, work: BoxFuture<'static, HostResult>) -> HostResult {
         vm.inbox.push_back((p, s));
     }
     match done {
-        Some(r) => r,
-        None => {
+        Some(Some(r)) => r,
+        Some(None) => {
             let _ = vm.check_time();
+            Err(HostValue::Undefined)
+        }
+        None => {
+            vm.fatal = Some((
+                DiagnosticKind::ExecutionFailure,
+                "A synchronous host function waits for work that isn't ready, which a thread can't wait for on \
+                 wasm32: return it as a promise instead (`Returned::Pending`), or make the function async."
+                    .into(),
+            ));
             Err(HostValue::Undefined)
         }
     }
 }
 
 /// Polls `work` to its end or the deadline, and the run's other host calls meanwhile: what they complete with, in
-/// order, and the work's result, `None` past the deadline.
+/// order, and the work's result, `Some(None)` past the deadline, `None` if the thread can't wait for it (wasm32).
 fn wait(
     tasks: &mut crate::exec::Tasks<'static, Settlement>,
     mut work: BoxFuture<'static, HostResult>,
     deadline: Option<crate::time::Instant>,
-) -> (Vec<(Id, Settlement)>, Option<HostResult>) {
+) -> (Vec<(Id, Settlement)>, Option<Option<HostResult>>) {
     let mut settled = Vec::new();
     let mut armed = false;
     let done = block_on(std::future::poll_fn(|cx| {
