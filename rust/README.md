@@ -1,7 +1,5 @@
 # psychoscript (Rust)
 
-An early pre-release (`0.1.0-alpha.1`): the API may still change.
-
 A Rust implementation of psychoscript: the same confined, JavaScript-like language as the TypeScript package in `src/`,
 which is its reference. Programs run in a bytecode VM written in pure Rust, with no Bun, Node or other JavaScript
 engine at build or run time, and reach only the host functions the embedder gives them.
