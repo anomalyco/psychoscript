@@ -413,6 +413,13 @@ fn built_ins_that_recurse_on_deep_values_throw_a_range_error_instead_of_overflow
             "{m}"
         );
     }
+    // JSON 256 deep still parses within the budget, in a debug build too, nested in calls.
+    let outcome = run(
+        &Runtime::make(),
+        r#"const parse = (n) => [JSON.parse("[".repeat(n) + "]".repeat(n)).length, typeof JSON.parse('{"a":'.repeat(n) + "1" + "}".repeat(n)).a]
+        return [1].map(() => parse(256))[0]"#,
+    );
+    assert_eq!(outcome.result.unwrap(), json!([1, "object"]));
     // A structured clone of many objects copies each once, keeping what they share.
     let outcome = run(
         &Runtime::make(),

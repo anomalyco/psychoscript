@@ -1488,94 +1488,107 @@ impl<'s> Parser<'s> {
         v
     }
 
-    // Inlined into `value`, so a parse without snapshots recurses as one function.
+    // Inlined into `value`. Each kind of token is its own function, so that the frame each level of a nested value
+    // takes holds only what an object or array needs: in a debug build, a frame holds every branch's locals.
     #[inline(always)]
     fn token(&mut self, vm: &mut Vm) -> Res {
-        let Some(&c) = self.s.get(self.i) else {
-            return Err(self.error(vm));
-        };
-        match c {
-            b'{' => {
-                self.depth += 1;
-                // A debug build's frames are larger: its stack budget may run out first.
-                if self.depth > 512 || vm.stack_spent() {
-                    return Err(vm.range_error("Maximum call stack size exceeded"));
-                }
-                self.i += 1;
-                let id = vm.new_object();
-                let children = self.children(vm);
-                self.ws();
-                if self.s.get(self.i) == Some(&b'}') {
+        match self.s.get(self.i) {
+            Some(b'{') => self.object(vm),
+            Some(b'[') => self.array(vm),
+            Some(&c) => self.scalar(vm, c),
+            None => Err(self.error(vm)),
+        }
+    }
+
+    #[inline(never)]
+    fn object(&mut self, vm: &mut Vm) -> Res {
+        self.depth += 1;
+        // A debug build's frames are larger: its stack budget may run out first.
+        if self.depth > 512 || vm.stack_spent() {
+            return Err(vm.range_error("Maximum call stack size exceeded"));
+        }
+        self.i += 1;
+        let id = vm.new_object();
+        let children = self.children(vm);
+        self.ws();
+        if self.s.get(self.i) == Some(&b'}') {
+            self.i += 1;
+            self.depth -= 1;
+            return Ok(self.snapshot_of(vm, Value::Obj(id), children));
+        }
+        loop {
+            self.ws();
+            if self.s.get(self.i) != Some(&b'"') {
+                return Err(self.error(vm));
+            }
+            let k = self.string(vm)?;
+            self.ws();
+            if self.s.get(self.i) != Some(&b':') {
+                return Err(self.error(vm));
+            }
+            self.i += 1;
+            self.ws();
+            let v = self.value(vm)?;
+            let a = vm.atoms.intern(&k);
+            vm.define(id, a, v);
+            if let Some(c) = children {
+                vm.define(c, a, self.snapshot);
+            }
+            self.ws();
+            match self.s.get(self.i) {
+                Some(b',') => self.i += 1,
+                Some(b'}') => {
                     self.i += 1;
                     self.depth -= 1;
                     return Ok(self.snapshot_of(vm, Value::Obj(id), children));
                 }
-                loop {
-                    self.ws();
-                    if self.s.get(self.i) != Some(&b'"') {
-                        return Err(self.error(vm));
-                    }
-                    let k = self.string(vm)?;
-                    self.ws();
-                    if self.s.get(self.i) != Some(&b':') {
-                        return Err(self.error(vm));
-                    }
-                    self.i += 1;
-                    self.ws();
-                    let v = self.value(vm)?;
-                    let a = vm.atoms.intern(&k);
-                    vm.define(id, a, v);
-                    if let Some(c) = children {
-                        vm.define(c, a, self.snapshot);
-                    }
-                    self.ws();
-                    match self.s.get(self.i) {
-                        Some(b',') => self.i += 1,
-                        Some(b'}') => {
-                            self.i += 1;
-                            self.depth -= 1;
-                            return Ok(self.snapshot_of(vm, Value::Obj(id), children));
-                        }
-                        _ => return Err(self.error(vm)),
-                    }
-                }
+                _ => return Err(self.error(vm)),
             }
-            b'[' => {
-                self.depth += 1;
-                // A debug build's frames are larger: its stack budget may run out first.
-                if self.depth > 512 || vm.stack_spent() {
-                    return Err(vm.range_error("Maximum call stack size exceeded"));
-                }
-                self.i += 1;
-                let mut items = Vec::new();
-                let children = self.children(vm);
-                self.ws();
-                if self.s.get(self.i) == Some(&b']') {
+        }
+    }
+
+    #[inline(never)]
+    fn array(&mut self, vm: &mut Vm) -> Res {
+        self.depth += 1;
+        // A debug build's frames are larger: its stack budget may run out first.
+        if self.depth > 512 || vm.stack_spent() {
+            return Err(vm.range_error("Maximum call stack size exceeded"));
+        }
+        self.i += 1;
+        let mut items = Vec::new();
+        let children = self.children(vm);
+        self.ws();
+        if self.s.get(self.i) == Some(&b']') {
+            self.i += 1;
+            self.depth -= 1;
+            let a = vm.new_array(items);
+            return Ok(self.snapshot_of(vm, a, children));
+        }
+        loop {
+            self.ws();
+            items.push(self.value(vm)?);
+            if let Some(c) = children {
+                let a = vm.atoms.intern(&(items.len() - 1).to_string());
+                vm.define(c, a, self.snapshot);
+            }
+            self.ws();
+            match self.s.get(self.i) {
+                Some(b',') => self.i += 1,
+                Some(b']') => {
                     self.i += 1;
                     self.depth -= 1;
                     let a = vm.new_array(items);
                     return Ok(self.snapshot_of(vm, a, children));
                 }
-                loop {
-                    self.ws();
-                    items.push(self.value(vm)?);
-                    if let Some(c) = children {
-                        let a = vm.atoms.intern(&(items.len() - 1).to_string());
-                        vm.define(c, a, self.snapshot);
-                    }
-                    self.ws();
-                    match self.s.get(self.i) {
-                        Some(b',') => self.i += 1,
-                        Some(b']') => {
-                            self.i += 1;
-                            self.depth -= 1;
-                            let a = vm.new_array(items);
-                            return Ok(self.snapshot_of(vm, a, children));
-                        }
-                        _ => return Err(self.error(vm)),
-                    }
-                }
+                _ => return Err(self.error(vm)),
             }
+        }
+    }
+
+    /// A string, number, `true`, `false` or `null`.
+    #[inline(never)]
+    fn scalar(&mut self, vm: &mut Vm, c: u8) -> Res {
+        match c {
             b'"' => {
                 let s = self.string(vm)?;
                 Ok(vm.string_val(s))
