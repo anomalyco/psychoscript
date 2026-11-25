@@ -1,7 +1,7 @@
 // Runs one bench case once through the reference, for one-shot measurements such as peak RSS.
 // Usage: bun bench/ref/run-case.ts <slug>
 import { resolve } from "node:path"
-import { reference, toolsGlobal } from "../../conformance/reference.ts"
+import { reference, toolsGlobal } from "../../conformance/reference.js"
 
 // The reference: the package from PSYCHOSCRIPT_REF, or by default the repository root. The programs reach one host
 // global, `tools`, the namespace of conformance/reference.ts (`tools.echo`, `tools.git.status`, ... all async).

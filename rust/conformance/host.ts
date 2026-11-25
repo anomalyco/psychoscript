@@ -62,8 +62,8 @@
 // Everything is recorded twice, and a difference between the two fails the generator.
 
 import { join } from "node:path"
-import { writeRecording } from "./recording.ts"
-import { describe, reference } from "./reference.ts"
+import { writeRecording } from "./recording.js"
+import { describe, reference } from "./reference.js"
 
 const ref = await reference(process.argv[2] ?? process.env.PSYCHOSCRIPT_REF)
 const Effect = ref.Effect
@@ -86,7 +86,7 @@ const make = (entry: Entry) => {
   const log: Array<unknown> = []
   const state = { resumed: false, made: 0, started: () => {} }
   const waiting = new Promise<void>((done) => (state.started = done))
-  const pending = () => Effect.callback<never>(() => state.started())
+  const pending = () => Effect.callback(() => state.started())
   const runtime = Runtime.make({
     ...(entry.translate === undefined ? {} : { translate: entry.translate }),
     ...(entry.limits === undefined ? {} : { limits: entry.limits }),

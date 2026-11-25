@@ -2,7 +2,7 @@
 // Checks the variant returns what the original does, then prints one JSON line per program: median and min ms.
 // Usage: bun bench/ref/variants.ts [--iterations N] <slug>...
 import { resolve } from "node:path"
-import { reference, toolsGlobal } from "../../conformance/reference.ts"
+import { reference, toolsGlobal } from "../../conformance/reference.js"
 
 // The reference: the package from PSYCHOSCRIPT_REF, or by default the repository root. The programs reach one host
 // global, `tools`, the namespace of conformance/reference.ts (`tools.echo`, `tools.git.status`, ... all async).
