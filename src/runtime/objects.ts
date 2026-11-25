@@ -1253,7 +1253,9 @@ export const set = (target: Obj, key: PropertyKey, value: Value): boolean | Call
   rejectAddition(target, name)
   changed(target)
   guard(target, name)
-  target.props.set(name, { value, ...data })
+  // Written out, never spread: a spread is JSC's slow copyDataProperties (about a third of a run's setup) and would
+  // copy any other field the object holds. A new attribute is added here explicitly.
+  target.props.set(name, { value, writable: true, enumerable: true, configurable: true })
   return true
 }
 
@@ -1269,7 +1271,8 @@ export const define = (target: Obj, key: PropertyKey, value: Value, attrs: Attri
   if (isIndexed(target) && writeElement(target, name, value) !== undefined) return
   changed(target)
   guard(target, name)
-  target.props.set(name, { value, ...attrs })
+  // Written out, never spread, as in `set`.
+  target.props.set(name, { value, writable: attrs.writable, enumerable: attrs.enumerable, configurable: attrs.configurable })
 }
 
 /** A built-in's native accessor. Made with the intrinsics, each half gets its companion program function. */
@@ -1477,15 +1480,20 @@ export const remove = (target: Obj, key: PropertyKey): boolean => {
 
 // JS order: array indexes, integer-like keys ascending, other strings, then symbols.
 export const ownKeys = (target: Obj): Array<string | symbol> => {
-  const strings = [...target.props.keys()].filter((key): key is string => typeof key === "string")
-  const symbols = [...target.props.keys()].filter((key): key is symbol => typeof key === "symbol")
-  return [
-    ...(isIndexed(target) ? Object.keys(elements(target)) : []),
-    ...(target instanceof Arr ? ["length"] : []),
-    ...strings.filter((key) => parseArrayIndex(key) !== undefined).sort((a, b) => Number(a) - Number(b)),
-    ...strings.filter((key) => parseArrayIndex(key) === undefined),
-    ...symbols,
-  ]
+  const out: Array<string | symbol> = isIndexed(target) ? Object.keys(elements(target)) : []
+  if (target instanceof Arr) out.push("length")
+  let indexes: Array<string> | undefined
+  let names: Array<string> | undefined
+  let symbols: Array<symbol> | undefined
+  for (const key of target.props.keys()) {
+    if (typeof key === "symbol") (symbols ??= []).push(key)
+    else if (parseArrayIndex(key) !== undefined) (indexes ??= []).push(key)
+    else (names ??= []).push(key)
+  }
+  if (indexes !== undefined) for (const key of indexes.sort((a, b) => Number(a) - Number(b))) out.push(key)
+  if (names !== undefined) for (const key of names) out.push(key)
+  if (symbols !== undefined) for (const key of symbols) out.push(key)
+  return out
 }
 
 const enumerable = (target: Obj, key: string | symbol): boolean => own(target, key)?.enumerable === true
