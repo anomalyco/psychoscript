@@ -173,8 +173,9 @@ mod sys {
 
     #[link(name = "kernel32")]
     unsafe extern "system" {
-        fn GetCurrentProcess() -> *mut c_void;
-        fn GetCurrentThread() -> *mut c_void;
+        // Pseudo-handles of the calling process and thread: no arguments, and they never fail.
+        safe fn GetCurrentProcess() -> *mut c_void;
+        safe fn GetCurrentThread() -> *mut c_void;
         fn DuplicateHandle(
             source_process: *mut c_void,
             source: *mut c_void,
@@ -218,11 +219,11 @@ mod sys {
 
     pub fn current() -> Handle {
         let mut handle = std::ptr::null_mut();
+        let process = GetCurrentProcess();
         // SAFETY: the pseudo-handles of this process and thread, duplicated into a real handle; `handle` is a valid
         // out pointer, left null if the call fails.
-        unsafe {
-            let process = GetCurrentProcess();
-            if DuplicateHandle(
+        let ok = unsafe {
+            DuplicateHandle(
                 process,
                 GetCurrentThread(),
                 process,
@@ -230,10 +231,10 @@ mod sys {
                 0,
                 0,
                 DUPLICATE_SAME_ACCESS,
-            ) == 0
-            {
-                handle = std::ptr::null_mut();
-            }
+            )
+        };
+        if ok == 0 {
+            handle = std::ptr::null_mut();
         }
         Arc::new(Owned(handle))
     }

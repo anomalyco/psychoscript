@@ -527,21 +527,16 @@ fn this_big(vm: &mut Vm, this: &Value, name: &str) -> Result<Id, Value> {
     }
 }
 
-fn to_locale_string(vm: &mut Vm, this: Value, _args: &[Value], _: Id) -> Res {
+// Through ICU4X, as the reference's host `Intl.NumberFormat` (see `number_locale`).
+fn to_locale_string(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
     let id = this_big(vm, &this, "toLocaleString")?;
-    let text = vm.big_text(id);
-    let (sign, digits) = match text.strip_prefix('-') {
-        Some(d) => ("-", d),
-        None => ("", text.as_str()),
-    };
-    let mut out = String::from(sign);
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    Ok(vm.string_val(out))
+    let digits = vm.big_text(id);
+    super::number_locale::to_locale_string(
+        vm,
+        super::number_locale::Input::BigInt(digits),
+        args,
+        "BigInt.prototype.toLocaleString",
+    )
 }
 
 fn to_string(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {

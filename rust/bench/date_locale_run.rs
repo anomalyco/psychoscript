@@ -1,6 +1,7 @@
-//! The runner for the `conformance/date-locale.json` matrix, shared by the generator's helper (`examples/date_locale.rs`)
-//! and the replay test (`tests/date_locale.rs`): runs each case — `new Date(instant).toLocale*(locale, options)` — and
-//! answers it as JSON. A case's `locale` and `options` are JSON (absent, `null`, or the value), and a successful case
+//! The runner for the locale matrices, `conformance/date-locale.json` and `conformance/number-locale.json`, shared by
+//! the generators' helper (`examples/date_locale.rs`) and the replay test (`tests/date_locale.rs`): runs each case —
+//! `new Date(instant).toLocale*(locale, options)`, or `(value).toLocaleString(locale, options)` for a case with a
+//! `value`, the source of a number or BigInt — and answers it as JSON. A case's `locale` and `options` are JSON (absent, `null`, or the value), and a successful case
 //! answers its string (or, for an error case, the caught `[name, message]` array), so the recorded error kinds and
 //! messages are pinned too.
 
@@ -27,7 +28,11 @@ pub struct Case {
     pub locale: Json,
     #[serde(default = "missing")]
     pub options: Json,
+    #[serde(default)]
     pub instant: i64,
+    /// The receiver's source, for a case of the number matrix.
+    #[serde(default)]
+    pub value: Option<String>,
     #[serde(default)]
     pub error: bool,
     #[serde(default)]
@@ -58,9 +63,12 @@ impl Case {
             }
             (true, true) => {}
         }
+        let receiver = match &self.value {
+            Some(value) => format!("({value})"),
+            None => format!("new Date({})", self.instant),
+        };
         let call = format!(
-            "new Date({})[{}]({})",
-            self.instant,
+            "{receiver}[{}]({})",
             serde_json::to_string(&self.method).unwrap_or_default(),
             args,
         );

@@ -118,18 +118,21 @@ pub(crate) fn format(t: f64, request: &Request) -> Result<String, DateError> {
 
 // ---------- locale ----------
 
-fn preferences(request: &Request) -> Result<DateTimeFormatterPreferences, DateError> {
+/// The locale of a `toLocale*String` call: its first tag, once every tag is valid, else the host default.
+pub(crate) fn locale_of(tags: &[String]) -> Result<Locale, DateError> {
     let mut locale = None;
-    for tag in &request.tags {
+    for tag in tags {
         let Ok(parsed) = Locale::try_from_str(tag) else {
             return Err(DateError::range(format!("invalid language tag: {tag}")));
         };
         locale.get_or_insert(parsed);
     }
     // Bun's host default is en-US whatever the environment says.
-    let mut prefs = DateTimeFormatterPreferences::from(
-        locale.unwrap_or_else(|| Locale::try_from_str("en-US").expect("en-US is a valid locale")),
-    );
+    Ok(locale.unwrap_or_else(|| Locale::try_from_str("en-US").expect("en-US is a valid locale")))
+}
+
+fn preferences(request: &Request) -> Result<DateTimeFormatterPreferences, DateError> {
+    let mut prefs = DateTimeFormatterPreferences::from(locale_of(&request.tags)?);
     if let Some(algorithm) = request
         .options
         .calendar

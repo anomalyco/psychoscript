@@ -994,8 +994,8 @@ const recordAll = async () => ({
     Promise.resolve([] as Array<unknown>),
   ),
 })
-// Everything is recorded twice: a recording that differs between the two depends on timing, which CI's freshness
-// check and the Rust replay can't follow, so it fails here instead of being written.
+// Everything is recorded twice: a recording that differs between the two depends on timing, which the generators'
+// no-diff check and the Rust replay can't follow, so it fails here instead of being written.
 const expected = await recordAll()
 const again = await recordAll()
 const unstable = (["programs", "suspensions"] as const).flatMap((kind) =>

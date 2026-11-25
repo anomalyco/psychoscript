@@ -10,5 +10,5 @@
   `bun test test/test262.test.ts`. Update `skipped.txt` with `bun run script/test262-report.ts --write`.
 - Keep `interpreter-support.md` and `README.md` in step with behavior changes.
 - VM code works on `Value`, not `unknown`. Only `src/effect/` imports `effect` (an optional peer dependency).
-- `rust/` is a Rust implementation held to parity with `src/` by recordings CI regenerates; see `rust/README.md`.
+- `rust/` is a Rust implementation held to parity with `src/` by recordings made from it; see `rust/README.md`.
 - PRs go into `dev` and are squash-merged. Changes to `.github/` need Dax.
