@@ -106,15 +106,18 @@ export const settings = {
     ],
     // The 3D terminal: where its middle sits in the box, box widths per world unit, and the view angles.
     machine: { at: [0.62, 0.68], size: 0.22, yaw: 0.52, pitch: 0.25 },
+    // And the same for when it has walked up close, to show what is on its screen: big, low, and squared up to whoever is looking.
+    // (And where the sun goes meanwhile: to the left of the monitor so its whole face is seen beside the glass.)
+    close: { at: [0.43, 0.64], size: 1.02, yaw: 0.1, pitch: 0.08, sun: [-0.34, 0.36] },
   },
   narrow: {
     width: 600,
-    height: 0, // as tall as its content
+    height: 960, // and it is all in the one screen, which is as tall as a phone's or taller
     line: 4,
     band: 64,
     clouds: [
       [420, 70, 0.95, 0],
-      [530, 660, 0.9, 1],
+      [530, -638, 0.9, 1],
       [20, -505, 1.0, 2],
     ],
     aim: -Math.PI / 2,
@@ -125,13 +128,23 @@ export const settings = {
     ],
     focal: 520,
     horizon: 330, // the land comes higher up a tall screen
-    sun: [0.66, 0.1, 0.105],
+    // (The box is the foot of the hero, and the sun hangs in the sky over it, in the middle of the screen between
+    // the title and the hills. Its fourth number is how far it is lifted out of the box: see sunAt.)
+    sun: [0.544, 0.466, 0.105, 0.513],
     sceneClouds: [
-      [0.4, 0.16, 0.00085],
-      [0.53, 0.3, 0.00066],
+      [0.3, 0.02, 0.00085],
+      [0.83, 0.1, 0.00066],
     ],
-    machine: { at: [0.6, 0.72], size: 0.2, yaw: 0.52, pitch: 0.25 },
+    // (It stands clear of the bottom edge, boots and all: under it is the way down, once the sun has been heard out.)
+    machine: { at: [0.59, 0.532], size: 0.22, yaw: 0.52, pitch: 0.25 },
+    // (Up close it fills nearly the whole width over the dock so its screen can be read easily, with the sun clear above it.)
+    close: { at: [0.54, 0.585], size: 0.8, yaw: 0.08, pitch: 0.08, sun: [0.544, 0.175, 0.32] },
   },
+}
+
+const TITLE_MAPS = {
+  wide: { src: 'art/title-wide.png', width: 1536, height: 711, range: 10, deep: 40, line: 7, shadow: [9, 14] },
+  narrow: { src: 'art/title-narrow.png', width: 1024, height: 1068, range: 10, deep: 40, line: 7, shadow: [9, 14] },
 }
 
 // The land the picture flies over. Lengths are world units.
@@ -1090,7 +1103,7 @@ fn landColor(p: vec3f, far: f32, d: vec2f, scale: f32, pen: f32) -> vec3f {
 
 fn dyeLoad(c: vec2i) -> vec4f {
   // Past an edge the texture is read back on itself, like a mirror.
-  let last = vec2i(textureDimensions(dyeMap)) - 1;
+  let last = max(vec2i(u.dye.xy) - 1, vec2i(0));
   return textureLoad(dyeMap, clamp(last - abs(last - abs(c)), vec2i(0), last), 0);
 }
 
@@ -1177,17 +1190,24 @@ fn liquid(d: vec2f, scale: f32, pen: f32) -> vec3f {
   let facing = dot(normal, toLight);
   tone *= 0.66 + 0.46 * smoothstep(-0.1, 0.95, facing);
   tone = mix(tone, tone * vec3f(0.5, 0.36, 0.72), 0.55 * plump * (1.0 - smoothstep(-0.25, 0.35, facing)));
-  let glint = pow(max(dot(normal, normalize(toLight + vec3f(0.0, 0.0, 1.0))), 0.0), 70.0);
-  tone += vec3f(1.0, 0.96, 0.86) * 1.5 * plump * smoothstep(0.35, 0.75, glint);
+  if (plump > 0.0) {
+    let spec = dot(normal, normalize(toLight + vec3f(0.0, 0.0, 1.0)));
+    if (spec > 0.98) {
+      let glint = pow(spec, 70.0);
+      tone += vec3f(1.0, 0.96, 0.86) * 1.5 * plump * smoothstep(0.35, 0.75, glint);
+    }
+  }
 
   let ink = stroke(edgePx, pen) * smoothstep(pen * 2.0, pen * 4.5, ringPx);
   var color = mix(tone * (0.972 + 0.05 * noise(d * 2.3)), INK, ink);
 
   // Where the lasers have burnt through, the dark behind the liquid shows,
   // with stars in it, inside a glowing edge. The burn drifts with the fluid and heals.
-  let t = u.frame.z;
-  let burn = dyeUnder(d).w + 0.09 * (noise(d * 0.05 + vec2f(t * 0.3, -t * 0.2)) - 0.5);
-  if (burn > 0.2) {
+  let rawBurn = dyeUnder(d).w;
+  if (rawBurn > 0.155) {
+    let t = u.frame.z;
+    let burn = rawBurn + 0.09 * (noise(d * 0.05 + vec2f(t * 0.3, -t * 0.2)) - 0.5);
+    if (burn > 0.2) {
     let perBurn = scale / 0.03; // pixels for each unit of burn, near enough
     let cell = floor(d / 30.0);
     let star = length(d - (cell + 0.2 + 0.6 * vec2f(hash(cell), hash(cell + 7.7))) * 30.0);
@@ -1199,6 +1219,7 @@ fn liquid(d: vec2f, scale: f32, pen: f32) -> vec3f {
     color = mix(color, glow, fill((burn - 0.34) * perBurn));
     color = mix(color, INK, fill((burn - 0.5) * perBurn + pen));
     color = mix(color, dark, fill((burn - 0.5) * perBurn - pen));
+    }
   }
   return color;
 }
@@ -1574,7 +1595,7 @@ fn cloud3d(at: vec2f, unit: f32, pen: f32, still: vec2f, t: f32, seed: f32, ligh
 // the box the cloud is drawn in and 0 if not.
 fn cloudAt(c: i32, d: vec2f, t: f32) -> vec3f {
   let cloud = u.clouds[c];
-  if (cloud.z <= 0.0) { return vec3f(0.0); }
+  if (cloud.z <= 0.0 || abs(d.x - cloud.x - 8.0 * cloud.z) > 152.0 * cloud.z || d.y < cloud.y - 116.0 * cloud.z || d.y > cloud.y + 44.0 * cloud.z) { return vec3f(0.0); }
   let seed = f32(c) * 2.1;
   let bob = vec2f(sin(t * 0.13 + seed) * 12.0, cos(t * 0.17 + seed) * 4.0) * cloud.z;
   let at = (d - cloud.xy - bob) / cloud.z * vec2f(1.0, -1.0);
@@ -2657,10 +2678,11 @@ fn hipAt(i: i32, four: bool) -> vec3f { if (four) { return u.legs[i].xyz; } retu
 fn kneeAt(i: i32, four: bool) -> vec3f { if (four) { return u.legs[6 + i].xyz; } return u.walkerLegs[legRig * 18u + 6u + u32(i)].xyz; }
 fn footAt(i: i32, four: bool) -> vec3f { if (four) { return u.legs[12 + i].xyz; } return u.walkerLegs[legRig * 18u + 12u + u32(i)].xyz; }
 fn hoseLegs(p: vec3f, r: f32, boot: f32, four: bool) -> vec2f {
+  if (four && terminalLegs == 0u) { return vec2f(1e9, 13.0); }
   var best = vec2f(1e9, 13.0);
   let pieces = select(2, 4, four);
   for (var i = 0; i < 6; i++) {
-    if (four && (i / 2 == 1 || (terminalLegs & (1u<<u32(i)))==0u)) { continue; }
+    if (four && (i / 2 == 1 || (terminalLegs & (1u << u32(i))) == 0u)) { continue; }
     let hip = hipAt(i, four);
     let foot = footAt(i, four);
     let ankle = foot + vec3f(0.0, 0.25 * boot, 0.0);
@@ -2682,12 +2704,14 @@ fn hoseLegs(p: vec3f, r: f32, boot: f32, four: bool) -> vec2f {
       last = next;
     }
     let f = (p - foot) / boot;
-    let upper = min((length((f - vec3f(0.0, 0.11, 0.09)) / vec3f(0.17, 0.125, 0.26)) - 1.0) * 0.125, length(f - vec3f(0.0, 0.14, -0.04)) - 0.15) * boot;
-    if (upper < best.x) { best = vec2f(upper, 10.0); nearFoot = f; }
-    let sole = max((length((f - vec3f(0.0, 0.03, 0.085)) / vec3f(0.195, 0.09, 0.285)) - 1.0) * 0.09, f.y - 0.055) * boot;
-    if (sole < best.x) { best = vec2f(sole, 11.0); nearFoot = f; }
-    let cuff = (length(vec2f(length(f.xz - vec2f(0.0, -0.03)) - 0.105, f.y - 0.27)) - 0.052) * boot;
-    if (cuff < best.x) { best = vec2f(cuff, 12.0); nearFoot = f; }
+    if ((length(f - vec3f(0.0, 0.12, 0.05)) - 0.44) * boot < best.x) {
+      let upper = min((length((f - vec3f(0.0, 0.11, 0.09)) / vec3f(0.17, 0.125, 0.26)) - 1.0) * 0.125, length(f - vec3f(0.0, 0.14, -0.04)) - 0.15) * boot;
+      if (upper < best.x) { best = vec2f(upper, 10.0); nearFoot = f; }
+      let sole = max((length((f - vec3f(0.0, 0.03, 0.085)) / vec3f(0.195, 0.09, 0.285)) - 1.0) * 0.09, f.y - 0.055) * boot;
+      if (sole < best.x) { best = vec2f(sole, 11.0); nearFoot = f; }
+      let cuff = (length(vec2f(length(f.xz - vec2f(0.0, -0.03)) - 0.105, f.y - 0.27)) - 0.052) * boot;
+      if (cuff < best.x) { best = vec2f(cuff, 12.0); nearFoot = f; }
+    }
   }
   return best;
 }
@@ -3821,7 +3845,7 @@ const FLOOR = -0.42;
 
 // The terminal as a distance field: distance, then part (1 monitor, 2 neck, 3 base, 4 and 5 its legs).
 var<private> droopedEar:vec3f;
-fn machine(p: vec3f) -> vec2f {
+fn machineShell(p: vec3f) -> vec2f {
   let q = p - bodyShift;
   let pm = q - MON_C;
   let well = roundBox(vec3f(pm.xy - GLASS_C, pm.z - MON_B.z), vec3f(GLASS_B, WELL), 0.07);
@@ -3840,13 +3864,23 @@ fn machine(p: vec3f) -> vec2f {
   if (ears < best.x) { best = vec2f(ears, 7.0); }
   let bulbs = min(length(q - vec3f(-0.36, 1.5, -0.18)), length(q - droopedEar)) - 0.05;
   if (bulbs < best.x) { best = vec2f(bulbs, 9.0); }
+  return best;
+}
+
+fn machine(p: vec3f) -> vec2f {
+  var best = machineShell(p);
   let walk = hoseLegs(p, 0.085, 1.0, true);
   if (walk.x < best.x) { best = walk; }
   return best;
 }
 
-fn machineNormal(p: vec3f) -> vec3f {
+fn machineNormal(p: vec3f, part: f32) -> vec3f {
   let e = vec2f(0.0015, -0.0015);
+  if (part < 10.0 && (terminalLegs == 0u || hoseLegs(p, 0.085, 1.0, true).x > 0.005)) {
+    return normalize(
+      e.xyy * machineShell(p + e.xyy).x + e.yyx * machineShell(p + e.yyx).x + e.yxy * machineShell(p + e.yxy).x + e.xxx * machineShell(p + e.xxx).x,
+    );
+  }
   return normalize(
     e.xyy * machine(p + e.xyy).x + e.yyx * machine(p + e.yyx).x + e.yxy * machine(p + e.yxy).x + e.xxx * machine(p + e.xxx).x,
   );
@@ -3940,10 +3974,11 @@ fn flameRamp(e: f32) -> vec3f {
 fn terminal(at: vec2f, px: f32, pen: f32, still: vec2f, t: f32) -> vec4f {
   let back = u.camBack.xyz;
   let origin = TARGET + u.camRight.xyz * at.x + u.camUp.xyz * at.y + back * 4.0;
-  // It walks: the body rides on six legs whose feet keep to the ground going by.
-  bodyShift = vec3f(0.02 * sin(u.machine.w * TAU), u.gait.z, 0.0); // it shifts its weight from one set of feet to the other
-  bodyRoll = 0.0;
-  bodyPivot = 0.0;
+  let hover = u.cosmos.z;
+  // It walks: the body rides on six legs whose feet keep to the ground going by (and wiggles eagerly when hovered).
+  bodyShift = vec3f(0.02 * sin(u.machine.w * TAU) + 0.012 * hover * sin(t * 19.0), u.gait.z, 0.0);
+  bodyRoll = 0.028 * hover * sin(t * 15.0);
+  bodyPivot = 0.45;
   // (Its legs are posed once a frame, by poseTerminal.)
   var travelled = 0.0;
   var previous = 1e9;
@@ -3981,7 +4016,7 @@ fn terminal(at: vec2f, px: f32, pen: f32, still: vec2f, t: f32) -> vec4f {
   }
 
   let hitAt = origin - back * travelled;
-  let n = machineNormal(hitAt);
+  let n = machineNormal(hitAt, part);
   let p = hitAt - bodyShift;
   let lit = dot(n, normalize(vec3f(-0.45, 0.8, 0.4)));
   var tone = mix(CASE_SHADE, CASE_MID, smoothstep(0.06, 0.12, lit));
@@ -4010,9 +4045,10 @@ fn terminal(at: vec2f, px: f32, pen: f32, still: vec2f, t: f32) -> vec4f {
     return vec4f(mix(metal * (0.972 + 0.05 * noise(still * 2.3)), INK, ink), 1.0);
   }
   if (part == 9.0) {
-    // The bulbs on its aerials take turns to light.
-    let lit0 = step(0.0, p.x) * step(0.5, fract(t * 0.8)) + step(p.x, 0.0) * step(fract(t * 0.8), 0.5);
-    return vec4f(mix(mix(${vec3('#8c1f1c')}, RED * 2.4 + vec3f(0.5, 0.3, 0.1), lit0), INK, ink), 1.0);
+    // The bulbs on its aerials take turns to light (and both flash brightly when hovered).
+    let rate = fract(t * (0.8 + 2.8 * hover));
+    let lit0 = max(hover * (0.65 + 0.35 * sin(t * 18.0 + p.x * 6.0)), step(0.0, p.x) * step(0.5, rate) + step(p.x, 0.0) * step(rate, 0.5));
+    return vec4f(mix(mix(${vec3('#8c1f1c')}, RED * (2.4 + 0.8 * hover) + vec3f(0.5, 0.3, 0.1), lit0), INK, ink), 1.0);
   }
 
   if (part == 1.0) {
@@ -4057,9 +4093,9 @@ fn terminal(at: vec2f, px: f32, pen: f32, still: vec2f, t: f32) -> vec4f {
       screen += vec3f(0.01, 0.07, 0.03) * smoothstep(0.2, 0.9, rings);
       screen = written(screen, uv, px, pen, t);
       // Its face comes up when the sun roars, lightning lands or the planet takes someone.
-      let fright = max(max(u.mood.y, 1.0 - smoothstep(0.5, 1.3, u.weather.y)), select(0.0, u.cosmos.w * (0.35 + 0.65 * u.chorusBeat.y), cosmosLive)); // (and sings in the chorus)
-      // And when the pointer comes close it looks to see who is there.
-      let curious = 1.0 - smoothstep(0.75, 1.25, length((u.pointer.xy - u.machine.xy - vec2f(0.0, -0.2 * u.machine.z)) / u.machine.z));
+      let fright = max(max(u.mood.y, 1.0 - smoothstep(0.5, 1.3, u.weather.y)), u.cosmos.w * (0.35 + 0.65 * u.chorusBeat.y)); // (and sings in the chorus)
+      // And when the pointer comes close (and all the more when it hovers directly over the terminal) it perks up and looks.
+      let curious = max(hover, 1.0 - smoothstep(0.75, 1.25, length((u.pointer.xy - u.machine.xy - vec2f(0.0, -0.2 * u.machine.z)) / u.machine.z)));
       let awe = max(u.lift.z, curious);
       if (max(fright, awe) > 0.01) {
         var what = u.sun.xy;
@@ -4067,7 +4103,8 @@ fn terminal(at: vec2f, px: f32, pen: f32, still: vec2f, t: f32) -> vec4f {
         let gaze = normalize((what - u.machine.xy) * vec2f(1.0, -1.0) + vec2f(0.0001, 0.0));
         screen = mix(screen, startled(screen, uv, px, pen, t, fright, gaze), smoothstep(0.0, 0.2, max(fright, awe)));
       }
-      screen *= 0.9 + 0.1 * sin(g.y * 300.0);
+      screen *= (0.9 + 0.1 * sin(g.y * 300.0)) * (1.0 + 0.48 * hover);
+      screen += vec3f(0.08, 0.28, 0.15) * hover * (0.45 + 0.55 * smoothstep(-0.22, 0.0, glass));
       screen += vec3f(0.07, 0.1, 0.08) * smoothstep(0.35, 0.0, abs(uv.x + uv.y * 0.7 + 1.05));
       if(damage>0.001){
         let pane=g/GLASS_B;
@@ -4229,7 +4266,8 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
   if (u.title.z > 0.0) {
     let inkUv = (titleAt(d, t) - u.title.xy) / u.title.zw;
     if (inkUv.x > 0.0 && inkUv.x < 1.0 && inkUv.y > 0.0 && inkUv.y < 1.0) {
-      lettered = (titleField(inkUv).z + 1.2 * sin(t * 0.45 + d.x * 0.008)) * u.title.z / u.titleSize.x * scale >= 0.7;
+      let rawZ = titleField(inkUv).z;
+      lettered = rawZ > -u.titleInfo.x + 0.5 && (rawZ + 1.2 * sin(t * 0.45 + d.x * 0.008)) * u.title.z / u.titleSize.x * scale >= 0.7;
     }
   }
   // The terminal stands in front of the sky, the sun and the whole valley. It is
@@ -4240,7 +4278,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
   var deskShift = vec3f(0.0);
   if (u.machine.z > 0.0) {
     deskAt = (d - u.machine.xy) / u.machine.z * vec2f(1.0, -1.0);
-    onDesk = abs(deskAt.x) < 2.3 && deskAt.y > -1.15 && deskAt.y < 1.3 + u.gait.w;
+    onDesk = all(position.xy >= u.deskStamp.xy) && all(position.xy < u.deskStamp.zw);
     if (onDesk && !lettered) {
       desk = textureLoad(deskMap, vec2i(position.xy - u.deskStamp.xy), 0); // (drawn by drawDesk)
       deskShift = vec3f(0.02 * sin(u.machine.w * TAU), u.gait.z, 0.0); // how the terminal's body rides on its legs
@@ -4673,20 +4711,22 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
   }
 
   // Butterflies about the near flowers. They keep out of the rain.
-  for (var i = 0; i < 3; i++) {
-    let k = f32(i);
-    let home = u.flowers[0].xy + vec2f(70.0 + 80.0 * k, -95.0 - 26.0 * k);
-    let at = d - home - vec2f(90.0 * sin(t * 0.31 + k * 2.1) + 30.0 * sin(t * 0.83 + k), 46.0 * sin(t * 0.47 + k * 1.3) + 14.0 * sin(t * 1.9 + k));
-    if (dot(at, at) > 330.0 || rain > 0.5 || u.flowers[0].z <= 0.0) { continue; }
-    let flap = 0.22 + 0.78 * abs(sin(t * 8.0 + k * 2.0));
-    let q = turn(0.5 * sin(t * 0.6 + k)) * at;
-    let w = vec2f(abs(q.x) / flap, q.y);
-    let wing = min(oval(w - vec2f(6.5, -3.0), vec2f(6.0, 5.2)), oval(w - vec2f(4.6, 4.2), vec2f(4.4, 3.6)));
+  if (rain <= 0.5 && u.flowers[0].z > 0.0 && d.x > u.flowers[0].x - 72.0 && d.x < u.flowers[0].x + 372.0 && d.y > u.flowers[0].y - 228.0 && d.y < u.flowers[0].y - 14.0) {
     let show = 1.0 - smoothstep(0.3, 0.5, rain);
-    color = mix(color, INK, show * fill((pen * 0.9 - wing) * scale));
-    color = mix(color, K_BOW_0[(i * 2 + 1) % 6], show * fill(-wing * scale));
-    color = mix(color, PAPER, show * fill((1.6 - length(w - vec2f(7.0, -3.0))) * scale));
-    color = mix(color, INK, show * fill((1.3 - segment(q, vec2f(0.0, -5.0), vec2f(0.0, 5.0))) * scale));
+    for (var i = 0; i < 3; i++) {
+      let k = f32(i);
+      let home = u.flowers[0].xy + vec2f(70.0 + 80.0 * k, -95.0 - 26.0 * k);
+      let at = d - home - vec2f(90.0 * sin(t * 0.31 + k * 2.1) + 30.0 * sin(t * 0.83 + k), 46.0 * sin(t * 0.47 + k * 1.3) + 14.0 * sin(t * 1.9 + k));
+      if (dot(at, at) > 330.0) { continue; }
+      let flap = 0.22 + 0.78 * abs(sin(t * 8.0 + k * 2.0));
+      let q = turn(0.5 * sin(t * 0.6 + k)) * at;
+      let w = vec2f(abs(q.x) / flap, q.y);
+      let wing = min(oval(w - vec2f(6.5, -3.0), vec2f(6.0, 5.2)), oval(w - vec2f(4.6, 4.2), vec2f(4.4, 3.6)));
+      color = mix(color, INK, show * fill((pen * 0.9 - wing) * scale));
+      color = mix(color, K_BOW_0[(i * 2 + 1) % 6], show * fill(-wing * scale));
+      color = mix(color, PAPER, show * fill((1.6 - length(w - vec2f(7.0, -3.0))) * scale));
+      color = mix(color, INK, show * fill((1.3 - segment(q, vec2f(0.0, -5.0), vec2f(0.0, 5.0))) * scale));
+    }
   }
 
   // Rain, in three depths, slanting on the wind.
@@ -4753,37 +4793,50 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
       let away = normalize(at - select(vec2f(at.x, at.y + 1.0), u.sun.xy, u.sun.z > 0.0));
       let side = vec2f(-away.y, away.x);
       let sd = titleField(uv);
-      // (Where the black shape is solid the stack behind it cannot be seen, and is not drawn.)
-      if ((sd.z + swell) * px < 0.75) {
+      let floorDist = -u.titleInfo.x;
+      // (Where the black shape is solid the stack behind it cannot be seen, and is not drawn. Any sample clamped at
+      // floorDist is strictly outside the distance field, so it never bleeds dark ink even when drawn soft.)
+      if (sd.z <= floorDist + 0.25 || (sd.z + swell) * px < 0.75) {
         for (var k = 13; k >= 1; k--) {
           let depth = f32(k);
           let shift = away * depth * 4.6 + side * 6.0 * sin(t * 1.1 - depth * 0.5) * depth / 13.0;
-          let copy = titleField(uv + shift / u.title.zw).z + swell;
+          let raw = titleField(uv + shift / u.title.zw).z;
+          if (raw <= floorDist + 0.25) { continue; }
+          let copy = raw + swell;
           if ((copy + 1.5 / texel) * px <= -0.7) { continue; } // (both fills below are 0: it is nowhere near)
-          if (k % 2 == 1) { color = mix(color, INK, fill((copy + 1.5 / texel) * px)); }
-          if (k < 13) { color = mix(color, K_BOW_0[((k - 1) / 2) % 6] * (0.972 + 0.05 * noise(d * 2.3)), fill(copy * px)); }
+          let valid = smoothstep(floorDist + 0.25, floorDist + 1.0, raw);
+          if (k % 2 == 1) { color = mix(color, INK, valid * fill((copy + 1.5 / texel) * px)); }
+          if (k < 13) { color = mix(color, K_BOW_0[((k - 1) / 2) % 6] * (0.972 + 0.05 * noise(d * 2.3)), valid * fill(copy * px)); }
         }
       }
-      let hop = 1.5 / u.titleSize.xy;
-      let slopeX = titleField(uv + vec2f(hop.x, 0.0)) - titleField(uv - vec2f(hop.x, 0.0));
-      let slopeY = titleField(uv + vec2f(0.0, hop.y)) - titleField(uv - vec2f(0.0, hop.y));
-      color = mix(color, INK, fill((sd.z + swell) * px));
-      if(takeoverLive && u.boss.y*u.boss.z>0.0){
-        let shift=vec2f((4.0+abs(tape.y)*0.43)*u.boss.z/u.title.z,0.0);
-        let ink0=titleField(uv-shift); let ink1=titleField(uv+shift);
-        color+=u.boss.z*vec3f(0.78*fill(max(ink0.x,ink0.y)*px),0.49*fill(max(ink1.x,ink1.y)*px),0.75*fill(max(ink1.x,ink1.y)*px));
-      }
-      for (var layer = 0; layer < 2; layer++) {
-        let letter = select(sd.y, sd.x, layer == 0);
-        let inward = select(vec2f(slopeX.y, slopeY.y), vec2f(slopeX.x, slopeY.x), layer == 0);
-        let outward = -inward / max(length(inward), 1e-4);
-        color = mix(color, INK, fill((letter + u.titleInfo.y) * px));
-        // (Outside the letter, where fill() is 0, its colour and glint are not worked out.)
-        if (letter * px > -0.7) {
-          color = mix(color, candy(d, uv.y, letter * texel, outward, scale, t), fill(letter * px));
-          // Now and then a glint crosses the lettering.
-          let glint = exp(-pow((d.x + d.y * 0.5 - (fract(t / 8.0) * 3.0 - 0.6) * u.frame.w) / 38.0, 2.0));
-          color += (vec3f(0.5, 0.42, 0.3) * glint + vec3f(0.35, 0.31, 0.24) * pow(glint, 9.0)) * fill(letter * px);
+      if (max(sd.z, max(sd.x, sd.y)) > floorDist + 0.25 || (takeoverLive && u.boss.y * u.boss.z > 0.0)) {
+        let hop = 1.5 / u.titleSize.xy;
+        let slopeX = titleField(uv + vec2f(hop.x, 0.0)) - titleField(uv - vec2f(hop.x, 0.0));
+        let slopeY = titleField(uv + vec2f(0.0, hop.y)) - titleField(uv - vec2f(0.0, hop.y));
+        let validZ = smoothstep(floorDist + 0.25, floorDist + 1.0, sd.z);
+        color = mix(color, INK, validZ * fill((sd.z + swell) * px));
+        if (takeoverLive && u.boss.y * u.boss.z > 0.0) {
+          let shift = vec2f((4.0 + abs(tape.y) * 0.43) * u.boss.z / u.title.z, 0.0);
+          let ink0 = titleField(uv - shift); let ink1 = titleField(uv + shift);
+          let m0 = max(ink0.x, ink0.y); let m1 = max(ink1.x, ink1.y);
+          let v0 = smoothstep(floorDist + 0.25, floorDist + 1.0, m0);
+          let v1 = smoothstep(floorDist + 0.25, floorDist + 1.0, m1);
+          color += u.boss.z * vec3f(0.78 * v0 * fill(m0 * px), 0.49 * v1 * fill(m1 * px), 0.75 * v1 * fill(m1 * px));
+        }
+        for (var layer = 0; layer < 2; layer++) {
+          let letter = select(sd.y, sd.x, layer == 0);
+          if (letter <= floorDist + 0.25) { continue; }
+          let validL = smoothstep(floorDist + 0.25, floorDist + 1.0, letter);
+          let inward = select(vec2f(slopeX.y, slopeY.y), vec2f(slopeX.x, slopeY.x), layer == 0);
+          let outward = -inward / max(length(inward), 1e-4);
+          color = mix(color, INK, validL * fill((letter + u.titleInfo.y) * px));
+          // (Outside the letter, where fill() is 0, its colour and glint are not worked out.)
+          if (letter * px > -0.7) {
+            color = mix(color, candy(d, uv.y, letter * texel, outward, scale, t), validL * fill(letter * px));
+            // Now and then a glint crosses the lettering.
+            let glint = exp(-pow((d.x + d.y * 0.5 - (fract(t / 8.0) * 3.0 - 0.6) * u.frame.w) / 38.0, 2.0));
+            color += (vec3f(0.5, 0.42, 0.3) * glint + vec3f(0.35, 0.31, 0.24) * pow(glint, 9.0)) * validL * fill(letter * px);
+          }
         }
       }
     }
@@ -5012,7 +5065,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
 // After the picture: anything brighter than paper white (lasers, embers, glints)
 // spills light round itself. The bright parts are shrunk step by step, spread
 // back up, and added to the picture.
-export const glowShader = /* wgsl */ `
+const lensSource = /* wgsl */ `
 @group(0) @binding(0) var sourceMap: texture_2d<f32>;
 @group(0) @binding(1) var bilinear: sampler;
 @group(0) @binding(2) var glowMap: texture_2d<f32>;
@@ -5022,6 +5075,7 @@ export const glowShader = /* wgsl */ `
 @group(0) @binding(7) var pageMap: texture_2d<f32>;   // art/page.png: a perfectly ordinary page of an encyclopedia
 @group(0) @binding(8) var flareMap: texture_2d<f32>;  // the light thrown about inside the lens, drawn small by flares()
 @group(0) @binding(9) var paperMap: texture_2d<f32>;  // the paper, which never changes, drawn once by paper()
+@group(0) @binding(10) var termMap: texture_2d<f32>;  // what the tour writes on the terminal's tube: light on black, drawn afresh thirty times a second while the eye is in there
 
 struct Lens {
   frame: vec4f, // time, pixels per design unit, how wide the maw gapes, how far a footfall's ripple runs in pixels
@@ -5029,7 +5083,7 @@ struct Lens {
   shock: vec4f, // where it went off, in pixels; how much faster than usual the picture is flying; the horizon's height in pixels
   tread: vec4f, // where the terminal last put its feet down, in pixels, how long ago (0 to 1), how hard
   jolt: vec4f,  // how hard the whole picture is being shaken
-  gate: vec4f,  // the grey page: where its tab sits in pixels, how far along its taking is in seconds (0 and the page is whole), 1 if there is a page at all
+  gate: vec4f,  // the grey page: where its tab sits in pixels, how far along its taking is in seconds (0 and the page is whole), 1 if there is a page at all (2: Psychoscript's own)
   tab: vec4f,   // half the tab's width in pixels, how closely it is being looked at (0 to 1), where the pointer is in pixels
   beat: vec4f,  // seconds the grey page has been up, the sun's radius in pixels, how hard the tab is pressed, how near the pointer has come to it (0 to 1)
   // What the show is putting on in front of the lens, as the show's act.lens gives it (raw; lengths are in design units, so multiply by frame.y):
@@ -5039,6 +5093,15 @@ struct Lens {
   hazeK: vec4f, // how hot (0 to 1), pixels per world unit there, how far it shifts the picture in pixels
   // [72] (eggs) the picture as the eye planet sees it: how far it has it (0 to 1), seconds in, the planet's middle in design units.
   stare: vec4f,
+  // [76] the sun's tour, in the terminal: how much of its writing is on the tube (0 to 1), how far gone the tube is (0 to 1),
+  // a flash, and how far apart its colours have come, in design units.
+  term: vec4f,
+  // [80] how far the tube's rows sway and how much they jump (0 to 1), how hot its phosphor has got (0 green, 1 magenta and
+  // violet), and how far the terminal that walks about in there is hidden (0 to 1).
+  termK: vec4f,
+  // [84] and out of it again: how far the picture itself has gone off its head (0 to 1). Then the terminal asking to
+  // be looked into: how brightly it is lit (0 to 1), and how much is left of the 2.4 seconds a ring of light takes to go out from it.
+  termQ: vec4f,
 }
 @group(0) @binding(3) var<uniform> lens: Lens;
 
@@ -5098,11 +5161,19 @@ fn spun(a: f32) -> mat2x2f {
 }
 
 // The poster's rainbow, one colour running softly into the next.
+// (A constant: as a var every call of bowAt, and front() makes a couple of dozen, filled a copy of its own.)
+const BOW = ${list('vec3f', RAINBOW.map(vec3))};
 fn bowAt(x: f32) -> vec3f {
-  var bow = ${list('vec3f', RAINBOW.map(vec3))};
   let k = fract(x) * 6.0;
   let i = i32(floor(k));
-  return mix(bow[i % 6], bow[(i + 1) % 6], smoothstep(0.3, 0.7, fract(k)));
+  return mix(BOW[i % 6], BOW[(i + 1) % 6], smoothstep(0.3, 0.7, fract(k)));
+}
+
+// cloudy() along one of its rows (row is a whole number): the same numbers, bit for bit, for half the work.
+fn cloudyRow(x: f32, row: f32) -> f32 {
+  let i = floor(x);
+  let f = fract(x);
+  return mix(speck(vec2f(i, row)), speck(vec2f(i + 1.0, row)), f * f * (3.0 - 2.0 * f));
 }
 
 // Out to one and a little past it, then back.
@@ -5111,12 +5182,16 @@ fn overshoot(x: f32) -> f32 {
   return 1.0 + 2.4 * k * k * k + 1.4 * k * k;
 }
 
+// (For the tab drawn by itself, see stamp(): the page is then one flat colour, this one, with nothing written on it.)
+var<private> flatPage: vec4f;
+
 // The grey page at a point; swap is how far its words there have turned into glyphs.
 fn greyPage(q: vec2f, size: vec2f, swap: f32) -> vec3f {
-  let plain = textureSampleLevel(frontMap, bilinear, q / size, 0.0).rgb;
-  if (swap <= 0.0) { return plain; }
+  if (flatPage.w > 0.0) { return flatPage.rgb; }
+  if (swap <= 0.0) { return textureSampleLevel(frontMap, bilinear, q / size, 0.0).rgb; }
   let script = textureSampleLevel(runeMap, bilinear, q / size, 0.0).rgb;
-  return mix(plain, script, swap);
+  if (swap >= 1.0) { return script; }
+  return mix(textureSampleLevel(frontMap, bilinear, q / size, 0.0).rgb, script, swap);
 }
 
 // How far down the page the picture has run in a column (x and the answer in
@@ -5129,29 +5204,36 @@ fn poured(x: f32, a: f32) -> vec2f {
   return vec2f(12.0 * since * since + 1.4 * since + 6.0 * since * fine * fine, since);
 }
 
-// How far a column of the grey page has run down (x and the answer in tabs),
-// a seconds after the tab was taken, and for how long it has been running.
+// How far a column of the grey page has run down (the answers in tabs), a
+// seconds after the tab was taken, and for how long it has been running: for
+// the column at.x, and how far its neighbours at.y (to its left) and at.z (to
+// its right) have run, from which the slope of the page's edge is told. Gives
+// (run, seconds running, run to the left, run to the right).
 // Some columns give way before others, and here and there a thin run races ahead.
-fn melted(x: f32, a: f32) -> vec2f {
-  let lag = cloudy(vec2f(x * 0.3, 7.0));
-  let fine = cloudy(vec2f(x * 1.15, 23.0));
-  let since = max(a - 0.95 - 0.75 * lag - 0.1 * fine, 0.0);
+// (All three at once: the runs near by are the same ones for all of them, and
+// are looked up once instead of three times.)
+fn melted(at: vec3f, a: f32) -> vec4f {
+  let lag = vec3f(cloudyRow(at.x * 0.3, 7.0), cloudyRow(at.y * 0.3, 7.0), cloudyRow(at.z * 0.3, 7.0));
+  let fine = vec3f(cloudyRow(at.x * 1.15, 23.0), cloudyRow(at.y * 1.15, 23.0), cloudyRow(at.z * 1.15, 23.0));
+  let since = max(a - 0.95 - 0.75 * lag - 0.1 * fine, vec3f(0.0));
   // Runs: one to every couple of tabs' width, each with its own girth and
   // its own moment, round at the tip the way a run of paint is.
-  var runs = 0.0;
+  // (A run reaches no further than the cells next to its own, so those from one
+  // cell left of the left column to one right of the right are all that can be over any of the three.)
+  var runs = vec3f(0.0);
   var running = 0.0;
-  let cell = floor(x / 3.2);
-  for (var i = -1; i <= 1; i++) {
-    let id = cell + f32(i);
+  let last = floor(at.z / 3.2) + 1.0;
+  for (var id = floor(at.y / 3.2) - 1.0; id <= last; id += 1.0) {
     let mid = (id + 0.25 + 0.5 * speck(vec2f(id, 67.0))) * 3.2;
     let girth = 0.5 + 0.75 * speck(vec2f(id, 71.0));
     let begun = max(a - 0.95 - 0.9 * speck(vec2f(id, 61.0)), 0.0);
-    let across = (x - mid) / girth;
-    let round = sqrt(max(1.0 - across * across, 0.0));
+    let across = (at - mid) / girth;
+    let round = sqrt(max(1.0 - across * across, vec3f(0.0)));
     runs = max(runs, (6.5 * begun * begun + 2.0 * begun) * (0.55 + 0.8 * speck(vec2f(id, 73.0))) * round);
-    running = max(running, begun * round);
+    running = max(running, begun * round.x);
   }
-  return vec2f((6.5 * since * since + 1.2 * since) * (0.5 + 0.55 * fine * fine) + runs, max(since, running));
+  let run = (6.5 * since * since + 1.2 * since) * (0.5 + 0.55 * fine * fine) + runs;
+  return vec4f(run.x, max(since.x, running), run.y, run.z);
 }
 
 // Where the tab's face is, a seconds after the tab was taken: on the tab,
@@ -5161,6 +5243,17 @@ fn faceAt(a: f32, seat: vec2f, sun: vec2f, h: f32) -> vec2f {
   let way = leap * leap * (3.0 - 2.0 * leap);
   let round = 6.2831853 * leap - 1.5708;
   return mix(seat, sun, way) + 2.8 * h * sin(3.14159 * leap) * vec2f(cos(round), sin(round));
+}
+
+// How far the blast that takes the last of the grey page has got (0 to 1 and on), and how far from the face
+// the hole in the page reaches, in pixels, before its edge's wavering (which takes it to 1.15 of this at
+// the most). There is no hole for the first second and a half. (draw() works the same out as holeBox.)
+fn holeBlast() -> f32 {
+  return pow(max(lens.gate.z - 2.5, 0.0) / 1.45, 2.3);
+}
+fn holeReach(size: vec2f) -> f32 {
+  let a = lens.gate.z;
+  return step(1.5, a) * (lens.beat.y * 2.3 * overshoot((a - 1.5) / 0.8) * (1.0 + 0.03 * sin(a * 10.0)) + holeBlast() * length(size) * 1.3);
 }
 
 // The grey page that lies over the picture, the little tab sitting on it, and
@@ -5192,17 +5285,29 @@ fn front(under: vec3f, p: vec2f, size: vec2f) -> vec3f {
   let heart = faceAt(a, seat, lens.sun.xy, h);
 
   // The hole: first wide enough to show the sun, then, when the sun roars, everything.
-  let blast = pow(max(a - 2.5, 0.0) / 1.45, 2.3);
-  let reach = step(1.5, a) * (sunR * 2.3 * overshoot((a - 1.5) / 0.8) * (1.0 + 0.03 * sin(a * 10.0)) + blast * length(size) * 1.3);
+  let blast = holeBlast();
+  let reach = holeReach(size);
   let rel = p - heart;
   let far = max(length(rel), 0.001);
   let dir = rel / far;
-  let around = atan2(rel.y, rel.x);
-  let wavy = 1.0 + 0.06 * sin(around * 12.0 + a * 2.2 + g) + 0.04 * sin(around * 5.0 - a * 3.1) + 0.1 * (cloudy(dir * 2.6 + vec2f(a * 0.9, 4.0)) - 0.5);
-  let edge = reach * wavy;
+  // (The bearing from the face is wanted only once the page has begun to soften, and the wavering of the hole's edge only once there is a hole.)
+  var around = 0.0;
+  if (a > 0.85) { around = atan2(rel.y, rel.x); }
+  var edge = 0.0;
+  if (reach > 0.0) { edge = reach * (1.0 + 0.06 * sin(around * 12.0 + a * 2.2 + g) + 0.04 * sin(around * 5.0 - a * 3.1) + 0.1 * (cloudy(dir * 2.6 + vec2f(a * 0.9, 4.0)) - 0.5)); }
   let thick = (26.0 * smoothstep(1.5, 1.75, a) + 70.0 * smoothstep(1.7, 3.4, a)) * u;
   let past = far - edge;
   if (past < -200.0 * u && a > 2.1) { return under; }
+  let toTab = p - home;
+  let off = max(length(toTab), 0.001);
+  // Well inside the hole's edge nothing of the page is left to work out: there is the picture, in the shade of
+  // the sheet the hole is cut through, and the two flashes.
+  if (a > 1.5 && past <= -0.7) {
+    var bare = under * (1.0 - 0.5 * exp(past / (30.0 * u)) * (1.0 - smoothstep(3.0, 3.7, a)));
+    bare += vec3f(1.0, 0.95, 0.85) * 0.9 * exp(-a * 9.0) * taken * exp(-off / (h * 5.0));
+    bare += vec3f(1.0, 0.92, 0.7) * 0.5 * exp(-max(a - 1.5, 0.0) * 6.0) * step(1.5, a) * exp(-far / (sunR * 2.4));
+    return bare;
+  }
 
   // The page. It goes in three acts. First a ring runs out from the tab and
   // every word it passes turns into the terminal's script. Then the page
@@ -5211,10 +5316,8 @@ fn front(under: vec3f, p: vec2f, size: vec2f) -> vec3f {
   // coming away from the top of the window. Last the sun roars and what is
   // left is blown off.
   let leaving = 1.0 - smoothstep(0.1, 0.7, a);
-  let toTab = p - home;
-  let off = max(length(toTab), 0.001);
-  let bearing = atan2(toTab.y, toTab.x);
-  let pulse = life * (0.82 + 0.18 * sin(TURN * g / 2.0)) * (0.6 + 0.95 * look) * leaving + 2.5 * exp(-a * 5.0) * taken;
+  // (On Psychoscript's own page, gate.w 2, it is always awake, and sheds a good deal less light on what is written round it.)
+  let pulse = life * mix(1.0, 0.3, step(1.5, lens.gate.w)) * (0.82 + 0.18 * sin(TURN * g / 2.0)) * (0.6 + 0.95 * look) * leaving + 2.5 * exp(-a * 5.0) * taken;
   let aura = exp(-off / (h * 2.5)) * pulse;
   let soft = smoothstep(0.85, 1.6, a);
   var q = p;
@@ -5230,80 +5333,107 @@ fn front(under: vec3f, p: vec2f, size: vec2f) -> vec3f {
     q += soft * (1.0 - smoothstep(1.6, 2.6, a)) * 1.6 * u * vec2f(sin(q.y / (5.0 * u) + a * 23.0), 0.0);
   }
   // How far this column has run, and how that changes from one column to the next.
-  let run = melted(q.x / h, a);
+  // (No column begins to run before 0.95 s, so until then there is nothing to work out.)
   let lower = 0.3 + 0.7 * clamp(q.y / size.y, 0.0, 1.0); // the further down the page, the further it has run
-  let step2 = 2.0 * u;
-  let slope = (melted((q.x + step2) / h, a).x - melted((q.x - step2) / h, a).x) * h / (2.0 * step2) * lower;
+  var run = vec2f(0.0);
+  var slope = 0.0;
+  if (a > 0.95) {
+    let step2 = 2.0 * u;
+    let runs = melted(vec3f(q.x, q.x - step2, q.x + step2) / h, a);
+    run = runs.xy;
+    slope = (runs.w - runs.z) * h / (2.0 * step2) * lower;
+  }
   // Before it runs it sags.
-  let limp = 0.65 * cloudy(vec2f(q.x / (64.0 * u), 31.0)) + 0.35 * cloudy(vec2f(q.x / (22.0 * u), 37.0));
-  let sag = soft * (0.06 + 0.5 * limp * limp);
+  var sag = 0.0;
+  if (soft > 0.0) {
+    let limp = 0.65 * cloudyRow(q.x / (64.0 * u), 31.0) + 0.35 * cloudyRow(q.x / (22.0 * u), 37.0);
+    sag = soft * (0.06 + 0.5 * limp * limp);
+  }
   let fallen = q.y - run.x * h * lower;
   let gone = -fallen / sqrt(1.0 + slope * slope);
-  let src = vec2f(q.x, fallen / (1.0 + sag) - 26.0 * u * sag);
+  // Above the page's own top edge, where it has run down and away, the paint that pours after it covers all
+  // there is of the page: there, none of the page is worked out.
+  let buried = run.y > 0.0 && gone >= 0.7;
+  var c = vec3f(0.0);
+  if (!buried) {
+    let src = vec2f(q.x, fallen / (1.0 + sag) - 26.0 * u * sag);
 
-  // Its words turn into the terminal's script as the ring passes, a block at a time.
-  let block = floor(p / (52.0 * u));
-  let turns = 0.12 + 0.6 * off / (1000.0 * u) + 0.1 * speck(block + 3.0);
-  let flip = clamp((a - turns) / 0.18, 0.0, 1.0);
-  let swap = smoothstep(0.3, 0.7, flip);
-  let split = dir * (aura * 1.6 + 2.0 * soft) * u;
-  var plain = greyPage(src, size, swap);
-  if (soft > 0.0) {
-    // Going soft, it goes out of focus a little.
-    let blur = 1.5 * u * soft;
-    plain = 0.4 * plain + 0.15 * (greyPage(src + vec2f(blur, blur), size, swap) + greyPage(src + vec2f(-blur, blur), size, swap) + greyPage(src + vec2f(blur, -blur), size, swap) + greyPage(src - vec2f(blur, blur), size, swap));
-  }
-  var c = plain;
-  if (dot(split, split) > 0.01) { c = vec3f(greyPage(src + split, size, swap).r, plain.g, greyPage(src - split, size, swap).b); }
-  let inked = smoothstep(0.075, 0.2, 1.0 - dot(plain, vec3f(0.3333)));
-  if (a > 0.0) {
-    // As a word turns it flares, and what is written in script is written in the poster's colours.
-    let paint = bowAt(src.x / (300.0 * u) + src.y / (520.0 * u) + 0.3 * a);
-    let spark = sin(3.14159 * flip);
-    c = mix(c, mix(paint * 0.7, INK, 0.35), inked * smoothstep(0.5, 1.0, flip));
-    c = mix(c, paint * 1.5 + 0.3, inked * spark * spark);
-  }
-  // It takes on colour as it softens, more the nearer the hole.
-  let pale = dot(c, vec3f(0.3333));
-  let close = exp(-max(past - thick, 0.0) / (170.0 * u));
-  let dye = bowAt(around / TURN + far / (430.0 * u) - a * 0.45 - g / 6.0 + 0.5 * (1.0 - pale));
-  c = mix(c, dye * mix(0.12, 1.12, smoothstep(0.4, 0.92, pale)), clamp(soft * (0.1 + 0.9 * close * step(1.45, a)) * (0.7 + 1.6 * (1.0 - pale)) * (1.0 - inked) + 0.3 * smoothstep(1.6, 2.5, a) + smoothstep(2.5, 3.15, a), 0.0, 1.0));
-  // Running, it is wet: light on one shoulder of every run, shade in the fold on the other.
-  if (run.y > 0.0) {
-    let wet = smoothstep(0.0, 0.35, run.y);
-    c *= 1.0 - 0.3 * wet * smoothstep(0.15, 0.9, slope);
-    c *= 1.0 + 0.12 * wet * clamp(-slope, 0.0, 1.0);
-    c += vec3f(1.0, 0.98, 0.92) * 0.5 * wet * exp(-pow((slope + 0.5) / 0.17, 2.0)) * smoothstep(0.35, 0.7, cloudy(vec2f(q.x / (46.0 * u), fallen / (210.0 * u))));
-  }
+    // Its words turn into the terminal's script as the ring passes, a block at a time.
+    let block = floor(p / (52.0 * u));
+    let turns = 0.12 + 0.6 * off / (1000.0 * u) + 0.1 * speck(block + 3.0);
+    let flip = clamp((a - turns) / 0.18, 0.0, 1.0);
+    let swap = smoothstep(0.3, 0.7, flip);
+    let split = dir * (aura * 1.6 + 2.0 * soft) * u;
+    var plain = greyPage(src, size, swap);
+    if (soft > 0.0) {
+      // Going soft, it goes out of focus a little.
+      let blur = 1.5 * u * soft;
+      plain = 0.4 * plain + 0.15 * (greyPage(src + vec2f(blur, blur), size, swap) + greyPage(src + vec2f(-blur, blur), size, swap) + greyPage(src + vec2f(blur, -blur), size, swap) + greyPage(src - vec2f(blur, blur), size, swap));
+    }
+    c = plain;
+    if (dot(split, split) > 0.01) { c = vec3f(greyPage(src + split, size, swap).r, plain.g, greyPage(src - split, size, swap).b); }
+    let inked = smoothstep(0.075, 0.2, 1.0 - dot(plain, vec3f(0.3333)));
+    if (a > 0.0) {
+      // As a word turns it flares, and what is written in script is written in the poster's colours.
+      let paint = bowAt(src.x / (300.0 * u) + src.y / (520.0 * u) + 0.3 * a);
+      let spark = sin(3.14159 * flip);
+      c = mix(c, mix(paint * 0.7, INK, 0.35), inked * smoothstep(0.5, 1.0, flip));
+      c = mix(c, paint * 1.5 + 0.3, inked * spark * spark);
+    }
+    // It takes on colour as it softens, more the nearer the hole.
+    let pale = dot(c, vec3f(0.3333));
+    if (a > 0.85) {
+      let close = exp(-max(past - thick, 0.0) / (170.0 * u));
+      let dye = bowAt(around / TURN + far / (430.0 * u) - a * 0.45 - g / 6.0 + 0.5 * (1.0 - pale));
+      c = mix(c, dye * mix(0.12, 1.12, smoothstep(0.4, 0.92, pale)), clamp(soft * (0.1 + 0.9 * close * step(1.45, a)) * (0.7 + 1.6 * (1.0 - pale)) * (1.0 - inked) + 0.3 * smoothstep(1.6, 2.5, a) + smoothstep(2.5, 3.15, a), 0.0, 1.0));
+    }
+    // Running, it is wet: light on one shoulder of every run, shade in the fold on the other.
+    if (run.y > 0.0) {
+      let wet = smoothstep(0.0, 0.35, run.y);
+      c *= 1.0 - 0.3 * wet * smoothstep(0.15, 0.9, slope);
+      c *= 1.0 + 0.12 * wet * clamp(-slope, 0.0, 1.0);
+      c += vec3f(1.0, 0.98, 0.92) * 0.5 * wet * exp(-pow((slope + 0.5) / 0.17, 2.0)) * smoothstep(0.35, 0.7, cloudy(vec2f(q.x / (46.0 * u), fallen / (210.0 * u))));
+    }
 
-  // The tab's light on the page: a wash of colour, slow rays, and sparks going radius.
-  let rays = pow(0.5 + 0.5 * cos(bearing * 9.0 + TURN * g / 6.0), 6.0) * exp(-off / (h * 4.4)) * 0.3 * pulse;
-  // Looked at, it sends rings out over the page.
-  let ripple = pow(0.5 + 0.5 * cos(TURN * (off / (h * 1.5) - g * 1.5)), 8.0) * exp(-off / (h * 4.0)) * look * leaving;
-  // What is written near it has caught some of the colour.
-  let glow = bowAt(bearing / TURN + g / 6.0 + off / (h * 9.0));
-  c = mix(c, glow * 0.8, clamp(3.0 * (aura + rays) * (1.0 - pale) * 2.2, 0.0, 0.9));
-  c = mix(c, glow * 1.1, clamp(0.78 * aura + rays + 0.5 * ripple, 0.0, 0.9));
-  for (var i = 0; i < 9; i++) {
-    let f = f32(i);
-    let orbit = TURN * (f / 9.0 + g / 15.0 * (1.0 + f32(i % 3)) * select(-1.0, 1.0, i % 2 == 0));
-    let ringR = h * (2.1 + 0.55 * sin(TURN * (g / 5.0 + f * 0.37)) + 0.22 * f32(i % 4)) * (1.0 + 3.0 * smoothstep(0.0, 0.6, a));
-    let twinkle = pow(0.5 + 0.5 * sin(TURN * (g / 2.0 + f * 0.61)), 2.0);
-    let s = (p - home - ringR * vec2f(cos(orbit), 0.82 * sin(orbit))) / (h * (0.1 + 0.2 * twinkle));
-    let star = smoothstep(0.0, 0.3, 1.0 - sqrt(abs(s.x)) - sqrt(abs(s.y)));
-    c = mix(c, mix(vec3f(1.0), bowAt(f / 9.0 + g / 6.0), 0.45) * 1.15, star * life * (leaving + taken * (1.0 - smoothstep(0.5, 0.9, a))) * (0.5 + 0.5 * twinkle));
+    // The tab's light on the page: a wash of colour, slow rays, and sparks going radius.
+    // (Left alone and not yet taken, it sheds none.)
+    if (pulse > 0.0 || look > 0.0) {
+      let bearing = atan2(toTab.y, toTab.x);
+      let rays = pow(0.5 + 0.5 * cos(bearing * 9.0 + TURN * g / 6.0), 6.0) * exp(-off / (h * 4.4)) * 0.3 * pulse;
+      // Looked at, it sends rings out over the page.
+      let ripple = pow(0.5 + 0.5 * cos(TURN * (off / (h * 1.5) - g * 1.5)), 8.0) * exp(-off / (h * 4.0)) * look * leaving;
+      // What is written near it has caught some of the colour.
+      let glow = bowAt(bearing / TURN + g / 6.0 + off / (h * 9.0));
+      c = mix(c, glow * 0.8, clamp(3.0 * (aura + rays) * (1.0 - pale) * 2.2, 0.0, 0.9));
+      c = mix(c, glow * 1.1, clamp(0.78 * aura + rays + 0.5 * ripple, 0.0, 0.9));
+    }
+    // (The sparks are gone 0.9 s after the tab is taken, and none ever gets further from the tab than this.)
+    let starry = life * (leaving + taken * (1.0 - smoothstep(0.5, 0.9, a)));
+    let sparks = select(0, 9, starry > 0.0 && off < h * (3.4 * (1.0 + 3.0 * smoothstep(0.0, 0.6, a)) + 0.5));
+    for (var i = 0; i < sparks; i++) {
+      let f = f32(i);
+      let orbit = TURN * (f / 9.0 + g / 15.0 * (1.0 + f32(i % 3)) * select(-1.0, 1.0, i % 2 == 0));
+      let ringR = h * (2.1 + 0.55 * sin(TURN * (g / 5.0 + f * 0.37)) + 0.22 * f32(i % 4)) * (1.0 + 3.0 * smoothstep(0.0, 0.6, a));
+      let twinkle = pow(0.5 + 0.5 * sin(TURN * (g / 2.0 + f * 0.61)), 2.0);
+      let s = (p - home - ringR * vec2f(cos(orbit), 0.82 * sin(orbit))) / (h * (0.1 + 0.2 * twinkle));
+      let star = smoothstep(0.0, 0.3, 1.0 - sqrt(abs(s.x)) - sqrt(abs(s.y)));
+      c = mix(c, mix(vec3f(1.0), bowAt(f / 9.0 + g / 6.0), 0.45) * 1.15, star * life * (leaving + taken * (1.0 - smoothstep(0.5, 0.9, a))) * (0.5 + 0.5 * twinkle));
+    }
   }
 
   // The page's own top edge, as it comes away and runs down: thick, wet, and in the poster's colours.
   if (run.y > 0.0) {
     let lip = 30.0 * u * smoothstep(0.0, 0.45, run.y);
-    let lane = clamp(-gone / max(lip, 0.001), 0.0, 0.9999) * 4.0;
-    var brim = bowAt((floor(lane) + 0.5) / 6.0 + 0.16 + 0.1 * a);
-    brim = mix(brim, INK, smoothstep(1.3 * u, 0.5 * u, (0.5 - abs(fract(lane) - 0.5)) / 4.0 * lip));
-    brim = mix(brim, INK, smoothstep(3.0 * u, 2.0 * u, min(-gone, lip + gone)));
-    brim += vec3f(1.0, 0.98, 0.92) * 0.35 * exp(-pow((slope + 0.42) / 0.16, 2.0));
-    let outside = smoothstep(-0.7, 0.7, past);
-    c = mix(c, brim, smoothstep(-lip - 0.7, -lip + 0.7, gone) * smoothstep(0.0, 0.12, run.y) * outside);
+    // (Below it the page is untouched; above it the paint covers it.)
+    if (!buried && gone > -lip - 0.7) {
+      let lane = clamp(-gone / max(lip, 0.001), 0.0, 0.9999) * 4.0;
+      var brim = bowAt((floor(lane) + 0.5) / 6.0 + 0.16 + 0.1 * a);
+      brim = mix(brim, INK, smoothstep(1.3 * u, 0.5 * u, (0.5 - abs(fract(lane) - 0.5)) / 4.0 * lip));
+      brim = mix(brim, INK, smoothstep(3.0 * u, 2.0 * u, min(-gone, lip + gone)));
+      brim += vec3f(1.0, 0.98, 0.92) * 0.35 * exp(-pow((slope + 0.42) / 0.16, 2.0));
+      let outside = smoothstep(-0.7, 0.7, past);
+      c = mix(c, brim, smoothstep(-lip - 0.7, -lip + 0.7, gone) * smoothstep(0.0, 0.12, run.y) * outside);
+    }
     // Above that edge there is no picture yet. Paint in the poster's colours pours down after the page,
     // band over band, wider the further up, and only the hole shows what is behind it all.
     if (gone > -0.7) {
@@ -5328,28 +5458,31 @@ fn front(under: vec3f, p: vec2f, size: vec2f) -> vec3f {
     // Its shadow on the page.
     let lying = (p - seat - vec2f(0.0, h * 1.3 + 3.0 * u * bob)) / vec2f(h * 1.05, h * 0.26);
     c *= 1.0 - 0.24 * exp(-dot(lying, lying)) * (1.0 - smoothstep(0.0, 0.25, fall));
-    let l = spun(-tilt) * (p - sheet) / (h * grown);
-    let b = abs(l);
-    let along = select(l.x, l.y, b.x > b.y);
-    let paper = (length(max(b - 0.9, vec2f(0.0))) + min(max(b.x, b.y) - 0.9, 0.0) - 0.1 + 0.03 * cos(along * 3.14159 * 9.0)) * h * grown;
-    // It has a little thickness, seen from just above.
-    let under2 = spun(-tilt) * (p - sheet - vec2f(0.0, 0.085 * h * grown)) / (h * grown);
-    let lower = (length(max(abs(under2) - 0.9, vec2f(0.0))) + min(max(abs(under2).x, abs(under2).y) - 0.9, 0.0) - 0.1) * h * grown;
-    c = mix(c, vec3f(0.6, 0.56, 0.5), smoothstep(0.75, -0.75, lower) * (1.0 - smoothstep(0.9, 1.3, fall)));
-    if (paper < 1.5) {
-      var card = mix(vec3f(0.95), vec3f(0.985, 0.96, 0.9), life) * (0.95 + 0.06 * cloudy(l * 7.0 + 3.0));
-      card = mix(card, vec3f(0.78, 0.74, 0.68), smoothstep(-0.07 * h, 0.0, paper) * step(0.0, l.y + l.x * 0.3));
-      let rho = length(l);
-      let bend = log(rho + 0.06) * 1.35 - atan2(l.y, l.x) / TURN * 2.0 - g / 3.0 + 0.05 * sin(atan2(l.y, l.x) * 6.0 + TURN * g / 2.0);
-      let band = fract(bend) * 6.0;
-      var art = bowAt((floor(band) + 0.5) / 6.0) * 1.06;
-      art = mix(art, INK, smoothstep(1.0 * u, 0.4 * u, (0.5 - abs(fract(band) - 0.5)) / 6.0 * (rho + 0.06) / 1.35 * h * grown));
-      art = mix(vec3f(dot(art, vec3f(0.3, 0.59, 0.11)) * 0.75 + 0.2), art, life); // printed in greys until someone comes near
-      let frame = (max(b.x, b.y) - 0.8) * h * grown;
-      card = mix(card, art, smoothstep(0.7, -0.7, frame));
-      card = mix(card, INK, smoothstep(1.4 * u, 0.6 * u, abs(frame)));
-      card += 0.4 * life * exp(-pow((l.x + 0.6 * l.y - (fract(g / 3.0) * 6.0 - 3.0)) / 0.2, 2.0));
-      c = mix(c, card, smoothstep(0.75, -0.75, paper) * (1.0 - smoothstep(0.9, 1.3, fall)));
+    // (No further from its middle than this is there anything of the square or of its thickness.)
+    if (length(p - sheet) < 1.6 * h * grown + 3.0) {
+      let l = spun(-tilt) * (p - sheet) / (h * grown);
+      let b = abs(l);
+      let along = select(l.x, l.y, b.x > b.y);
+      let paper = (length(max(b - 0.9, vec2f(0.0))) + min(max(b.x, b.y) - 0.9, 0.0) - 0.1 + 0.03 * cos(along * 3.14159 * 9.0)) * h * grown;
+      // It has a little thickness, seen from just above.
+      let under2 = spun(-tilt) * (p - sheet - vec2f(0.0, 0.085 * h * grown)) / (h * grown);
+      let lower = (length(max(abs(under2) - 0.9, vec2f(0.0))) + min(max(abs(under2).x, abs(under2).y) - 0.9, 0.0) - 0.1) * h * grown;
+      c = mix(c, vec3f(0.6, 0.56, 0.5), smoothstep(0.75, -0.75, lower) * (1.0 - smoothstep(0.9, 1.3, fall)));
+      if (paper < 1.5) {
+        var card = mix(vec3f(0.95), vec3f(0.985, 0.96, 0.9), life) * (0.95 + 0.06 * cloudy(l * 7.0 + 3.0));
+        card = mix(card, vec3f(0.78, 0.74, 0.68), smoothstep(-0.07 * h, 0.0, paper) * step(0.0, l.y + l.x * 0.3));
+        let rho = length(l);
+        let bend = log(rho + 0.06) * 1.35 - atan2(l.y, l.x) / TURN * 2.0 - g / 3.0 + 0.05 * sin(atan2(l.y, l.x) * 6.0 + TURN * g / 2.0);
+        let band = fract(bend) * 6.0;
+        var art = bowAt((floor(band) + 0.5) / 6.0) * 1.06;
+        art = mix(art, INK, smoothstep(1.0 * u, 0.4 * u, (0.5 - abs(fract(band) - 0.5)) / 6.0 * (rho + 0.06) / 1.35 * h * grown));
+        art = mix(vec3f(dot(art, vec3f(0.3, 0.59, 0.11)) * 0.75 + 0.2), art, life); // printed in greys until someone comes near
+        let frame = (max(b.x, b.y) - 0.8) * h * grown;
+        card = mix(card, art, smoothstep(0.7, -0.7, frame));
+        card = mix(card, INK, smoothstep(1.4 * u, 0.6 * u, abs(frame)));
+        card += 0.4 * life * exp(-pow((l.x + 0.6 * l.y - (fract(g / 3.0) * 6.0 - 3.0)) / 0.2, 2.0));
+        c = mix(c, card, smoothstep(0.75, -0.75, paper) * (1.0 - smoothstep(0.9, 1.3, fall)));
+      }
     }
   }
 
@@ -5375,7 +5508,8 @@ fn front(under: vec3f, p: vec2f, size: vec2f) -> vec3f {
     let line = max(1.6 * u, 0.045 * radius);
     // It puts out rays as it goes: by the time it lands it is a sun.
     let grow = smoothstep(0.3, 1.0, leap) * (1.0 + 0.12 * sin(3.14159 * smoothstep(0.75, 1.0, leap)));
-    if (grow > 0.0) {
+    // (No ray, with its inked line, reaches further from the face's middle than this.)
+    if (grow > 0.0 && length(m) < 1.0 + 1.45 * grow + (line + 0.7) / radius + 0.01) {
       let about = atan2(m.y, m.x) + 0.4 * sin(a * 3.0) * (1.0 - leap);
       let petal = pow(abs(cos(8.0 * about)), 0.55);
       let ray = (length(m) - 1.0 - grow * (0.25 + 1.2 * petal)) * radius;
@@ -5441,16 +5575,19 @@ fn front(under: vec3f, p: vec2f, size: vec2f) -> vec3f {
   // it and through its rays, and what is inside is the sun itself.
   // The rim of the hole: the rainbow under the title, inked on both sides.
   if (a > 1.5) {
-    let lane = clamp(past / thick + 0.035 * sin(around * 9.0 + g * 2.0), 0.0, 0.9999) * 6.0;
-    var rim = bowAt((floor(lane) + 0.5) / 6.0 + 0.5);
-    rim = mix(rim, INK, smoothstep(1.3 * u, 0.5 * u, (0.5 - abs(fract(lane) - 0.5)) / 6.0 * thick));
-    rim = mix(rim, INK, smoothstep(3.2 * u, 2.2 * u, min(past, thick - past)));
     // Its light falls on the page round it,
     c += vec3f(1.0, 0.9, 0.66) * 0.2 * exp(-max(past - thick, 0.0) / (52.0 * u)) * smoothstep(1.5, 1.8, a);
-    c = mix(c, rim, smoothstep(thick + 0.7, thick - 0.7, past));
-    // and the sheet it is cut through shades what is just inside it: a hole, not a picture stuck on.
-    let shade = 1.0 - 0.5 * exp(past / (30.0 * u)) * (1.0 - smoothstep(3.0, 3.7, a));
-    c = mix(c, under * shade, smoothstep(0.7, -0.7, past));
+    // (and the rim itself is worked out only where it is)
+    if (past < thick + 0.7) {
+      let lane = clamp(past / thick + 0.035 * sin(around * 9.0 + g * 2.0), 0.0, 0.9999) * 6.0;
+      var rim = bowAt((floor(lane) + 0.5) / 6.0 + 0.5);
+      rim = mix(rim, INK, smoothstep(1.3 * u, 0.5 * u, (0.5 - abs(fract(lane) - 0.5)) / 6.0 * thick));
+      rim = mix(rim, INK, smoothstep(3.2 * u, 2.2 * u, min(past, thick - past)));
+      c = mix(c, rim, smoothstep(thick + 0.7, thick - 0.7, past));
+      // and the sheet it is cut through shades what is just inside it: a hole, not a picture stuck on.
+      let shade = 1.0 - 0.5 * exp(past / (30.0 * u)) * (1.0 - smoothstep(3.0, 3.7, a));
+      c = mix(c, under * shade, smoothstep(0.7, -0.7, past));
+    }
   }
   // The flash as it is taken, and again as the face lands in the sky.
   c += vec3f(1.0, 0.95, 0.85) * 0.9 * exp(-a * 9.0) * taken * exp(-off / (h * 5.0));
@@ -5773,6 +5910,159 @@ fn tube(p: vec2f, size: vec2f, seen: f32) -> vec3f {
   return c + vec3f(0.006, 0.014, 0.01);
 }
 
+// The sun's tour of the terminal. What it has to say is written on the tube (termMap, as wide and as high as the
+// tube's picture), and the further it gets the less the tube can stand it.
+
+// The place on the tube that a place p of it shows: its rows sway, and now and then a few of them jump sideways.
+fn termWarp(p: vec2f, size: vec2f) -> vec2f {
+  let t = lens.frame.x;
+  let sway = lens.termK.x;
+  let jump = lens.termK.y;
+  let row = p.y / size.y;
+  var q = p;
+  q.x += sway * size.x * (0.007 * sin(row * 9.0 + t * 2.3) + 0.0035 * sin(row * 31.0 - t * 5.1));
+  if (jump > 0.0) {
+    let tick = floor(t * 13.0);
+    let band = floor(row * (9.0 + 14.0 * speck(vec2f(tick, 5.0))));
+    q.x += jump * size.x * 0.045 * step(1.0 - 0.2 * jump, speck(vec2f(band, tick))) * (speck(vec2f(tick, band)) - 0.5);
+    q.y += jump * size.y * 0.02 * step(0.9, speck(vec2f(tick, 3.0))) * (speck(vec2f(tick, 9.0)) - 0.5);
+    // Far enough gone, the whole tube shakes.
+    q += smoothstep(0.55, 1.0, jump) * 5.0 * lens.frame.y * vec2f(sin(t * 71.0), cos(t * 59.0));
+  }
+  return q;
+}
+
+// The tube with the tour's writing on it. c0 is the tube's own picture at p; seen is how many pixels of the screen
+// a pixel of the tube takes just now (writing too small to be read is not written).
+fn termOver(c0: vec3f, p: vec2f, size: vec2f, seen: f32) -> vec3f {
+  let t = lens.frame.x;
+  let scale = lens.frame.y;
+  let craze = lens.term.y;
+  let hot = lens.termK.z;
+  let centre = 0.5 * size;
+  let m = (p - centre) / centre;
+  let rim = -diveBox(p - centre, centre, 0.085 * size.y) / size.y;
+  var c = c0;
+  // Its phosphor heats: out of green into magenta, amber and violet.
+  if (hot > 0.0) {
+    let l = dot(c, vec3f(0.3, 0.59, 0.11));
+    let fever = mix(mix(vec3f(1.0, 0.2, 0.75), vec3f(1.0, 0.62, 0.12), 0.5 + 0.5 * sin(m.y * 5.0 + t * 2.9)), vec3f(0.55, 0.25, 1.0), 0.5 + 0.5 * sin(m.x * 3.0 - t * 1.7));
+    c = mix(c, fever * l * 2.4, 0.85 * hot);
+  }
+  let on = lens.term.x * smoothstep(0.3, 0.8, seen);
+  if (on > 0.0) {
+    // The picture behind goes down, so that what is written can be read.
+    c *= mix(1.0, 0.13 + 0.12 * craze, on);
+    let uv = p / size;
+    let inside = step(0.0, min(uv.x, uv.y)) * step(max(uv.x, uv.y), 1.0);
+    let mid = textureSampleLevel(termMap, bilinear, uv, 0.0).rgb;
+    var ink = mid;
+    // Its three colours come apart, more toward the edges.
+    let apart = lens.term.w * scale * (0.35 + 1.3 * dot(m, m)) / size.x;
+    if (apart * size.x > 0.05) {
+      let way = vec2f(apart, 0.12 * apart * size.x / size.y);
+      ink = vec3f(textureSampleLevel(termMap, bilinear, uv + way, 0.0).r, mid.g, textureSampleLevel(termMap, bilinear, uv - way, 0.0).b);
+    }
+    // What is written glows.
+    let reach = 2.6 * scale / size;
+    let halo = 0.25 * (
+      textureSampleLevel(termMap, bilinear, uv + reach * vec2f(-1.0, -1.0), 0.0).rgb +
+      textureSampleLevel(termMap, bilinear, uv + reach * vec2f(1.0, -1.0), 0.0).rgb +
+      textureSampleLevel(termMap, bilinear, uv + reach * vec2f(-1.0, 1.0), 0.0).rgb +
+      textureSampleLevel(termMap, bilinear, uv + reach * vec2f(1.0, 1.0), 0.0).rgb
+    );
+    var lit = ink * 1.18 + halo * (0.5 + 0.5 * craze);
+    // The tube's lines and its slow roll go through it as through everything on the tube.
+    let pitch = max(round(2.7 * scale), 3.0);
+    lit *= 1.0 - 0.2 * smoothstep(1.8, 3.0, pitch * seen) * (0.5 - 0.5 * cos(6.2831853 * p.y / pitch));
+    let roll = fract(p.y / size.y - t * 0.09);
+    lit *= 1.0 + 0.14 * exp(-pow((roll - 0.5) / 0.07, 2.0)) + (0.012 + 0.05 * craze * craze) * sin(t * 47.0);
+    c += lit * on * inside * smoothstep(-0.004, 0.05, rim);
+  }
+  // The poster's colours seep in round the edge of the glass, wet, and further in the further gone it is.
+  if (craze > 0.14) {
+    let seep = (craze - 0.14) / 0.86;
+    let depth = seep * (0.035 + 0.2 * cloudy(m * 2.3 + vec2f(t * 0.31, -t * 0.23)) + 0.07 * seep * cloudy(m * 7.0 - vec2f(t * 0.5, t * 0.2)));
+    let wet = smoothstep(depth, 0.45 * depth, rim) * smoothstep(-0.02, 0.0, rim);
+    if (wet > 0.0) {
+      let lane = clamp(rim / max(depth, 1e-4), 0.0, 0.9999) * 4.0;
+      var paint = bowAt((floor(lane) + 0.5) / 6.0 + 0.25 * (m.x + m.y) - 0.3 * t);
+      paint = mix(paint, ${vec3(INK)}, 0.7 * smoothstep(0.42, 0.5, abs(fract(lane) - 0.5)));
+      c = mix(c, paint * (0.95 + 0.25 * sin(t * 6.0 + m.x * 9.0)), 0.9 * wet);
+    }
+  }
+  return c;
+}
+
+// The picture gone off its head, as the sun shouts the last of its tour: its colours change places in rings that run
+// out from the sun, the poster's rainbow runs out with them, and every shout is a flash.
+fn frenzy(c0: vec3f, p: vec2f, size: vec2f) -> vec3f {
+  let wild = lens.termQ.x;
+  let t = lens.frame.x;
+  var c = c0;
+  if (wild > 0.0) {
+    let off = p - lens.sun.xy;
+    let far = length(off) / lens.frame.y;
+    let l = dot(min(c, vec3f(1.0)), vec3f(0.3, 0.59, 0.11));
+    let turn = 0.5 + 0.5 * sin(far / 85.0 - t * 5.5);
+    c = mix(c, mix(c.gbr, c.brg, turn), 0.5 * wild * smoothstep(70.0, 260.0, far) * (0.35 + 0.65 * turn));
+    let ring = pow(0.5 + 0.5 * cos(6.2831853 * (far / 250.0 - t * 1.15)), 4.0);
+    c += bowAt(far / 420.0 - t * 0.9 + atan2(off.y, off.x) / 6.2831853) * 0.5 * wild * ring * (0.3 + 0.7 * l) * smoothstep(70.0, 220.0, far);
+  }
+  return c + vec3f(1.0, 0.94, 0.8) * 0.55 * lens.term.z;
+}
+
+// The terminal has walked up close, and what the sun's tour has to show is on its own glass: the tour's writing
+// (termMap) laid on the glass as the glass lies in the picture, lit as a tube is and gone to bits as far as the
+// tour has. c0 is what the lens made of the place q of the picture.
+fn glassed(c0: vec3f, q: vec2f, size: vec2f) -> vec3f {
+  let unit = lens.acts[4].w * lens.frame.y;
+  let lie = lens.acts[5].xyz;
+  let v = q - lens.acts[4].yz * lens.frame.y;
+  // (The place on the glass, in the terminal's units from its middle, down the glass positive.)
+  let g = vec2f(v.x / (lie.x * unit), (v.y - lie.y / lie.x * v.x) / (lie.z * unit));
+  let inside = -diveBox(g, DIVE_GLASS.xy, DIVE_GLASS.z) * unit;
+  if (inside < -1.0) { return c0; }
+  // The glass as a tube of its own: as many pixels across and down as it has on the screen.
+  let tube = 2.0 * DIVE_GLASS.xy * unit * vec2f(lie.x, lie.z);
+  var p = (g / (2.0 * DIVE_GLASS.xy) + 0.5) * tube;
+  p = termWarp(diveBulge(p, tube, 1.5), tube);
+  return mix(c0, termOver(c0, p, tube, 1.0), smoothstep(-0.75, 0.75, inside));
+}
+
+// The terminal asks to be looked into: a warm light round it, a ring of gold that runs out from it, and a glint
+// on the corner of its case.
+fn beckoned(c0: vec3f, p: vec2f) -> vec3f {
+  let lit = lens.termQ.y;
+  let age = 2.4 - lens.termQ.z;
+  let unit = lens.acts[4].w * lens.frame.y;
+  let off = (p - lens.acts[4].yz * lens.frame.y - vec2f(0.0, 0.1 * unit)) / unit;
+  let far = length(off * vec2f(1.0, 1.12));
+  if (far > 5.0) { return c0; }
+  let gold = vec3f(1.0, 0.78, 0.24);
+  let hover = clamp(lit - 1.0, 0.0, 1.0);
+  let baseLit = min(lit, 1.0) * (1.0 - 0.55 * hover * (1.0 - smoothstep(0.42, 0.88, far)));
+  var c = c0 + gold * 0.52 * baseLit * exp(-pow(far / 1.45, 2.0)) * (0.76 + 0.24 * sin(lens.frame.x * 6.5));
+  if (hover > 0.0) {
+    let rim = exp(-pow((far - 0.92) / 0.34, 2.0)) * smoothstep(0.48, 0.82, far);
+    c += mix(vec3f(0.42, 1.0, 0.66), gold * 1.3, 0.58) * (0.52 + 0.1 * sin(lens.frame.x * 9.0)) * hover * rim;
+  }
+  if (age < 2.4) {
+    for (var i = 0; i < 2; i++) {
+      let a = age - 0.2 * f32(i);
+      if (a < 0.0) { continue; }
+      let reach = 0.72 + 2.85 * (1.0 - exp(-a * 2.1));
+      let ring = exp(-pow((far - reach) / (0.075 + 0.085 * a), 2.0)) * exp(-a * 1.45) * (1.0 - 0.25 * f32(i));
+      c = mix(c, gold * 1.65 + 0.25, clamp(0.95 * ring, 0.0, 1.0));
+    }
+    // (The glint: a star of four points on its top left corner, there and gone.)
+    let s = (off - vec2f(-0.5, -0.47)) / (0.58 * smoothstep(0.0, 0.14, age) * (1.0 - smoothstep(0.35, 0.9, age)) + 0.001);
+    let star = smoothstep(0.0, 0.5, 1.0 - sqrt(abs(s.x)) - sqrt(abs(s.y)));
+    c = mix(c, vec3f(1.8, 1.6, 1.1), star * (1.0 - smoothstep(0.35, 0.9, age)));
+  }
+  return c;
+}
+
 // The tube's glass bulges a little toward whoever is looking: the place on
 // the flat picture that a point of the glass shows.
 fn diveBulge(p: vec2f, size: vec2f, much: f32) -> vec2f {
@@ -5882,6 +6172,8 @@ fn plunged(p: vec2f, size: vec2f) -> Plunge {
 fn dived(c0: vec3f, d: Plunge, at: vec2f, size: vec2f) -> vec3f {
   let rush = lens.acts[5].w;
   let mine = d.cover > 0.5; // c0 is of the inside
+  var cover = d.cover;
+  var glass = d.glass;
   var outer = vec3f(0.0);
   var inner = vec3f(0.0);
   var pane = vec3f(0.0);
@@ -5904,21 +6196,33 @@ fn dived(c0: vec3f, d: Plunge, at: vec2f, size: vec2f) -> vec3f {
       }
     }
     if (d.cover > 0.0) {
-      let place = diveBulge(d.inside, size, 1.0);
+      var place = diveBulge(d.inside, size, 1.0);
+      // (On the sun's tour the tube has its writing on it, and comes to bits.)
+      if (lens.term.x > 0.0) { place = termWarp(place, size); }
       inner = tube(place, size, d.small);
+      if (lens.term.x > 0.0) { inner = termOver(inner, place, size, d.small); }
       // By the time the lens is through, the terminal in there has the picture on its own glass.
       let late = smoothstep(0.5, 0.95, d.k);
       if (late > 0.0) {
         let pinned = divePinned(place, size, d.small);
-        inner = mix(inner, pinned.rgb, pinned.a * late);
+        inner = mix(inner, pinned.rgb, pinned.a * late * (1.0 - lens.termK.w));
       }
     }
     pane = vec3f(0.012, 0.03, 0.02);
   } else {
     // In the terminal, and on the way out of it: the tube all round, and the
     // picture, a print of it, on the glass of the terminal in there.
-    if (d.cover < 1.0) { outer = tube(d.outside, size, d.grown); }
-    if (d.cover > 0.0) {
+    // (On the sun's tour the terminal in there keeps out of the way of what is written, until it is wanted.)
+    let touring = lens.term.x > 0.0;
+    cover *= 1.0 - lens.termK.w;
+    glass *= 1.0 - lens.termK.w;
+    if (cover < 1.0) {
+      var place = d.outside;
+      if (touring) { place = termWarp(place, size); }
+      outer = tube(place, size, d.grown);
+      if (touring) { outer = termOver(outer, place, size, d.grown); }
+    }
+    if (cover > 0.0) {
       inner = c0;
       if (!mine) { inner = textureSampleLevel(sourceMap, bilinear, d.inside / size, 0.0).rgb; }
       let many = smoothstep(1.0, 0.4, d.small);
@@ -5927,7 +6231,7 @@ fn dived(c0: vec3f, d: Plunge, at: vec2f, size: vec2f) -> vec3f {
     }
     pane = DIVE_PAPER;
   }
-  return mix(mix(outer, pane, d.glass), inner, d.cover);
+  return mix(mix(outer, pane, glass), inner, cover);
 }
 
 // How near a point is to a box with rounded corners: less than nothing inside it.
@@ -6407,11 +6711,7 @@ fn planetSees(c: vec3f, p: vec2f, size: vec2f) -> vec3f {
   return mix(c, max(look, vec3f(0.0)), here);
 }
 
-@fragment
-fn finish(@builtin(position) position: vec4f) -> @location(0) vec4f {
-  let size = vec2f(textureDimensions(sourceMap));
-  // While the grey page is whole there is nothing else to draw.
-  if (lens.gate.w > 0.5 && lens.gate.z <= 0.0) { return vec4f(front(vec3f(0.0), position.xy, size), 1.0); }
+fn seen(position: vec4f, size: vec2f) -> vec3f {
   let scale = lens.frame.y;
   let maw = lens.frame.z;
   var at = position.xy;
@@ -6455,6 +6755,13 @@ fn finish(@builtin(position) position: vec4f) -> @location(0) vec4f {
   at += scale * 2.6 * (vec2f(cloudy(sheet / 58.0 + vec2f(3.1, drift)), cloudy(sheet / 58.0 + vec2f(17.7 - drift, 5.0))) - 0.5);
   let stock = textureLoad(paperMap, vec2i(position.xy), 0);
   at += scale * 0.9 * (stock.ba - 0.5);
+  // As the sun shouts the last of its tour the whole picture sways, and rings run out through it from the sun.
+  if (lens.termQ.x > 0.0) {
+    let out = (at - lens.sun.xy) / scale;
+    let far = length(out);
+    at += lens.termQ.x * scale * (4.0 * vec2f(sin(out.y / 64.0 + lens.frame.x * 5.3), cos(out.x / 78.0 - lens.frame.x * 4.4))
+      + out / max(far, 1.0) * 7.0 * sin(far / 46.0 - lens.frame.x * 9.0) * smoothstep(60.0, 260.0, far));
+  }
 
   // The ground gives under each step the terminal takes.
   if (lens.tread.w > 0.0) {
@@ -6476,12 +6783,15 @@ fn finish(@builtin(position) position: vec4f) -> @location(0) vec4f {
   // Where the visitor has pressed, a ring runs out through the picture.
   let poked = lens.acts[7];
   let pokeLife = poked.w * smoothstep(0.0, 0.04, poked.z) * (1.0 - smoothstep(0.3, 0.7, poked.z));
-  let pokeOff = position.xy - poked.xy * scale;
-  let pokeFar = length(pokeOff) / scale;
-  let pokeReach = 8.0 + 190.0 * (1.0 - exp(-poked.z * 3.4));
+  var pokeFar = 0.0;
+  var pokeReach = 0.0;
   if (pokeLife > 0.0) {
+    let pokeOff = position.xy - poked.xy * scale;
+    let pokeLen = length(pokeOff);
+    pokeFar = pokeLen / scale;
+    pokeReach = 8.0 + 190.0 * (1.0 - exp(-poked.z * 3.4));
     let wave = exp(-pow((pokeFar - pokeReach) / (10.0 + 26.0 * poked.z), 2.0));
-    at += pokeOff / max(length(pokeOff), 1e-3) * wave * pokeLife * 11.0 * scale;
+    at += pokeOff / max(pokeLen, 1e-3) * wave * pokeLife * 11.0 * scale;
   }
 
   if (lens.hazeK.x > 0.0) {
@@ -6494,23 +6804,28 @@ fn finish(@builtin(position) position: vec4f) -> @location(0) vec4f {
       at += wob * vec2f(1.0, 0.55) * lens.hazeK.x * lens.hazeK.z * edge;
     }
   }
-  let fromSun = at - lens.sun.xy;
-  let pull = 0.006 * maw * smoothstep(60.0 * scale, 520.0 * scale, length(fromSun));
   let middle = (at / size - 0.5) * vec2f(size.x / size.y, 1.0);
   let corner = dot(middle, middle);
   let part = middle / vec2f(size.x / size.y, 1.0) * ((0.0016 + 0.0035 * maw) * corner) + vec2f(0.3, 0.18) * scale / size;
-  let taps = select(1, 6, maw > 0.01);
+  let uv = at / size;
   var c = vec3f(0.0);
   var softness = 0.0;
-  for (var i = 0; i < taps; i++) {
-    let spot = (lens.sun.xy + fromSun * (1.0 - pull * f32(i) / 5.0)) / size;
-    let green = textureSampleLevel(sourceMap, bilinear, spot, 0.0);
-    c += vec3f(textureSampleLevel(sourceMap, bilinear, spot + part, 0.0).r, green.g, textureSampleLevel(sourceMap, bilinear, spot - part, 0.0).b);
-    softness += green.a;
+  if (maw <= 0.01) {
+    let green = textureSampleLevel(sourceMap, bilinear, uv, 0.0);
+    c = vec3f(textureSampleLevel(sourceMap, bilinear, uv + part, 0.0).r, green.g, textureSampleLevel(sourceMap, bilinear, uv - part, 0.0).b);
+    softness = green.a;
+  } else {
+    let fromSun = at - lens.sun.xy;
+    let pull = 0.006 * maw * smoothstep(60.0 * scale, 520.0 * scale, length(fromSun));
+    for (var i = 0; i < 6; i++) {
+      let spot = (lens.sun.xy + fromSun * (1.0 - pull * f32(i) / 5.0)) / size;
+      let green = textureSampleLevel(sourceMap, bilinear, spot, 0.0);
+      c += vec3f(textureSampleLevel(sourceMap, bilinear, spot + part, 0.0).r, green.g, textureSampleLevel(sourceMap, bilinear, spot - part, 0.0).b);
+      softness += green.a;
+    }
+    c /= 6.0;
+    softness /= 6.0;
   }
-  c /= f32(taps);
-  softness /= f32(taps);
-  let uv = at / size;
 
   // Out of focus: the same place seen through a wider opening.
   if (softness > 0.03) {
@@ -6575,13 +6890,80 @@ fn finish(@builtin(position) position: vec4f) -> @location(0) vec4f {
   // @over windows
   if (lens.acts[4].x > 0.0) { c = dived(c, plunge, position.xy, size); }
   // @over dive
+  if (lens.term.x > 0.0 && lens.acts[4].x <= 0.0) { c = glassed(c, at, size); }
+  if (lens.termQ.y > 0.0 || lens.termQ.z > 0.0) { c = beckoned(c, position.xy); }
   if (lens.acts[2].z > 0.0) { c = notice(c, position.xy, size); }
   // @over notice
   if (lens.stare.x > 0.0) { c = planetSees(c, position.xy, size); }
+  // @over stare
+  if (lens.termQ.x > 0.0 || lens.term.z > 0.0) { c = frenzy(c, position.xy, size); }
+  return c;
+}
+
+@fragment
+fn finish(@builtin(position) position: vec4f) -> @location(0) vec4f {
+  let size = vec2f(textureDimensions(sourceMap));
+  // Under the grey page the picture shows only through the hole the sun opens in it, a second and a half after
+  // the tab is taken: anywhere else there is no picture to work out, only the page. (The hole's edge wavers
+  // out to 1.15 of its reach at the most, and by then its middle is the sun's.)
+  var c = vec3f(0.0);
+  if (lens.gate.w <= 0.5 || (lens.gate.z > 1.5 && length(position.xy - lens.sun.xy) < holeReach(size) * 1.15 + 2.0)) { c = seen(position, size); }
   if (lens.gate.w > 0.5) { c = front(c, position.xy, size); }
   return vec4f(c, 1.0);
 }
+
+// The grey page and nothing else, for as long as it hides all of the picture: while it is whole, and for the
+// first second and a half of its going. (A pass of its own: none of the lens's code sits in it.)
+@fragment
+fn page(@builtin(position) position: vec4f) -> @location(0) vec4f {
+  return vec4f(front(vec3f(0.0), position.xy, vec2f(textureDimensions(sourceMap))), 1.0);
+}
+
+// The tab by itself, with its light, its rays, its sparks and its shadow, and nothing of the page under it: for a
+// small canvas of its own that lies on the page itself, inside the tab's button, and goes wherever the page does.
+// (It is frontWhole() that draws it: front() as it is while the page is whole, see glowShader below.)
+// The page is worked out twice over two flat papers of the same lightness, a little redder and a little greener
+// than the paper the tab really lies on (lens.haze.rgb; the canvas is lens.hazeK.xy pixels). What differs between
+// the two is how much of the paper shows through at this pixel, and the rest is the tab's own light: that goes
+// out, with how much it covers. (All that front() does with the page's colour while the tab is whole is to lay
+// things over it, darken it and add light to it, by amounts that depend at most on how light the page is.)
+@fragment
+fn stamp(@builtin(position) position: vec4f) -> @location(0) vec4f {
+  let size = lens.hazeK.xy;
+  let paper = lens.haze.rgb;
+  let lean = vec3f(0.04, -0.04, 0.0);
+  flatPage = vec4f(paper + lean, 1.0);
+  let warm = frontWhole(vec3f(0.0), position.xy, size);
+  flatPage = vec4f(paper - lean, 1.0);
+  let cool = frontWhole(vec3f(0.0), position.xy, size);
+  flatPage = vec4f(0.0);
+  let through = clamp(((warm.r - cool.r) - (warm.g - cool.g)) / 0.16, 0.0, 1.0);
+  // (Toward the canvas's edge it all dies away, so that the canvas has no edge to be seen.)
+  let fade = 1.0 - smoothstep(0.74, 0.98, length(position.xy - 0.5 * size) / (0.5 * size.x));
+  let light = max(0.5 * (warm + cool) - through * paper, vec3f(0.0)) * fade;
+  return vec4f(light, clamp(max(1.0 - through, max(light.r, max(light.g, light.b))), 0.0, 1.0) * fade);
+}
 `
+
+// The lens's shader, as above, and with it frontWhole(): front() over again for a page that is whole and its tab
+// untaken (no seconds gone since the taking, no hole, no blast), which is all that stamp() draws. It is the same
+// code word for word, so that the tab it draws is the same tab; but with nothing of the page's going left to work
+// out, it is a small enough thing for a browser to make a pipeline of without being kept waiting.
+export const glowShader = (() => {
+  const from = lensSource.indexOf('fn front(under: vec3f, p: vec2f, size: vec2f) -> vec3f {')
+  const to = lensSource.indexOf('\n}\n', from) + 3
+  let whole = lensSource.slice(from, to)
+  for (const [was, is] of [
+    ['fn front(', 'fn frontWhole('],
+    ['let a = lens.gate.z;', 'let a = 0.0;'],
+    ['let blast = holeBlast();', 'let blast = 0.0;'],
+    ['let reach = holeReach(size);', 'let reach = 0.0;'],
+  ]) {
+    if (from < 0 || whole.split(was).length !== 2) throw new Error(`liquid: front() has changed: ${was}`)
+    whole = whole.replace(was, is)
+  }
+  return lensSource.slice(0, to) + '\n' + whole + lensSource.slice(to)
+})()
 
 // The fluid: a velocity field kept divergence-free, and the dye it carries.
 // Every pass is a full-screen triangle drawn into one of the simulation's textures.
@@ -7118,8 +7500,8 @@ const CHORUS = {
 const PLAYERS = {
   wide: [[0.23, 0.035], [0.39, 0.02], [0.56, 0.04], [0.72, 0.025], [0.03, 0.43], [0.13, 0.47], [0.06, 0.62], [0.16, 0.68], [0.04, 0.74],
     [0.86, 0.13], [0.97, 0.17], [0.85, 0.52], [0.965, 0.6], [0.9, 0.75]],
-  narrow: [[0.4, 0.026], [0.5, 0.052], [0.94, 0.031], [0.96, 0.098], [0.04, 0.634], [0.16, 0.66], [0.25, 0.63], [0.07, 0.887], [0.18, 0.955],
-    [0.28, 0.93], [0.95, 0.66], [0.975, 0.784], [0.935, 0.897], [0.983, 0.955]],
+  narrow: [[0.07, 0.21], [0.93, 0.26], [0.94, 0.031], [0.96, 0.098], [0.05, 0.38], [0.11, 0.5], [0.04, 0.6], [0.07, 0.887], [0.18, 0.955],
+    [0.28, 0.93], [0.955, 0.45], [0.975, 0.784], [0.935, 0.897], [0.983, 0.955]],
 }
 // Each by pitch, lowest first: semitones over the choir's key, and its kind (0 glass,
 // 1 bell, 2 bowed, 3 a soft pluck). The higher a star is in the sky, the higher it sings.
@@ -7166,6 +7548,84 @@ function composeStars(r) {
   return notes.sort((a, b) => a[0] - b[0])
 }
 
+// The sun's tour (audio/sun-tour.mp3), as its face is to give it: { fps, duration, open, round, brow, words }, the
+// three lists being how far its mouth is open, how round its lips are and how high its brows, 0 to 1, fps times a
+// second. Fetched once, and null if it cannot be had.
+let tourLoading = null
+// (With it, asides: the two other things it was recorded saying, 'excuse' and 'resume' (audio/sun-excuse.mp3 and
+// audio/sun-resume.mp3), measured the same way; null if they cannot be had, and then it never breaks off.)
+export const loadTour = () =>
+  (tourLoading ??= Promise.all(
+    ['sun-tour', 'sun-excuse', 'sun-resume'].map((name) =>
+      fetch(new URL(`./audio/${name}.json`, import.meta.url))
+        .then((response) => (response.ok ? response.json() : null))
+        .then((data) => {
+          const lists = data && [data.open, data.round, data.brow]
+          if (!lists || !(data.fps > 0) || !lists.every((list) => Array.isArray(list) && list.length === data.open.length && list.length > 1)) return null
+          return { ...data, duration: data.duration > 0 ? data.duration : data.open.length / data.fps }
+        })
+        .catch(() => null),
+    ),
+  ).then(([tour, excuse, resume]) => tour && { ...tour, asides: excuse && resume ? { excuse, resume } : null }))
+
+// The tour, by the recording's own clock (seconds into audio/sun-tour.mp3). It is given in two parts. The first
+// the sun gives by itself, to whoever took the tab: a welcome, and "look inside the terminal" (at which it looks
+// at the terminal, and the terminal hops), and there it stops. The second it gives to whoever does look: the
+// terminal walks up close, the sun shows three things on its screen, each less calmly than the last, and the
+// terminal walks back to leave it the whole picture to shout the rest in. Part way through it breaks off, has
+// the terminal step aside, deals with some of the little walkers, and picks up where it was.
+export const TOUR = {
+  hello: 1.9, // where the welcome begins: "Welcome to Psychoscript" (what the recording says before that is left out)
+  intro: 7.48, // and where it ends
+  glance: 4.8, // "Come closer": it looks at the terminal, which is lit
+  hop: 6.0, // "look inside": the terminal hops
+  beckon: 2.6, // and afterwards, until somebody does look, every so many seconds
+  from: 7.55, // where the rest begins: "Step one"
+  lead: 1.1, // how long the terminal has been on its way when that is said
+  walk: 1.2, // how long it takes to walk up close, or back
+  tail: 1.8, // the breath after its last word
+  done: 46.1, // it has said all it has to say
+  // Where it can break off (in a silence between two steps), and where it picks up again.
+  asides: [[17.96, 18.02], [27.36, 27.42]],
+  aside: { back: 1.1, zap: 3.6, up: 2.2 }, // the terminal's walk back; the lasers; how far into "much better" it walks up again
+  steps: [7.6, 18.1, 27.45], // where each of the three begins
+  frozen: 30.64, // "freeze its entire brain": the tube gives way
+  resumed: 33.05, // RESUMED, and the terminal in there is seen again
+  leave: 33.5, // the terminal walks back
+  swell: 33.6, // from here the choir comes up under it
+  // What is put on outside, and when. (The cosmos waits for the lasers to go out.)
+  cues: [
+    [33.5, 'leave'], [34.0, 'snake'], [34.15, 'bolt'], [34.9, 'bolt'], [35.65, 'bolt'],
+    [36.48, 'lasers'], [36.5, 'unfold'], [37.44, 'jolt'], [38.72, 'jolt'], [40.0, 'cosmos'], [41.6, 'rainbow'],
+    [42.56, 'bolt'], [43.44, 'bolt'], [44.56, 'finale'], [45.1, 'bolt'],
+  ],
+  lasers: [36.48, 39.3],
+  // Its shouts, each a flash: when, and how bright.
+  flashes: [[19.44, 0.5], [23.36, 0.55], [26.76, 0.35], [30.64, 0.8], [33.05, 1], [34.0, 0.6], [36.72, 0.5], [37.68, 0.45], [38.72, 0.5], [39.12, 0.6], [40.0, 0.8], [42.56, 0.45], [43.44, 0.5], [44.56, 0.8]],
+  // How far things have got, as [seconds, value] to be read between.
+  craze: [[4.8, 0], [7.6, 0.08], [18.0, 0.12], [18.3, 0.2], [19.4, 0.3], [23.3, 0.42], [27.2, 0.62], [27.7, 0.5], [30.5, 0.55], [30.75, 0.82], [33.1, 1]],
+  apart: [[7.6, 0], [18.0, 0.25], [19.4, 1.2], [23.3, 2], [27.2, 3.2], [27.7, 1.8], [30.5, 2.4], [30.75, 5], [33.1, 9]],
+  sway: [[7.6, 0.04], [18.0, 0.07], [19.4, 0.28], [27.2, 0.7], [27.7, 0.35], [30.5, 0.45], [30.75, 1.2], [33.1, 2]],
+  jump: [[18.0, 0], [19.4, 0.14], [27.2, 0.42], [27.7, 0.16], [30.5, 0.25], [30.75, 0.8], [33.1, 1]],
+  hot: [[27.45, 0], [28.6, 0.14], [30.5, 0.24], [30.9, 0.9], [33.1, 1]],
+  hidden: [[32.85, 1], [33.3, 0]],
+  wild: [[33.6, 0], [34.3, 0.4], [36.4, 0.5], [36.7, 0.72], [39.9, 0.78], [40.3, 0.9], [44.5, 0.92], [44.62, 1], [45.9, 1], [47.5, 0]],
+  hurry: [[0, 0], [7.6, 0.2], [18.1, 1], [27.3, 2.5], [30.6, 2.6], [33.4, 3.5], [34.0, 4.5], [36.5, 6], [45.9, 6], [47.5, 3]],
+}
+// A value read off one of those lists.
+export const tourTrack = (list, t) => {
+  if (t <= list[0][0]) return list[0][1]
+  for (let i = 1; i < list.length; i++) {
+    if (t < list[i][0]) return list[i - 1][1] + ((list[i][1] - list[i - 1][1]) * (t - list[i - 1][0])) / (list[i][0] - list[i - 1][0])
+  }
+  return list.at(-1)[1]
+}
+export const tourFlash = (t) => {
+  let most = 0
+  for (const [at, much] of TOUR.flashes) if (t >= at) most = Math.max(most, much * Math.exp(-(t - at) * 5.5))
+  return most
+}
+
 export function createShow(seed = 11) {
   const stream = (state) => () => {
     state = (state + 0x6d2b79f5) | 0
@@ -7198,7 +7658,7 @@ export function createShow(seed = 11) {
   let castAt = -99
   let spells = 0
   // What the show is putting on in front of the lens: eight slots of four numbers (see Lens.acts).
-  const lens = new Float32Array(36) // and [32] to [35], the planet's view (eggs)
+  const lens = new Float32Array(48) // and [32] to [35], the planet's view (eggs); [36] to [47], the sun's tour
   // The picture as browser windows, and the ordinary page that breaks in (lens slots 0 and 1).
   // The lens times both from when they start (paneAt and brokenIn), so these two lengths go with the shader.
   const windowsDuration = 6.9
@@ -7275,6 +7735,7 @@ export function createShow(seed = 11) {
   // picture, 1 inside the terminal), when it set off for the other, and when
   // it comes back out by itself.
   const diveDuration = 2.7
+  let diveSpan = diveDuration // (the sun's tour goes in and comes out at its own pace)
   const diveStay = 20
   let diveFrom = 0
   let diveAt = null
@@ -7366,8 +7827,97 @@ export function createShow(seed = 11) {
   const mouthNow = [0, 0, 0, 0, 0, 0]
   const lastSaid = {}
   const mouthBusy = (time) => maw > 0.02 || time < roarUntil || (time >= cosmosAt && time < cosmosAt + COSMOS.lasts) || (time >= chorusAt && time < chorusAt + CHORUS.lasts)
+  // The tour: a speech the sun was recorded giving (audio/sun-tour.mp3), what its mouth and brows do all through
+  // it, measured thirty times a second (audio/sun-tour.json, see loadTour), and what it puts on as it goes (TOUR).
+  // While it lasts the sun says nothing else and nothing else is put on; a roar, or anything else that takes its
+  // mouth, cuts it short.
+  // The part of it being given: which ('intro' or 'steps'), when it began, when the recording would have begun
+  // (at), where in the recording this part begins and ends (from, ends), when it is over (until), its
+  // measurements, whether it has been heard yet, whether it is being given without sound, whether it was cut
+  // short, which of its cues is next.
+  let tour = null
+  let tourOver = -99
+  let tourCount = 0
+  let tourRuns = 0
+  let finished = false // it has been heard out
+  let tourNow = null // as the page is to show it: see tick
+  const touring = (time) => tour !== null && time < tour.until
+  // Whether the sun is showing somebody round the terminal: nothing else is to take its mouth meanwhile.
+  const guiding = () => tour !== null && !tour.cut && tour.part === 'steps'
+  // The terminal up close. It walks there, and back: how near it was when it set off, how near it is going
+  // (0 where it lives, 1 up close), when it set off and how long it takes; how near it is now; how many
+  // strides it has walked on the way (back again, fewer); when its next step is heard.
+  let nearFrom = 0, nearTo = 0, nearAt = -99, nearSpan = 1, present = 0, strides = 0, nextStep = 0
+  const presentAt = (time) => {
+    const k = clamp01((time - nearAt) / nearSpan)
+    return nearFrom + (nearTo - nearFrom) * k * k * (3 - 2 * k)
+  }
+  const walkTo = (time, to) => {
+    if (nearTo === to) return
+    nearFrom = presentAt(time)
+    nearTo = to
+    nearAt = time
+    nearSpan = TOUR.walk * Math.max(0.4, Math.abs(to - nearFrom))
+    nextStep = time
+  }
+  // The terminal asks to be looked into, until somebody has: when it next does, when a ring of light last went out
+  // from it, until when the sun glances at it, and its hop (when, how high, whether it has come down yet).
+  const STEP_FROM = [TOUR.from, 18.02, 27.42]
+  let visited = false, tourStep = 0, nextBeckon = 14, ringAt = -99, glanceUntil = -99, hopAt = -99, hopHigh = 0, hopLanded = true
+  const hopNow = (time, high) => {
+    if (time - jumpAt < 1.9 || time - hopAt < 1.4) return
+    hopAt = time
+    hopHigh = high
+    hopLanded = false
+    events.push({ kind: 'jump', x: 0.5 })
+  }
+  const cutTour = (time) => {
+    if (!tour || tour.cut) return
+    tour.cut = true
+    tour.cutAt = time
+    tour.cutT = time - tour.at
+    events.push({ kind: 'hush', x: 0 })
+    if (tour.part !== 'steps') {
+      tour.until = Math.min(tour.until, time + 0.3)
+      return
+    }
+    // (Up close, the terminal walks back, and what is on its screen stays there until it has. Broken off, the lasers go out.)
+    if (tour.aside) {
+      beam.until = Math.min(beam.until, time)
+      for (const m of tour.aside.targets) delete m.zapped
+    }
+    walkTo(time, 0)
+    tour.until = Math.max(time + 0.3, nearAt + nearSpan)
+  }
+  // What the sound is told to give of the recording from offset seconds in, delay seconds from now: as far as the
+  // part goes, or to where it next breaks off.
+  const tourSound = (offset, delay = 0) => ({
+    kind: 'tour', x: 0, id: tour.id, offset, delay, swell: TOUR.swell, rise: 0.03,
+    ...(tour.segEnd < tour.data.duration - 0.02 ? { duration: tour.segEnd - offset, fade: tour.part === 'intro' ? 0.09 : 0.03 } : {}),
+  })
+  // A part of the tour begins: data is what loadTour() gave. Whatever the sun was saying, it stops. (The sound is
+  // told which part, from where to where in the recording, and how long from now; silent, it is told nothing.)
+  const beginTour = (time, data, part, silent = false) => {
+    if (saying) {
+      if (saying.cut === Infinity) events.push({ kind: 'hush', x: 0 })
+      saying = null
+    }
+    const whole = data.duration > 0 ? data.duration : data.open.length / data.fps
+    const startAt = part === 'steps' ? (STEP_FROM[tourStep] ?? TOUR.from) : TOUR.hello
+    const [from, ends, lead, tail] = part === 'intro' ? [Math.min(TOUR.hello, whole), Math.min(TOUR.intro, whole), 0, 0.3] : [Math.min(startAt, whole), whole, TOUR.lead, TOUR.tail]
+    const at = time + lead - from
+    // (Shown round, it breaks off once at an unseen stop ahead of where this visit begins.)
+    const ahead = part === 'steps' && data.asides ? TOUR.asides.filter(([stop, back]) => stop > from + 0.5 && back < ends) : []
+    const stops = ahead.length ? [ahead[tourRuns++ % ahead.length]] : []
+    let cue = 0
+    while (part === 'steps' && cue < TOUR.cues.length && TOUR.cues[cue][0] < from) cue++
+    // (Taking over from the other part, it is the sound that stops that one: no word of it is to reach the new one.)
+    tour = { part, id: ++tourCount, began: time, at, from, ends, tail, until: at + ends + tail, data, heard: false, silent, voices: 0, cut: false, cue, cosmos: false, stops, aside: null, segEnd: stops[0]?.[0] ?? ends }
+    lineAt = at + ends
+    if (!silent) events.push(tourSound(from, lead))
+  }
   const utterance = (time, line) => {
-    if (!SAYINGS[line]) return false
+    if (!SAYINGS[line] || touring(time)) return false
     saying = { line, at: time, length: lineLength(line), cut: Infinity }
     lineAt = time
     events.push({ kind: 'say', line, x: 0 })
@@ -7376,7 +7926,7 @@ export function createShow(seed = 11) {
   }
   const speak = (time, when, odds = 1 / 3) => {
     // (The few it always says, odds 1, are not kept back by the nine seconds.)
-    if (saying || (odds < 1 && time - lineAt < 9) || mouthBusy(time) || hosting(time)) return false
+    if (saying || touring(time) || (odds < 1 && time - lineAt < 9) || mouthBusy(time) || hosting(time)) return false
     if (voiceRandom() >= odds) return false
     const pool = SAYINGS.map(([w], i) => (w === when ? i : -1)).filter((i) => i >= 0)
     if (!pool.length) return false
@@ -8069,26 +8619,238 @@ export function createShow(seed = 11) {
       if (beam.held) Object.assign(beam, { held: false, until: time + 0.12 })
     },
     roar(time) {
-      if(hosting(time)) return false
+      if(hosting(time) || guiding()) return false
       roarUntil = time + 3.6
       say('roar')
     },
     // The sun is pleased to see whoever has just come, and the planet winks at them.
-    greet(time) {
+    // (With its tour to give, data, it gives the first part of that, the welcome, instead of a word of greeting.)
+    greet(time, data = null) {
       gladAt = time
       winkAt = time + 0.45
       events.push({ kind: 'wink', x: 0 })
-      speak(time, 'greet', 1)
+      if (!visited) nextBeckon = time + TOUR.beckon
+      if (!(data && this.tour(time, data))) speak(time, 'greet', 1)
+    },
+    // The sun gives the first part of its tour, the welcome, and leaves it at that: data is what loadTour() gave.
+    // Says whether it could.
+    tour(time, data) {
+      if (!data?.open?.length || !(data.fps > 0) || touring(time) || time - tourOver < 2.5 || hosting(time) || maw > 0.02 || time < roarUntil || diveAt !== null || diveFrom || nearTo > 0 || notice) return false
+      beginTour(time, data, 'intro')
+      return true
+    },
+    // The visitor looks into the terminal: it walks up close, and the sun gives the rest of its tour on its screen,
+    // from "Step one", whatever it was saying. (silent: with no sound to keep time by, it is given by the picture's
+    // own clock.) Says whether it set off: not with no tour to give, or with something else in the way.
+    visit(time, data = null, silent = false) {
+      if (!machine || !data?.open?.length || !(data.fps > 0) || hosting(time) || notice || diveAt !== null || diveFrom) return false
+      // (If it was roaring, it shuts its mouth: it has something to say.)
+      roarUntil = Math.min(roarUntil, time)
+      sweep = null
+      visited = true
+      beginTour(time, data, 'steps', silent)
+      walkTo(time, 1)
+      events.push({ kind: 'zoom', x: 0.4 })
+      return true
+    },
+    // The terminal walks back to where it lives, and the tour of it stops there. Says whether it was up close.
+    leave(time) {
+      if (!(nearTo > 0)) return false
+      if (guiding()) cutTour(time)
+      walkTo(time, 0)
+      return true
+    },
+    // (For whoever is framing it: it stands k of the way there, with no tour.)
+    pose(k) {
+      nearFrom = nearTo = clamp01(Number(k) || 0)
+      nearAt = -99
+      visited = visited || nearTo > 0
+    },
+    // Whether the terminal is up close, or on its way there.
+    get near() {
+      return nearTo > 0
+    },
+    get nextStep() {
+      return tourStep
+    },
+    beckonHover(time) {
+      if (time - ringAt < 1.1 || nearTo > 0) return
+      ringAt = time
+    },
+    // The part of the tour that is being given without sound can be heard after all: the sound is told where it
+    // has got to, and it goes on by the sound's clock. Says whether there was such a part. (Not while it has
+    // broken off: it is joined when it picks up again.)
+    voice(time) {
+      if (!guiding() || !tour.silent || tour.voices >= 4 || tour.aside) return false
+      const t = time - tour.at
+      if (t > Math.min(tour.ends - 0.5, tour.segEnd - 0.2)) return false
+      Object.assign(tour, { silent: false, heard: false, began: time, voices: tour.voices + 1, id: ++tourCount })
+      events.push(tourSound(Math.max(t, tour.from), Math.max(0, tour.from - t)))
+      return true
+    },
+    // Whether it is giving its tour, and which part of it ('intro', 'steps', or null).
+    get touring() {
+      return touring(now)
+    },
+    get tourPart() {
+      return touring(now) && !tour.cut ? tour.part : null
+    },
+    // What the sound is to know what is being said just now by (see tourTime in sound.js).
+    get tourId() {
+      return tour ? tour.id : 0
+    },
+    // In the middle of showing somebody round, the sun breaks off: "excuse me", the terminal steps aside, three of
+    // the little walkers are dealt with, "much better", the terminal comes back, and on it goes from where it was.
+    // stop is [where in the recording it broke off, where it picks up]. The recording waits there meanwhile.
+    asideBegin(time, stop) {
+      // (Up to four of the walkers are steered to where the sun can see them: those nearest to there already.)
+      const targets = minis
+        .filter((m) => !m.gone && !(lift && lift.m === m))
+        .sort((a, b) => Math.abs(a.z - view.z - 30) - Math.abs(b.z - view.z - 30))
+        .slice(0, 4)
+      for (const m of targets) if (m.struckAt) Object.assign(m, { struckAt: 0, dead: 0 })
+      tour.aside = { stop, phase: 'excuse', began: time, at: time, clip: null, targets, order: [], last: null, up: false }
+      tour.at = time - stop[0]
+      this.asideClip(time, 'excuse')
+    },
+    // It says one of the two things it has to say in an aside.
+    asideClip(time, name) {
+      const data = tour.data.asides[name]
+      tour.aside.clip = { data, at: time, length: data.duration }
+      if (tour.silent) return
+      tour.id = ++tourCount
+      events.push({ kind: 'tour', x: 0, id: tour.id, clip: `sun-${name}`, offset: 0 })
+    },
+    // Where the nth of the walkers it means to have is to stand: on dry land a little way up the valley, either side of the river.
+    asideSlot(n) {
+      const z = view.z + 25 + 4.5 * n
+      return [world.river(z) + [-5.5, 4.5, -3.2, 6.5][n % 4], z]
+    },
+    asideTick(time, heard, width) {
+      const a = tour.aside
+      tour.at = time - a.stop[0]
+      if (a.clip && heard !== null && !tour.silent) a.clip.at = time - heard
+      const since = time - a.at
+      if (a.phase === 'excuse') {
+        // (The terminal sets off back as it finishes saying so.)
+        if (time - a.clip.at >= a.clip.length - 0.2) {
+          Object.assign(a, { phase: 'back', at: time })
+          walkTo(time, 0)
+        }
+      } else if (a.phase === 'back') {
+        if (since < TOUR.aside.back) return
+        // Whoever is not where they can be seen by now is put there. Three of them are for it, from one side to the other.
+        const seen = (m) => onHero(m.x, world.ground(m.x, m.z) + 0.6 * world.mini, m.z)
+        a.targets.forEach((m, n) => {
+          const [x] = seen(m)
+          if (m.z - view.z > 15 && m.z - view.z < 50 && x > 0.08 * width && x < 0.72 * width) return
+          const [sx, sz] = this.asideSlot(n)
+          Object.assign(m, { x: sx, z: sz, speed: 0, gone: 0, struckAt: 0, dead: 0 })
+        })
+        a.order = a.targets.map((m) => [m, seen(m)[0]]).sort((p, q) => p[1] - q[1]).slice(0, 3).map(([m]) => m)
+        Object.assign(a, { phase: 'zap', at: time, clip: null })
+      } else if (a.phase === 'zap') {
+        const seen = (m) => onHero(m.x, world.ground(m.x, m.z) + 0.6 * world.mini, m.z)
+        const [wait, dwell] = [0.5, 0.92]
+        const n = Math.floor((since - wait) / dwell)
+        if (since >= wait && n < a.order.length) {
+          // Its lasers go to each in turn, and stay on it until it is done for.
+          const m = a.order[n]
+          const into = since - wait - n * dwell
+          const to = m.gone ? a.last ?? [view.cx, size[1] - 0.6 * world.horizon] : seen(m)
+          const e = n > 0 && a.from ? smooth(0, 0.26, into) : 1
+          const aim = e < 1 ? [a.from[0] + (to[0] - a.from[0]) * e, a.from[1] + (to[1] - a.from[1]) * e] : to
+          if (e >= 1) a.last = to
+          if (into > dwell - 0.05) a.from = a.last
+          Object.assign(beam, { x: aim[0], y: aim[1], until: time + 0.12, burning: null })
+          if (!m.zapped && !m.gone && e >= 1 && beam.power > 0.5 && into >= 0.3) {
+            if (!m.struckAt) {
+              m.struckAt = time
+              say('fried', to[0], to[1] - 24)
+              burst(to[0], to[1], 8, 0, 220)
+            }
+            m.zapped = time
+            events.push({ kind: 'scream', x: Math.max(-1, Math.min(1, (to[0] - view.cx) / 700)) })
+            kindle(m.x, m.z, time, random() * 6.283)
+            burst(to[0], to[1], 6, 1, 170)
+            shake = Math.max(shake, 0.3)
+          }
+        }
+        // What is hit burns a moment, and goes up in smoke.
+        for (const m of a.order) {
+          if (!m.zapped || m.gone || time - m.zapped < 0.75) continue
+          const [x, y, k] = seen(m)
+          for (let i = 0; i < 7; i++) add({ x: x + 16 * (random() - 0.5), y: y - 6 * random(), vx: 46 * (random() - 0.5), vy: -60 - 70 * random(), life: 1, fade: 1 / (0.55 * (0.9 + 0.8 * random())), kind: 8, seed: random() })
+          burst(x, y - 0.4 * k, 9, 0, 150)
+          m.gone = time + 9
+          delete m.zapped
+        }
+        if (since >= TOUR.aside.zap) {
+          for (const m of a.targets) delete m.zapped
+          Object.assign(a, { phase: 'resume', at: time })
+          gladAt = time
+          this.asideClip(time, 'resume')
+        }
+      } else {
+        // "Now, where were we?": the terminal walks up again, and when that is said the recording goes on.
+        const into = time - a.clip.at
+        if (!a.up && into >= TOUR.aside.up) {
+          a.up = true
+          walkTo(time, 1)
+        }
+        if (into < a.clip.length) return
+        tour.stops.shift()
+        Object.assign(tour, { aside: null, at: time - a.stop[1], segEnd: tour.stops[0]?.[0] ?? tour.ends, heard: false, began: time })
+        if (!tour.silent) {
+          tour.id = ++tourCount
+          events.push(tourSound(a.stop[1]))
+        }
+      }
+    },
+    // The sun stops what it is saying.
+    hush(time) {
+      cutTour(time)
+      if (saying && saying.cut === Infinity) {
+        saying.cut = time
+        events.push({ kind: 'hush', x: 0 })
+      }
+    },
+    // What the tour puts on at each of its cues (see TOUR.cues).
+    tourCue(name, time) {
+      const [width, height] = size
+      const bolt = () => strike(width * (0.12 + 0.76 * random()), height - 40 - 110 * random(), time)
+      if (name === 'leave') walkTo(time, 0)
+      else if (name === 'snake') {
+        if (!crossing) nextSnake = time
+      } else if (name === 'bolt') bolt()
+      else if (name === 'jolt') {
+        shake = Math.max(shake, 0.55)
+        bolt()
+      } else if (name === 'unfold') this.unfold(time)
+      else if (name === 'cosmos') tour.cosmos = true
+      else if (name === 'rainbow') {
+        if (time - rainbowFrom > 17) {
+          rainbowFrom = time
+          say('rainbow')
+        }
+      } else if (name === 'finale') {
+        shake = 1
+        gladAt = time
+        bolt()
+        flowerRing(time)
+        if (tour.sun) for (let i = 0; i < 6; i++) burst(tour.sun[0] + 1.5 * tour.sun[2] * Math.cos(i * 1.047), tour.sun[1] + 1.5 * tour.sun[2] * Math.sin(i * 1.047), 6, i % 2 ? 1 : 2, 190)
+        if (time - chorusAt > CHORUS.lasts) this.chorus(time)
+      }
     },
     // The sun says line n of SAYINGS, or its next catchphrase. Says whether it could.
     say(time, line) {
-      if (saying || mouthBusy(time) || hosting(time)) return false
+      if (saying || touring(time) || mouthBusy(time) || hosting(time)) return false
       return utterance(time, line ?? catchLines[catchCount++ % catchLines.length])
     },
     strike,
     // Swap day for night, or night for day, now. The planet winks.
     turnOver(time) {
-      if(hosting(time)) return false
+      if(hosting(time) || guiding()) return false
       winkAt = time
       turnOver(time)
     },
@@ -8267,14 +9029,17 @@ export function createShow(seed = 11) {
     // The eye dives into the terminal's screen; inside, it dives on through
     // the screen of the terminal in there and is out in the picture again.
     dive(time) {
-      if (diveAt !== null || !machine) return false
+      if (diveAt !== null || !machine || nearTo > 0 || present > 0.02) return false
       diveAt = time
+      diveSpan = diveDuration
       diveBack = Infinity
       events.push({ kind: 'zoom', x: machine && view ? Math.max(-1, Math.min(1, (machine[0] - view.cx) / 700)) : 0.4 })
       return true
     },
     // Out of the terminal, if the eye is in it or on its way in. Says whether it was.
+    // (Up close, the terminal walks back instead; either way the sun's tour of it stops there.)
     surface(time) {
+      if (this.leave(time)) return true
       if (diveAt === null) return diveFrom === 1 && this.dive(time)
       if (diveFrom === 0) diveBack = 0
       return true
@@ -8320,7 +9085,7 @@ export function createShow(seed = 11) {
     },
     // The line is cast, and something comes of it: each cast something else.
     cast(time) {
-      if (!view || time - castAt < 0.6) return
+      if (!view || time - castAt < 0.6 || guiding()) return
       castAt = time
       const line = script.at(-1)
       spells = (spells + 1 + (line.mine ? line.length : 0)) % 11
@@ -8403,7 +9168,7 @@ export function createShow(seed = 11) {
     },
     // Tickled too often, the sun loses its temper. By day, and not while anything else has it.
     tantrum(time) {
-      if (!view || hosting(time) || sweep || notice || beam.held || orb.moon || time - orb.from < 10 || orb.next - time < 8 || time - maskAt < maskDuration) return false
+      if (!view || hosting(time) || guiding() || sweep || notice || beam.held || orb.moon || time - orb.from < 10 || orb.next - time < 8 || time - maskAt < maskDuration) return false
       const [width, height] = size
       const way = random() < 0.5 ? -1 : 1
       const [near, far] = [height - 0.42 * world.horizon, height - 0.78 * world.horizon]
@@ -8442,8 +9207,143 @@ export function createShow(seed = 11) {
     get diving() {
       return diveAt !== null || diveFrom !== 0
     },
-    tick(time, dt, { width, height, sun, pointer = null, focal = 760, machine: stands = null, song = 0, hurry = 0, planet: eyeball = null }) {
+    // (heard: how far into its tour the sun is being heard to be, in seconds, or null when it is not being heard.)
+    tick(time, dt, { width, height, sun, pointer = null, focal = 760, machine: stands = null, song = 0, hurry = 0, planet: eyeball = null, heard = null }) {
       now = time
+      // The terminal's walk up close and back: how near it is now, the strides it takes, and each step heard.
+      present = presentAt(time)
+      if (nearFrom !== nearTo && time < nearAt + nearSpan) {
+        strides += dt * 2.5 * Math.sign(nearTo - nearFrom)
+        if (time >= nextStep) {
+          nextStep = time + 0.23
+          events.push({ kind: 'step', x: 0.5 })
+        }
+      }
+      // The sun's tour keeps time with its recording where that can be heard, whatever the picture's own clock
+      // does; it stops if the recording does (or never starts), and is cut short by anything else that takes the sun's mouth.
+      // (heard is how far into whatever it is saying just now: the recording, whichever part is being given, or
+      // one of the two things it says in an aside. A part that loses its sound goes on without it if the terminal
+      // is up close for it, by the picture's clock; the welcome just stops.)
+      tourNow = null
+      let look = null // where the sun is to look, if anywhere: a point of the hero, and how hard it turns to it
+      if (tour && !tour.cut) {
+        if (tour.aside) this.asideTick(time, heard, width)
+        else {
+          if (heard !== null && !tour.silent) {
+            tour.heard = true
+            tour.at = time - Math.min(heard, tour.segEnd)
+          } else if (!tour.silent && (tour.heard ? time - tour.at < tour.segEnd - 0.4 : time - tour.began > 1.5)) {
+            if (tour.part === 'steps') tour.silent = true
+            else cutTour(time)
+          }
+          if (!tour.cut && tour.stops.length && time - tour.at >= tour.stops[0][0] && view) this.asideBegin(time, tour.stops[0])
+        }
+        if (!tour.cut) tour.until = tour.at + tour.ends + tour.tail
+        // (Anything else that takes its mouth cuts the welcome short. Showing somebody round the terminal, nothing else is let take it.)
+        if (!tour.cut && (hosting(time) || notice || (tour.part === 'intro' && (maw > 0.02 || time < roarUntil)))) cutTour(time)
+      }
+      if (tour && time >= tour.until) {
+        tourOver = time
+        tour = null
+        lens.fill(0, 36, 45)
+      }
+      // (Cut short up close, what was on the terminal's screen stays on it until it has walked back.)
+      if (tour && tour.cut && tour.part === 'steps') {
+        lens[36] = smooth(0.55, 0.92, present)
+        lens[38] = 0
+        lens[44] *= Math.exp(-dt * 6)
+        if (present > 0.05) tourNow = { part: 'steps', t: tour.cutT, from: tour.from, inside: true, data: tour.data, craze: lens[37], wild: 0, hurry: null, open: 0, aside: null }
+      }
+      let glow = 0 // how brightly the terminal is lit, asking to be looked into
+      if (tour && !tour.cut && tour.part === 'intro') {
+        // (The welcome: nothing else is put on while it is given, and the valley is the visitor's to fly as they like.
+        // At "Come closer" the sun looks at the terminal, which lights up; at "look inside" the terminal hops.)
+        const t = time - tour.at
+        stageUntil = Math.max(stageUntil, tour.until + 1.5)
+        nextShot = Math.max(nextShot, tour.until + 1.5)
+        nextRoar = Math.max(nextRoar, tour.until + 4)
+        nextSaying = Math.max(nextSaying, tour.until + 9)
+        if (!visited) nextBeckon = Math.max(nextBeckon, tour.until + 0.6)
+        if (t >= TOUR.glance && !visited) {
+          glow = smooth(TOUR.glance, TOUR.glance + 0.5, t)
+          if (machine) look = [machine[0], machine[1], 2.2]
+          if (!tour.rang) {
+            tour.rang = true
+            ringAt = time
+          }
+          if (t >= TOUR.hop && !tour.hopped) {
+            tour.hopped = true
+            ringAt = time
+            hopNow(time, 3.2)
+          }
+        }
+        tourNow = { part: 'intro', t, from: tour.from, inside: false, data: tour.data, craze: 0, wild: 0, hurry: null, open: 0, aside: null }
+      }
+      // Until somebody has looked into it, the terminal keeps hopping eagerly, sending out golden rings while the sun glances down at it.
+      if (!visited && !tour && time >= nextBeckon) {
+        if (machine && sun && diveAt === null && !diveFrom && !notice && !hosting(time) && maw < 0.05 && time > roarUntil) {
+          ringAt = time
+          glanceUntil = time + 1.8
+          hopNow(time, 3.0)
+          nextBeckon = time + TOUR.beckon
+        } else nextBeckon = time + 0.6
+      }
+      if (time < glanceUntil && machine && !look) look = [machine[0], machine[1], 1.9]
+      {
+        const rung = time - ringAt
+        if (!visited && ringAt > -90) glow = Math.max(glow, 0.55)
+        if (rung >= 0 && rung < 2.4) glow = Math.max(glow, 1 - smooth(0.5, 2.4, rung))
+        lens[45] = glow * (1 - present)
+        lens[46] = rung >= 0 && rung < 2.4 && present < 0.2 ? 2.4 - rung : 0 // (what is left of the ring's 2.4 seconds)
+      }
+      if (tour && !tour.cut && tour.part === 'steps') {
+        const t = time - tour.at
+        const aside = tour.aside
+        tour.sun = sun
+        if (t >= 17.5 || (aside && aside.stop[0] < 20)) tourStep = Math.max(tourStep, 1)
+        if (t >= 26.8 || (aside && aside.stop[0] > 20)) tourStep = Math.max(tourStep, 2)
+        if (t >= TOUR.done) {
+          finished = true
+          tourStep = 0
+        }
+        for (; tour.cue < TOUR.cues.length && t >= TOUR.cues[tour.cue][0]; tour.cue++) this.tourCue(TOUR.cues[tour.cue][1], time)
+        // Its lasers go about the valley while it shouts, and are out before the sky opens.
+        if (sun && view && t >= TOUR.lasers[0] && t < TOUR.lasers[1]) {
+          const k = (t - TOUR.lasers[0]) / (TOUR.lasers[1] - TOUR.lasers[0])
+          const [near, far] = [height - 0.4 * world.horizon, height - 0.8 * world.horizon]
+          Object.assign(beam, { x: width * (0.5 - 0.42 * Math.sin(k * Math.PI * 2)), y: far + (near - far) * (0.5 - 0.5 * Math.cos(k * Math.PI * 3)), until: time + 0.15 })
+        }
+        if (tour.cosmos && (t > 42 || this.cosmos(time))) tour.cosmos = false
+        // (However long the picture's clock makes of it, nothing else is put on until it is done, the day waits,
+        // and the sun neither weeps nor is rained on.)
+        stageUntil = Math.max(stageUntil, tour.until + 2.5)
+        nextShot = Math.max(nextShot, tour.until + 1.5)
+        nextRoar = Math.max(nextRoar, tour.until + 4)
+        nextSaying = Math.max(nextSaying, tour.until + 9)
+        nextLift = Math.max(nextLift, tour.until + 3)
+        // (Day or night, whichever it is stays: a sun half way down has no lasers to break off with.)
+        orb.next = Math.max(orb.next, tour.until + 12)
+        if (cry.from > time && cry.from < tour.until + 6) cry = { ...cry, from: tour.until + 12, until: tour.until + 12 + cry.until - cry.from }
+        if (storm.from > time && storm.from < tour.until + 6) storm = { from: tour.until + 10, until: tour.until + 24 }
+        // Where it looks: at the walkers it means to have, while it is put out with them; otherwise, a little, at the terminal's screen.
+        if (aside && aside.phase !== 'resume' && view) {
+          const spots = aside.targets.filter((m) => !m.gone).map((m) => onHero(m.x, world.ground(m.x, m.z), m.z))
+          look = spots.length ? [spots.reduce((sum, at) => sum + at[0], 0) / spots.length, spots.reduce((sum, at) => sum + at[1], 0) / spots.length, 2.4] : null
+        } else if (!aside && present > 0.4 && machine) look = [machine[0], machine[1] - 0.25 * machine[2], 0.7]
+        // What the lens is to make of it (see term, termK and termQ in the lens's uniforms).
+        const flash = aside ? 0 : tourFlash(t)
+        lens[36] = smooth(0.55, 0.92, present)
+        lens[37] = tourTrack(TOUR.craze, t)
+        lens[38] = flash
+        // (The glass is a small tube: its colours come less far apart on it, and its rows jump less far.)
+        lens[39] = 0.38 * tourTrack(TOUR.apart, t) + 2 * flash
+        lens[40] = 0.8 * tourTrack(TOUR.sway, t) + 0.5 * flash
+        lens[41] = Math.min(1, 0.75 * tourTrack(TOUR.jump, t) + 0.4 * flash)
+        lens[42] = tourTrack(TOUR.hot, t)
+        lens[43] = 0
+        lens[44] = tourTrack(TOUR.wild, t)
+        tourNow = { part: 'steps', t, from: tour.from, inside: present > 0.05, silent: tour.silent && tour.voices < 4 && !aside, data: tour.data, craze: lens[37], wild: lens[44], hurry: aside ? 0.2 : tourTrack(TOUR.hurry, t), open: 0, aside: aside ? aside.phase : null }
+      }
       if(sun && offstage(time)){
         if(time>=nextBoss){this.boss(time)}
         else if(time>=nextTease && time<14 && this.boss(time,true)){nextTease=Infinity}
@@ -8497,11 +9397,12 @@ export function createShow(seed = 11) {
       let deep = diveFrom
       let rush = 0
       if (diveAt !== null) {
-        const gone = clamp01((time - diveAt) / diveDuration)
+        const gone = clamp01((time - diveAt) / diveSpan)
         if (gone >= 1) {
           diveFrom = 1 - diveFrom
           diveAt = null
           deep = diveFrom
+          // (On its tour the sun says when to come out.)
           if (diveFrom) diveBack = Math.min(diveBack, time + diveStay)
         } else {
           const [a, b] = [gone ** 2.2, (1 - gone) ** 2.2]
@@ -8889,6 +9790,12 @@ export function createShow(seed = 11) {
           const z = view.z + 26 + 18 * m.seed
           goal = [world.river(z) + (i % 2 ? 1 : -1) * (2.8 + 3 * m.seed), z]
         }
+        // (The sun has broken off its tour to deal with a few of them: those go where it can see them, and quickly.)
+        const wanted = tour && !tour.cut && tour.aside && !m.struckAt ? tour.aside.targets.indexOf(m) : -1
+        if (wanted >= 0) {
+          goal = this.asideSlot(wanted)
+          face = null
+        }
         if (goal[1] - view.z < 19) goal[1] = view.z + 24 // never left behind
         // They run from the compliance officers and their grey.
         if (audit && audit.rank && !audit.tame) {
@@ -8921,8 +9828,8 @@ export function createShow(seed = 11) {
         let turn = aim - m.heading
         turn -= Math.PI * 2 * Math.round(turn / (Math.PI * 2))
         m.heading += Math.max(-4 * dt, Math.min(4 * dt, turn * Math.min(1, dt * 7)))
-        const want = m.dead > 0.08 || there ? 0 : Math.min(3.6, 0.5 + far * 1.3) * Math.max(0, Math.cos(turn))
-        m.speed += Math.max(-7 * dt, Math.min(4 * dt, want - m.speed))
+        const want = m.dead > 0.08 || there ? 0 : Math.min(wanted >= 0 ? 8 : 3.6, 0.5 + far * 1.3) * Math.max(0, Math.cos(turn))
+        m.speed += Math.max(-7 * dt, Math.min((wanted >= 0 ? 14 : 4) * dt, want - m.speed))
         m.x += Math.sin(m.heading) * m.speed * dt
         m.z += Math.cos(m.heading) * m.speed * dt
         m.stride += (clamp01(m.speed / 1.5) - m.stride) * Math.min(1, dt * 8)
@@ -8947,6 +9854,22 @@ export function createShow(seed = 11) {
       if (sinceJump >= 0 && sinceJump < 0.16) hop[1] = -0.16 * (sinceJump / 0.16)
       else if (sinceJump < 0.9) hop[0] = 4.6 * ((sinceJump - 0.16) / 0.74) * (1 - (sinceJump - 0.16) / 0.74)
       else if (sinceJump < 1.8) hop[1] = -0.2 * Math.exp(-(sinceJump - 0.9) * 7) * Math.cos((sinceJump - 0.9) * 20)
+      // And its little hop, asking to be looked into: the same, smaller, and it comes down without breaking anything.
+      const sinceHop = time - hopAt
+      if (hop[0] === 0 && hop[1] === 0 && sinceHop >= 0 && sinceHop < 1.6) {
+        const air = 0.34 + 0.1 * hopHigh
+        if (sinceHop < 0.12) hop[1] = -0.05 * hopHigh * (sinceHop / 0.12)
+        else if (sinceHop < 0.12 + air) hop[0] = 1.2 * hopHigh * ((sinceHop - 0.12) / air) * (1 - (sinceHop - 0.12) / air)
+        else {
+          hop[1] = -0.06 * hopHigh * Math.exp(-(sinceHop - 0.12 - air) * 8) * Math.cos((sinceHop - 0.12 - air) * 22)
+          if (!hopLanded) {
+            hopLanded = true
+            events.push({ kind: hopHigh > 2.5 ? 'slam' : 'step', x: 0.5 })
+            if (hopHigh > 2.5) shake = Math.max(shake, 0.3)
+            if (machine) for (let i = 0; i < 2; i++) add({ x: machine[0] + 0.7 * machine[2] * (i - 0.5), y: machine[1] + 0.82 * machine[2], vx: 110 * (i - 0.5), vy: -50 - 30 * random(), life: 1, fade: 1 / (0.55 * 0.8), kind: 8, seed: random() })
+          }
+        }
+      }
       const slam = !slammed && sinceJump >= 0.9
       if (slam) slammed = true
       shake = Math.max(0, shake - dt * 2.2)
@@ -9186,7 +10109,7 @@ export function createShow(seed = 11) {
       const rapt = time > trance.from && time < trance.until && !firing && sinking === 0
       // Its flames whirl while it roars, fires, weeps or is entranced: the two rings
       // opposite ways and at different rates, running down afterwards.
-      const wild = Math.max(maw, 0.5 * beam.power, rapt ? 0.45 : 0, time >= unfoldAt && time < unfoldAt + unfoldDuration ? 0.8 : 0, tears > 0.3 ? 0.25 : 0)
+      const wild = Math.max(maw, 0.5 * beam.power, rapt ? 0.45 : 0, time >= unfoldAt && time < unfoldAt + unfoldDuration ? 0.8 : 0, tears > 0.3 ? 0.25 : 0, tourNow ? tourNow.wild : 0)
       whirling += (wild - whirling) * Math.min(1, dt * (wild > whirling ? 2.2 : 0.7))
       if (whirling < 0.002 && wild === 0) whirling = 0
       whirl[0] = (whirl[0] + dt * 2.3 * whirling * (1 + 0.35 * Math.sin(time * 0.9))) % (Math.PI * 2)
@@ -9226,17 +10149,53 @@ export function createShow(seed = 11) {
       }
       // The mouth reads the same timeline as the voice, easing in from the smile and back to it.
       let talking = 0
-      if (saying) {
+      const toured = touring(time)
+      // (How far it has lost its head: not at all while it explains, altogether once the terminal has left it the picture.)
+      const lost = toured && !tour.aside ? smooth(TOUR.swell, TOUR.swell + 0.8, time - tour.at) : 0
+      // What it is saying just now: the recording, or, broken off, one of the two things it says then (or nothing,
+      // while its lasers are out): its measurements, how far into them it is, and from when to when it is said.
+      const aside = toured && !tour.cut ? tour.aside : null
+      const speech = !toured
+        ? null
+        : aside
+          ? aside.clip && { data: aside.clip.data, into: time - aside.clip.at, from: aside.clip.at, until: aside.clip.at + aside.clip.length }
+          : { data: tour.data, into: tour.cut ? tour.cutT : time - tour.at, from: tour.at + tour.from, until: Math.min(tour.until, tour.at + tour.ends) }
+      if (speech) {
+        // Its mouth is read from the measurements, between one thirtieth of a second and the next.
+        const { data } = speech
+        const end = data.open.length - 1
+        const at = Math.max(0, Math.min(end, speech.into * data.fps))
+        const i = Math.floor(at), j = Math.min(end, i + 1), f = at - i
+        const read = (list) => clamp01((list[i] ?? 0) + ((list[j] ?? 0) - (list[i] ?? 0)) * f)
+        const open = read(data.open), round = read(data.round)
+        // (Opened a little wider than a line of its own is: it is a small mouth, a long way off, with a lot to say.
+        // Shouting, wider still.)
+        mouthNow[0] = (1.35 + 0.25 * lost) * open ** (0.8 - 0.08 * lost)
+        mouthNow[1] = round
+        mouthNow[2] = smooth(0, 0.15, open) * (1 - smooth(0.2, 0.7, open)) * (1 - 0.7 * round) // teeth, while the jaw is nearly shut
+        mouthNow[3] = 0
+        mouthNow[4] = read(data.brow)
+        // (It says nothing of what comes before this part of it, while the terminal is on its way; and nothing more once it is cut short.)
+        mouthNow[5] = talking = smooth(speech.from, speech.from + 0.2, time) * (1 - smooth(speech.until - 0.3, speech.until, time)) * (tour.cut ? 1 - smooth(tour.cutAt, tour.cutAt + 0.15, time) : 1)
+        if (tourNow) tourNow.open = clamp01(open) * talking
+      } else if (toured) {
+        mouthNow.fill(0)
+      } else if (saying) {
         mouthAt(saying.line, time - saying.at, mouthNow)
         talking = mouthNow[5] * (saying.cut < Infinity ? 1 - smooth(saying.cut, saying.cut + 0.12, time) : 1)
       }
-      const into = saying ? time - saying.at : 0
-      const blinkAt = saying ? 0.42 * saying.length : 0
+      const into = toured ? (aside ? time - aside.began : time - tour.at) : saying ? time - saying.at : 0
+      // (A blink in the middle of a line; through the tour, one every four seconds or so.)
+      const blinkAt = toured ? Math.floor((into + 2.4) / 4.3) * 4.3 - 2.4 + 0.1 : saying ? 0.42 * saying.length : 0
       const talk = [mouthNow[0], mouthNow[1], mouthNow[2], mouthNow[3]]
-      const talkFace = [mouthNow[4] * talking, saying ? 1 - smooth(0, 0.08, Math.abs(into - blinkAt)) : 0, talking, 0]
-      // It leans toward the terminal while it speaks, and nods on the stressed words.
+      const talkFace = [mouthNow[4] * talking, toured || saying ? 1 - smooth(0, 0.08, Math.abs(into - blinkAt)) : 0, talking, 0]
+      // It leans toward the terminal while it speaks, and nods on the stressed words. (Giving its tour it speaks
+      // to whoever is looking: it leans that way only a little, and sways as it goes; shouting, it throws its head about.)
+      const toward = sun && stands ? Math.max(-1, Math.min(1, (stands[0] - sun[0]) / (width * 0.5))) : 0
       const nod = sun && stands && talking > 0
-        ? [Math.max(-1, Math.min(1, (stands[0] - sun[0]) / (width * 0.5))) * 0.2 * talking, (-0.05 + 0.05 * mouthNow[4]) * talking]
+        ? toured
+          ? [(0.06 * toward * (1 - lost) + (0.05 + 0.09 * lost) * Math.sin(into * (0.83 + 2.1 * lost))) * talking, (-0.05 + (0.08 + 0.1 * lost) * mouthNow[4]) * talking]
+          : [toward * 0.2 * talking, (-0.05 + 0.05 * mouthNow[4]) * talking]
         : [0, 0]
 
       const glad = time - gladAt < 3
@@ -9260,6 +10219,27 @@ export function createShow(seed = 11) {
         wants.brow = Math.max(wants.brow, 0.85 * glare)
         wants.lids = Math.max(wants.lids, 0.3 * glare)
         wants.smile = Math.min(wants.smile, 0.3 - 0.8 * glare)
+      }
+      // Giving its tour it is pleased with itself: a smile, lids a little lowered, and eyes that open with its
+      // brows. Out of the terminal again it has lost its head: all teeth, eyes wide, and lit from inside once the sky is open.
+      // (Broken off: put out with the little walkers, eyes narrowed; then furious, while its lasers are on them; and
+      // then very pleased with itself.)
+      if (toured && maw <= 0.15 && tears <= 0.3) {
+        const lift = mouthNow[4] * talking
+        if (aside && aside.phase === 'resume') {
+          Object.assign(wants, { brow: 0, smile: 1, lids: 0.34 - 0.3 * lift, gasp: 0, dilate: 0.2 })
+        } else if (aside) {
+          const fury = aside.phase === 'zap' ? 1 : aside.phase === 'back' ? 0.8 : 0.55
+          Object.assign(wants, { brow: firing ? 1 : fury, smile: -0.2 - 0.4 * fury, lids: firing ? -0.3 : 0.3 + 0.18 * fury, gasp: 0, dilate: -0.5 * fury })
+        } else {
+          wants.brow = firing ? 0.7 : 0.2 * lost
+          wants.smile = Math.max(0.75, lost)
+          wants.lids = (0.14 - 0.45 * lift) * (1 - lost) - (0.4 + 0.35 * lift) * lost
+          if (talking > 0.3) wants.gasp = 0
+          wants.dilate = lost * (firing ? -0.4 : 0.7)
+        }
+        wants.roll = 0
+        wants.glow = aside ? 0 : lost * space
       }
       for (const key of Object.keys(mien)) {
         const stiff = key === 'roll' || key === 'glow' ? 4.5 : 9
@@ -9421,6 +10401,16 @@ export function createShow(seed = 11) {
         bossRig, comets,
         cursor: hand.state === 2 ? 1 + hand.form : hand.state,
         lens,
+        // The sun's tour, while it is being given: { part: 'intro' or 'steps', t: seconds into the recording, from: where in
+        // it this part began, inside: whether the terminal is near enough for its screen to be written on, data, craze,
+        // wild, hurry (null: as the visitor likes), open, silent: whether it is being given without sound and could do
+        // with some, aside: which part of an aside it has broken off for ('excuse', 'back', 'zap', 'resume'), or null }.
+        tour: tourNow,
+        present, // how near the terminal has walked: 0 where it lives, 1 up close
+        near: nearTo > 0, // and whether that is where it is going, or is
+        walked: strides, // the strides it has taken getting there (back again, fewer)
+        look, // where the sun is to look, if anywhere: [x, y, how hard it turns to it]
+        finished, // whether the sun has been heard out
         dive: lens[16] > 1 ? 2 - lens[16] : lens[16],
         unfold: time >= unfoldAt && time < unfoldAt + unfoldDuration ? (time - unfoldAt) / unfoldDuration : 0,
         swell: time - gulpAt < 1.4 ? 0.34 * Math.exp(-(time - gulpAt) * 4.2) * Math.sin((time - gulpAt) * 17) : 0,
@@ -9456,8 +10446,8 @@ export function createShow(seed = 11) {
   }
 }
 
-// The hero's size in design units for a canvas of this shape. Wide, the
-// design is at least layout.width by layout.height; narrow, it is layout.width across.
+// The hero's size in design units for a canvas of this shape: at least
+// layout.width by layout.height, and one or the other exactly.
 export function designSize(layout, width, height) {
   const unit = layout.height ? Math.min(width / layout.width, height / layout.height) : width / layout.width
   return [width / unit, height / unit]
@@ -9513,7 +10503,9 @@ export function dawnAt(age, design, sun) {
 }
 
 // The sun's middle and face radius in design units, given the .scene box.
-export const sunAt = (layout, [x, y, w, h]) => [x + w * layout.sun[0], y + h * layout.sun[1], w * layout.sun[2]]
+// (Narrow, the box is the foot of a tall hero and the sun hangs in the sky over it: layout.sun[3] is how much of
+// the way from the box's top edge to the hero's it is lifted, so that a taller screen has it higher.)
+export const sunAt = (layout, [x, y, w, h]) => [x + w * layout.sun[0], y * (1 - (layout.sun[3] ?? 0)) + h * layout.sun[1], w * layout.sun[2]]
 
 // Everything on the GPU: the fluid's textures and passes, and the final picture.
 // The page and tools/frame.mjs both drive this.
@@ -9680,6 +10672,7 @@ export function createLiquid(device, format, options = {}) {
       { binding: 7, visibility: stage, texture: {} },
       { binding: 8, visibility: stage, texture: {} },
       { binding: 9, visibility: stage, texture: {} },
+      { binding: 10, visibility: stage, texture: {} },
     ],
   })
   const adding = { color: { srcFactor: 'one', dstFactor: 'one' }, alpha: { srcFactor: 'one', dstFactor: 'one' } }
@@ -9713,63 +10706,93 @@ export function createLiquid(device, format, options = {}) {
     vertex: { module, entryPoint: 'walkerVertex' },
     fragment: { module, entryPoint: 'drawWorks', targets: [{ format: 'rgba32float' }, { format: 'rg32float' }] },
   })
-  const valleyModule = device.createShaderModule({code:quietShader.replace('const viperActive = true;', 'const viperActive = false;')})
-  const built = build({
+  const simBuilt = build({
     moveVelocity: pipe(sim, simLayout, 'moveVelocity', FLOW),
     measure: pipe(sim, simLayout, 'measure', FLOW),
     relax: pipe(sim, simLayout, 'relax', FLOW),
     swirl: pipe(sim, simLayout, 'swirl', FLOW),
     moveDye: pipe(sim, simLayout, 'moveDye', DYE),
     startDye: pipe(sim, simLayout, 'startDye', DYE),
-    clearValley: pipe(valleyModule, pictureLayout, 'fragmentMain', FLOW),
-    sky: pipe(valleyModule, pictureLayout, 'skyMain', FLOW),
-    clouds: device.createRenderPipelineAsync({
-      layout: device.createPipelineLayout({ bindGroupLayouts: [pictureLayout] }),
-      vertex: { module: valleyModule, entryPoint: 'walkerVertex' },
-      fragment: { module: valleyModule, entryPoint: 'cloudMain', targets: [{ format: FLOW }] },
-    }),
-    sun: pipe(valleyModule, pictureLayout, 'sunMain', FLOW),
-    deskQuiet: deskPipe(valleyModule),
-    walkerQuiet: walkerPipe(valleyModule),
-    worksQuiet: worksPipe(valleyModule),
-    bright: pipe(glow, glowLayout, 'bright', FLOW),
-    shrink: pipe(glow, glowLayout, 'shrink', FLOW),
-    spread: pipe(glow, glowLayout, 'spread', FLOW, adding),
-    flares: pipe(glow, glowLayout, 'flares', FLOW),
-    paper: pipe(glow, glowLayout, 'paper', 'rgba8unorm'),
-    finish: pipe(glow, finishLayout, 'finish', format),
   })
+  const valleyModule = device.createShaderModule({ code: quietShader.replace('const viperActive = true;', 'const viperActive = false;') })
+  const built = Promise.all([
+    simBuilt,
+    build({
+      clearValley: pipe(valleyModule, pictureLayout, 'fragmentMain', FLOW),
+      sky: pipe(valleyModule, pictureLayout, 'skyMain', FLOW),
+      clouds: device.createRenderPipelineAsync({
+        layout: device.createPipelineLayout({ bindGroupLayouts: [pictureLayout] }),
+        vertex: { module: valleyModule, entryPoint: 'walkerVertex' },
+        fragment: { module: valleyModule, entryPoint: 'cloudMain', targets: [{ format: FLOW }] },
+      }),
+      sun: pipe(valleyModule, pictureLayout, 'sunMain', FLOW),
+      deskQuiet: deskPipe(valleyModule),
+      walkerQuiet: walkerPipe(valleyModule),
+      worksQuiet: worksPipe(valleyModule),
+      bright: pipe(glow, glowLayout, 'bright', FLOW),
+      shrink: pipe(glow, glowLayout, 'shrink', FLOW),
+      spread: pipe(glow, glowLayout, 'spread', FLOW, adding),
+      flares: pipe(glow, glowLayout, 'flares', FLOW),
+      paper: pipe(glow, glowLayout, 'paper', 'rgba8unorm'),
+      finish: pipe(glow, finishLayout, 'finish', format),
+      page: pipe(glow, finishLayout, 'page', format),
+      stamp: pipe(glow, finishLayout, 'stamp', format),
+    }),
+  ])
   let vPipe = null
   let snakeIn = false // whether the snake's pipelines are in use yet, and the takeover's
   let bossIn = false
   let cosmosIn = false
-  // One at a time, in the order the show wants them, and each shader handed over only when its turn comes: a
-  // browser making four of these at once has little left to draw with, and a small one has not the memory.
-  const whole = built.then(async () => {
-    const rest = options.rest ?? (() => {})
+  const rest = options.rest ?? (() => {})
+  const idle = options.idle ?? (() => Promise.resolve())
+  // One stage at a time, in the order the show wants them: snake right after built (pausing while gauge() measures),
+  // takeover next, and cosmos deferred until after the melt so cold load and melt never compete with it.
+  const snake = built.then(async () => {
+    await idle()
+    const viperModule = device.createShaderModule({ code: quietShader })
+    const [, madeViper] = await Promise.all([
+      build({ picture: pipe(viperModule, pictureLayout, 'fragmentMain', FLOW) }),
+      device.createRenderPipelineAsync({
+        layout: device.createPipelineLayout({ bindGroupLayouts: [vLayout] }),
+        vertex: { module: viperModule, entryPoint: 'vertexMain' },
+        fragment: { module: viperModule, entryPoint: 'drawViper', targets: [{ format: 'rgba8unorm' }, { format: 'rgba16float' }] },
+      }),
+    ])
+    vPipe = madeViper
+  })
+  const takeover = snake.then(async () => {
+    await idle()
     await rest()
-    await build({ picture: pipe(device.createShaderModule({ code: quietShader }), pictureLayout, 'fragmentMain', FLOW) })
+    await idle()
     const picture = device.createShaderModule({ code: shader })
-    vPipe = await device.createRenderPipelineAsync({
-      layout:device.createPipelineLayout({bindGroupLayouts:[vLayout]}),vertex:{module:picture,entryPoint:'vertexMain'},
-      fragment:{module:picture,entryPoint:'drawViper',targets:[{format:'rgba8unorm'},{format:'rgba16float'}]},
-    })
-    await rest()
     await build({ takeover: pipe(picture, pictureLayout, 'fragmentMain', FLOW), deskTakeover: deskPipe(picture), walkerTakeover: walkerPipe(picture), worksTakeover: worksPipe(picture) })
-    // The same pictures with the cosmos in them, used only while it (or the chorus) is on.
+  })
+  const cosmos = takeover.then(async () => {
+    if (options.waitCosmos) await options.waitCosmos()
+    await idle()
     await rest()
+    await idle()
     const cosmosModule = device.createShaderModule({ code: cosmic(quietShader.replace('const viperActive = true;', 'const viperActive = false;')) })
-    await build({ cosmos: pipe(cosmosModule, pictureLayout, 'fragmentMain', FLOW), skyCosmos: pipe(cosmosModule, pictureLayout, 'skyMain', FLOW), deskCosmos: deskPipe(cosmosModule), walkerCosmos: walkerPipe(cosmosModule), worksCosmos: worksPipe(cosmosModule) })
+    await build({ cosmos: pipe(cosmosModule, pictureLayout, 'fragmentMain', FLOW), skyCosmos: pipe(cosmosModule, pictureLayout, 'skyMain', FLOW), walkerCosmos: walkerPipe(cosmosModule) })
+    passes.deskCosmos = passes.deskQuiet
+    passes.worksCosmos = passes.worksQuiet
+    await idle()
     await rest()
+    await idle()
     await build({ cosmosPicture: pipe(device.createShaderModule({ code: cosmic(quietShader) }), pictureLayout, 'fragmentMain', FLOW) })
   })
+  const whole = cosmos
   whole.catch(() => {})
   const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' })
   const simData = new Float32Array(32)
   const simBuffer = device.createBuffer({ size: simData.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
   const pictureBuffer = device.createBuffer({ size: UNIFORM_FLOATS * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
-  const lensData = new Float32Array(76)
+  const lensData = new Float32Array(88)
   const lensBuffer = device.createBuffer({ size: lensData.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+  // (And the same again for the tab drawn by itself: see drawStamp.)
+  const stampData = new Float32Array(88)
+  const stampBuffer = device.createBuffer({ size: stampData.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+  let stampGroup = null
   const usage = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT
   const blank = device.createTexture({ size: [1, 1], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST })
 
@@ -9805,6 +10828,7 @@ export function createLiquid(device, format, options = {}) {
   let title = blank
   let front = blank
   let runes = blank
+  let term = blank // what the sun's tour writes on the terminal's tube (see setTerm)
   const theatre=bossTheatre(device,sampler)
   let art = { notice: blank, page: blank, boss: blank, 'dax-wide':blank, 'dax-narrow':blank, comets:blank, fire:blank }
   // The small plate is shared across both dye bind groups; no allocation per frame.
@@ -9830,60 +10854,71 @@ export function createLiquid(device, format, options = {}) {
     p.setPipeline(deep?passes.cosmosPicture:passes.picture); rect(x,y,x1-x,y1-y); p.end()
   }
   // The shader's pose(): six legs' hips, knees and feet into u from index at, for a body shifted by shift and rolled by
-  // roll about a line at height pivot.
-  const posed = (u, at, phase, stride, hip, reach, floorY, tilt, thigh, shin, lift, curl, shift, roll, pivot) => {
+  // roll about a line at height pivot (written in scalars so hot frames allocate nothing).
+  const posed = (u, at, phase, strideX, strideZ, hipX, hipY, hipZ, reach, floorY, tiltX, tiltZ, thigh, shin, lift, curl, shiftX, shiftY, shiftZ, roll, pivot) => {
     const cr = Math.cos(roll), sr = Math.sin(roll)
-    const outOfBody = ([x, y, z]) => [cr * x - sr * (y - pivot) + shift[0], sr * x + cr * (y - pivot) + pivot + shift[1], z + shift[2]]
-    const stepping = Math.min(Math.hypot(...stride) * 4, 1)
+    const stepping = Math.min(Math.hypot(strideX, strideZ) * 4, 1)
+    const minD = Math.abs(thigh - shin) + 0.02, maxD = thigh + shin - 0.01
     for (let i = 0; i < 6; i++) {
-      const side = i % 2 === 0 ? 1 : -1, row = Math.floor(i / 2) - 1
-      const g0 = phase + ((i + Math.floor(i / 2)) % 2 === 0 ? 0.5 : 0), g = g0 - Math.floor(g0)
+      const side = i % 2 === 0 ? 1 : -1, row = (i >> 1) - 1
+      const g0 = phase + (((i + (i >> 1)) & 1) === 0 ? 0.5 : 0), g = g0 - Math.floor(g0)
       const swing = Math.min(Math.max((g - 0.62) / 0.38, 0), 1), glide = swing * swing * (3 - 2 * swing)
       const along = g > 0.62 ? glide - 0.5 : 0.5 - g / 0.62
-      const root = outOfBody([side * hip[0], hip[1], row * hip[2]])
-      let foot = [side * reach * (1 - 0.1 * Math.abs(row)) + stride[0] * along, 0, row * hip[2] * 2.3 + stride[1] * along]
-      foot[1] = floorY + tilt[0] * foot[0] + tilt[1] * foot[2] + lift * stepping * Math.sin(3.14159 * swing)
-      const tuck = [root[0] + side * 0.32 * thigh, root[1] + 0.75 * thigh, root[2] + row * 0.1]
-      foot = foot.map((n, a) => n + (tuck[a] - n) * curl)
-      const span = foot.map((n, a) => n - root[a]), len = Math.hypot(...span), dir = span.map((n) => n / len)
-      const d = Math.min(Math.max(len, Math.abs(thigh - shin) + 0.02), thigh + shin - 0.01)
+      const bx = side * hipX, by = hipY - pivot, bz = row * hipZ
+      const rx = cr * bx - sr * by + shiftX, ry = sr * bx + cr * by + pivot + shiftY, rz = bz + shiftZ
+      let fx = side * reach * (1 - 0.1 * Math.abs(row)) + strideX * along
+      let fz = row * hipZ * 2.3 + strideZ * along
+      let fy = floorY + tiltX * fx + tiltZ * fz + lift * stepping * Math.sin(3.14159 * swing)
+      fx += (rx + side * 0.32 * thigh - fx) * curl
+      fy += (ry + 0.75 * thigh - fy) * curl
+      fz += (rz + row * 0.1 - fz) * curl
+      const sx = fx - rx, sy = fy - ry, sz = fz - rz
+      const invLen = 1 / (Math.hypot(sx, sy, sz) || 1e-6)
+      const dx = sx * invLen, dy = sy * invLen, dz = sz * invLen
+      const d = Math.min(Math.max(1 / invLen, minD), maxD)
       const a = (thigh * thigh - shin * shin + d * d) / (2 * d)
-      const pole = [side * 0.4, 1, 0], onto = pole[0] * dir[0] + pole[1] * dir[1] + pole[2] * dir[2]
-      const off = pole.map((n, k) => n - dir[k] * onto), offLen = Math.hypot(...off), up = off.map((n) => n / offLen)
+      const px = side * 0.4, onto = px * dx + dy
+      const ox = px - dx * onto, oy = 1 - dy * onto, oz = -dz * onto
+      const invOff = 1 / (Math.hypot(ox, oy, oz) || 1e-6)
       const rise = Math.sqrt(Math.max(thigh * thigh - a * a, 0))
-      u.set(root, at + 4 * i)
-      u.set(root.map((n, k) => n + dir[k] * a + up[k] * rise), at + 4 * (6 + i))
-      u.set(root.map((n, k) => n + dir[k] * d), at + 4 * (12 + i))
+      const i0 = at + 4 * i, i1 = at + 4 * (6 + i), i2 = at + 4 * (12 + i)
+      u[i0] = rx; u[i0 + 1] = ry; u[i0 + 2] = rz
+      u[i1] = rx + dx * a + ox * invOff * rise; u[i1 + 1] = ry + dy * a + oy * invOff * rise; u[i1 + 2] = rz + dz * a + oz * invOff * rise
+      u[i2] = rx + dx * d; u[i2 + 1] = ry + dy * d; u[i2 + 2] = rz + dz * d
     }
   }
   // Each little walker's legs for the frame, as mini() posed them: on the slope of the ground (heaved) under it.
   const poseWalkers = (u) => {
     const at = u[2], TAU = 6.283185307, MINI = LAND.mini
     const heave = (x, z) => { // the shader's heaved()
-      if (u[595] < 0.5 || Math.hypot(x-u[592], z-u[593]) > u[594]) return 0
+      if (u[595] < 0.5 || Math.hypot(x - u[592], z - u[593]) > u[594]) return 0
       let h = 0
       for (let i = 0; i < 12 && i < u[595]; i++) {
-        const o = 544+4*i, age = at-u[o+2], away = Math.hypot(x-u[o], z-u[o+1]), front = age*5.6
-        if (Math.abs(away-front) > 5.5 && away > 3.5) continue
-        const hard = Math.min(Math.abs(u[o+3])/0.9, 2.4), lasts = hard > 1.25 ? 5.5 : 2.6
-        const live = smooth(0, 0.1, age)*(1-smooth(0.65*lasts, lasts, age))
-        h += live*hard*(0.5*Math.exp(-age*0.75)*Math.sin((away-front)*2.2)*Math.exp(-(((away-front)/1.9)**2)) - 0.3*Math.exp(-age*3.2)*Math.exp(-away*away/1.4))
+        const o = 544 + 4 * i, age = at - u[o + 2], away = Math.hypot(x - u[o], z - u[o + 1]), front = age * 5.6
+        if (Math.abs(away - front) > 5.5 && away > 3.5) continue
+        const hard = Math.min(Math.abs(u[o + 3]) / 0.9, 2.4), lasts = hard > 1.25 ? 5.5 : 2.6
+        const live = smooth(0, 0.1, age) * (1 - smooth(0.65 * lasts, lasts, age))
+        h += live * hard * (0.5 * Math.exp(-age * 0.75) * Math.sin((away - front) * 2.2) * Math.exp(-(((away - front) / 1.9) ** 2)) - 0.3 * Math.exp(-age * 3.2) * Math.exp(-away * away / 1.4))
       }
       return h
     }
     const ground = (x, z) => world.ground(x, z) + heave(x, z)
     for (let i = 0; i < 8; i++) {
-      const [x, z, face, phase] = u.subarray(224 + 4 * i, 228 + 4 * i), [dead, , stride, dip] = u.subarray(256 + 4 * i, 260 + 4 * i)
-      const y = ground(x, z) + 2.4 * Math.max(heave(x, z), 0), c = Math.cos(face), s = Math.sin(face), half = 0.5 * MINI
-      const tilt = [(ground(x + c * half, z - s * half) - y) / half, (ground(x + s * half, z + c * half) - y) / half]
+      const o0 = 224 + 4 * i, o1 = 256 + 4 * i
+      const x = u[o0], z = u[o0 + 1], face = u[o0 + 2], phase = u[o0 + 3]
+      const dead = u[o1], stride = u[o1 + 2], dip = u[o1 + 3]
+      const hv = heave(x, z), y0 = world.ground(x, z) + hv, y = y0 + 2.4 * Math.max(hv, 0)
+      const c = Math.cos(face), s = Math.sin(face), half = 0.5 * MINI
+      const tiltX = (ground(x + c * half, z - s * half) - y) / half
+      const tiltZ = (ground(x + s * half, z + c * half) - y) / half
       const lean = 0.035 * Math.sin(phase * TAU * 2) * stride - 0.14 * dip
-      posed(u, 1832 + 72 * i, phase, [0, 0.8 * stride], [0.42, 0.22, 0.26], 0.98, 0, tilt, 0.62, 0.78, 0.3, dead, [0, lean + (-0.12 - lean) * dead, 0], 3 * dead + 0.05 * Math.sin(phase * TAU) * stride, 0.6)
+      posed(u, 1832 + 72 * i, phase, 0, 0.8 * stride, 0.42, 0.22, 0.26, 0.98, 0, tiltX, tiltZ, 0.62, 0.78, 0.3, dead, 0, lean + (-0.12 - lean) * dead, 0, 3 * dead + 0.05 * Math.sin(phase * TAU) * stride, 0.6)
     }
   }
   // The terminal's legs for the frame, as terminal() posed them.
   const poseTerminal = (u) => {
     const phase = u[43]
-    posed(u, 1760, phase, [u[328], u[329]], [0.66, 0.09, 0.3], 1.36, -0.42 + u[331], [0, 0], 0.8, 0.96, 0.24, Math.min(Math.max(u[331] * 0.45, 0), 0.4), [0.02 * Math.sin(phase * 6.283185307), u[330], 0], 0, 0)
+    posed(u, 1760, phase, u[328], u[329], 0.66, 0.09, 0.3, 1.36, -0.42 + u[331], 0, 0, 0.8, 0.96, 0.24, Math.min(Math.max(u[331] * 0.45, 0), 0.4), 0.02 * Math.sin(phase * 6.283185307), u[330], 0, 0, 0)
   }
   // The sun's own picture: a square round it that takes in every point sunMain can find within its reach (13 square
   // face radii, at the most it swells), cut to the sky's rows; while it and the moon change places, all of those rows.
@@ -9913,13 +10948,35 @@ export function createLiquid(device, format, options = {}) {
   }
   // The terminal's own picture: a rectangle round it, grown when it has to be.
   let desk = device.createTexture({ size: [1, 1], format: 'rgba32float', usage })
+  // Bound the terminal tightly from its shell, shadow and already-posed joints (u[1760..1831]), so up close drawDesk
+  // never marches wide bands of empty sky to either side of the monitor.
   const deskRect = (u) => {
-    const W=u[0], H=u[1], k=W/u[3], z=u[42]
+    const W = u[0], H = u[1], k = W / u[3], z = u[42]
     if (!(z > 0)) return null
     const wide = u[837] > 0 // (the takeover shifts rows sideways)
-    const x = wide ? 0 : Math.max(0, Math.floor((u[40]-2.3*z)*k)-2), x1 = wide ? W : Math.min(W, Math.ceil((u[40]+2.3*z)*k)+2)
-    const y = Math.max(0, Math.floor((u[41]-(1.3+u[331])*z)*k)-2), y1 = Math.min(H, Math.ceil((u[41]+1.15*z)*k)+2)
-    return x1 > x && y1 > y ? [x, y, x1-x, y1-y] : null
+    const fire = u[FIRE_OFFSET + 6] > 0.001 ? 0.66 : 0
+    let ax0 = -1.06, ax1 = 1.14 + fire, ay0 = -1.08, ay1 = 1.28 + Math.max(0, u[330]) + Math.max(0, u[331])
+    const rx = u[28], ry = u[29], rz = u[30], ux = u[32], uy = u[33], uz = u[34]
+    const [tx, ty, tz] = MACHINE.target
+    for (const leg of [0, 1, 4, 5]) {
+      for (const base of [1760, 1784, 1808]) {
+        const o = base + 4 * leg
+        const dx = u[o] - tx, dy = u[o + 1] - ty, dz = u[o + 2] - tz
+        const px = dx * rx + dy * ry + dz * rz, py = dx * ux + dy * uy + dz * uz
+        const pad = base === 1808 ? 0.62 : 0.34
+        if (px - pad < ax0) ax0 = px - pad
+        if (px + pad > ax1) ax1 = px + pad
+        if (py - pad < ay0) ay0 = py - pad
+        if (py + pad > ay1) ay1 = py + pad
+      }
+    }
+    ax0 = Math.max(-2.3, ax0); ax1 = Math.min(2.3, ax1)
+    ay0 = Math.max(-1.15, ay0); ay1 = Math.min(1.3 + u[331], ay1)
+    const x = wide ? 0 : Math.max(0, Math.floor((u[40] + ax0 * z) * k) - 2)
+    const x1 = wide ? W : Math.min(W, Math.ceil((u[40] + ax1 * z) * k) + 2)
+    const y = Math.max(0, Math.floor((u[41] - ay1 * z) * k) - 2)
+    const y1 = Math.min(H, Math.ceil((u[41] - ay0 * z) * k) + 2)
+    return x1 > x && y1 > y ? [x, y, x1 - x, y1 - y] : null
   }
   // The sixteen patches a probe draws of the picture (see draw), as [x, y, width, height] in pixels.
   const probePatches = (W, H) => Array.from({ length: 16 }, (_, i) => [Math.floor(((i % 4) + 0.375) * W / 4), Math.floor(((i >> 2) + 0.375) * H / 4), Math.max(1, Math.floor(W / 16)), Math.max(1, Math.floor(H / 16))])
@@ -10062,6 +11119,35 @@ export function createLiquid(device, format, options = {}) {
     return grid.groups[key]
   }
 
+  // While the grey page is going, the picture shows only through the hole the sun opens in it (front() in the lens,
+  // whose holeReach() this works out again). The rectangle of the canvas, [x, y, width, height] in pixels, that takes in
+  // the hole and as much round it as the lens's bending and the glow's spreading can bring into it: null when that is
+  // nearly all of the picture anyway, or when the lens is showing the picture some other way round (in windows,
+  // slipped sideways, dived into, folded). sun is the sun's place and radius in pixels.
+  const holeBox = (gate, acts, sun, perUnit, [W, H]) => {
+    if (!(gate.age > GATE_OPENS) || (acts && (acts[0] > 0 || acts[4] > 0 || acts[16] > 0 || acts[24] > 0))) return null
+    const k = Math.min(Math.max((gate.age - 1.5) / 0.8, 0), 1) - 1
+    const blast = Math.pow(Math.max(gate.age - 2.5, 0) / 1.45, 2.3)
+    // (Its edge wavers out to 1.15 of its reach at the most, and its reach swells by 3 in a hundred. Then: the hand's
+    // wobble, footfalls and soft focus move what a pixel shows by 16 units at the most, and a shock, a jolt, a press
+    // or heat, while there is one, by 44 more; and the glow spreads some 250 pixels.)
+    const shaken = lensData[7] > 0 || lensData[16] !== 0 || lensData[63] > 0 || lensData[68] > 0
+    const far = 1.15 * (sun[2] * 2.3 * (1 + 2.4 * k * k * k + 1.4 * k * k) * 1.03 + blast * Math.hypot(W, H) * 1.3) + (shaken ? 60 : 16) * perUnit + 256
+    const x = Math.max(0, Math.floor(sun[0] - far)), y = Math.max(0, Math.floor(sun[1] - far))
+    const x1 = Math.min(W, Math.ceil(sun[0] + far)), y1 = Math.min(H, Math.ceil(sun[1] + far))
+    return x1 > x && y1 > y && (x1 - x) * (y1 - y) < 0.9 * W * H ? [x, y, x1 - x, y1 - y] : null
+  }
+  // Whole, the grey page itself lies over the canvas and shows it only through the window it leaves round the tab:
+  // gate.window is how far from the tab's middle that reaches, in CSS pixels (a tab is 40 of them from its middle
+  // to its edge), or 0 when all of the canvas can be seen. The square of the canvas that takes the window in.
+  const pageWindow = (gate, perUnit, [W, H]) => {
+    if (!(gate.window > 0)) return null
+    const r = (gate.window + 40) * (gate.half / 40) * perUnit + 2
+    const x = Math.min(W, Math.max(0, Math.floor(gate.x * perUnit - r))), y = Math.min(H, Math.max(0, Math.floor(gate.y * perUnit - r)))
+    const x1 = Math.min(W, Math.max(x, Math.ceil(gate.x * perUnit + r))), y1 = Math.min(H, Math.max(y, Math.ceil(gate.y * perUnit + r)))
+    return [x, y, x1 - x, y1 - y]
+  }
+
   // The picture is painted here first, then its glow is worked out in ever smaller copies.
   let easel = null
   let everDrawn = false
@@ -10119,35 +11205,55 @@ export function createLiquid(device, format, options = {}) {
         { binding: 7, resource: art.page.createView() },
         { binding: 8, resource: easel.flare.createView() },
         { binding: 9, resource: easel.paper.createView() },
+        { binding: 10, resource: term.createView() },
       ],
     })
   }
 
-  function run(encoder, pipeline, texture, group, keep = false) {
+  // clip: only that rectangle of it, [x, y, width, height].
+  function run(encoder, pipeline, texture, group, keep = false, clip = null) {
     const pass = encoder.beginRenderPass({
       colorAttachments: [{ view: texture.createView?.() ?? texture, loadOp: keep ? 'load' : 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] }],
     })
     pass.setPipeline(pipeline)
     pass.setBindGroup(0, group)
+    if (clip) pass.setScissorRect(...clip)
     pass.draw(3)
     pass.end()
   }
 
   // Positions arrive in the hero's design units and are scaled into the fluid's
   // own space, which can lag a little behind a hero that is being resized.
-  function writeSim({ dt, time, sun, view = [grid.width, grid.height], pointer = [-9999, -9999, 0, 0], shot = [0, 0, 0], blast = [0, 0, 0], quake = 0 }) {
+  function fillSim(targetBuffer, { dt, time, sun, view = [grid.width, grid.height], pointer = [-9999, -9999, 0, 0], shot = [0, 0, 0], blast = [0, 0, 0], quake = 0 }) {
     const { wavelength, rate } = settings.liquid
     const kx = grid.width / view[0]
     const ky = grid.height / view[1]
-    simData.set([grid.width, grid.height, dt, time], 0)
-    simData.set([sun[0] * kx, sun[1] * ky, wavelength, rate], 4)
-    simData.set([pointer[0] * kx, pointer[1] * ky, pointer[2] * kx, pointer[3] * ky], 8)
-    simData.set([grid.flow[0], grid.flow[1], grid.dyeSize[0], grid.dyeSize[1]], 12)
-    simData.set([sun[2]], 16)
-    simData.set([shot[0] * kx, shot[1] * ky, shot[2]], 20)
-    simData.set([blast[0] * kx, blast[1] * ky, blast[2]], 24)
-    simData.set([quake], 28)
-    device.queue.writeBuffer(simBuffer, 0, simData)
+    simData[0] = grid.width; simData[1] = grid.height; simData[2] = dt; simData[3] = time
+    simData[4] = sun[0] * kx; simData[5] = sun[1] * ky; simData[6] = wavelength; simData[7] = rate
+    simData[8] = pointer[0] * kx; simData[9] = pointer[1] * ky; simData[10] = pointer[2] * kx; simData[11] = pointer[3] * ky
+    simData[12] = grid.flow[0]; simData[13] = grid.flow[1]; simData[14] = grid.dyeSize[0]; simData[15] = grid.dyeSize[1]
+    simData[16] = sun[2]; simData[17] = 0; simData[18] = 0; simData[19] = 0
+    simData[20] = shot[0] * kx; simData[21] = shot[1] * ky; simData[22] = shot[2]; simData[23] = 0
+    simData[24] = blast[0] * kx; simData[25] = blast[1] * ky; simData[26] = blast[2]; simData[27] = 0
+    simData[28] = quake; simData[29] = 0; simData[30] = 0; simData[31] = 0
+    device.queue.writeBuffer(targetBuffer, 0, simData)
+  }
+  function writeSim(state) {
+    fillSim(simBuffer, state)
+  }
+  function encodeStep(encoder, groupFor) {
+    run(encoder, passes.moveVelocity, grid.velocity[1 - grid.v], groupFor(grid.v, grid.p, grid.d))
+    grid.v = 1 - grid.v
+    run(encoder, passes.measure, grid.pressure[1 - grid.p], groupFor(grid.v, grid.p, grid.d))
+    grid.p = 1 - grid.p
+    for (let i = 0; i < settings.liquid.solve; i++) {
+      run(encoder, passes.relax, grid.pressure[1 - grid.p], groupFor(grid.v, grid.p, grid.d))
+      grid.p = 1 - grid.p
+    }
+    run(encoder, passes.swirl, grid.velocity[1 - grid.v], groupFor(grid.v, grid.p, grid.d))
+    grid.v = 1 - grid.v
+    run(encoder, passes.moveDye, grid.dye[1 - grid.d], groupFor(grid.v, grid.p, grid.d))
+    grid.d = 1 - grid.d
   }
 
   return {
@@ -10157,8 +11263,12 @@ export function createLiquid(device, format, options = {}) {
     get ready() {
       return Boolean(grid)
     },
+    simBuilt,
     built, // settles when a first frame can be drawn
-    whole, // and when the snake and the takeover can be
+    snake,
+    takeover,
+    cosmos,
+    whole, // and when the snake, takeover and cosmos can be
     clocked, // whether frames' GPU times will be handed to timed
     timed: null, // (milliseconds, probe) => …, set by whoever wants them
     burden: 1, // the picture is drawn this many times over a frame: a small GPU, for trying the page's pacing on a big one
@@ -10195,6 +11305,50 @@ export function createLiquid(device, format, options = {}) {
     },
     // The grey page as a picture, or nothing to take it away.
     // Its second picture is the same page with its words in the terminal's script.
+    // The tab by itself (the lens's stamp()), on a small square canvas of its own that lies on the page: view is that
+    // canvas's texture, size its side in pixels. The tab sits in the middle of it, half pixels from its middle to its
+    // edge; pointer is where the pointer is, in the canvas's pixels; paper is the colour of the page it lies on, as
+    // [r, g, b] from 0 to 1; own, the page is Psychoscript's own. The rest is the grey page's: see draw(). Says whether it drew.
+    drawStamp(view, { size, half, look = 0, pointer = null, time = 0, press = 0, near = 0, own = false, paper = [1, 1, 1] }) {
+      if (!passes.stamp) return false
+      stampGroup ??= device.createBindGroup({
+        layout: finishLayout,
+        entries: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((binding) => ({ binding, resource: binding === 1 ? sampler : binding === 3 ? { buffer: stampBuffer } : blank.createView() })),
+      })
+      stampData.fill(0)
+      stampData.set([time, 1, 0, 0], 0)
+      stampData.set([size / 2, size / 2, 9, 0], 4)
+      stampData.set([size / 2, size / 2, 0, own ? 2 : 1], 20)
+      stampData.set([half, look, pointer?.[0] ?? size / 2, pointer?.[1] ?? size / 2], 24)
+      stampData.set([time, half * 2.5, press, near], 28)
+      stampData.set([paper[0], paper[1], paper[2], 0], 64)
+      stampData.set([size, size, 0, 0], 68)
+      device.queue.writeBuffer(stampBuffer, 0, stampData)
+      const encoder = device.createCommandEncoder()
+      run(encoder, passes.stamp, view, stampGroup)
+      device.queue.submit([encoder.finish()])
+      return true
+    },
+    // What the sun's tour writes on the terminal's tube: a canvas, light on black, copied as it is just now.
+    // Nothing: the tour is over, and what was kept of it is let go.
+    setTerm(sheet) {
+      if (!sheet) {
+        if (term === blank) return
+        term.destroy()
+        term = blank
+        return hang()
+      }
+      if (term === blank || term.width !== sheet.width || term.height !== sheet.height) {
+        if (term !== blank) term.destroy()
+        term = device.createTexture({
+          size: [sheet.width, sheet.height],
+          format: 'rgba8unorm',
+          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+        })
+        hang()
+      }
+      device.queue.copyExternalImageToTexture({ source: sheet }, { texture: term }, [sheet.width, sheet.height])
+    },
     setFront(texture, script) {
       front = texture ?? blank
       runes = script ?? front
@@ -10214,52 +11368,105 @@ export function createLiquid(device, format, options = {}) {
     step(state) {
       writeSim(state)
       const encoder = device.createCommandEncoder()
-      run(encoder, passes.moveVelocity, grid.velocity[1 - grid.v], simGroup(grid.v, grid.p, grid.d))
-      grid.v = 1 - grid.v
-      run(encoder, passes.measure, grid.pressure[1 - grid.p], simGroup(grid.v, grid.p, grid.d))
-      grid.p = 1 - grid.p
-      for (let i = 0; i < settings.liquid.solve; i++) {
-        run(encoder, passes.relax, grid.pressure[1 - grid.p], simGroup(grid.v, grid.p, grid.d))
-        grid.p = 1 - grid.p
-      }
-      run(encoder, passes.swirl, grid.velocity[1 - grid.v], simGroup(grid.v, grid.p, grid.d))
-      grid.v = 1 - grid.v
-      run(encoder, passes.moveDye, grid.dye[1 - grid.d], simGroup(grid.v, grid.p, grid.d))
-      grid.d = 1 - grid.d
+      encodeStep(encoder, simGroup)
       device.queue.submit([encoder.finish()])
+    },
+    // Run a batch of fluid steps in a single command encoder submission using temporary uniform buffers.
+    warmBatch(fromStep, toStep, totalSteps, time, state) {
+      const dt = 1 / 30, count = toStep - fromStep
+      if (count <= 0 || !grid) return
+      const bufs = Array.from({ length: count }, () => device.createBuffer({ size: simData.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }))
+      const vViews = [grid.velocity[0].createView(), grid.velocity[1].createView()]
+      const pViews = [grid.pressure[0].createView(), grid.pressure[1].createView()]
+      const dViews = [grid.dye[0].createView(), grid.dye[1].createView()]
+      const encoder = device.createCommandEncoder()
+      for (let j = 0; j < count; j++) {
+        const i = fromStep + j, at = time - (totalSteps - i) * dt, buf = bufs[j]
+        fillSim(buf, { dt, time: at, ...state(at, dt) })
+        const groups = []
+        const groupFor = (v, p, d) => (groups[v * 4 + p * 2 + d] ??= device.createBindGroup({
+          layout: simLayout,
+          entries: [
+            { binding: 0, resource: { buffer: buf } },
+            { binding: 1, resource: vViews[v] },
+            { binding: 2, resource: pViews[p] },
+            { binding: 3, resource: dViews[d] },
+            { binding: 4, resource: sampler },
+          ],
+        }))
+        encodeStep(encoder, groupFor)
+      }
+      device.queue.submit([encoder.finish()])
+      ;(device.queue.onSubmittedWorkDone?.() ?? Promise.resolve()).then(() => bufs.forEach((b) => b.destroy()), () => bufs.forEach((b) => b.destroy()))
     },
     // Run the fluid for a while so it is already marbled at `time`. state(time, dt)
     // returns what step() needs beyond dt and time.
     warm(steps, time, state) {
-      const dt = 1 / 30
-      for (let i = 0; i < steps; i++) {
-        const at = time - (steps - i) * dt
-        this.step({ dt, time: at, ...state(at, dt) })
+      for (let i = 0; i < steps; i += 20) this.warmBatch(i, Math.min(steps, i + 20), steps, time, state)
+    },
+    // Run the fluid in non-blocking slices across turns so startup never stalls the GPU in one burst.
+    async warmAsync(steps, time, state, slice = 25) {
+      for (let i = 0; i < steps; i += slice) {
+        if (!grid) return
+        this.warmBatch(i, Math.min(steps, i + slice), steps, time, state)
+        await (device.queue.onSubmittedWorkDone?.() ?? new Promise((r) => setTimeout(r, 0)))
       }
+    },
+    // Touch newly compiled background pipelines on a 1x1 scissor offscreen so their first show cue never hitches.
+    prewarm(which) {
+      if (!grid || !easel) return
+      const group = grid.pictureGroups[grid.d]
+      const skyGroup = grid.pictureGroups[2 + grid.d]
+      if (!group || !skyGroup) return
+      const encoder = device.createCommandEncoder()
+      const tiny = (pipeToWarm, target, bg, extraTarget = null) => {
+        if (!pipeToWarm || !target) return
+        const colorAttachments = [{ view: target.createView?.() ?? target, loadOp: 'load', storeOp: 'store' }]
+        if (extraTarget) colorAttachments.push({ view: extraTarget.createView?.() ?? extraTarget, loadOp: 'load', storeOp: 'store' })
+        const p = encoder.beginRenderPass({ colorAttachments })
+        p.setPipeline(pipeToWarm); p.setBindGroup(0, bg); p.setScissorRect(0, 0, 1, 1); p.draw(3); p.end()
+      }
+      if (which === 'snake') {
+        tiny(vPipe, vSurfaces[0], vGroup, vSurfaces[1])
+        tiny(passes.picture, easel.picture, group)
+      } else if (which === 'cosmos') {
+        tiny(passes.skyCosmos, easel.sky, skyGroup)
+        tiny(passes.walkerCosmos, walkerAtlas[0], vGroup, walkerAtlas[1])
+        tiny(passes.cosmos, easel.picture, group)
+        tiny(passes.cosmosPicture, easel.picture, group)
+      }
+      device.queue.submit([encoder.finish()])
     },
     // Paint the hero into view, which is size = [width, height] pixels. uniforms is what packUniforms filled.
     // gate, when there is a grey page over it: { x, y, half, sun } in design units, age, look, pointer, time, press.
     // acts is the show's act.lens: 32 numbers for what it is putting on in front of the lens.
     // probe: only a sixteenth of the picture is drawn, in sixteen patches spread evenly over it, and nothing is
     // shown: what a whole one would cost can be told from it without asking a small GPU for a whole one.
-    draw(view, uniforms, size, gate = null, acts = null, probe = false) {
+    draw(view, uniforms, size, gate = null, acts = null, probe = false, stepState = null) {
       if (!passes.finish) return
+      const encoder = device.createCommandEncoder()
+      const timing = clocked && !stamps.busy && this.timed
+      const last = timing ? stamped(encoder) : () => {}
+      if (stepState && grid) {
+        writeSim(stepState)
+        encodeStep(encoder, simGroup)
+      }
       stretch(size)
+      poseTerminal(uniforms)
+      poseWalkers(uniforms)
       const deskAt = deskRect(uniforms)
       if (deskAt) {
-        uniforms.set([deskAt[0], deskAt[1]], 1660)
+        uniforms.set([deskAt[0], deskAt[1], deskAt[0] + deskAt[2], deskAt[1] + deskAt[3]], 1660)
         if (desk.width < deskAt[2] || desk.height < deskAt[3]) {
           const [w, h] = [Math.max(desk.width, Math.ceil(deskAt[2]/64)*64), Math.max(desk.height, Math.ceil(deskAt[3]/64)*64)]
           desk.destroy()
           desk = device.createTexture({ size: [w, h], format: 'rgba32float', usage })
           grid.pictureGroups = []
         }
-      }
+      } else uniforms.fill(0, 1660, 1664)
       const walkersAt = packWalkers(uniforms)
       const sunBox = placeSun(uniforms)
       const cloudBoxes = packClouds(uniforms)
-      poseTerminal(uniforms)
-      poseWalkers(uniforms)
       device.queue.writeBuffer(pictureBuffer, 0, uniforms)
       // What the lens needs, read back out of the picture's uniforms: lightning
       // landing and buildings finishing send a shock through it.
@@ -10280,13 +11487,16 @@ export function createLiquid(device, format, options = {}) {
       lensData.set([uniforms[477], (uniforms[14] - uniforms[7]) * perUnit], 10)
       lensData[16] = uniforms[478]
       if (gate) {
-        lensData.set([gate.x * perUnit, gate.y * perUnit, gate.age, 1], 20)
+        // (2: the page is Psychoscript's own, where the tab is always awake and sheds less light on what is written round it.)
+        lensData.set([gate.x * perUnit, gate.y * perUnit, gate.age, gate.calm ? 2 : 1], 20)
         lensData.set([gate.half * perUnit, gate.look ?? 0, (gate.pointer?.[0] ?? gate.x) * perUnit, (gate.pointer?.[1] ?? gate.y) * perUnit], 24)
         lensData.set([gate.time ?? 0, uniforms[22] * perUnit, gate.press ?? 0, gate.near ?? 0], 28)
       } else lensData.fill(0, 20, 32)
       if (acts) {
         lensData.set(acts.subarray(0, 32), 32)
         lensData.set(acts.length > 32 ? acts.subarray(32, 36) : [0, 0, 0, 0], 72) // the planet's view
+        if (acts.length >= 48) lensData.set(acts.subarray(36, 48), 76) // the sun's tour
+        else lensData.fill(0, 76)
       }
       else { lensData.fill(0, 32, 64); lensData.fill(0, 72) }
       if (uniforms[HAZE_OFFSET + 4] > 0) {
@@ -10351,9 +11561,7 @@ export function createLiquid(device, format, options = {}) {
         patch(pass)
         pass.end()
       }
-      const encoder = device.createCommandEncoder()
-      const timing = clocked && !stamps.busy && this.timed
-      const last = timing ? stamped(encoder) : () => {}
+
       const close = () => {
         if (timing) {
           encoder.resolveQuerySet(stamps.set, 0, 2, stamps.held, 0)
@@ -10396,8 +11604,10 @@ export function createLiquid(device, format, options = {}) {
         easel.drawn = false
         return close()
       }
-      // While the grey page is whole only the last pass has anything to do, once everything has been drawn once.
-      if (!(gate && gate.age <= 0 && easel.drawn)) {
+      // While the grey page hides all of the picture (whole, and for the first GATE_OPENS seconds of its going, until
+      // the sun opens a hole in it) only the last pass has anything to do, once everything has been drawn once.
+      const covered = Boolean(gate) && gate.age <= GATE_OPENS && everDrawn
+      if (!covered) {
         const first = !everDrawn
         everDrawn = true
         easel.drawn = true
@@ -10410,20 +11620,24 @@ export function createLiquid(device, format, options = {}) {
         if (!cosmosIn && passes.cosmosPicture && passes.cosmos && passes.deskCosmos && passes.walkerCosmos && passes.worksCosmos && passes.skyCosmos && (!cosmic || first)) cosmosIn = true
         const deep = cosmic && cosmosIn
         const active = snake && snakeIn
+        // Going, the page hides the picture but for the hole in it: only that much of each pass is drawn (see holeBox).
+        const clip = gate && !(boss && bossIn) && !active ? holeBox(gate, acts, [lensData[4], lensData[5], lensData[29]], perUnit, size) : null
+        const only = clip && [clip]
         for (let n = 0; n < this.burden; n++) {
-        printDesk(encoder, deskAt, boss && bossIn ? passes.deskTakeover : deep ? passes.deskCosmos : passes.deskQuiet)
-        printWalkers(encoder, walkersAt, boss && bossIn ? passes.walkerTakeover : deep ? passes.walkerCosmos : passes.walkerQuiet, boss && bossIn ? passes.worksTakeover : deep ? passes.worksCosmos : passes.worksQuiet)
+        printDesk(encoder, deskAt, boss && bossIn ? passes.deskTakeover : deep ? passes.deskCosmos : passes.deskQuiet, only)
+        printWalkers(encoder, walkersAt, boss && bossIn ? passes.walkerTakeover : deep ? passes.walkerCosmos : passes.walkerQuiet, boss && bossIn ? passes.worksTakeover : deep ? passes.worksCosmos : passes.worksQuiet, only)
         if (!(boss && bossIn)) {
-          drawSky(deep ? passes.skyCosmos : passes.sky, (pass) => { pass.setScissorRect(0, 0, easel.width, skyRows); pass.draw(3) })
-          drawClouds()
-          if (sunBox) drawSun([[0, 0, sunBox[2], sunBox[3]]])
+          const rows = clip ? meet([0, 0, easel.width, skyRows], clip, 0, 0) : [0, 0, easel.width, skyRows]
+          drawSky(deep ? passes.skyCosmos : passes.sky, (pass) => { if (rows) { pass.setScissorRect(...rows); pass.draw(3) } })
+          drawClouds(only)
+          if (sunBox) drawSun(clip ? [meet(sunBox, clip, -sunBox[0], -sunBox[1])].filter(Boolean) : [[0, 0, sunBox[2], sunBox[3]]])
         }
         if(boss && bossIn){
           theatre.draw(encoder,art.boss,uniforms.subarray(BOSS_RIG,BOSS_RIG+4))
           if(active) printViper(encoder,uniforms)
           run(encoder,passes.takeover,easel.picture,grid.pictureGroups[grid.d])
         } else if(active){printViper(encoder,uniforms); paintWithViper(encoder,grid.pictureGroups[grid.d],uniforms,deep)}
-        else run(encoder,deep?passes.cosmos:passes.clearValley,easel.picture,grid.pictureGroups[grid.d])
+        else run(encoder,deep?passes.cosmos:passes.clearValley,easel.picture,grid.pictureGroups[grid.d],false,clip)
         }
         run(encoder, passes.bright, easel.glow[0], easel.fromPicture)
         for (let i = 1; i < easel.glow.length; i++) run(encoder, passes.shrink, easel.glow[i], easel.from[i - 1])
@@ -10435,7 +11649,9 @@ export function createLiquid(device, format, options = {}) {
         run(encoder, passes.paper, easel.paper, easel.fromGlow)
       }
       last()
-      run(encoder, passes.finish, view, easel.finish)
+      // (Whole, the page shows the canvas only through its window round the tab: no more of it than that is drawn.)
+      if (covered && passes.page) run(encoder, passes.page, view, easel.finish, false, gate.age <= 0 ? pageWindow(gate, perUnit, size) : null)
+      else run(encoder, passes.finish, view, easel.finish)
       close()
     },
   }
@@ -10518,10 +11734,23 @@ export const secrets = {
 
 // How long, in seconds, the grey page takes to give way once its tab is taken.
 export const GATE_END = 4.15
+// And how long before the sun opens a hole in it: until then it hides all of the picture (holeReach() in the lens).
+export const GATE_OPENS = 1.5
 
 // Paints the grey page's boxes and words on a canvas, each where the browser
 // has laid it out, leaving out the tab: near enough the same page, as a
 // picture that can be bent.
+const svgPaths = new Map()
+const pathOf = (d) => {
+  if (!d) return null
+  let made = svgPaths.get(d)
+  if (!made) {
+    made = new Path2D(d)
+    svgPaths.set(d, made)
+  }
+  return made
+}
+
 export function drawPage(g, top, skip, inScript = false) {
   const range = document.createRange()
   let nth = 1
@@ -10531,7 +11760,58 @@ export function drawPage(g, top, skip, inScript = false) {
     const style = getComputedStyle(el)
     if (style.display === 'none') return
     const box = el.getBoundingClientRect()
-    const radius = parseFloat(style.borderTopLeftRadius) || 0
+    if (el !== top && (box.bottom < -2 || box.top > innerHeight + 2)) return
+    const radius = Math.min(parseFloat(style.borderTopLeftRadius) || 0, box.width / 2, box.height / 2)
+    // A hard shadow (one with no blur to it), under the box.
+    const cast = /^(rgba?\([^)]+\)) (-?[\d.]+)px (-?[\d.]+)px 0px (-?[\d.]+)px$/.exec(style.boxShadow)
+    if (cast) {
+      const spread = Number(cast[4])
+      g.fillStyle = cast[1]
+      g.beginPath()
+      g.roundRect(box.left + Number(cast[2]) - spread, box.top + Number(cast[3]) - spread, box.width + 2 * spread, box.height + 2 * spread, Math.max(0, radius + spread))
+      g.fill()
+    }
+    // A picture, as big as its box; a drawing, its paths in their own colours (or, drawn from a symbol, in the ink it was given).
+    if (el.localName === 'img') {
+      if (el.complete && el.naturalWidth > 0) {
+        try {
+          g.globalAlpha = Number(style.opacity) || 0
+          g.drawImage(el, box.left, box.top, box.width, box.height)
+        } catch {}
+        g.globalAlpha = 1
+      }
+      return
+    }
+    if (el.localName === 'svg') {
+      const view = el.viewBox?.baseVal
+      if (!view || !view.width || !view.height || !box.width) return
+      const use = el.querySelector('use')
+      const paths = use ? document.querySelector(use.getAttribute('href') || '#-')?.querySelectorAll('path') ?? [] : el.querySelectorAll('path')
+      g.save()
+      g.translate(box.left, box.top)
+      g.scale(box.width / view.width, box.height / view.height)
+      g.translate(-view.x, -view.y)
+      g.globalAlpha = Number(style.opacity) || 1
+      for (const path of paths) {
+        const shape = pathOf(path.getAttribute('d'))
+        if (!shape) continue
+        const ink = use ? null : getComputedStyle(path)
+        const fill = use ? style.color : ink.fill
+        if (fill && fill !== 'none') {
+          g.fillStyle = fill
+          g.fill(shape)
+        }
+        if (ink && ink.stroke && ink.stroke !== 'none') {
+          g.strokeStyle = ink.stroke
+          g.lineWidth = parseFloat(ink.strokeWidth) || 1
+          g.lineCap = ink.strokeLinecap || 'butt'
+          g.lineJoin = ink.strokeLinejoin || 'miter'
+          g.stroke(shape)
+        }
+      }
+      g.restore()
+      return
+    }
     if (!clear(style.backgroundColor)) {
       g.fillStyle = style.backgroundColor
       g.beginPath()
@@ -10624,6 +11904,9 @@ function drawRune(g, x, y, w, h, seed) {
   g.stroke()
 }
 
+// What to do when the picture cannot be drawn (set by motionControl; see motion.ground).
+let groundPage = null
+
 // Play and pause for everything that moves.
 function motionControl() {
   const reduced = matchMedia('(prefers-reduced-motion: reduce)')
@@ -10633,26 +11916,51 @@ function motionControl() {
   // The page arrives as a grey and sensible one, and stays that way until the
   // tab sitting in the middle of it is taken. Escape wears it off again.
   const root = document.documentElement
-  const corp = document.querySelector('.corp')
-  const tab = corp?.querySelector('.tab')
+  // There are two such pages, and only ever one of them in front (html[data-front], set before anything is drawn):
+  // NormalScript's ('corp'), for a first visit, and Psychoscript's own ('home'), for whoever has come down from the
+  // trip. Each has a tab on it. Coming down, the page can be changed for the other.
+  const fronts = { corp: document.querySelector('.corp:not(.home)'), home: document.querySelector('.corp.home') }
+  let front = root.dataset.front === 'home' && fronts.home ? 'home' : fronts.corp ? 'corp' : 'home'
+  let corp = fronts[front] ?? null
+  let tab = corp?.querySelector('.tab') ?? null
   const poster = document.querySelector('.poster')
   const icon = document.querySelector('link[rel="icon"]')
-  const names = { sober: document.title, awake: 'PSYCHOSCRIPT', icon: icon?.getAttribute('href'), plain: icon?.dataset.plain }
+  const titles = { corp: 'NormalScript® | Enterprise Scripting Solutions', home: 'Psychoscript: a small, fast virtual machine for a subset of JavaScript' }
+  const names = { get sober() { return titles[front] }, awake: 'PSYCHOSCRIPT', icon: icon?.getAttribute('href'), plain: icon?.dataset.plain }
   const trips = []
+  const unlocks = []
   let on = frozen === null && !reduced.matches
   let sober = Boolean(tab) && root.dataset.trip === 'off'
   let taken = false
+  let grounded = false // the picture cannot be drawn here: there is no trip to take (see motion.ground)
+  let armed = !root.classList.contains('lensing') // when reduced-motion or ?awake skips lensing, clicks need not wait
+  let pending = null
+  const clearBusy = () => {
+    root.classList.remove('is-waiting')
+    for (const page of Object.values(fronts)) {
+      const t = page?.querySelector('.tab')
+      t?.removeAttribute('aria-busy')
+      t?.removeAttribute('data-queued')
+    }
+    pending?.removeAttribute('aria-busy')
+  }
+  if (armed) clearBusy()
   const motion = {
     get playing() { return on && !sober },
     get sober() { return sober },
     get taken() { return taken },
     get wanted() { return on },
+    get armed() { return armed },
+    get pending() { return pending },
     reduced: () => reduced.matches,
-    tab,
-    corp,
+    get tab() { return tab },
+    get corp() { return corp },
+    get front() { return front },
+    fronts,
     startTime: frozen === null ? 0 : Number(frozen) || 0,
     onChange: (fn) => listeners.push(fn),
     onTrip: (fn) => trips.push(fn),
+    onUnlock: (fn) => unlocks.push(fn),
   }
   // It gets out of the page: the name on the browser's own tab turns into
   // the terminal's script and back into the other name, a little sun turns
@@ -10662,7 +11970,9 @@ function motionControl() {
   const leak = { timer: 0, since: 0, name: document.title, was: document.title, sheet: null }
   const drawIcon = (k) => {
     leak.sheet ??= Object.assign(document.createElement('canvas'), { width: 64, height: 64 })
-    const g = leak.sheet.getContext('2d')
+    // (Kept in memory, not on the GPU: read back from there seven times a second, toDataURL() waits each time for
+    // the GPU to finish the picture's frame, and every frame near it comes late.)
+    const g = leak.sheet.getContext('2d', { willReadFrequently: true })
     g.clearRect(0, 0, 64, 64)
     g.save()
     g.beginPath()
@@ -10722,9 +12032,10 @@ function motionControl() {
     }
   }
   const dress = () => {
-    if (corp) corp.inert = !sober
+    for (const [name, page] of Object.entries(fronts)) if (page) page.inert = !(sober && name === front)
     if (poster) poster.inert = sober
-    if (icon && names.plain && sober) icon.setAttribute('href', names.plain)
+    // (NormalScript has a grey icon of its own. Psychoscript's page keeps the sun.)
+    if (icon && sober) icon.setAttribute('href', front === 'corp' && names.plain ? names.plain : names.icon)
     clearInterval(leak.timer)
     leak.timer = 0
     const next = sober ? names.sober : names.awake
@@ -10736,20 +12047,31 @@ function motionControl() {
     Object.assign(leak, { was: document.title.replace(/^[☼✺❂✹] /, ''), name: next, since: 0 })
     leak.timer = setInterval(() => !document.hidden && leakTick(), 140)
   }
-  const turn = (awake) => {
-    if (!tab || sober === !awake) return
+  const originFor = (el) => {
+    if (tab) {
+      const r = tab.getBoundingClientRect()
+      if (r.bottom > 0 && r.top < innerHeight) return tab
+    }
+    return el || tab
+  }
+  const turn = (awake, origin = tab) => {
+    if (!tab || sober === !awake || (awake && (grounded || !armed))) return
     sober = !awake
     taken = true
-    const at = tab.getBoundingClientRect()
+    const anchor = originFor(origin)
+    const at = anchor.getBoundingClientRect()
     root.style.setProperty('--trip-x', `${at.left + at.width / 2}px`)
     root.style.setProperty('--trip-y', `${at.top + at.height / 2}px`)
     root.dataset.trip = awake ? 'on' : 'off'
     dress()
     if (sober) tab.focus({ preventScroll: true })
-    trips.forEach((fn) => fn(awake))
+    trips.forEach((fn) => fn(awake, anchor))
     listeners.forEach((fn) => fn())
   }
   dress()
+  // (The icon's first drawing takes a twentieth of a second, wherever it is drawn: it is had while the page is
+  // idle, before anyone takes the tab, and not in the first frames of its going.)
+  if (icon && tab && sober) (globalThis.requestIdleCallback ?? ((fn) => setTimeout(fn, 1500)))(() => sober && drawIcon(0))
   if (tab) {
     document.addEventListener('pointermove', (event) => {
       if (!sober) return
@@ -10758,19 +12080,90 @@ function motionControl() {
       tab.style.setProperty('--close', Math.max(0, Math.min(1, 1 - (away - 60) / 340)).toFixed(3))
     })
   }
-  document.addEventListener('visibilitychange', () => {
-    if (!tab || sober) return
-    if (document.hidden) {
-      document.title = names.sober
-      if (icon && names.plain) icon.setAttribute('href', names.plain)
-    } else if (!leak.timer) {
-      document.title = names.awake
-      if (icon) icon.setAttribute('href', names.icon)
-    }
+  motion.arm = () => {
+    if (grounded || armed) return false
+    armed = true
+    root.classList.add('ready')
+    const queued = pending
+    pending = null
+    clearBusy()
+    listeners.forEach((fn) => fn())
+    if (queued && sober) turn(true, queued)
+    return true
+  }
+  const comeDown = () => {
+    if (sober) return
+    document.cookie = 'psychoscript_seen=1; max-age=31536000; path=/; SameSite=Lax'
+    motion.setFront('home')
+    corp?.scrollTo?.({ top: 0, behavior: 'instant' })
+    if (!grounded && !reduced.matches) root.classList.add('lensing')
+    turn(false)
+  }
+  motion.comeDown = comeDown
+  // The picture cannot be drawn live in this browser (no WebGPU, or none that will start, or it gave out): there is
+  // no trip, and whoever is here gets Psychoscript's own page, whichever page they were on and wherever they were,
+  // with no tab on it (styles.css takes that away where html has no .gpu). Never the still poster by itself.
+  // (A frozen frame, ?freeze, is for whoever is making pictures of the poster: that keeps the still.)
+  motion.ground = groundPage = () => {
+    grounded = true
+    armed = false
+    clearBusy()
+    pending = null
+    root.classList.remove('gpu', 'drawn', 'lensing', 'melting', 'ready')
+    if (frozen !== null || !fronts.home) return
+    front = 'home'
+    corp = fronts.home
+    tab = corp.querySelector('.tab')
+    sober = true
+    root.dataset.front = 'home'
+    root.dataset.trip = 'off'
+    dress()
+    listeners.forEach((fn) => fn())
+  }
+  // The other page is put in front (while the picture is up, for coming down to). Says whether it was changed.
+  motion.setFront = (name) => {
+    if (!fronts[name] || name === front) return false
+    front = name
+    root.dataset.front = name
+    corp = fronts[name]
+    tab = corp.querySelector('.tab')
+    dress()
+    return true
+  }
+  // "Return to normalcy", at the foot of Psychoscript's own page: the visitor is forgotten (the cookie goes) and
+  // the page comes again, without whatever asked for this one, as it does for a first visit: NormalScript's.
+  fronts.home?.querySelector('.home__reset')?.addEventListener('click', () => {
+    document.cookie = 'psychoscript_seen=; max-age=0; path=/; SameSite=Lax'
+    location.assign(location.pathname)
   })
-  motion.comeDown = () => turn(false)
-  tab?.addEventListener('click', () => turn(true))
-  document.addEventListener('keydown', (event) => event.key === 'Escape' && !sober && turn(false))
+  // On NormalScript's page anything that can be pressed takes the tab; on Psychoscript's own, only the tab does.
+  // (A real link, [data-real-link], goes where it says, on either.)
+  for (const [name, page] of Object.entries(fronts)) {
+    page?.addEventListener('click', (event) => {
+      if (name !== front || grounded) return
+      const trigger = event.target?.closest?.(name === 'home' ? '.tab' : 'button, a, .corp__button')
+      if (!trigger || trigger.closest('[data-real-link]')) return
+      event.preventDefault()
+      if (!armed) {
+        if (pending && pending !== trigger && pending !== tab) pending.removeAttribute('aria-busy')
+        pending = trigger
+        root.classList.add('is-waiting')
+        trigger.setAttribute('aria-busy', 'true')
+        tab?.setAttribute('aria-busy', 'true')
+        tab?.setAttribute('data-queued', '')
+        unlocks.forEach((fn) => fn())
+        return
+      }
+      turn(true, trigger)
+    })
+  }
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return
+    if (!armed && pending) {
+      clearBusy()
+      pending = null
+    } else if (!sober) comeDown()
+  })
   const set = (next) => {
     on = next
     if (taken) dress()
@@ -10789,24 +12182,460 @@ function motionControl() {
   return motion
 }
 
+// What the sun's tour writes on the terminal's screen: three steps of code, typed as the sun says them, and what
+// goes with each. Each line is [when its typing begins, when it ends, what it says], by the recording's clock; each
+// step has its own inks. It is laid out for the terminal's own glass, 1040 by 720, in type that can be read on it
+// from where the visitor sits. (The lens lays it on the glass, with a tube's lines, glow and curve, and takes it to
+// bits as it goes: see glassed and termOver.)
+const TERM = {
+  mono: 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+  size: [1040, 720],
+  boot: {
+    head: 'BOOT',
+    ink: { name: '#d9ffe6', key: '#ffcf70', type: '#8dffc0', call: '#fff1b8', text: '#fff1b8', num: '#fff1b8', mark: '#79d9a3', note: '#62b587', head: '#9dffc4', dim: '#3f8f66', sun: '#ffc94a' },
+    lines: [[6.6, 7.1, '$ psychoscript tour --guide sun'], [7.15, 7.5, '// three steps. mind the glass.']],
+  },
+  steps: [
+    {
+      head: 'STEP 01 OF 03 — EMBEDDABLE JS SUBSET',
+      ink: { name: '#d9ffe6', key: '#ffcf70', type: '#8dffc0', call: '#fff1b8', text: '#fff1b8', num: '#fff1b8', mark: '#79d9a3', note: '#62b587', head: '#9dffc4', dim: '#3f8f66', sun: '#ffc94a' },
+      lines: [
+        [7.9, 8.7, 'import { Host, Runtime }'],
+        [8.7, 9.4, '  from "psychoscript"'],
+        [9.4, 9.4, ''],
+        [9.5, 10.6, 'const vm = Runtime.make({'],
+        [10.8, 12.3, '  globals: () => ({'],
+        [16.2, 17.1, '    query: Host.fn(([sql]) =>'],
+        [17.1, 17.6, '      db.run(sql)),'],
+        [17.6, 17.75, '  }),'],
+        [17.75, 17.9, '})'],
+      ],
+      // What it does without, each lit as it is said.
+      badges: [[12.8, 'NO WORKERS'], [13.68, 'NO WASM'], [15.5, 'NODE ≥ 24 / BUN ≥ 1.4']],
+    },
+    {
+      head: 'STEP 02 OF 03 — CODE MODE',
+      ink: { name: '#e4fff8', key: '#ffd83d', type: '#39f3ff', call: '#7dff5c', text: '#ffe98a', num: '#ff8ae2', mark: '#59e6d5', note: '#ffb347', head: '#39f3ff', dim: '#2f9a94', sun: '#ffd83d' },
+      lines: [
+        [20.1, 21.2, '// ONE SCRIPT · 20 HOST CALLS'],
+        [21.3, 22.2, 'const due = invoices.list()'],
+        [22.2, 22.9, '  .filter(i => !i.paid)'],
+        [23.3, 24.0, 'await Promise.all(due.map('],
+        [24.0, 24.7, '  i => invoices.remind(i.id)))'],
+        [26.3, 26.9, '// => { reminded: 20 }'],
+      ],
+      banner: [19.12, 20.25, 'CODE MODE!'],
+      meter: [23.45, 26.2], // the twenty calls go out, and are all back
+    },
+    {
+      head: 'STEP 03 OF 03 — SUSPEND TO BYTES',
+      ink: { name: '#ffe6f6', key: '#ff58d6', type: '#ffb443', call: '#c79bff', text: '#ffd36b', num: '#ffd36b', mark: '#ff8fc8', note: '#b98cff', head: '#ff6ad8', dim: '#a04a8c', sun: '#ff8a3d' },
+      lines: [
+        [27.6, 28.8, '// SUSPEND TO BYTES · RESUME ANYWHERE'],
+        [28.85, 30.2, 'const snap = await program.suspend()'],
+        [30.64, 31.4, 'const bytes = toBytes(snap.state)'],
+        [31.4, 31.7, '// 5,402 B'],
+      ],
+      paused: 29.6, // "mid-flight"
+    },
+  ],
+  bytes: [0x70, 0x73, 0x79, 0x63, 0x68, 0x6f, 0x00, 0x1f], // p s y c h o, and what comes after
+}
+const termChance = (a, b) => {
+  const x = Math.sin(a * 127.1 + b * 311.7) * 43758.5453
+  return x - Math.floor(x)
+}
+// A line of code as its parts, each with the ink it is written in.
+const termParts = (line) =>
+  [...line.matchAll(/(\/\/.*$)|("[^"]*"?)|\b(import|from|const|await|true)\b|\b(Host|Runtime|Promise)\b|(\b\d[\d,.]*\b)|([A-Za-z_$][\w$]*(?=\())|([A-Za-z_$][\w$]*)|(\s+)|(.)/g)].map((m) => [
+    m[0],
+    m[1] ? 'note' : m[2] ? 'text' : m[3] ? 'key' : m[4] ? 'type' : m[5] ? 'num' : m[6] ? 'call' : m[7] ? 'name' : 'mark',
+  ])
+
+// The canvas the tour's writing is drawn on, light on black, for the lens to lay on the terminal's glass.
+const HEX = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, '0'))
+const RAIN_INK = Array.from({ length: 180 * 4 }, (_, k) => `hsl(${(k >> 2) * 2} 100% ${54 + (k & 3) * 6}%)`)
+
+export function createTerm() {
+  const sheet = document.createElement('canvas')
+  const g = sheet.getContext('2d', { alpha: false })
+  const parts = new Map()
+  const [DW, DH] = TERM.size
+  let drawnAt = -9
+  const font = (size, weight = 600) => (g.font = weight + ' ' + size + 'px ' + TERM.mono)
+  const box = (x, y, w, h, r) => {
+    g.beginPath()
+    g.roundRect(x, y, w, h, r)
+  }
+  // How far the sun's mouth was open at a moment of its tour.
+  let begins = 0 // where in the recording the part being given began: before it the sun said nothing to be seen here
+  const openAt = (data, t) => {
+    const at = t * data.fps
+    return at < 0 || t < begins ? 0 : Math.max(0, Math.min(1, data.open[Math.min(data.open.length - 1, Math.floor(at))] ?? 0))
+  }
+  return {
+    sheet,
+    // Draws it as it is t seconds into the tour, for a glass width by height pixels on the screen (it is drawn finer
+    // than that, to stay sharp as the glass moves): thirty times a second, however often it is asked. Says how many
+    // signs it has typed so far, or -1 if it had nothing new to draw.
+    draw({ t, data, from = 0 }, width, height) {
+      begins = from
+      const fine = Math.max(DW / Math.max(width, 1), Math.min(2, 1380 / Math.max(width, 1)))
+      const [w, h] = [Math.max(2, Math.round(width * fine)), Math.max(2, Math.round(height * fine))]
+      if (sheet.width === w && sheet.height === h && Math.abs(t - drawnAt) < 1 / 31) return -1
+      if (sheet.width !== w || sheet.height !== h) Object.assign(sheet, { width: w, height: h })
+      drawnAt = t
+      // It is laid out DW by DH, in the middle of the glass, and a little inside it: the tube is dark toward its edge.
+      const k = Math.min(w / DW, h / DH) * 0.95
+      const [W, H] = [w / k, h / k]
+      g.setTransform(1, 0, 0, 1, 0, 0)
+      g.globalAlpha = 1
+      g.fillStyle = '#000'
+      g.fillRect(0, 0, w, h)
+      g.setTransform(k, 0, 0, k, (w - DW * k) / 2, (h - DH * k) / 2)
+      g.textBaseline = 'alphabetic'
+      g.textAlign = 'left'
+      const [left, top] = [-(W - DW) / 2, -(H - DH) / 2]
+      const viewT = from > TOUR.from + 0.5 ? Math.max(t, from + 0.1) : t
+      const at = viewT < TOUR.steps[0] ? -1 : viewT < TOUR.steps[1] ? 0 : viewT < TOUR.steps[2] ? 1 : 2
+      const step = at < 0 ? TERM.boot : TERM.steps[at]
+      const ink = step.ink
+      const since = at < 0 ? 9 : t - TOUR.steps[at]
+      const frozen = at === 2 && t >= TOUR.frozen
+      const resumed = at === 2 && t >= TOUR.resumed
+      let typed = 0
+
+      // The bytes of a run frozen in mid-flight pour down the glass.
+      if (frozen) {
+        const hard = Math.min(1, (t - TOUR.frozen) / 0.5)
+        font(21, 700)
+        const rows = Math.ceil(H / 25) + 1
+        for (let x = left + 6, col = 0; x < left + W; x += 31, col++) {
+          // (Two runs to a column, one after the other, so that none is ever empty.)
+          for (let run = 0; run < 2; run++) {
+            const speed = 11 + 15 * termChance(col, 1)
+            const tail = 12 + Math.floor(10 * termChance(col, 3 + run))
+            const lap = rows + tail
+            const head = ((t - TOUR.frozen) * speed + lap * (termChance(col, 2) + 0.5 * run)) % lap
+            for (let i = 0; i < tail; i++) {
+              const row = Math.floor(head) - i
+              if (row < 0 || row >= rows) continue
+              const byte = TERM.bytes[(col + row * 3) & 7] ^ (termChance(col, row) > 0.45 ? Math.floor(256 * termChance(col + row * 31, Math.floor(t * 3 + col))) & 255 : 0)
+              const fade = 1 - i / tail
+              g.globalAlpha = hard * (i === 0 ? 1 : 0.3 + 0.7 * fade)
+              // (Hot magenta, electric violet and amber, a column of each, and now and then one of any colour at all.)
+              const hue = termChance(col, 5 + Math.floor(t * 0.7 + termChance(col, 9))) > 0.86 ? 360 * termChance(col, 6) + 90 * t : [316, 276, 38][(col + run + Math.floor(3 * termChance(col, 7))) % 3] + 14 * (1 - fade)
+              g.fillStyle = i === 0 ? '#fff4fb' : RAIN_INK[((((hue % 360) + 360) % 360 >> 1) << 2) | Math.min(3, fade * 3.99 | 0)]
+              g.fillText(HEX[byte & 255], x, top + row * 25 + 20)
+            }
+          }
+        }
+        g.globalAlpha = 1
+      }
+
+      // The bar along the top: which step this is, how the sun's voice is going, and the sun.
+      const lit = Math.max(0, 1 - since / 0.5)
+      box(22, 16, DW - 44, 84, 14)
+      g.fillStyle = frozen ? 'rgba(20, 0, 16, 0.86)' : '#000'
+      g.fill()
+      g.globalAlpha = 0.14 + 0.5 * lit
+      g.fillStyle = ink.head
+      g.fill()
+      g.globalAlpha = 1
+      g.lineWidth = 2.5
+      g.strokeStyle = ink.head
+      g.stroke()
+      font(17, 700)
+      g.fillStyle = lit > 0.5 ? '#ffffff' : ink.dim
+      g.fillText('PSYCHOSCRIPT VM', 44, 44)
+      font(31, 700)
+      g.fillStyle = lit > 0.5 ? '#ffffff' : ink.head
+      g.fillText(step.head, 44, 82)
+      const loud = openAt(data, t)
+      for (let i = 0; i < 11; i++) {
+        const much = openAt(data, t - i * 0.05)
+        const tall = 4 + 46 * much ** 0.7
+        g.globalAlpha = 0.35 + 0.65 * (1 - i / 11)
+        g.fillStyle = at === 1 ? 'hsl(' + ((170 + i * 9 + t * 60) % 360) + ' 100% 62%)' : ink.head
+        g.fillRect(DW - 116 - i * 8, 58 - tall / 2, 5, tall)
+      }
+      g.globalAlpha = 1
+      // (the sun, saying it)
+      const [sx, sy] = [DW - 66, 58]
+      g.strokeStyle = g.fillStyle = ink.sun
+      g.lineWidth = 3
+      for (let i = 0; i < 10; i++) {
+        const a = (i / 10) * 6.2832 + t * 0.6, far = 23 + 3 * loud + (i % 2 ? 0 : 3)
+        g.beginPath()
+        g.moveTo(sx + 18.5 * Math.cos(a), sy + 18.5 * Math.sin(a))
+        g.lineTo(sx + far * Math.cos(a), sy + far * Math.sin(a))
+        g.stroke()
+      }
+      g.beginPath()
+      g.arc(sx, sy, 16, 0, 6.2832)
+      g.fill()
+      g.fillStyle = '#000'
+      const blink = Math.abs(((t + 1.3) % 4.3) - 0.1) < 0.09 ? 0.7 : 3
+      g.fillRect(sx - 8, sy - 6 - blink / 2, 4.2, blink)
+      g.fillRect(sx + 3.8, sy - 6 - blink / 2, 4.2, blink)
+      g.beginPath()
+      g.ellipse(sx, sy + 5.5, 6.8 - 1.8 * loud, 1.4 + 6 * loud, 0, 0, 6.2832)
+      g.fill()
+
+      // The code, typed as it is said: each line's number, and the cursor at the end of whatever is being typed.
+      const [x0, y0, pitch] = [84, 168, 52]
+      font(42)
+      const wide = g.measureText('M').width
+      let cursor = [x0, y0]
+      step.lines.forEach(([from, to, line], n) => {
+        const shown = t >= to ? line.length : t <= from ? 0 : Math.floor((line.length * (t - from)) / (to - from))
+        typed += shown
+        if (t < from) return
+        const y = y0 + n * pitch
+        // (Behind the bytes, what is written is still to be read.)
+        if (frozen && line) {
+          g.fillStyle = 'rgba(16, 0, 14, 0.84)'
+          g.fillRect(28, y - 42, 64 + line.length * wide, pitch - 2)
+        }
+        font(19, 500)
+        g.fillStyle = ink.dim
+        g.fillText(String(n + 1).padStart(2, '0'), 36, y - 5)
+        font(42)
+        if (!parts.has(line)) parts.set(line, termParts(line))
+        let done = 0
+        for (const [word, sort] of parts.get(line)) {
+          if (done >= shown) break
+          g.fillStyle = ink[sort]
+          g.fillText(word.slice(0, shown - done), x0 + done * wide, y)
+          done += word.length
+        }
+        cursor = shown < line.length || n === step.lines.length - 1 ? [x0 + shown * wide, y] : [x0, y + pitch]
+      })
+      if (!resumed && (t * 2.6) % 1 < 0.6) {
+        g.fillStyle = ink.head
+        g.fillRect(cursor[0] + 3, cursor[1] - 35, 22, 43)
+      }
+
+      if (step.badges) {
+        // What it does without: each lights as the sun says it.
+        font(25, 700)
+        let x = 30
+        for (const [when, name] of step.badges) {
+          const on = t >= when
+          const label = '[' + (on ? '✓' : ' ') + ' ' + name + ']'
+          const span = g.measureText(label).width + 30
+          const pop = on ? Math.max(0, 1 - (t - when) / 0.35) : 0
+          box(x - 3 * pop, 622 - 3 * pop, span + 6 * pop, 60 + 6 * pop, 10)
+          g.globalAlpha = on ? 0.2 + 0.6 * pop : 0.05
+          g.fillStyle = ink.type
+          g.fill()
+          g.globalAlpha = on ? 1 : 0.5
+          g.lineWidth = on ? 2.5 : 1.5
+          g.strokeStyle = on ? ink.type : ink.dim
+          g.stroke()
+          g.fillStyle = on ? (pop > 0.4 ? '#ffffff' : ink.type) : ink.dim
+          g.fillText(label, x + 15, 661)
+          g.globalAlpha = 1
+          x += span + 12
+        }
+      }
+
+      if (step.banner && t >= step.banner[0] && t < step.banner[1]) {
+        const [from, to, word] = step.banner
+        const gone = (t - from) / (to - from)
+        g.globalAlpha = Math.min(1, gone / 0.08) * (1 - Math.max(0, (gone - 0.72) / 0.28))
+        g.textAlign = 'center'
+        font(128 + 22 * gone, 800)
+        g.fillStyle = 'hsl(' + ((45 + 400 * t) % 360) + ' 100% 62%)'
+        g.fillText(word, DW / 2 + 5, 440 + 5)
+        g.fillStyle = '#ffffff'
+        g.fillText(word, DW / 2, 440)
+        g.textAlign = 'left'
+        g.globalAlpha = 1
+      }
+
+      if (step.meter && t >= step.meter[0] - 1.2) {
+        // Twenty host calls go out at once, and every one comes back.
+        const [from, to] = step.meter
+        const [mx, each] = [56, 46.6]
+        let back = 0
+        g.globalAlpha = Math.min(1, (t - from + 1.2) / 0.4)
+        for (let i = 0; i < 20; i++) {
+          const begun = from + 0.035 * i + 0.25 * termChance(i, 11)
+          const ended = Math.min(to - 0.03 * (19 - i) * termChance(i, 13), begun + 0.9 + 1.5 * termChance(i, 12))
+          const much = Math.max(0, Math.min(1, (t - begun) / (ended - begun)))
+          const full = much >= 1
+          if (full) back++
+          const x = mx + i * each
+          g.lineWidth = 1.5
+          g.strokeStyle = ink.dim
+          g.strokeRect(x, 508, 36, 88)
+          if (much > 0) {
+            g.fillStyle = 'hsl(' + ((i * 18 + 70 * t) % 360) + ' 100% ' + (full ? 66 + 14 * Math.max(0, 1 - (t - ended) / 0.3) : 56) + '%)'
+            g.fillRect(x + 3, 593 - 82 * much, 30, 82 * much)
+          }
+          font(15, 600)
+          g.fillStyle = full ? '#ffffff' : ink.dim
+          g.fillText(full ? '✓' : String(i + 1).padStart(2, '0'), x + (full ? 11 : 8), 616)
+        }
+        const right = mx + 19 * each + 36
+        font(24, 700)
+        g.fillStyle = ink.type
+        g.fillText('Promise.all ▸ 20 host calls, in your process', mx, 494)
+        g.textAlign = 'right'
+        g.fillStyle = back === 20 ? ink.call : ink.text
+        g.fillText(String(back).padStart(2, '0') + '/20', right, 494)
+        if (back === 20) {
+          const pop = Math.max(0, 1 - (t - to) / 0.4)
+          font(38 + 6 * pop, 800)
+          g.fillStyle = pop > 0.5 ? '#ffffff' : ink.call
+          g.fillText('20/20 tools resolved in 0.6ms', right, 668)
+        }
+        g.textAlign = 'left'
+        g.globalAlpha = 1
+      }
+
+      if (at === 2) {
+        // A run, going; then stopped where it stood; then all of it as bytes.
+        const stopped = t >= step.paused
+        const gone = Math.max(0, (Math.min(t, step.paused) - TOUR.steps[2]) / (step.paused - TOUR.steps[2]))
+        const [rx, rw] = [56, DW - 112]
+        if (frozen) {
+          // (Behind the bytes, each of these is still to be read.)
+          g.fillStyle = 'rgba(16, 0, 14, 0.84)'
+          g.fillRect(rx - 14, 386, rw + 28, 84)
+          g.fillRect(rx - 14, 478, 800, Math.min(5, Math.ceil((t - TOUR.frozen) * 5)) * 30 + 50)
+        }
+        font(27, 700)
+        g.fillStyle = stopped ? ink.type : ink.call
+        g.fillText(stopped ? ((t * 3) % 1 < 0.6 ? '❚❚' : '  ') + ' SUSPENDED MID-FLIGHT' : '▶ RUNNING', rx, 420)
+        g.fillStyle = ink.name
+        g.textAlign = 'right'
+        g.fillText('step ' + Math.floor(311 * gone) + '/842 · pc 0x' + (0x1a00 + Math.floor(1338 * gone)).toString(16), rx + rw, 420)
+        g.textAlign = 'left'
+        g.lineWidth = 2
+        g.strokeStyle = ink.dim
+        g.strokeRect(rx, 436, rw, 22)
+        g.fillStyle = stopped ? ink.type : ink.call
+        g.fillRect(rx + 4, 440, (rw - 8) * 0.37 * gone, 14)
+        if (frozen) {
+          const into = t - TOUR.frozen
+          font(27, 700)
+          g.fillStyle = ink.key
+          g.fillText('toBytes ▸ ' + Math.min(5402, Math.floor((5402 * into) / 2.1)).toLocaleString('en-US') + ' B', rx, 510)
+          font(24, 600)
+          for (let row = 0; row < 5 && row < into * 5; row++) {
+            let text = (row * 16).toString(16).padStart(4, '0') + '  '
+            for (let i = 0; i < 16; i++) {
+              const n = row * 16 + i
+              const value = n < 8 ? TERM.bytes[n] : Math.floor(256 * termChance(n, 17 + Math.floor(Math.max(0, 1.4 - into + row * 0.12) * 12)))
+              text += HEX[value & 255] + (i === 7 ? '  ' : ' ')
+            }
+            g.fillStyle = row === 0 ? '#ffffff' : 'hsl(' + ((305 + row * 22 + 40 * t) % 360) + ' 100% 72%)'
+            g.fillText(text, rx, 546 + row * 30)
+          }
+        }
+      }
+
+      if (resumed) {
+        // And it wakes somewhere else, as if nothing had happened.
+        const pop = Math.max(0, 1 - (t - TOUR.resumed) / 0.3)
+        g.fillStyle = 'rgba(8, 0, 10, 0.9)'
+        g.fillRect(left, 238, W, 274)
+        g.fillStyle = 'hsl(' + ((320 + 500 * t) % 360) + ' 100% 60%)'
+        g.fillRect(left, 238, W, 5)
+        g.fillRect(left, 507, W, 5)
+        g.textAlign = 'center'
+        font(40, 700)
+        g.fillStyle = '#ffe9a8'
+        g.fillText('runtime.resume(fromBytes(bytes))', DW / 2, 318)
+        font(96 + 24 * pop, 800)
+        g.fillStyle = 'hsl(' + ((320 + 500 * t) % 360) + ' 100% 62%)'
+        g.fillText('>>> RESUMED <<<', DW / 2 + 6, 448 + 6)
+        g.fillStyle = (t * 9) % 1 < 0.5 ? '#ffffff' : '#fff27a'
+        g.fillText('>>> RESUMED <<<', DW / 2, 448)
+        g.textAlign = 'left'
+      }
+
+      return typed + (at + 1) * 1000
+    },
+  }
+}
+
 async function start() {
   const motion = motionControl()
   // For whoever looks underneath: a note in the console, and a way to cast from it.
   const found = secrets.found(secrets.storage())
   let discover = (name) => found.add(name)
   let castWord = null
+  let giveTour = null
+  let dev = null
   globalThis.psychoscript = Object.freeze({
     cast: (word) => Boolean(castWord?.(String(word ?? '').toLowerCase())),
     get found() { return found.size },
+    // The sun shows you round the terminal: the eye goes in, as if the terminal had been pressed (with the sound, if it may).
+    tour: () => Boolean(giveTour?.()),
+    // What the page is made of, for whoever wants to film it: { canvas, sound, show, motion, gate, clock, act, tourData, steady(), tour(), intro() }.
+    get _dev() { return dev },
   })
   console.log(`%c${secrets.SUN}
 %c${secrets.RIDDLE}`, 'font: 12px/1.2 monospace; color: #f9bb2d; background: #1d1614; padding: 4px 10px', 'font: italic 12px Georgia, serif; color: #ee5a8f')
   addEventListener('beforeprint', () => discover('print'))
   const hero = document.querySelector('.hero')
   const canvas = hero?.querySelector('canvas.liquid')
-  // (If the picture cannot be drawn after all, the page's own tab comes back in place of the photograph of the drawn one.)
-  const plain = () => document.documentElement.classList.remove('lensing')
+  const soundToggle = document.querySelector('#sound-toggle')
+  // (If the picture cannot be drawn after all, there is Psychoscript's own page and no trip: see motion.ground.)
+  const plain = () => motion.ground()
   if (!canvas || !navigator.gpu) return plain()
+
+  // Hoist all non-GPU fetching and decoding before waiting on WebGPU adapter, device or shader compilation.
+  const narrow = matchMedia('(max-width: 900px)')
+  let layout = narrow.matches ? settings.narrow : settings.wide
+  world.horizon = layout.horizon ?? LAND.horizon
+  const initialTitleName = narrow.matches ? 'narrow' : 'wide'
+  const initialDaxName = narrow.matches ? 'dax-narrow' : 'dax-wide'
+  const otherDaxName = narrow.matches ? 'dax-wide' : 'dax-narrow'
+
+  const sound = createSound()
+  sound.prepare()
+  let tourData = null
+  let toured = false
+  let muted = false // the visitor has turned the sound off themselves, and it is not turned on for them
+  const tourPromise = loadTour().then((data) => (tourData = data))
+
+  const decodeBitmap = (url) =>
+    fetch(url).then(async (r) => {
+      if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`)
+      return createImageBitmap(await r.blob(), { colorSpaceConversion: 'none', premultiplyAlpha: 'none' })
+    })
+  const artNames = ['fire', 'notice', 'boss', 'comets', initialDaxName, 'page', otherDaxName]
+  const artBitmaps = Object.fromEntries(artNames.map((name) => [name, decodeBitmap(`art/${name}.${name === 'boss' ? 'jpg' : 'png'}`)]))
+  const titleBitmaps = { [initialTitleName]: decodeBitmap(TITLE_MAPS[initialTitleName].src) }
+  let fontsSettled = false
+  const fontsPromise = (document.fonts?.ready ?? Promise.resolve()).then(() => { fontsSettled = true })
+
+  // Register early gesture unlock and trip handlers before any await so no click can slip past unregistered handlers.
+  const shownSound = () => soundToggle?.setAttribute('aria-pressed', String(sound.enabled))
+  let tripHandler = null
+  motion.onUnlock(() => {
+    soundToggle?.classList.add('was-on')
+    muted = false
+    sound.unlock()
+  })
+  motion.onTrip((awake, origin) => tripHandler?.(awake, origin))
+  if (soundToggle) {
+    motion.onTrip((awake) => {
+      soundToggle.classList.add('was-on')
+      if (awake) {
+        muted = false
+        sound.enable().then(() => {
+          shownSound()
+          sound.event('tab', { x: 0 })
+        })
+      } else sound.disable()
+      shownSound()
+    })
+  }
 
   const adapter = await navigator.gpu.requestAdapter()
   // (A browser with no GPU to give may offer one made of software: that is no place for this, and gets the still.)
@@ -10818,60 +12647,66 @@ async function start() {
   const format = navigator.gpu.getPreferredCanvasFormat()
   context.configure({ device, format, alphaMode: 'opaque' })
 
+  let gaugeWaiters = []
+  let cosmosOpen = !motion.sober
+  let openCosmos = null
+  const cosmosGate = cosmosOpen ? Promise.resolve() : new Promise((done) => { openCosmos = done })
+  const releaseCosmos = () => {
+    if (cosmosOpen) return
+    cosmosOpen = true
+    openCosmos?.()
+  }
+
   // (A shader the browser will not have is reported by the pipeline that was to be made of it.)
   device.pushErrorScope('validation')
-  const liquid = createLiquid(device, format, { clocked: true, rest: () => new Promise((done) => setTimeout(done, 400)) })
+  const liquid = createLiquid(device, format, {
+    clocked: true,
+    idle: () => (gauged ? Promise.resolve() : gaugePromise),
+    rest: () => (motion.playing ? new Promise((done) => setTimeout(done, 120)) : Promise.resolve()),
+    waitCosmos: () => cosmosGate,
+  })
   liquid.burden = Math.max(1, Math.min(200, Math.round(Number(new URLSearchParams(location.search).get('burden')) || 1)))
   const failed = await device.popErrorScope()
   if (failed) {
     console.error('liquid pipelines:', failed.message)
     return plain()
   }
-  try {
-    await liquid.built
-  } catch (error) {
-    console.error('liquid pipelines:', error.message)
-    return plain()
-  }
-  liquid.whole.catch((error) => console.error('liquid pipelines:', error.message))
   const uniforms = new Float32Array(UNIFORM_FLOATS)
 
-  // The pictures the lens puts in front of the picture, and the boss.
-  for (const name of ['notice', 'page', 'boss', 'comets', 'dax-wide', 'dax-narrow', 'fire']) {
-    fetch(`art/${name}.${name === 'boss' ? 'jpg' : 'png'}`)
-      .then(async (r) => createImageBitmap(await r.blob(), { colorSpaceConversion: 'none', premultiplyAlpha: 'none' }))
-      .then((bitmap) => {
-        const texture = device.createTexture({
-          size: [bitmap.width, bitmap.height],
-          format: 'rgba8unorm',
-          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
-        })
-        device.queue.copyExternalImageToTexture({ source: bitmap }, { texture }, [bitmap.width, bitmap.height])
-        liquid.setArt({ [name]: texture })
-      })
-      .catch((error) => console.error(`liquid ${name}:`, error))
-  }
-
-  // The title's distance fields, one per layout, loaded once each.
-  const wordmark = hero.querySelector('.wordmark')
-  const maps = await fetch('art/title.json').then((r) => (r.ok ? r.json() : null)).catch(() => null)
-  const titles = {}
-  let title = null
-  async function loadTitle(name) {
-    if (!maps?.[name] || titles[name]) return
-    titles[name] = { map: maps[name], texture: null }
-    const bitmap = await createImageBitmap(await (await fetch(maps[name].src)).blob(), {
-      colorSpaceConversion: 'none',
-      premultiplyAlpha: 'none',
-    })
+  const makeTex = (bitmap) => {
     const texture = device.createTexture({
       size: [bitmap.width, bitmap.height],
       format: 'rgba8unorm',
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
     })
     device.queue.copyExternalImageToTexture({ source: bitmap }, { texture }, [bitmap.width, bitmap.height])
-    titles[name].texture = texture
-    useTitle()
+    return texture
+  }
+
+  // Upload pre-fetched art bitmaps as soon as the device and each bitmap are ready.
+  const artUploaded = {}
+  for (const name of artNames) {
+    artUploaded[name] = artBitmaps[name]
+      .then((bitmap) => liquid.setArt({ [name]: makeTex(bitmap) }))
+      .catch((error) => console.error(`liquid ${name}:`, error))
+  }
+
+  // The title's distance fields, one per layout, loaded from inlined TITLE_MAPS with zero serial JSON fetch.
+  const wordmark = hero.querySelector('.wordmark')
+  const titles = {}
+  let title = null
+  function loadTitle(name) {
+    const map = TITLE_MAPS[name]
+    if (!map) return Promise.resolve()
+    if (titles[name]?.job) return titles[name].job
+    const job = (titleBitmaps[name] ??= decodeBitmap(map.src))
+      .then((bitmap) => {
+        titles[name].texture = makeTex(bitmap)
+        useTitle()
+      })
+      .catch((error) => console.error('liquid title:', error))
+    titles[name] = { map, texture: null, job }
+    return job
   }
   function useTitle() {
     const name = layout === settings.narrow ? 'narrow' : 'wide'
@@ -10879,14 +12714,11 @@ async function start() {
     liquid.setTitle(ready)
     title = ready ? { map: titles[name].map, box: [0, 0, 0, 0] } : null
     hero.classList.toggle('has-live-title', Boolean(ready))
-    if (!ready) loadTitle(name).catch((error) => console.error('liquid title:', error))
+    if (!ready) loadTitle(name)
     placeScene()
     redraw()
   }
 
-  const narrow = matchMedia('(max-width: 900px)')
-  let layout = narrow.matches ? settings.narrow : settings.wide
-  world.horizon = layout.horizon ?? LAND.horizon
   let clock = motion.startTime
   let visible = true
   let last = 0
@@ -10894,66 +12726,131 @@ async function start() {
   let alive = true
   const pointer = { x: -9999, y: -9999, tx: -9999, ty: -9999, strength: 0, vx: 0, vy: 0 }
 
+  // Cached layout boxes so hot rAF frames never trigger synchronous DOM reflows.
+  let canvasRect = canvas.getBoundingClientRect()
+  let tabRect = null
+  const updateCanvasRect = () => { canvasRect = canvas.getBoundingClientRect(); return canvasRect }
+  const getTabRect = () => {
+    if (!motion.tab) return null
+    if (!tabRect || tabRect.el !== motion.tab) tabRect = { el: motion.tab, box: motion.tab.getBoundingClientRect() }
+    return tabRect.box
+  }
+  const invalidateTabRect = () => { tabRect = null }
+  for (const page of Object.values(motion.fronts)) page?.addEventListener('scroll', invalidateTabRect, { passive: true })
+  addEventListener('resize', () => { updateCanvasRect(); invalidateTabRect() }, { passive: true })
+  addEventListener('scroll', () => { updateCanvasRect(); invalidateTabRect() }, { passive: true })
+
   // The grey page, as a picture the lens can melt, and how far along its tab's taking is.
   const root = document.documentElement
-  const gate = { on: false, age: 0, way: 0, look: 0, looking: false, press: 0, time: 0, pointer: null, texture: null, x: 0, y: 0, half: 32, roarAt: null }
-  function paintFront() {
+  const gate = { on: false, age: 0, way: 0, look: 0, looking: false, press: 0, time: 0, pointer: null, texture: null, x: 0, y: 0, half: 32, roarAt: null, paintedKey: '' }
+  // (On Psychoscript's own page the tab is awake from the first.)
+  if (motion.front === 'home') gate.near = 1
+  // (The page is painted ahead of time while sober, and reused at zero cost when its tab is taken unless scrolled or resized.)
+  function paintFront(origin = motion.tab, force = false) {
     if (!motion.corp || !motion.tab || motion.reduced() || !canvas.width) return
-    const box = canvas.getBoundingClientRect()
-    if (!box.width) return
-    // A canvas that has changed size is empty until it is drawn again, so the page closes its window on it till then.
+    const cBox = canvasRect.width ? canvasRect : updateCanvasRect()
+    if (!cBox.width) return
+    const paintRatio = Math.min(devicePixelRatio || 1, 1.5)
+    const sw = Math.max(2, Math.min(canvas.width, Math.round(cBox.width * paintRatio)))
+    const sh = Math.max(2, Math.min(canvas.height, Math.round(cBox.height * paintRatio)))
+    const key = `${motion.front}|${sw}x${sh}|${Math.round(motion.corp.scrollTop)}|${fontsSettled ? 1 : 0}`
     if (gate.sized !== `${canvas.width} ${canvas.height}`) {
-      root.classList.remove('drawn')
-      Object.assign(gate, { open: false, time: 0 })
+      if (motion.sober && !gate.way) {
+        root.classList.remove('drawn')
+        Object.assign(gate, { open: false, time: 0 })
+      }
+      gate.sized = `${canvas.width} ${canvas.height}`
+      gate.reach = undefined
     }
-    gate.sized = `${canvas.width} ${canvas.height}`
-    // Twice: as it reads, and with every word of it in the terminal's script.
-    const [texture, script] = [false, true].map((inScript) => {
-      const sheet = document.createElement('canvas')
-      sheet.width = canvas.width
-      sheet.height = canvas.height
-      const g = sheet.getContext('2d')
-      g.scale(sheet.width / box.width, sheet.height / box.height)
-      g.translate(-box.left, -box.top)
-      drawPage(g, motion.corp, motion.tab, inScript)
-      const made = device.createTexture({
-        size: [sheet.width, sheet.height],
-        format: 'rgba8unorm',
-        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+    gate.calm = motion.front === 'home'
+    if (force || !gate.texture || gate.paintedKey !== key) {
+      gate.paintedKey = key
+      // Twice: as it reads, and with every word of it in the terminal's script.
+      const [texture, script] = [false, true].map((inScript) => {
+        const sheet = document.createElement('canvas')
+        sheet.width = sw
+        sheet.height = sh
+        const g = sheet.getContext('2d')
+        g.scale(sw / cBox.width, sh / cBox.height)
+        g.translate(-cBox.left, -cBox.top)
+        drawPage(g, motion.corp, motion.tab, inScript)
+        const made = device.createTexture({
+          size: [sw, sh],
+          format: 'rgba8unorm',
+          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+        })
+        device.queue.copyExternalImageToTexture({ source: sheet }, { texture: made }, [sw, sh])
+        return made
       })
-      device.queue.copyExternalImageToTexture({ source: sheet }, { texture: made }, [sheet.width, sheet.height])
-      return made
-    })
-    liquid.setFront(texture, script)
-    gate.texture?.destroy()
-    gate.script?.destroy()
-    Object.assign(gate, { texture, script })
-    // Where the tab sits, in the hero's units, and in the page's for the window the canvas shows through.
-    const at = motion.tab.getBoundingClientRect()
-    const k = design[0] / box.width
-    Object.assign(gate, { x: (at.left + at.width / 2 - box.left) * k, y: (at.top + at.height / 2 - box.top) * k, half: 40 * k })
+      liquid.setFront(texture, script)
+      gate.texture?.destroy()
+      gate.script?.destroy()
+      Object.assign(gate, { texture, script })
+    }
+    // Where the trigger sits, in the hero's units, and in the page's for the window the canvas shows through.
+    invalidateTabRect()
+    const target = origin || motion.tab
+    const at = target === motion.tab ? getTabRect() : target.getBoundingClientRect()
+    const k = design[0] / cBox.width
+    Object.assign(gate, { x: (at.left + at.width / 2 - cBox.left) * k, y: (at.top + at.height / 2 - cBox.top) * k, half: 40 * k })
     root.style.setProperty('--trip-x', `${at.left + at.width / 2}px`)
     root.style.setProperty('--trip-y', `${at.top + at.height / 2}px`)
-    if (!gate.on && motion.sober) gate.on = true
-    // The page opens its window on the canvas only when the canvas has the page in it (see draw):
-    // the first frame takes a while, and an empty canvas seen through the window is a black hole.
-    gate.unseen = true
+    if (!gate.on && motion.sober && !gate.warm) {
+      gate.on = true
+      gate.unseen = true
+    }
     schedule()
   }
+  // Whole, the grey page itself lies over the canvas, and shows it only through the window it leaves round the tab
+  // (the mask on html.drawn .corp, in styles.css): how far from the tab's middle that window reaches, in CSS pixels,
+  // read from the page's own style once the window is open. 0 for as long as it cannot be told, or the page is not
+  // seen to cover the canvas, and then all of the canvas is drawn.
+  function windowReach() {
+    if (gate.reach === undefined && root.classList.contains('drawn')) {
+      const style = getComputedStyle(motion.corp)
+      const stop = /^radial-gradient\(circle at [^,]+,.*(?:rgb\(0, 0, 0\)|black) ([\d.]+)px\)$/.exec(style.maskImage || style.webkitMaskImage || '')
+      const over = motion.corp.getBoundingClientRect()
+      const under = canvas.getBoundingClientRect()
+      const solid = /^rgb\(/.test(style.backgroundColor) && over.left <= under.left && over.top <= under.top && over.right >= under.right && over.bottom >= under.bottom
+      gate.reach = stop && solid ? Number(stop[1]) : 0
+    }
+    return gate.reach ?? 0
+  }
   if (motion.tab) {
-    const watch = (yes) => () => (gate.looking = yes)
-    for (const name of ['pointerenter', 'focus']) motion.tab.addEventListener(name, watch(true))
-    for (const name of ['pointerleave', 'blur']) motion.tab.addEventListener(name, watch(false))
-    motion.tab.addEventListener('pointerdown', () => (gate.press = 1))
-    document.documentElement.addEventListener('pointerleave', () => (gate.pointer = null))
+    for (const page of Object.values(motion.fronts)) {
+      const stamp = page?.querySelector('.tab')
+      if (!stamp) continue
+      const watch = (yes) => () => stamp === motion.tab && (gate.looking = yes)
+      stamp.addEventListener('pointerenter', watch(true))
+      // (Focus it is given on coming down, so that the keyboard is where it was, is not being looked at.)
+      stamp.addEventListener('focus', () => stamp === motion.tab && (gate.looking = stamp.matches(':focus-visible')))
+      for (const name of ['pointerleave', 'blur']) stamp.addEventListener(name, watch(false))
+      stamp.addEventListener('pointerdown', () => stamp === motion.tab && (gate.press = 1))
+    }
+    document.documentElement.addEventListener('pointerleave', () => (gate.pointer = gate.client = null))
     document.addEventListener('pointermove', (event) => {
-      if (!gate.on) return
-      const box = canvas.getBoundingClientRect()
-      const k = design[0] / box.width
-      gate.pointer = [(event.clientX - box.left) * k, (event.clientY - box.top) * k]
+      if (!motion.sober && !gate.on) return
+      gate.client = [event.clientX, event.clientY]
+      const cBox = canvasRect.width ? canvasRect : updateCanvasRect()
+      const k = design[0] / cBox.width
+      gate.pointer = [(event.clientX - cBox.left) * k, (event.clientY - cBox.top) * k]
     })
-    motion.onTrip((awake) => {
+    tripHandler = (awake, origin) => {
+      // (Taken: the page is painted as it stands this moment, reusing the pre-warmed textures at zero cost if un-scrolled.
+      // Coming down: Psychoscript's own page is painted at its top so the hole closes cleanly into it.)
+      if (awake) {
+        paintFront(origin)
+        gate.age = 0
+      } else {
+        gate.scrolled = false
+        paintFront()
+        if (!(gate.age > 0)) gate.age = GATE_END
+      }
       if (!gate.texture) return
+      gate.open = true
+      gate.unseen = false
+      root.classList.add('drawn')
+      if (awake) stampOff()
       gate.on = true
       gate.way = awake ? 1 : -1
       Object.assign(gate, { rate: 1, hold: 0 })
@@ -10963,10 +12860,80 @@ async function start() {
       } else {
         gate.age = Math.min(gate.age, GATE_END)
         gate.roarAt = null
+        show.hush(clock)
         sound.event('comedown', { x: 0 })
       }
       root.classList.add('melting')
+      schedule()
+    }
+  }
+
+  // The tab on the page while the page is whole: drawn on a small canvas of the tab's own, inside the tab's button
+  // (canvas.tab__live, made here), with nothing but the tab and its light on it. It lies on the page and scrolls
+  // with it, the page needs no hole in it to show the tab through, and nothing changes places with anything
+  // wherever the page is scrolled to. Each page's tab has its own.
+  const STAMP = 360 // the canvas's side, in the page's pixels: room for the tab's light and its sparks
+  const stamps = new Map()
+  // (Drawn as soon as the stamp pipeline is built, so the live tab is immediately interactive while everything else warms.)
+  function stampLive() {
+    return alive && builtReady && motion.sober && !gate.way && Boolean(motion.tab) && !motion.reduced()
+  }
+  function stampOf(button) {
+    if (stamps.has(button)) return stamps.get(button)
+    const live = Object.assign(document.createElement('canvas'), { className: 'tab__live', width: 2, height: 2 })
+    live.setAttribute('aria-hidden', 'true')
+    let made = null
+    try {
+      const pen = live.getContext('webgpu')
+      pen.configure({ device, format, alphaMode: 'premultiplied' })
+      // The colour of the page it lies on: the nearest ground behind it that is not clear.
+      let paper = [1, 1, 1]
+      for (let el = button.parentElement; el; el = el.parentElement) {
+        const rgb = /^rgba?\((\d+), (\d+), (\d+)(?:, ([\d.]+))?\)$/.exec(getComputedStyle(el).backgroundColor)
+        if (rgb && (rgb[4] === undefined || Number(rgb[4]) > 0.99)) {
+          paper = [rgb[1] / 255, rgb[2] / 255, rgb[3] / 255]
+          break
+        }
+      }
+      button.append(live)
+      made = { live, pen, paper }
+    } catch (error) {
+      console.error('liquid tab:', error)
+    }
+    stamps.set(button, made)
+    return made
+  }
+  let stamped = false
+  function drawStamp() {
+    const button = motion.tab
+    const stamp = button && stampOf(button)
+    if (!stamp) return
+    const at = getTabRect()
+    // (Scrolled out of sight, or not laid out, it is not drawn.)
+    if (!at || !at.width || at.bottom < -STAMP / 2 || at.top > innerHeight + STAMP / 2) return
+    const ratio = Math.min(devicePixelRatio || 1, settings.maxPixelRatio)
+    const size = Math.round(STAMP * ratio)
+    if (stamp.live.width !== size) stamp.live.width = stamp.live.height = size
+    const [x, y] = [at.left + at.width / 2, at.top + at.height / 2]
+    const drew = liquid.drawStamp(stamp.pen.getCurrentTexture().createView(), {
+      size,
+      half: 40 * ratio,
+      look: gate.look,
+      pointer: gate.client && [(gate.client[0] - x) * ratio + size / 2, (gate.client[1] - y) * ratio + size / 2],
+      time: gate.time,
+      press: gate.press,
+      near: gate.near ?? 0,
+      own: motion.front === 'home',
+      paper: stamp.paper,
     })
+    if (drew && !stamped) {
+      stamped = true
+      root.classList.add('stamped')
+    }
+  }
+  function stampOff() {
+    stamped = false
+    root.classList.remove('stamped')
   }
 
   const limit = device.limits.maxTextureDimension2D
@@ -10983,7 +12950,8 @@ async function start() {
   let scene = null
   let design = [layout.width, layout.height]
   function placeScene() {
-    const box = canvas.getBoundingClientRect()
+    const box = updateCanvasRect()
+    invalidateTabRect()
     const at = sceneBox?.getBoundingClientRect()
     if (!at || !box.width) return
     design = designSize(layout, box.width, box.height)
@@ -11024,35 +12992,89 @@ async function start() {
   function placeComply() {
     if (!complySpot) return
     const at = act.notice?.up ? act.notice.button : null
-    const css = at ? canvas.getBoundingClientRect().width / design[0] : 0
+    const css = at ? canvasRect.width / design[0] : 0
     const next = at ? at.map((n) => (n * css).toFixed(1)).join() : ''
     if (next === complyAt) return
     complyAt = next
     complySpot.hidden = !at
     if (at) Object.assign(complySpot.style, { left: `${at[0] * css}px`, top: `${at[1] * css}px`, width: `${at[2] * css}px`, height: `${at[3] * css}px` })
   }
-  const sound = createSound()
-  if (motion.sober) sound.prepare()
-  const soundToggle = document.querySelector('#sound-toggle')
+  let term = null
+  let termUp = false
+  let termTyped = 0
+  let termKey = -9
   const lean = [0, 0]
   const light = [-0.49, -0.87]
   const sunLean = [0, 0]
   const show = createShow()
   let act = show.tick(clock, 0, { width: design[0], height: design[1], focal: layout.focal })
+  // Where the terminal stands just now: where it lives, up close (layout.close), or on its way between the two.
+  // The layout as it is with the terminal there.
+  let hoveringTerm = false
+  let termHover = 0
+  let stage = layout
+  let staged = ''
+  function restage() {
+    const k = act.present ?? 0
+    const h = termHover * (1 - smooth(0.05, 0.2, k))
+    const [m, c] = [layout.machine, layout.close]
+    if (!(k > 0) && !(h > 1e-3)) return (stage = layout)
+    const key = `${k.toFixed(4)} ${h.toFixed(4)} ${layout === settings.narrow}`
+    if (key === staged) return stage
+    staged = key
+    const mix = (a, b) => a + (b - a) * k
+    const baseMachine = k > 0 && c
+      ? { at: [mix(m.at[0], c.at[0]), mix(m.at[1], c.at[1])], size: m.size * (c.size / m.size) ** k, yaw: mix(m.yaw, c.yaw), pitch: mix(m.pitch, c.pitch) }
+      : m
+    return (stage = {
+      ...layout,
+      sun: k > 0 && c?.sun ? [mix(layout.sun[0], c.sun[0]), mix(layout.sun[1], c.sun[1]), layout.sun[2], mix(layout.sun[3] ?? 0, c.sun[2] ?? layout.sun[3] ?? 0)] : layout.sun,
+      machine: h > 1e-3
+        ? { at: [baseMachine.at[0], baseMachine.at[1] - 0.012 * h], size: baseMachine.size * (1 + 0.08 * h), yaw: baseMachine.yaw - 0.09 * h, pitch: baseMachine.pitch - 0.05 * h }
+        : baseMachine,
+    })
+  }
+  // How big the terminal's glass is on the screen when it is up close, in pixels: what is written on it is drawn for that.
+  const glassSize = () => {
+    const c = layout.close ?? layout.machine
+    const k = (scene[2] * c.size * canvas.width) / design[0]
+    return [2 * (MACHINE.glass.half[0] - 0.035) * k * Math.cos(c.yaw), 2 * (MACHINE.glass.half[1] - 0.035) * k * Math.cos(c.pitch)]
+  }
+  // Along the bottom, over the picture: the links that come with the terminal when it is up close, and the way
+  // back down once the sun has been heard out.
+  const dock = hero.querySelector('.dock')
+  const comedown = hero.querySelector('.comedown')
+  let docked = false
+  let touringNow = false
+  let heardOut = false
   let hurry = 0 // how much faster than usual the picture is flying up the valley
   let pinned = ''
   function pin(cam, bob, shift) {
-    if (!prompt || !scene) return
-    const css = canvas.getBoundingClientRect().width / design[0]
-    const box = [0, 0, scene[2] * css, scene[3] * css]
-    const m = glassMatrix(layout, cam, box, prompt.offsetWidth, prompt.offsetHeight, bob * css, shift * css)
-    const next = `matrix(${m.map((n) => n.toFixed(4)).join(',')})`
+    if (!prompt || !scene || !canvasRect.width) return
+    const css = canvasRect.width / design[0]
+    const sBox = [0, 0, scene[2] * css, scene[3] * css]
+    const m = glassMatrix(stage, cam, sBox, 300, 200, bob * css, shift * css)
+    const next = `matrix(${m[0].toFixed(4)},${m[1].toFixed(4)},${m[2].toFixed(4)},${m[3].toFixed(4)},${m[4].toFixed(4)},${m[5].toFixed(4)})`
     if (next !== pinned) prompt.style.transform = pinned = next
   }
 
-  // The fluid's textures follow the hero's shape; a new shape starts a new, pre-stirred fluid.
+  // The fluid's textures follow the hero's shape; cold startup stirs the fluid in non-blocking slices while shaders build.
+  let builtReady = false
+  let simReady = false
+  let warming = null
+  function warmFluidAsync() {
+    if (!simReady || !scene || !canvas.width) return null
+    if (!liquid.stale(design[0], design[1])) return warming ?? Promise.resolve()
+    const sun = sunAt(layout, scene)
+    liquid.reset(design[0], design[1], sun)
+    const mine = (warming = liquid.warmAsync(settings.liquid.warm, clock, () => ({ sun })).finally(() => {
+      if (warming === mine) warming = null
+    }))
+    return mine
+  }
   function prepare() {
-    if (!scene || !canvas.width) return false
+    if (!builtReady || !scene || !canvas.width) return false
+    if (warming) return false
     if (liquid.stale(design[0], design[1])) {
       const sun = sunAt(layout, scene)
       liquid.reset(design[0], design[1], sun)
@@ -11077,9 +13099,10 @@ async function start() {
 
   function draw(dt = 0, probing = false) {
     if (!alive || (!gauged && !probing) || !prepare()) return
+    let stepState = null
     if (dt > 0) {
       // The pointer stirs the slice of fluid it is seen through.
-      const sun = sunAt(layout, scene)
+      const sun = sunAt(stage, scene)
       const at = intoFluid(layout, sun, [pointer.x, pointer.y], clock)
       const ahead = intoFluid(layout, sun, [pointer.x + pointer.vx * 0.01, pointer.y + pointer.vy * 0.01], clock)
       act = show.tick(clock, dt, {
@@ -11088,19 +13111,56 @@ async function start() {
         sun,
         pointer: pointer.tx > -9000 ? [pointer.x, pointer.y] : null,
         focal: layout.focal / (1 + 0.035 * Math.max(0, hurry)), // the lens widens with speed
-        machine: [scene[0] + scene[2] * layout.machine.at[0], scene[1] + scene[3] * layout.machine.at[1], scene[2] * layout.machine.size],
+        machine: [scene[0] + scene[2] * stage.machine.at[0], scene[1] + scene[3] * stage.machine.at[1], scene[2] * stage.machine.size],
         song: sound.level(),
         hurry,
         planet: layout.planet,
+        heard: sound.tourTime(show.tourId),
       })
-      hurry *= Math.exp(-dt * 0.9)
+      restage()
+      // (With the terminal up close its links come up along the bottom, and go as it sets off back. Once the sun
+      // has been heard out, and the terminal is where it lives, there is the way back down.)
+      if (docked !== (act.near && act.present > 0.6)) {
+        docked = !docked
+        hero.classList.toggle('is-near', docked)
+        if (dock) dock.inert = !docked
+      }
+      if (touringNow !== (act.tour?.part === 'steps' || act.present > 0.02)) hero.classList.toggle('is-touring', (touringNow = !touringNow))
+      if (act.finished && !heardOut) {
+        heardOut = true
+        hero.classList.add('is-done')
+      }
+      // (Showing somebody round the terminal the sun says how fast the valley goes by.)
+      if (act.tour && act.tour.hurry !== null) hurry += (act.tour.hurry - hurry) * Math.min(1, dt * 2.5)
+      else hurry *= Math.exp(-dt * 0.9)
       for (const event of act.events) sound.event(event.kind, event)
+      // (A tour begun without sound is joined by it, where it has got to, as soon as there is some.)
+      if (act.tour?.silent && sound.ready) show.voice(clock)
+      // With the terminal near enough on the sun's tour, what it has to show is written on its glass, and heard
+      // being typed. (Otherwise nothing is drawn, and what was is let go.)
+      if (act.tour?.inside) {
+        term ??= createTerm()
+        const typed = term.draw(act.tour, ...glassSize())
+        if (typed >= 0) {
+          liquid.setTerm(term.sheet)
+          termUp = true
+          if (typed > termTyped && clock - termKey > 0.075) {
+            termKey = clock
+            sound.event('key', { x: 0.3 })
+          }
+          termTyped = typed
+        }
+      } else if (termUp) {
+        termUp = false
+        termTyped = 0
+        liquid.setTerm(null)
+      }
       const cursor = ['', 'gone', 'flower', 'eye', 'face'][act.cursor ?? 0]
       if ((hero.dataset.cursor ?? '') !== cursor) hero.dataset.cursor = cursor
       sound.frame({ time: clock, night: act.night, rain: act.weather[0], maw: act.maw, beam: act.beam[2], tears: act.tears[0], blood: act.sky[1], water: act.wet, moon: act.moon })
       const churned = act.churn ?? act.shot
       const blast = intoFluid(layout, sun, churned, clock)
-      liquid.step({
+      stepState = {
         dt,
         time: clock,
         sun,
@@ -11109,24 +13169,35 @@ async function start() {
         shot: act.shot,
         blast: [blast[0], blast[1], churned[2]],
         quake: act.quake,
-      })
+      }
     }
-    const cam = camera(layout, clock, lean)
+    restage()
+    const hoverActive = termHover * (1 - smooth(0.05, 0.2, act.present ?? 0))
+    const cam = camera(stage, clock, lean)
+    // (Its gait keeps the pace of where it lives, wherever it stands; walking up close or back it takes the strides
+    // that takes besides; and up close it rides its legs less, so that what is on its glass can be read.)
     const gait = gaitAt(layout, scene, cam, act.view, act.travel)
-    // Each time a pair of boots comes down, the ground takes it and it is heard.
+    if (act.walked || act.present > 0) {
+      gait.phase += act.walked
+      gait.lift = 0.034 * (1 - 0.72 * act.present) * Math.sin(gait.phase * Math.PI * 4)
+    }
+    if (hoverActive > 1e-3) {
+      gait.lift += 0.065 * hoverActive + 0.014 * hoverActive * Math.sin(clock * 11)
+    }
+    // Each time a pair of boots comes down, the ground takes it and it is heard. (Not up close: its boots are out of the picture.)
     const beat = Math.floor(gait.phase * 2)
-    const fell = dt > 0 && act.hop[0] === 0 && show.tread(beat, footfalls(layout, scene, cam, gait), clock)
+    const fell = dt > 0 && act.hop[0] === 0 && !(act.present > 0.3) && show.tread(beat, footfalls(stage, scene, cam, gait), clock)
     if (fell) sound.event(fell.wet ? 'leap' : 'step', { x: beat % 2 ? 0.7 : 0.4 })
     if (act.slam) {
-      show.tread('slam', footfalls(layout, scene, cam, gait, true), clock, 1.7)
+      show.tread('slam', footfalls(stage, scene, cam, gait, true), clock, 1.7)
       sound.event('slam', { x: 0.5 })
     }
-    const bob = -(gait.lift + act.hop[0] + act.hop[1]) * scene[2] * layout.machine.size * cam.up[1]
+    const bob = -(gait.lift + act.hop[0] + act.hop[1]) * scene[2] * stage.machine.size * cam.up[1]
     packUniforms(uniforms, {
       width: canvas.width,
       height: canvas.height,
       time: clock,
-      layout,
+      layout: stage,
       design: design[0],
       pointer: [pointer.x, pointer.y, pointer.strength],
       scene,
@@ -11141,8 +13212,11 @@ async function start() {
       dawn: dawn(),
       gait,
     })
+    uniforms[COSMOS_OFFSET + 2] = hoverActive
+    if (hoverActive > 1e-3) act.lens[45] = Math.max(act.lens[45], 1.0 + hoverActive)
     if (probing) return liquid.draw(null, uniforms, [canvas.width, canvas.height], null, null, true)
-    liquid.draw(context.getCurrentTexture().createView(), uniforms, [canvas.width, canvas.height], gate.on ? gate : null, act.lens)
+    gate.window = gate.on && motion.sober && !gate.way ? windowReach() : 0
+    liquid.draw(context.getCurrentTexture().createView(), uniforms, [canvas.width, canvas.height], gate.on ? gate : null, act.lens, false, stepState)
     waited()
     if (gate.unseen && gate.on) {
       gate.unseen = false
@@ -11150,10 +13224,16 @@ async function start() {
       const shown = () =>
         requestAnimationFrame(function open() {
           if (mine !== gate.seen || gate.unseen) return
+          // (The page, whole, has no window on this canvas: now that it has been drawn here once, nothing more is,
+          // and the tab's own canvas has the tab.)
+          if (motion.sober && !gate.way) {
+            Object.assign(gate, { on: false, open: false, warm: true })
+            return schedule()
+          }
           // (The canvas fades in when it first has a picture in it; the window waits for that as well.)
           if (Number(getComputedStyle(canvas).opacity) < 1) requestAnimationFrame(open)
           else {
-            root.classList.add('drawn')
+            if (!gate.scrolled) root.classList.add('drawn')
             gate.open = true
           }
         })
@@ -11167,36 +13247,59 @@ async function start() {
 
   function frame(now) {
     request = 0
-    if (!gauged) return gauge()
-    const dt = Math.min(now - last, 100) / 1000
+    const dt = last > 0 ? Math.min(Math.max(0, now - last), 100) / 1000 : 0
     last = now
-    if (gate.on) {
-      // The tab's clock starts when the page opens its window on it: until then it sits as it does in the photograph of it.
-      if (gate.open || gate.way) gate.time += dt
+    const stamping = stampLive()
+    if (!builtReady) return
+    if (!gauged) {
+      if (stamping && !gauging) drawStamp()
+      return gauge()
+    }
+    if (gate.on || stamping) {
+      // The tab's clock starts when it is first drawn where it can be seen: until then it sits as it does in the photograph of it.
+      if (gate.open || gate.way || stamping) gate.time += dt
       gate.look += ((gate.looking && !gate.way ? 1 : 0) - gate.look) * Math.min(1, dt * 12)
       gate.press *= Math.exp(-dt * 9)
-      // The tab wakes as the pointer comes near it.
-      const away = gate.pointer ? Math.hypot(gate.pointer[0] - gate.x, gate.pointer[1] - gate.y) : Infinity
-      const near = gate.looking ? 1 : Math.max(0, Math.min(1, 1 - (away - 1.6 * gate.half) / (10 * gate.half)))
+      // The tab wakes as the pointer comes near it. (How near, by the window's own measure: the tab is 40 pixels from its middle to its edge.)
+      const at = gate.client && getTabRect()
+      const away = at ? Math.hypot(gate.client[0] - at.left - at.width / 2, gate.client[1] - at.top - at.height / 2) : Infinity
+      // (On Psychoscript's own page it is never asleep.)
+      const near = gate.looking || motion.front === 'home' ? 1 : Math.max(0, Math.min(1, 1 - (away - 64) / 400))
       gate.near = (gate.near ?? 0) + (near * near * (3 - 2 * near) - (gate.near ?? 0)) * Math.min(1, dt * 7)
+      // (Left alone it comes to rest, and the lens has nothing of its light to work out.)
+      if (!near && gate.near < 1e-4) gate.near = 0
+      if (!gate.looking && gate.look < 1e-4) gate.look = 0
       if (gate.hold > 0 && (gate.hold -= dt) <= 0) gate.way = 1
       if (gate.way > 0) {
         gate.age += dt * (gate.rate ?? 1)
-        if (gate.roarAt !== null && clock >= gate.roarAt) {
+        // (The sun greets whoever took the tab with the first part of its tour, the welcome, if that can be heard: it
+        // waits a moment for the sound. It goes no further by itself: the rest is for whoever looks inside the terminal.)
+        if (gate.roarAt !== null && clock >= gate.roarAt && !(tourData && sound.enabled && !sound.ready && clock < gate.roarAt + 3)) {
           gate.roarAt = null
-          show.greet(clock)
+          show.greet(clock, sound.ready ? tourData : null)
+          toured ||= show.touring
         }
         if (gate.age >= GATE_END) {
           Object.assign(gate, { on: false, way: 0, rate: 1 })
           root.classList.remove('melting')
+          releaseCosmos()
         }
       } else if (gate.way < 0) {
         gate.age -= (dt * GATE_END) / 1.3
         if (gate.age <= 0) {
           Object.assign(gate, { age: 0, way: 0 })
           root.classList.remove('melting')
+          // (Come down, the page itself takes over from this canvas, with its tab on the tab's own, and this one stops.)
+          root.classList.remove('drawn')
+          Object.assign(gate, { on: false, open: false, warm: true, scrolled: false })
+          drawStamp()
         }
       }
+    }
+    // (The page whole: its tab is drawn on the tab's own canvas, and once the big one has been drawn once there is nothing else to draw.)
+    if (stampLive()) {
+      drawStamp()
+      if (!gate.on) return schedule()
     }
     // The picture keeps going behind the grey page while it closes over it again.
     const moving = (motion.playing || (gate.on && gate.age > 0 && motion.wanted)) && dt > 0
@@ -11214,20 +13317,27 @@ async function start() {
       pointer.vx = (pointer.x - before[0]) / dt
       pointer.vy = (pointer.y - before[1]) / dt
       pointer.strength *= 0.965
-      // The terminal turns a little toward the pointer.
+      const wantHover = hoveringTerm && (act.present ?? 0) < 0.15 && !show.diving ? 1 : 0
+      termHover += (wantHover - termHover) * Math.min(1, dt * (wantHover ? 13 : 8))
+      if (!wantHover && termHover < 1e-3) termHover = 0
+      // The terminal turns toward the pointer, and much more eagerly when the pointer hovers over it.
+      const keen = 1 + 1.15 * termHover * (1 - (act.present ?? 0))
       const aim = scene && pointer.tx > -9000
         ? [
-            Math.max(-1, Math.min(1, (pointer.tx - (scene[0] + scene[2] * layout.machine.at[0])) / (design[0] * 0.6))) * 0.16,
-            Math.max(-1, Math.min(1, (scene[1] + scene[3] * layout.machine.at[1] - pointer.ty) / (design[0] * 0.6))) * -0.07,
+            Math.max(-1, Math.min(1, (pointer.tx - (scene[0] + scene[2] * stage.machine.at[0])) / (design[0] * (0.6 - 0.32 * termHover)))) * 0.16 * keen * (1 - 0.6 * (act.present ?? 0)),
+            Math.max(-1, Math.min(1, (scene[1] + scene[3] * stage.machine.at[1] - pointer.ty) / (design[0] * (0.6 - 0.32 * termHover)))) * -0.07 * keen * (1 - 0.6 * (act.present ?? 0)),
           ]
         : [0, 0]
-      lean[0] += (aim[0] - lean[0]) * 0.05
-      lean[1] += (aim[1] - lean[1]) * 0.05
-      // The sun looks where it is firing, and otherwise at the pointer.
-      const sun = scene && sunAt(layout, scene)
-      const watched = act.beam[2] > 0.05 ? act.beam : pointer.tx > -9000 ? [pointer.tx, pointer.ty] : null
+      const leanRate = 0.05 + 0.14 * termHover
+      lean[0] += (aim[0] - lean[0]) * leanRate
+      lean[1] += (aim[1] - lean[1]) * leanRate
+      // The sun looks where it is firing; or where the show has it look (at the terminal, when it says to look
+      // inside it; at the little walkers it is put out with), and harder than it follows a pointer; and otherwise at the pointer.
+      const sun = scene && sunAt(stage, scene)
+      const watched = act.beam[2] > 0.05 ? act.beam : act.look ?? (pointer.tx > -9000 ? [pointer.tx, pointer.ty] : null)
+      const hard = act.beam[2] > 0.05 ? 1 : act.look?.[2] ?? 1
       const turn = sun && watched
-        ? [Math.max(-1, Math.min(1, (watched[0] - sun[0]) / (design[0] * 0.5))) * 0.3, Math.max(-1, Math.min(1, (sun[1] - watched[1]) / (design[0] * 0.5))) * -0.16]
+        ? [Math.max(-1, Math.min(1, (hard * (watched[0] - sun[0])) / (design[0] * 0.5))) * 0.3, Math.max(-1, Math.min(1, (hard * (sun[1] - watched[1])) / (design[0] * 0.5))) * -0.16]
         : [0, 0]
       sunLean[0] += (turn[0] - sunLean[0]) * 0.12
       sunLean[1] += (turn[1] - sunLean[1]) * 0.12
@@ -11249,14 +13359,15 @@ async function start() {
   }
 
   function schedule() {
-    if (alive && (motion.playing || gate.on) && visible && !request) {
-      last = performance.now()
+    if (alive && builtReady && (motion.playing || gate.on || stampLive()) && visible && !request) {
       request = requestAnimationFrame(frame)
+    } else if (!request) {
+      last = 0
     }
   }
 
   function redraw() {
-    if (!request) request = requestAnimationFrame(frame)
+    if (builtReady && !request) request = requestAnimationFrame(frame)
   }
 
   // How much of the screen's sharpness is drawn. It comes down when frames
@@ -11265,7 +13376,7 @@ async function start() {
   let slow = 0
   let box = null
   // (A browser being driven by a test keeps its sharpness, so that its pictures can be compared; ?pace lets it adapt.)
-  const fixed = navigator.webdriver && !/[?&]pace\b/.test(location.search)
+  let fixed = navigator.webdriver && !/[?&]pace\b/.test(location.search)
   // (?pace also has what the pacing decides written to the console.)
   const tell = /[?&]pace\b/.test(location.search)
     ? (...said) => {
@@ -11274,15 +13385,22 @@ async function start() {
         canvas.dataset.pace = `${canvas.dataset.pace ?? ''}${line}; ` // (for a browser whose console cannot be read from outside)
       }
     : () => {}
-  const BUDGET = 12.5 // the milliseconds of GPU a frame may take: three quarters of a sixtieth of a second, the rest left to the visitor's other windows
-  const FLOOR = 0.25 // the least sharpness: softer than this is not the picture any more
+  const BUDGET = 11.0 // the milliseconds of GPU a frame may take (fluid step + draw): leaves clean margin for JS and compositor inside 16.7 ms
+  const FLOOR = 0.25 // the least sharpness on wide screens
   const HOPELESS = 85 // a GPU that takes this long over a frame at the floor is shown the still, not twelve soft frames a second
+  // Narrow/mobile viewports keep at least ~540px canvas width so artwork and close-up terminal text never go blurry.
+  const minQuality = () => {
+    const cssW = box?.contentBoxSize?.[0]?.inlineSize ?? innerWidth
+    if (cssW > 900) return FLOOR
+    const r = Math.min(devicePixelRatio || 1, settings.maxPixelRatio)
+    return Math.min(1, Math.max(FLOOR, 540 / Math.max(1, cssW * r)))
+  }
   // The picture stops, and the stills come back.
   function still() {
     if (!alive) return
     tell('stopped')
     alive = false
-    root.classList.remove('drawn', 'gpu', 'melting')
+    root.classList.remove('drawn', 'gpu', 'melting', 'ready')
     plain()
     canvas.classList.remove('is-live')
     hero.classList.remove('has-live-title')
@@ -11296,6 +13414,14 @@ async function start() {
   // from the browser for it, is never given one: it starts as soft as it needs to, or is shown the still.
   let gauged = fixed && !/[?&]gauge\b/.test(location.search)
   let gauging = false
+  let markGauged = null
+  const gaugePromise = gauged ? Promise.resolve() : new Promise((done) => { markGauged = done })
+  function finishGauge() {
+    gauging = false
+    const list = gaugeWaiters.splice(0)
+    for (const wake of list) wake()
+    markGauged?.()
+  }
   function gauge() {
     if (gauging) return
     const once = () =>
@@ -11314,26 +13440,34 @@ async function start() {
         }
         ;(device.queue.onSubmittedWorkDone?.() ?? Promise.resolve()).then(waited, waited)
       })
-    // (Not before the canvas has its size: a sixteenth of nothing takes no time at all.)
+    // (Not before the canvas has its size and the fluid is ready: a sixteenth of nothing takes no time at all.)
     if (!box || !prepare()) return
     gauging = true
     ;(async () => {
+      await (device.queue.onSubmittedWorkDone?.() ?? Promise.resolve())
       await once()
       const two = [await once(), await once()]
       // (Not every browser's stamps mean what they should: a sixteenth of this picture in next to no time is not to
       // be believed, and a GPU that says so is not asked again.)
       const stamp = Math.min(...two.map((took) => took.stamp ?? 0))
       believed = stamp > 0.15
-      const whole = (believed ? stamp : Math.min(...two.map((took) => took.wait))) * 16
+      const whole = believed ? Math.max(0.25, stamp - 0.55) * 15 : Math.min(...two.map((took) => took.wait)) * 15
       tell('a whole frame would take', whole, 'ms', believed ? '(stamped)' : '(waited for)')
       if (watching) console.info('pace:', `probe says ${whole.toFixed(1)} ms a whole frame`)
-      if (!watching && whole * FLOOR * FLOOR > HOPELESS) return still()
-      // (A wait is a rough measure, and only frames' lateness can correct it afterwards, downwards: it is acted on
-      // only when it says the GPU is far too small for a whole picture.)
+      if (!watching && whole * FLOOR * FLOOR > HOPELESS) {
+        still()
+        return finishGauge()
+      }
+      // (Where timestamps are absent, e.g. iOS Safari, wall-clock waits are noisy: never let a single cold wait crush sharpness.)
+      const floor = minQuality()
       const allowed = believed ? BUDGET : 16.7
-      if (!watching && whole > (believed ? BUDGET * 1.15 : 100)) quality = Math.max(FLOOR, Math.sqrt(allowed / whole))
+      if (!watching && whole > (believed ? BUDGET * 1.15 : 140)) {
+        const raw = Math.sqrt(allowed / whole)
+        quality = Math.max(believed ? floor : Math.max(floor, 0.78), raw)
+      }
       liquid.timed = timed
       gauged = true
+      finishGauge()
       // (The grey page keeps all its sharpness: the picture takes what it needs when the tab is taken.)
       if (quality < 1 && motion.sober && !gate.way) late = true
       else if (quality < 1) {
@@ -11371,7 +13505,7 @@ async function start() {
   function timed(ms, probe) {
     if (watching && ms !== null && !probe) watching.stamp.push(ms)
     // (Only frames in which the picture was drawn count: under the grey page there is next to nothing to time.)
-    if (ms === null || probe || !believed || fixed || watching || !alive || !(motion.playing || (gate.on && gate.age > 0))) return
+    if (ms === null || probe || !believed || fixed || watching || !alive || !(motion.playing || (gate.on && gate.age > 0)) || (gate.on && gate.age <= GATE_OPENS)) return
     costs.push(ms)
     if (costs.length > 9) costs.shift()
     costAt = performance.now()
@@ -11434,7 +13568,8 @@ async function start() {
       tried = null
     }
     tried = null
-    if (quality <= FLOOR) {
+    const floor = minQuality()
+    if (quality <= floor) {
       if (slow > 0.6 && spent > HOPELESS) {
         dire ??= now
         if (now - dire > 4000) {
@@ -11447,7 +13582,7 @@ async function start() {
     if (now < hold) return
     if (slow > 0.6 && spent > allowed * 1.15) {
       const was = quality
-      quality = Math.max(FLOOR, quality * Math.max(0.5, Math.min(0.92, Math.sqrt(allowed / spent))))
+      quality = Math.max(floor, quality * Math.max(0.5, Math.min(0.92, Math.sqrt(allowed / spent))))
       tried = stamped ? { quality: was, cost: spent, share: (quality / was) ** 2, since: [], until: now + 3000 } : null
       costs.length = 0
       gap = 16.7
@@ -11470,6 +13605,8 @@ async function start() {
     placeScene()
   }
 
+  let markLayout = null
+  const layoutPromise = new Promise((done) => { markLayout = done })
   const resize = new ResizeObserver((entries) => {
     const entry = entries.find((e) => e.target === canvas)
     if (entry) {
@@ -11477,7 +13614,9 @@ async function start() {
       sharpen()
     }
     placeScene()
-    if (motion.sober && !gate.way) paintFront()
+    if (box && scene) markLayout?.()
+    if (simReady && !builtReady) warmFluidAsync()
+    if (builtReady && motion.sober && !gate.way) paintFront()
     redraw()
   })
   resize.observe(canvas)
@@ -11496,18 +13635,65 @@ async function start() {
   })
   motion.onChange(schedule)
 
-  // The terminal's monitor is a way in: press it and the eye dives into its
-  // screen, and inside, press it again to dive on and out. x and y are a point of the hero.
+  // The terminal's monitor and case are to be pressed: press it and the terminal walks up close, and the sun shows what
+  // it has to show on its screen; press it again and it walks back. x and y are a point of the hero.
   const onTerminal = (x, y) => {
     const [gx, gy, unit] = act.lens.subarray(17, 20)
-    return unit > 0 && x > gx - 0.5 * unit && x < gx + 0.72 * unit && y > gy - 0.48 * unit && y < gy + 0.46 * unit
+    return unit > 0 && x > gx - 0.72 * unit && x < gx + 0.92 * unit && y > gy - 0.7 * unit && y < gy + 0.78 * unit
   }
-  const plunge = () => motion.playing && show.dive(clock)
+  const setTermHover = (yes) => {
+    if (hoveringTerm === yes) return
+    hoveringTerm = yes
+    if (yes && motion.playing && (act.present ?? 0) < 0.1) show.beckonHover(clock)
+  }
+  if (prompt) {
+    prompt.addEventListener('pointerenter', () => setTermHover(true))
+    prompt.addEventListener('focus', () => prompt.matches(':focus-visible') && setTermHover(true))
+    prompt.addEventListener('blur', () => setTermHover(false))
+  }
+  // (The sun gives the rest of its tour on it, from "Step one": with the sound, which a press may turn on unless
+  // the visitor has turned it off, or without it. Pressed up close, it walks back, and the tour stops. With no
+  // tour to give, pressing it is the old way in: the eye dives into its screen, and out again.)
+  const soundOn = () =>
+    sound.enable().then(() => {
+      soundToggle?.classList.add('was-on')
+      soundToggle?.setAttribute('aria-pressed', String(sound.enabled))
+    })
+  const plunge = () => {
+    if (!alive || !motion.playing) return false
+    if (show.near) return show.leave(clock)
+    if (show.diving) return act.dive === 1 && show.surface(clock)
+    if (!show.visit(clock, tourData, !sound.ready)) return !tourData && show.dive(clock)
+    toured = true
+    if (!sound.enabled && !muted) soundOn()
+    schedule()
+    return true
+  }
+  // What comes up along the bottom is pressed for itself: the picture takes no notice.
+  for (const bar of [dock, comedown]) bar?.addEventListener('pointerdown', (event) => event.stopPropagation())
+  // "I'm ready to come down": the visitor has been through it, and is remembered to have been (a cookie, for a
+  // year); the tour stops and the sound goes; and the picture closes over, not with NormalScript's page this time
+  // but with Psychoscript's own, which is what they will find here from now on.
+  if (comedown) {
+    comedown.hidden = false
+    comedown.addEventListener('click', () => {
+      if (!alive || motion.sober) return
+      show.leave(clock)
+      motion.comeDown()
+    })
+  }
+  // The sun gives the first part of its tour, the welcome, if it can be heard. Says whether it does.
+  const giveIntro = () => {
+    if (!alive || !motion.playing || !tourData || !sound.ready || !show.tour(clock, tourData)) return false
+    toured = true
+    schedule()
+    return true
+  }
   let eyed = null
 
   hero.addEventListener('pointermove', (event) => {
     if (!motion.playing) return
-    const box = canvas.getBoundingClientRect()
+    const box = canvasRect.width ? canvasRect : updateCanvasRect()
     const k = design[0] / box.width
     const x = (event.clientX - box.left) * k
     const y = (event.clientY - box.top) * k
@@ -11520,12 +13706,15 @@ async function start() {
     pointer.ty = y
     pointer.strength = Math.min(1, pointer.strength + moved * 0.004)
     show.move(x, y)
+    const overTerm = onTerminal(x, y) || event.target === prompt
+    setTermHover(overTerm)
     // Over the terminal the crosshair opens into an eye, as it does over the glass.
     // (Not while the planet has the pointer, or has given back something else.)
     const plain = !hero.dataset.cursor
     if (eyed === null && plain) eyed = prompt ? getComputedStyle(prompt).cursor : 'pointer'
-    hero.style.cursor = plain && onTerminal(x, y) ? eyed : ''
+    hero.style.cursor = plain && overTerm ? eyed : ''
   })
+  hero.addEventListener('pointerleave', () => setTermHover(false))
 
   // Press anywhere on the picture and something comes of it; drag, and more
   // does. Press the sun itself and it roars. (Nobody aims its lasers but the sun.)
@@ -11640,22 +13829,6 @@ async function start() {
     linked = secrets.linked(location.hash)
     if (motion.playing) castLink(0.3)
   })
-  // Looked back at, the grey page is caught in front of the picture for a
-  // moment, and melts away again, quickly.
-  document.addEventListener('visibilitychange', () => {
-    if (!alive) return
-    if (document.hidden) {
-      if (motion.sober || !motion.playing || !gate.texture || gate.on) return
-      Object.assign(gate, { on: true, age: 0, way: 0, hold: 0, press: 0, look: 0, near: 0, roarAt: null, rate: 1, caught: true })
-      draw(0)
-    } else if (gate.caught) {
-      gate.caught = false
-      if (motion.sober || gate.way) return
-      Object.assign(gate, { hold: 0.5, rate: GATE_END / 1.2 })
-      discover('away')
-      schedule()
-    }
-  })
   // The old code, and the long trip: the picture folds, flies, roars and flowers, for eight seconds or so.
   let keyed = []
   let typed = ''
@@ -11738,23 +13911,18 @@ async function start() {
   // The mouth in the corner turns the sound on and off. Away from the page it is quiet.
   if (soundToggle) {
     soundToggle.hidden = false
-    const shown = () => soundToggle.setAttribute('aria-pressed', String(sound.enabled))
     soundToggle.addEventListener('click', () => {
       soundToggle.classList.add('was-on')
+      muted = sound.enabled
       if (sound.enabled) sound.disable()
-      else sound.enable().then(shown)
-      shown()
-    })
-    // Taking the tab is a press, so the sound may come on with it; it goes when the tab wears off.
-    motion.onTrip((awake) => {
-      soundToggle.classList.add('was-on')
-      if (awake) {
+      else {
         sound.enable().then(() => {
-          shown()
-          sound.event('tab', { x: 0 })
+          shownSound()
+          // Arriving by way of ?awake nobody took the tab: the sun gives its welcome the first time it can be heard.
+          if (!toured && !gate.on && gate.roarAt === null) later(1.2, () => !toured && giveIntro())
         })
-      } else sound.disable()
-      shown()
+      }
+      shownSound()
     })
     let away = false
     document.addEventListener('visibilitychange', () => {
@@ -11763,15 +13931,136 @@ async function start() {
         sound.disable()
       } else if (!document.hidden && away) {
         away = false
-        sound.enable().then(shown)
+        sound.enable().then(shownSound)
       }
     })
   }
 
+  // The sun shows whoever asks round the terminal now: it walks up close, as if it had been pressed.
+  // Says whether it does.
+  giveTour = () => !show.near && !show.diving && plunge()
+  dev = Object.freeze({
+    canvas,
+    sound,
+    show,
+    motion,
+    gate,
+    get clock() { return clock },
+    get act() { return act },
+    get tourData() { return tourData },
+    // How the drawing stands: whether the GPU has been timed (or is being), whether the canvas can be seen, whether a frame is asked for, how sharp it is drawn.
+    get pace() { return { gauged, gauging, visible, asked: Boolean(request), quality, box: Boolean(box) } },
+    // Being filmed, the picture keeps all of its sharpness however long its frames take (and gives it up again).
+    steady(on = true) {
+      fixed = Boolean(on)
+      if (fixed) quality = 1
+      sharpen()
+      placeScene()
+      redraw()
+    },
+    // Straight to the tour of the terminal. If the tab has not been taken it is taken first, and the terminal
+    // walks up when the sun has said its welcome.
+    tour() {
+      if (!motion.sober) return giveTour()
+      motion.tab?.click()
+      later(GATE_END + 0.6, giveTour, () => !gate.on && !show.touring)
+      return true
+    },
+    // The welcome by itself.
+    intro: () => giveIntro(),
+    // The terminal stood k of the way up close (0 where it lives, 1 up close), for looking at how it is framed.
+    pose(k) {
+      show.pose(k)
+      redraw()
+    },
+  })
+
   device.lost.then(still)
 
+  // Start title texture upload as soon as its pre-fetched bitmap resolves.
+  const firstTitleReady = loadTitle(initialTitleName)
+
+  // Kick off sliced fluid warm-up as soon as the tiny sim pipelines and layout box settle, in parallel with valley shaders!
+  const simWarmDone = Promise.all([liquid.simBuilt, layoutPromise]).then(() => {
+    simReady = true
+    return warmFluidAsync()
+  })
+
+  try {
+    await Promise.all([liquid.built, simWarmDone])
+  } catch (error) {
+    console.error('liquid pipelines:', error.message)
+    return plain()
+  }
+  if (!alive) return false
+  builtReady = true
+  if (motion.sober && !gate.way && !motion.reduced()) {
+    if (motion.tab) stampOf(motion.tab)
+    drawStamp()
+    schedule()
+  }
+  liquid.whole.catch((error) => console.error('liquid pipelines:', error.message))
+  liquid.cosmos.then(() => alive && liquid.prewarm('cosmos')).catch(() => {})
+
   useTitle()
-  document.fonts?.ready.then(() => motion.sober && !gate.way && paintFront())
+  redraw()
+
+  // Orchestrate the ready milestone:
+  // 1) Hard requirements: built + fluid warm + gauged (and alive) + snake pipelines + pre-warmed sober gate & page pipeline.
+  // 2) Soft requirements (bounded timeout so slow networks never trap the tab forever): title, core art, tour, priority audio, fonts.
+  ;(async () => {
+    await layoutPromise
+    if (!gauged) redraw()
+    await gaugePromise
+    if (!alive) return
+
+    // Pre-paint the front page and warm both everDrawn and passes.page offscreen before arming.
+    if (motion.sober && !motion.reduced()) {
+      paintFront()
+      if (gate.texture) {
+        gate.on = true
+        gate.age = 0
+        gate.unseen = false
+        draw(0) // first draw sets everDrawn = true
+        draw(0) // second draw with covered = true warms passes.page!
+        await (device.queue.onSubmittedWorkDone?.() ?? Promise.resolve())
+        if (!alive) return
+        if (motion.sober && !gate.way) Object.assign(gate, { on: false, open: false, warm: true })
+      }
+    }
+
+    await liquid.snake.catch((error) => console.error('liquid snake:', error))
+    if (!alive) return
+    liquid.prewarm('snake')
+
+    const soft = Promise.all([
+      firstTitleReady,
+      artUploaded.fire,
+      artUploaded.notice,
+      artUploaded.boss,
+      artUploaded.comets,
+      artUploaded[initialDaxName],
+      tourPromise,
+      sound.priorityReady,
+      fontsPromise,
+    ])
+    await Promise.race([soft, new Promise((done) => setTimeout(done, 4500))])
+    if (!alive) return
+
+    if (motion.sober && !gate.way && !motion.reduced()) {
+      paintFront() // refresh once if web fonts finished after initial paint
+      gate.press = 1
+      if (motion.tab) stampOf(motion.tab)
+      motion.arm()
+      if (motion.sober && !gate.way) drawStamp()
+    } else {
+      motion.arm()
+      releaseCosmos()
+    }
+    schedule()
+  })()
+
+  fontsPromise.then(() => alive && builtReady && motion.sober && !gate.way && paintFront())
   return true
 }
 
@@ -11780,6 +14069,8 @@ if (typeof document !== 'undefined') {
   start()
     .catch((error) => console.error('liquid background:', error))
     .then((live) => {
-      if (!live) document.documentElement.classList.remove('gpu')
+      if (live) return
+      if (groundPage) groundPage()
+      else document.documentElement.classList.remove('gpu')
     })
 }
