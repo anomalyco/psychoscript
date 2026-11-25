@@ -1149,6 +1149,8 @@ export const set = (target: Obj, key: PropertyKey, value: Value): boolean | Call
   rejectAddition(target, name)
   changed(target)
   guard(target, name)
+  // Written out, never spread: a spread is JSC's slow copyDataProperties (about a third of a run's setup) and would
+  // copy any other field the object holds. A new attribute is added here explicitly.
   target.props.set(name, { value, writable: true, enumerable: true, configurable: true })
   return true
 }
@@ -1165,6 +1167,7 @@ export const define = (target: Obj, key: PropertyKey, value: Value, attrs: Attri
   if (isIndexed(target) && writeElement(target, name, value) !== undefined) return
   changed(target)
   guard(target, name)
+  // Written out, never spread, as in `set`.
   target.props.set(name, { value, writable: attrs.writable, enumerable: attrs.enumerable, configurable: attrs.configurable })
 }
 
