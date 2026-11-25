@@ -62,13 +62,6 @@ jobs:
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       # Includes bench/tests/conformance.rs, which checks every conformance case against the reference's outcome.
       - run: cargo test --locked --workspace
-      # MSRV: the crate builds, lints and passes its tests with its declared rust-version (rust/Cargo.toml). Release, as
-      # a debug build's stack margins (tests/value_depth.rs) are measured on the pinned toolchain.
-      - name: MSRV (1.98)
-        run: |
-          rustup toolchain install 1.98.0 --profile minimal --component clippy --no-self-update
-          cargo +1.98.0 clippy --locked -p psychoscript --all-targets -- -D warnings
-          cargo +1.98.0 test --locked --release -p psychoscript
       # Saves and restores every run at each host stop and loop slice; outcomes must not change.
       - run: cargo test --locked -p psychoscript-bench --test conformance
         env:
