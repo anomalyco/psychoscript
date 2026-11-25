@@ -296,6 +296,20 @@ mod tests {
         }
     }
 
+    /// The clock of a joined thread, read once it reads zero or after five seconds. `join` returns once the kernel has
+    /// cleared the thread's id, a moment before it forgets the thread (longer on a busy machine): until then the
+    /// clock still reads the thread's time.
+    fn settled(clock: &ThreadClock) -> Duration {
+        let start = Instant::now();
+        loop {
+            let read = clock.now();
+            if read == Duration::ZERO || start.elapsed() > Duration::from_secs(5) {
+                return read;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
     fn assert_send_sync<T: Send + Sync>() {}
 
     #[test]
@@ -362,15 +376,22 @@ mod tests {
     #[test]
     fn another_thread_s_clock_is_read_from_here_and_reads_zero_once_it_ended() {
         let (tx, rx) = std::sync::mpsc::channel();
+        let (spun, done) = std::sync::mpsc::channel::<()>();
         let (go, wait) = std::sync::mpsc::channel::<()>();
         let worker = std::thread::spawn(move || {
-            tx.send(ThreadClock::current()).unwrap();
-            spin(Duration::from_millis(60));
+            let own = ThreadClock::current();
+            tx.send(own.clone()).unwrap();
+            // 60 ms by its own clock, however busy the machine; then blocked, so its clock stops.
+            let start = own.now();
+            while own.now() - start < Duration::from_millis(60) {
+                spin(Duration::from_micros(100));
+            }
+            spun.send(()).unwrap();
             wait.recv().unwrap();
         });
         let clock = rx.recv().unwrap();
         let copy = clock.clone();
-        std::thread::sleep(Duration::from_millis(120));
+        done.recv().unwrap();
         let read = clock.now();
         assert!(read >= Duration::from_millis(40), "{read:?}");
         if MEASURES_CPU {
@@ -383,7 +404,7 @@ mod tests {
             let others: Vec<_> = (0..32)
                 .map(|_| std::thread::spawn(|| spin(Duration::from_millis(2))))
                 .collect();
-            assert_eq!(clock.now(), Duration::ZERO);
+            assert_eq!(settled(&clock), Duration::ZERO);
             assert_eq!(copy.now(), Duration::ZERO);
             others.into_iter().for_each(|t| t.join().unwrap());
             drop(clock);
