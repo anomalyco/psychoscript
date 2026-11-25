@@ -31,8 +31,10 @@ impl Wake for Parker {
     }
 }
 
-/// Drives a future to completion on the calling thread, parking it while the future waits.
-pub fn block_on<F: Future>(future: F) -> F::Output {
+/// Drives a future to completion on the calling thread, parking it while the future waits. `None` only on wasm32,
+/// whose thread can't park: the future is pending without having woken itself, and nothing else could wake it while
+/// the thread is held.
+pub fn block_on<F: Future>(future: F) -> Option<F::Output> {
     let mut future = pin!(future);
     let parker = Arc::new(Parker {
         woken: Mutex::new(false),
@@ -42,9 +44,13 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
     let mut cx = Context::from_waker(&waker);
     loop {
         if let Poll::Ready(v) = future.as_mut().poll(&mut cx) {
-            return v;
+            return Some(v);
         }
         let mut woken = parker.woken.lock().unwrap_or_else(|e| e.into_inner());
+        #[cfg(target_arch = "wasm32")]
+        if !*woken {
+            return None;
+        }
         while !*woken {
             woken = parker.signal.wait(woken).unwrap_or_else(|e| e.into_inner());
         }

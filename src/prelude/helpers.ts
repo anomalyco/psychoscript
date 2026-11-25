@@ -1,6 +1,6 @@
 import { isSupportedCallback, requireCallback, withReads } from "../runtime/callback.js"
 import type { Builtins } from "../runtime/intrinsics.js"
-import { SORT_RUN, sorted, type SortInto } from "../stdlib/array.js"
+import { SORT_RUN, sortKeys, sorted, type SortInto } from "../stdlib/array.js"
 import { finishBytes } from "../stdlib/bytes.js"
 import { weakKey } from "../stdlib/collections.js"
 import { buildPairs } from "../stdlib/url.js"
@@ -135,13 +135,13 @@ export const helpers = (ctx: Interpreter<unknown>): Array<readonly [string, Valu
       },
     ],
     $SumPrecise: [1, ([numbers]) => Math.sumPrecise((numbers as Arr).items as Array<number>)],
-    /** A typed array of the values, or the values set into one (see `collectBytes`). */
+    /** A Uint8Array of the values (see `collectBytes`). */
     $Bytes: [
       3,
       ([values, into, offset]) => {
         const items = (values as Arr).items
         checkArrayLength(items.length)
-        return finishBytes(builtins, items.map(coerceToNumber), into as Obj, offset as number)
+        return finishBytes(Uint8Array.from(items, coerceToNumber), into as Obj, offset as number)
       },
     ],
     /** A Uint8Array of the values, of the same kind as the Uint8Array `source`: a Buffer's map makes a Buffer. */
@@ -150,7 +150,7 @@ export const helpers = (ctx: Interpreter<unknown>): Array<readonly [string, Valu
       ([values, source]) => {
         const items = (values as Arr).items
         checkArrayLength(items.length)
-        return (source as Bytes).derive(builtins, Uint8Array.from(items as Array<Value>, coerceToNumber))
+        return (source as Bytes).derive(builtins, Uint8Array.from(items, coerceToNumber))
       },
     ],
     /** Headers or URLSearchParams from the pairs `readPairs` read, or from a record. */
@@ -202,7 +202,7 @@ export const helpers = (ctx: Interpreter<unknown>): Array<readonly [string, Valu
         return undefined
       },
     ],
-    $SortState: [1, ([keys]) => sortState(builtins, keys as Arr)],
+    $SortState: [1, ([values]) => sortState(builtins, values as Arr)],
     $SortStep: [1, ([state]) => sortStep(state as Arr)],
     $SortResult: [
       2,
@@ -278,8 +278,8 @@ const MERGE_STEP = 65_536
  * the next run to sort, and the merge pass's run width, output position, and positions in its two runs. Runs of
  * SORT_RUN are sorted first, then merged in passes of doubling width from the order into the buffer, which swap.
  */
-const sortState = (builtins: Builtins, strings: Arr): Arr => {
-  const keys = strings.items as Array<string>
+const sortState = (builtins: Builtins, values: Arr): Arr => {
+  const keys = sortKeys(values.items)
   const order = keys.map((_, at) => at)
   return new Arr(builtins.Array, [
     new Arr(builtins.Array, keys),

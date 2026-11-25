@@ -1,7 +1,6 @@
 import type { Expression, MemberExpression, NewExpression, Super } from "acorn"
 import { type AstNode, invalidData, rangeError, typeError } from "./model.js"
 import { UnaryOp } from "../opcodes.js"
-import { chargeConcat } from "./heap.js"
 import { checkBigIntSize, checkStringLength, MAX_BIGINT_BITS } from "./limits.js"
 import { locate } from "./errors.js"
 import { type Builtins, primitivePrototype } from "./intrinsics.js"
@@ -136,7 +135,7 @@ export const applyBinaryOperator = (operator: string, lhs: Value, rhs: Value, no
     return applyBinaryOperator(operator, longTextAsNumeric(lhs), rhs, node)
   if (operator === "==") return looselyEqual(lhs, rhs, node)
   if (operator === "!=") return !looselyEqual(lhs, rhs, node)
-  if (operator === "in" && rhs instanceof Obj && !(lhs instanceof HostNamespace)) return has(rhs, propertyKey(lhs))
+  if (operator === "in" && rhs instanceof Obj && !isOpaque(lhs)) return has(rhs, propertyKey(lhs))
   if (isOpaque(lhs) || isOpaque(rhs)) {
     throw invalidData("Binary operators require data values.", node)
   }
@@ -150,10 +149,7 @@ export const applyBinaryOperator = (operator: string, lhs: Value, rhs: Value, no
   switch (operator) {
     case "+": {
       const sum = (lhs as string) + (rhs as string)
-      if (typeof sum === "string") {
-        checkStringLength(sum.length)
-        chargeConcat(lhs, sum)
-      }
+      if (typeof sum === "string") checkStringLength(sum.length)
       return sum
     }
     case "-":
@@ -304,7 +300,7 @@ export const operatorConversion = (
   rhs: Value,
 ): { readonly kind: "key" } | { readonly kind: "primitive"; readonly hint: "default" | "number" } | undefined => {
   // `in` checks the right operand before ToPropertyKey on the left, so a bad right side wins over a bad key.
-  if (operator === "in" && lhs instanceof Obj && rhs instanceof Obj) return { kind: "key" }
+  if (operator === "in" && lhs instanceof Obj && !isOpaque(lhs) && rhs instanceof Obj) return { kind: "key" }
   // IsLooselyEqual converts only an object facing a non-nullish primitive; two objects (including namespace
   // references, which are not Obj) compare by identity.
   const equality = operator === "==" || operator === "!="

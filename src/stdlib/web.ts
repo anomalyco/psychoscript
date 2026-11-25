@@ -10,7 +10,6 @@ import {
   hidden,
   isRuntimeReference,
   Arr,
-  ArrayBufferObj,
   Bytes,
   DateObj,
   ErrorObj,
@@ -73,14 +72,7 @@ export const structuredCloneGlobal = <R>(ctx: Interpreter<R>) =>
       if (value instanceof RegExpObj) {
         return remember(new RegExpObj(builtins.RegExp, value.source, value.flags))
       }
-      if (value instanceof Bytes) {
-        return remember(
-          value.isUint8()
-            ? new Bytes(builtins.Uint8Array, new Uint8Array(value.bytes))
-            : value.derive(builtins, value.bytes.slice()),
-        )
-      }
-      if (value instanceof ArrayBufferObj) return remember(new ArrayBufferObj(builtins.ArrayBuffer, value.buffer.slice(0)))
+      if (value instanceof Bytes) return remember(new Bytes(builtins.Uint8Array, new Uint8Array(value.bytes)))
       if (value instanceof ErrorObj) {
         const name = get(value, "name")
         const message = get(value, "message")
@@ -118,7 +110,7 @@ export const cryptoGlobal = <R>(ctx: Interpreter<R>) => {
       "getRandomValues",
       1,
       (_, args) => {
-        if (!(args[0] instanceof Bytes && args[0].isUint8())) {
+        if (!(args[0] instanceof Bytes)) {
           throw typeError(`crypto.getRandomValues expects a Uint8Array, received ${describeValue(args[0])}.`)
         }
         crypto.getRandomValues(args[0].bytes)

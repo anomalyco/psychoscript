@@ -295,6 +295,23 @@ impl<'a> Program<'a> {
     /// Runs the program to its end or until a [`Suspender`] stops it, on the calling thread.
     pub fn run_resumable(mut self) -> Result<RunOutcome, Interrupted> {
         exec::block_on(std::future::poll_fn(|cx| self.advance(cx)))
+            .unwrap_or_else(|| self.cannot_wait())
+    }
+
+    /// Ends a run waiting on the calling thread, which can't wait (wasm32), with an `ExecutionFailure`.
+    fn cannot_wait(&mut self) -> Result<RunOutcome, Interrupted> {
+        let State::Running(mut r) = std::mem::replace(&mut self.state, State::Done) else {
+            unreachable!("only a running program waits")
+        };
+        r.vm.fatal = Some((
+            crate::DiagnosticKind::ExecutionFailure,
+            "The run waits for asynchronous host work, which a synchronous run can't wait for on wasm32: drive it as a \
+             future, with `execute_async` or `run_async`."
+                .into(),
+        ));
+        let outcome = RunOutcome::Done(run::finish(*r));
+        self.shared.finish(&outcome);
+        Ok(outcome)
     }
 
     /// [`Program::run_resumable`] as a future, which moves long stretches of compute as [`Program::run_async`] does.

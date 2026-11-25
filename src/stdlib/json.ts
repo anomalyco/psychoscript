@@ -1,5 +1,5 @@
 import { methods } from "../runtime/native.js"
-import { requireCallback, withPrimitives } from "../runtime/callback.js"
+import { requireCallback } from "../runtime/callback.js"
 import type { Interpreter } from "../runtime/interpreter.js"
 import { syntaxError, typeError } from "../runtime/model.js"
 import { typeofValue } from "../runtime/references.js"
@@ -16,18 +16,15 @@ export const jsonGlobal = <R>(ctx: Interpreter<R>) => {
   return json
 }
 
-// A plain object or an array is most likely a value that was parsed already: say so, rather than parse its text
-// ("[object Object]", or the array's elements joined). Other values convert through their own toString first, as
-// ToString does.
 const parse = <R>(ctx: Interpreter<R>, args: Array<Value>) => {
+  // A plain object or an array is most likely a value that was parsed already: say so, rather than parse its text
+  // ("[object Object]", or the array's elements joined).
   const input = args[0]
   if (input instanceof Arr || (input instanceof Obj && Object.getPrototypeOf(input) === Obj.prototype)) {
     throw typeError(`JSON.parse expects a string, got ${input instanceof Arr ? "an array" : "an object"} (is it already parsed?)`)
   }
-  return withPrimitives("string", [input], ([text]) => parseText(ctx, coerceToString(text), args[1]))
-}
+  const text = coerceToString(input)
 
-const parseText = <R>(ctx: Interpreter<R>, text: string, reviverArg: Value) => {
   const json = (() => {
     try {
       return JSON.parse(text)
@@ -35,8 +32,8 @@ const parseText = <R>(ctx: Interpreter<R>, text: string, reviverArg: Value) => {
       throw syntaxError(`JSON.parse received invalid JSON: ${error instanceof Error ? error.message : String(error)}`)
     }
   })()
-  if (typeofValue(reviverArg) !== "function") return fromJson(ctx, json)
-  const reviver = requireCallback(reviverArg, "JSON.parse")
+  if (typeofValue(args[1]) !== "function") return fromJson(ctx, json)
+  const reviver = requireCallback(args[1], "JSON.parse")
   // Each primitive replaced by its source text, for the reviver's context argument.
   const source = JSON.parse(text, (_, value, context: { source?: string }) => context.source ?? value)
   const [parsed, snapshot] = revivable(ctx, json, source)

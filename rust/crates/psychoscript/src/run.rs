@@ -414,6 +414,7 @@ fn diagnose_text(vm: &mut Vm, e: &Value, code: &str) -> Diagnosed {
         if let Some(f) = failure.clone() {
             let location = f.offset.map(|o| line_col(code, o));
             let message = match f.kind {
+                _ if f.host => f.message.clone(),
                 DiagnosticKind::ExecutionFailure
                 | DiagnosticKind::InvalidDataValue
                 | DiagnosticKind::UnsupportedSyntax => {

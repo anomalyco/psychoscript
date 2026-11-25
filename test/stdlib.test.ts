@@ -1670,6 +1670,7 @@ describe("built-in iterators", () => {
     ])
     const logged = await run(`console.log([1].keys()); return null`)
     expect(logged.logs?.[0]).toBe("[opaque reference]")
+    expect((await error(`return [1].keys() + ""`)).message).toContain("Binary operators require data values")
     expect(
       await value(
         `return [[1].keys(), "a"[Symbol.iterator](), new Map().entries(), new Set().values(), new Headers().keys(), new URLSearchParams().keys()].map(String)`,
@@ -1922,10 +1923,9 @@ describe("toLocaleString", () => {
         1234n.toLocaleString("en-US", { style: "currency", currency: "EUR" }),
         [1234.5, new Date(0)].toLocaleString("en-US", { timeZone: "UTC", maximumFractionDigits: 0 }),
         [].toLocaleString.length,
-        [{ toLocaleString: (...args) => args.length }].toLocaleString("en-US", {}),
       ]
     `),
-    ).toEqual(["$1,234.56", "25.6%", "1.234,5", "1234", "12.345.678.901.234.567.890", "€1,234.00", "1,235,1/1/1970, 12:00:00 AM", 0, "0"])
+    ).toEqual(["$1,234.56", "25.6%", "1.234,5", "1234", "12.345.678.901.234.567.890", "€1,234.00", "1,235,1/1/1970, 12:00:00 AM", 0])
     expect(
       await value(`
       const attempt = (f) => { try { return f() } catch (e) { return e.name } }

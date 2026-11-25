@@ -125,8 +125,7 @@ built-ins); resuming it in another build, or from malformed bytes, rejects with 
 
 `globals` is called for each run (and again on resume) with the `Run`: its `id`, and `metadata`, JSON the host keeps
 with the run. It returns the program's globals; they shadow built-ins of the same name, and plain objects of host
-functions act as namespaces (`fs.read(...)`). Arguments reach the host as copies, and results are copied back,
-except typed arrays (below).
+functions act as namespaces (`fs.read(...)`). Arguments reach the host as copies, and results are copied back.
 
 - **`Host.fn(f, options)`**: `f(args, call)` returns a value or a Promise, or throws. `call` has the call's `key`, a
   `signal`, and `suspending()`. `options.type`:
@@ -142,22 +141,11 @@ except typed arrays (below).
 - **`Host.namespace({ keys, resolve })`**: a lazy object for large catalogs. `resolve(path)` returns the function for
   `ns.a.b(...)`, or `Host.missing(message, suggestions)`.
 - **`Host.fail(kind, message, suggestions)`**: throw it to give the program an error with your own `kind`.
-- **`Host.error(name, message)`**: throw it (or reject, or fail an Effect with it) to give the program a real error of a
-  standard class (`TypeError`, `RangeError`, `Error`, ...) located at the call: its `stack` names the call, and
-  uncaught the run fails with `TypeError: message (line L, col C)`.
 - **`StreamingResponse`**: return `new StreamingResponse(response)` to give the program a `Response`-like object whose
   body streams (`text()`, `json()`, `bytes()`, `clone()`, `body` readers, `for await`).
-- **Typed arrays** (runtime option `typedArrays: true`; off by default, as before they were added) cross without a copy,
-  so a host can upload vertex or uniform data to a GPU as it is: a `Float32Array`, `Uint16Array`, `Uint32Array`,
-  `Int32Array` or `Float64Array` argument arrives as a host typed array over the program's own bytes (an `ArrayBuffer`
-  as the host `ArrayBuffer`). They are lent for the duration of the call: read or write them before it returns, and
-  don't keep them. A typed array a host function returns becomes the program's: bytes the host made, or a typed array
-  the same call got, which is the program's buffer again. A `Uint8Array` still crosses as a copy.
 - **`translate`** (runtime option): what happens to a program function or promise inside an argument. By default both
   fail the call; `{ functions: "drop", promises: "await" }` drops functions (as `JSON.stringify` does) and awaits
-  promises. `functions: "mark"` puts `Host.functionMarker` (a symbol; `HostValue::FunctionMarker` and
-  `Data::FunctionMarker` in Rust) where each function was, in arguments and in the run's result (typed `Data`: JSON
-  plus the marker), so a host can tell which props held one (`onPress`, say) without calling it.
+  promises.
 
 ```ts
 import { Host, Runtime } from "psychoscript"
@@ -260,23 +248,10 @@ defects become an `ExecutionFailure`.
 | ---------------- | ------- | -------------------------------------------------------------------------------------------- |
 | `timeoutMs`      | none    | Active time a run may take, summed across resumes; checked between VM steps.                 |
 | `maxOutputBytes` | none    | UTF-8 bytes kept from the result and logs (warnings get an equal budget); the rest is cut.    |
-| `maxHeapBytes`   | none    | Bytes the reachable heap may hold, in a fixed size model; over it, `MemoryLimitExceeded`.    |
-| `maxValueDepth`  | 32      | How deep a value may nest where it crosses to or from the host, and in `JSON.stringify`; 1 to 256. |
 
-`maxHeapBytes` measures what the program can still reach, not the process: garbage never counts, and the sizes are
-the same on every platform and in the Rust implementation (64 bytes per object, 32 per property, 16 per array
-element, 16 plus 2 per UTF-16 code unit per distinct string, 1 per byte of typed array storage; see
-`interpreter-support.md`). The heap is measured as the body returns (its own bindings included), when the run ends
-and, paced by allocation, while it runs; the run stops there, and no handler sees it. A brief peak between two
-measurements may pass unseen. A saved run keeps its limit when resumed.
-
-`maxValueDepth` applies to the result, a host call's arguments and what it returns: a value nested deeper fails with a
-`TypeError` (a `RangeError` for the result and `JSON.stringify`). The walk a result takes when it holds a promise or a
-`toJSON` allows at least 100. Its bound, 256, keeps these copies, which recurse once a level, within the native stack
-a run has in the Rust implementation, in debug builds too. A saved run keeps its depth when resumed.
-
-Fixed caps: a string at most 2^24 characters, an array at most 10,000,000 elements, and at most 10,000 pending
-promises. Exceeding one throws a `RangeError` in the program. There is no step-count limit: bound runs with `timeoutMs`.
+Fixed caps: a string at most 2^24 characters, an array at most 10,000,000 elements, at most 10,000 pending promises,
+and values nested at most 32 deep when they cross to or from the host. Exceeding one throws a `RangeError` in the
+program. There is no separate memory or step-count limit: bound runs with `timeoutMs`.
 
 ## Security model
 
@@ -285,7 +260,7 @@ promises. Exceeding one throws a `RangeError` in the program. There is no step-c
 - **No dynamic code.** No `eval`, `Function` constructor or `with`; programs are strict mode only.
 - **No prototype mutation.** No `Object.setPrototypeOf`, `__proto__` assignment, legacy accessors, `Proxy` or
   `Reflect`, so a program can't change how built-ins behave.
-- **Bounded.** Time via `timeoutMs`, output via `maxOutputBytes`, heap via `maxHeapBytes`, and the caps above. A single regular-expression
+- **Bounded.** Time via `timeoutMs`, output via `maxOutputBytes`, and the caps above. A single regular-expression
   match runs on the host engine and can't be interrupted, so a pathological pattern can run long.
 - **Checked snapshots.** A snapshot is validated on resume against the build that wrote it. Store snapshots as you
   would code: whoever can edit one controls the resumed run.
@@ -297,9 +272,7 @@ async generators and `for await`), classes (fields, static members, getters and 
 literal getters and setters, labels, `try`/`finally`, top-level `await` and `return`, and `import`/`require` of host
 globals by module name. Built-ins: `Object`, `Array`, `String`, `Number`, `BigInt`, `Math`, `JSON`, `Date`, `RegExp`, `Map`,
 `Set`, `Promise`, `Iterator` helpers, errors, `URL`, `URLSearchParams`, `Headers`, `TextEncoder`/`TextDecoder`,
-`atob`/`btoa`, `structuredClone`, `crypto.randomUUID`/`getRandomValues`, `Uint8Array`, Node's `Buffer`, `console`,
-and with `typedArrays: true`, `ArrayBuffer`, `Uint16Array`, `Uint32Array`, `Int32Array`, `Float32Array` and
-`Float64Array`.
+`atob`/`btoa`, `structuredClone`, `crypto.randomUUID`/`getRandomValues`, `Uint8Array`, Node's `Buffer`, and `console`.
 
 [`interpreter-support.md`](interpreter-support.md) is the detailed support matrix.
 
@@ -334,9 +307,8 @@ Unsupported syntax fails before the program runs, with a hint.
   and host functions marked `constructible` can be constructed).
 - **Symbols:** `Symbol()` (only `Symbol.iterator`, `Symbol.asyncIterator`, `Symbol.toPrimitive`, and
   `Symbol.toStringTag` exist).
-- **Binary and weak-reference built-ins:** `Int8Array`, `Int16Array`, `Uint8ClampedArray`, the BigInt and Float16
-  typed arrays, `DataView`, resizable or shared buffers, `WeakRef`, and `FinalizationRegistry` (the other typed arrays
-  and `ArrayBuffer` need `typedArrays: true`).
+- **Binary and weak-reference built-ins:** typed arrays other than `Uint8Array`, `ArrayBuffer`, `DataView`, `WeakRef`,
+  and `FinalizationRegistry`.
 - **TypeScript syntax:** programs must be plain JavaScript.
 
 ## Determinism
@@ -353,7 +325,7 @@ The interpreter is tested against [test262](https://github.com/tc39/test262) at 
 `test/test262/manifest.json`). The files aren't committed and CI doesn't run them yet: sync a local checkout (see
 [`test/test262/README.md`](test/test262/README.md)) and run `bun test test/test262.test.ts`. The sync leaves out
 features that are out of scope by design (prototype mutation, `Proxy`, `eval`, sloppy mode and others). Of the
-22,253 files it keeps, 19,521 pass and 2,732 are skipped as known gaps (`test/test262/skipped.txt`), with no failures.
+22,253 files it keeps, 19,408 pass and 2,845 are skipped as known gaps (`test/test262/skipped.txt`), with no failures.
 
 ## Development
 
@@ -366,9 +338,7 @@ bun run build            # dist/
 bun run script/sync-test262.ts ~/development/test262 && bun test test/test262.test.ts
 ```
 
-A Rust implementation of the same language lives in [`rust/`](rust/README.md), held to exact parity with recordings
-from this package: `cd rust && cargo test --workspace`, and after a change here, regenerate them with
-`bun conformance/generate.ts && bun conformance/host.ts && bun conformance/boundary.ts && bun conformance/streaming.ts`.
+A Rust implementation of the language lives in [`rust/`](rust/README.md).
 
 ## License
 

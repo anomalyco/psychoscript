@@ -69,7 +69,10 @@
         "TypeError",
         "Cannot create property 'b' on string 'ab'."
       ],
-      true,
+      [
+        "TypeError",
+        "Only data fields may be deleted."
+      ],
       [
         "TypeError",
         "The 'in' operator requires a data object on the right-hand side."
@@ -92,7 +95,10 @@
         "TypeError",
         "Cannot create property 'b' on number '5'."
       ],
-      true,
+      [
+        "TypeError",
+        "Only data fields may be deleted."
+      ],
       [
         "TypeError",
         "The 'in' operator requires a data object on the right-hand side."
@@ -115,7 +121,10 @@
         "TypeError",
         "Cannot create property 'b' on boolean 'true'."
       ],
-      true,
+      [
+        "TypeError",
+        "Only data fields may be deleted."
+      ],
       [
         "TypeError",
         "The 'in' operator requires a data object on the right-hand side."
@@ -138,7 +147,10 @@
         "TypeError",
         "Cannot create property 'b' on symbol 'Symbol(Symbol.iterator)'."
       ],
-      true,
+      [
+        "TypeError",
+        "Only data fields may be deleted."
+      ],
       [
         "TypeError",
         "The 'in' operator requires a data object on the right-hand side."
@@ -163,7 +175,10 @@
       ],
       true,
       false,
-      false,
+      [
+        "TypeError",
+        "Binary operators require data values."
+      ],
       true,
       [
         "TypeError",
@@ -241,7 +256,10 @@
       2,
       true,
       true,
-      false,
+      [
+        "TypeError",
+        "Binary operators require data values."
+      ],
       true,
       [
         "TypeError",
@@ -257,7 +275,10 @@
     ],
     true,
     true,
-    true,
+    [
+      "TypeError",
+      "Binary operators require data values."
+    ],
     [
       "[object Promise]",
       "[object Object]"

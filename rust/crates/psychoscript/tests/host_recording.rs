@@ -243,6 +243,16 @@ fn globals(state: &State, run: &psychoscript::Run) -> Vec<(String, HostValue)> {
             })),
         ),
         (
+            "refuseAs".into(),
+            one(HostFunction::new(|args, _| -> psychoscript::HostResult {
+                let kind = match args.first() {
+                    Some(HostValue::String(s)) => s.to_string_lossy().into_owned(),
+                    _ => String::new(),
+                };
+                Err(Failure::new(kind, "Not today").into())
+            })),
+        ),
+        (
             "mistyped".into(),
             one(HostFunction::new(|args, _| -> psychoscript::HostResult {
                 let n = match args.first() {
