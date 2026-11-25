@@ -4,7 +4,7 @@
 // Usage: bun bench/ref/bench.ts [--iterations N] <slug>...
 import { existsSync } from "node:fs"
 import { resolve } from "node:path"
-import { reference, toolsGlobal } from "../../conformance/reference.ts"
+import { reference, toolsGlobal } from "../../conformance/reference.js"
 
 // The reference: the package from PSYCHOSCRIPT_REF, or by default the repository root. The programs reach one host
 // global, `tools`, the namespace of conformance/reference.ts (`tools.echo`, `tools.git.status`, ... all async).

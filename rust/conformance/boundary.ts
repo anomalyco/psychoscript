@@ -49,8 +49,8 @@
 // suggestions? }`, the message and suggestions as `describe` writes a string.
 
 import { join } from "node:path"
-import { writeRecording } from "./recording.ts"
-import { describe, reference, toolsGlobal } from "./reference.ts"
+import { writeRecording } from "./recording.js"
+import { describe, reference, toolsGlobal } from "./reference.js"
 
 type Json = null | boolean | number | string | Array<Json> | { [key: string]: Json }
 
