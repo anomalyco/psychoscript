@@ -58,20 +58,20 @@ let mesh = HostFunction::new(|_, _| HostValue::TypedArray(TypedArray::from_f32(&
 
 Only Rust has:
 
-- A heap cap: [`Limits::max_heap_bytes`](crates/psychoscript/src/diagnostic.rs), measured in the size model of [`heap.rs`](crates/psychoscript/src/heap.rs); over it, `MemoryLimitExceeded`.
-- CPU-time budgets: [`Limits::clock`](crates/psychoscript/src/diagnostic.rs) `Clock::ThreadCpu` for `timeout_ms` (also [`thread_clock`](crates/psychoscript/src/thread_clock.rs) for hosts).
-- The interpreter slice: [`Limits::slice_ms`](crates/psychoscript/src/diagnostic.rs), the longest stretch between awaits of the host; past it, `SliceExceeded`.
-- The function marker: [`TranslateFunctions::Mark`](crates/psychoscript/src/runtime.rs), giving `HostValue::FunctionMarker` and `Data::FunctionMarker`.
-- A value depth limit: [`Limits::max_value_depth`](crates/psychoscript/src/diagnostic.rs), at most [`MAX_VALUE_DEPTH_LIMIT`](crates/psychoscript/src/convert.rs).
-- Located host errors: [`HostError::located`](crates/psychoscript/src/host_function.rs) (`HostValue::Located`), caught as a standard error at the call.
-- Always-on typed arrays: `ArrayBuffer`, `Uint16Array`, `Uint32Array`, `Int32Array`, `Float32Array`, `Float64Array`, as [`HostValue::TypedArray`](crates/psychoscript/src/host_function.rs): lent without a copy to sync host functions, copied for async and durable ones.
-- Lazy built-in groups: [`LAZY`](crates/psychoscript/src/builtins/mod.rs) sets up `RegExp`, `Date`, the typed arrays and the other groups only when a program uses them.
+- A heap cap: [`Limits::max_heap_bytes`](https://github.com/anomalyco/psychoscript/blob/dev/rust/crates/psychoscript/src/diagnostic.rs), measured in the size model of [`heap.rs`](https://github.com/anomalyco/psychoscript/blob/dev/rust/crates/psychoscript/src/heap.rs); over it, `MemoryLimitExceeded`.
+- CPU-time budgets: [`Limits::clock`](https://github.com/anomalyco/psychoscript/blob/dev/rust/crates/psychoscript/src/diagnostic.rs) `Clock::ThreadCpu` for `timeout_ms` (also [`thread_clock`](https://github.com/anomalyco/psychoscript/blob/dev/rust/crates/psychoscript/src/thread_clock.rs) for hosts).
+- The interpreter slice: [`Limits::slice_ms`](https://github.com/anomalyco/psychoscript/blob/dev/rust/crates/psychoscript/src/diagnostic.rs), the longest stretch between awaits of the host; past it, `SliceExceeded`.
+- The function marker: [`TranslateFunctions::Mark`](https://github.com/anomalyco/psychoscript/blob/dev/rust/crates/psychoscript/src/runtime.rs), giving `HostValue::FunctionMarker` and `Data::FunctionMarker`.
+- A value depth limit: [`Limits::max_value_depth`](https://github.com/anomalyco/psychoscript/blob/dev/rust/crates/psychoscript/src/diagnostic.rs), at most [`MAX_VALUE_DEPTH_LIMIT`](https://github.com/anomalyco/psychoscript/blob/dev/rust/crates/psychoscript/src/convert.rs).
+- Located host errors: [`HostError::located`](https://github.com/anomalyco/psychoscript/blob/dev/rust/crates/psychoscript/src/host_function.rs) (`HostValue::Located`), caught as a standard error at the call.
+- Always-on typed arrays: `ArrayBuffer`, `Uint16Array`, `Uint32Array`, `Int32Array`, `Float32Array`, `Float64Array`, as [`HostValue::TypedArray`](https://github.com/anomalyco/psychoscript/blob/dev/rust/crates/psychoscript/src/host_function.rs): lent without a copy to sync host functions, copied for async and durable ones.
+- Lazy built-in groups: [`LAZY`](https://github.com/anomalyco/psychoscript/blob/dev/rust/crates/psychoscript/src/builtins/mod.rs) sets up `RegExp`, `Date`, the typed arrays and the other groups only when a program uses them.
 
 Only TypeScript has:
 
-- [`parseProgram`](../src/runtime/execute.ts), the program's ESTree AST; Rust's `Runtime::compile` only reports its errors.
-- [`formatLocation`](../src/runtime/model.ts) and [`moduleName`](../src/runtime/modules.ts), two small exported helpers.
-- Date's locale formatting through the host's ICU4C: Rust uses ICU4X, with [recorded differences](conformance/date-locale.differences.json) (see Parity).
+- [`parseProgram`](https://github.com/anomalyco/psychoscript/blob/dev/src/runtime/execute.ts), the program's ESTree AST; Rust's `Runtime::compile` only reports its errors.
+- [`formatLocation`](https://github.com/anomalyco/psychoscript/blob/dev/src/runtime/model.ts) and [`moduleName`](https://github.com/anomalyco/psychoscript/blob/dev/src/runtime/modules.ts), two small exported helpers.
+- Date's locale formatting through the host's ICU4C: Rust uses ICU4X, with [recorded differences](https://github.com/anomalyco/psychoscript/blob/dev/rust/conformance/date-locale.differences.json) (see Parity).
 
 ## Commands
 
