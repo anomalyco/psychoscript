@@ -10,6 +10,8 @@
 // same matrix (the `date_locale` example) and the differences — where ICU4X renders its closest output rather than the
 // exact one — are written to the differences file, kept as short as the limit allows.
 //
+// Run it on Linux: the recordings come from the reference's ICU there, and macOS's renders some locales otherwise.
+//
 // Usage: bun conformance/date-locale.ts [reference] — the reference package directory, from the argument,
 // PSYCHOSCRIPT_REF, or by default the repository root.
 
