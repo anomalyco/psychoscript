@@ -41,7 +41,8 @@ oxc_str = "0.159"
 oxc_syntax = "0.159"
 regress = { version = "0.12.0", default-features = false, features = ["std", "utf16"] }
 rustc-hash = "2"
-serde_json = { version = "1", features = ["preserve_order"] }
+# `float_roundtrip`: a saved state's numbers read back from `to_bytes` exactly, not to the nearest few ulps.
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 tz-rs = "0.7"
 unicode-normalization = "0.1"
 url = "2.5"
