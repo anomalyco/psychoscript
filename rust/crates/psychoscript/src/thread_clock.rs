@@ -328,6 +328,9 @@ mod tests {
                 .unwrap()
             })
             .collect();
+        for clock in &ended {
+            assert_eq!(settled(clock), Duration::ZERO);
+        }
         let copies: Vec<ThreadClock> = ended.to_vec();
         // Two thousand threads come and go since, each taking its own clock and spinning while the ended ones are
         // read: a port name (Apple) or thread id (Linux) of an ended thread given to one of them would read its time.
@@ -360,7 +363,13 @@ mod tests {
         assert_send_sync::<ThreadClock>();
         let clock = ThreadClock::current();
         let before = clock.now();
-        spin(Duration::from_millis(50));
+        // Until it has grown 30 ms, however busy the machine, or five seconds have passed.
+        let start = Instant::now();
+        while clock.now() - before < Duration::from_millis(30)
+            && start.elapsed() < Duration::from_secs(5)
+        {
+            spin(Duration::from_micros(100));
+        }
         let spun = clock.now() - before;
         assert!(spun >= Duration::from_millis(30), "{spun:?}");
         let before = clock.now();
