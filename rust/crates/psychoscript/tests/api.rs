@@ -387,3 +387,37 @@ fn sparse_arrays_visit_only_their_elements() {
         json!([3, ",30000000,1", true, true, ["a", "z"], ["a", "z"]])
     );
 }
+
+#[test]
+fn built_ins_that_recurse_on_deep_values_throw_a_range_error_instead_of_overflowing() {
+    // On the mobile wrapper's live-run thread, 1 MiB, in a debug build too: they stop at the run's stack budget.
+    let deep = || {
+        let rt = Runtime::make();
+        [
+            "let m = new Map(); for (let i = 0; i < 100000; i++) m = new Map([[m, m]]); return structuredClone(m)",
+            "let a = []; for (let i = 0; i < 100000; i++) a = [{ a }]; return structuredClone(a)",
+            "return JSON.parse('['.repeat(100000) + ']'.repeat(100000))",
+            r#"return JSON.parse('{"a":'.repeat(100000) + '1' + '}'.repeat(100000))"#,
+        ]
+        .map(|code| run(&rt, code).result.unwrap_err().message_lossy())
+    };
+    let messages = std::thread::Builder::new()
+        .stack_size(1 << 20)
+        .spawn(deep)
+        .unwrap()
+        .join()
+        .unwrap();
+    for m in messages {
+        assert!(
+            m.starts_with("RangeError: Maximum call stack size exceeded"),
+            "{m}"
+        );
+    }
+    // A structured clone of many objects copies each once, keeping what they share.
+    let outcome = run(
+        &Runtime::make(),
+        "const shared = {}; const a = Array.from({ length: 200000 }, (_, i) => ({ i, shared }))
+        const b = structuredClone(a); return [b.length, b[7].i, b[0].shared === b[199999].shared, b[0].shared !== shared]",
+    );
+    assert_eq!(outcome.result.unwrap(), json!([200000, 7, true, true]));
+}

@@ -1,5 +1,7 @@
 //! URL, URLSearchParams and Headers.
 
+use rustc_hash::FxHashMap;
+
 use super::{arg, builtin_string, incompatible, require_callback};
 use crate::object::*;
 use crate::value::{Id, Value};
@@ -1168,7 +1170,7 @@ fn structured_clone(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
     if args.is_empty() {
         return Err(vm.type_error("structuredClone requires 1 argument"));
     }
-    let mut memo: Vec<(Id, Id)> = Vec::new();
+    let mut memo = FxHashMap::default();
     clone_value(vm, &args[0], &mut memo)
 }
 
@@ -1177,16 +1179,22 @@ fn clone_error(vm: &mut Vm, v: &Value) -> Value {
     vm.type_error(&format!("DataCloneError: {d} could not be cloned."))
 }
 
-fn clone_value(vm: &mut Vm, v: &Value, memo: &mut Vec<(Id, Id)>) -> Res {
+/// Copies `v`, recursing once a level on the native stack: past the run's stack budget it fails as a deep call does.
+fn clone_value(vm: &mut Vm, v: &Value, memo: &mut FxHashMap<Id, Id>) -> Res {
     let id = match v {
         Value::Obj(id) => *id,
         Value::Sym(_) => return Err(clone_error(vm, v)),
         other => return Ok(*other),
     };
-    if let Some((_, copy)) = memo.iter().find(|(src, _)| *src == id) {
+    if let Some(copy) = memo.get(&id) {
         return Ok(Value::Obj(*copy));
     }
-    let remember = |_: &mut Vm, memo: &mut Vec<(Id, Id)>, copy: Id| memo.push((id, copy));
+    if vm.stack_spent() {
+        return Err(vm.range_error("Maximum call stack size exceeded"));
+    }
+    let remember = |_: &mut Vm, memo: &mut FxHashMap<Id, Id>, copy: Id| {
+        memo.insert(id, copy);
+    };
     enum Plan {
         Map(bool),
         Date(f64),

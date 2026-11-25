@@ -1278,9 +1278,15 @@ impl Vm {
             .map_err(Slot::pack)
     }
 
-    fn call_slow(&mut self, f: &Value, this: Value, args: &[Value]) -> Res {
+    /// Whether the native stack the run may use is spent: a call, or a built-in recursing on it, fails with a
+    /// RangeError then.
+    pub(crate) fn stack_spent(&self) -> bool {
         let probe = 0u8;
-        if self.stack_base.abs_diff(&probe as *const u8 as usize) > self.stack_budget {
+        self.stack_base.abs_diff(&probe as *const u8 as usize) > self.stack_budget
+    }
+
+    fn call_slow(&mut self, f: &Value, this: Value, args: &[Value]) -> Res {
+        if self.stack_spent() {
             return Err(self.range_error("Maximum call stack size exceeded"));
         }
         let Value::Obj(id) = f else {
