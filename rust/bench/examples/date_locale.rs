@@ -1,5 +1,6 @@
-//! Prints the `conformance/date-locale.json` matrix's actual outputs as JSON, so `conformance/date-locale.ts` can
-//! record the differences the reference shows. Usage: `psychoscript-bench --example date_locale <matrix.json>`.
+//! Prints a locale matrix's actual outputs as JSON (`conformance/date-locale.json` or `number-locale.json`), so its
+//! generator (`conformance/date-locale.ts`, `number-locale.ts`) can record the differences from the
+//! reference. Usage: `psychoscript-bench --example date_locale <matrix.json>`.
 //!
 //! Each line of stdout is a JSON array of the cases' strings, in file order.
 

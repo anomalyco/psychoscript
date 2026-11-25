@@ -1,8 +1,10 @@
-//! Replays `conformance/date-locale.json`, the matrix of Date locale-formatting cases `conformance/date-locale.ts`
-//! recorded from the reference, and checks each — its string, or its error kind and message — against the reference,
-//! except the entries of `conformance/date-locale.differences.json`, the hits where ICU4X can't express the exact
-//! combination and renders its closest output; those are pinned to the values the same generator recorded, so a change
-//! that makes one match (or drift) fails here until the recordings are regenerated.
+//! Replays the locale matrices: `conformance/date-locale.json`, the Date locale-formatting cases
+//! `conformance/date-locale.ts` recorded from the reference, and `conformance/number-locale.json`, the Number and BigInt
+//! ones `conformance/number-locale.ts` recorded. Each case — its string, or its error kind and message — is checked
+//! against the reference, except the entries of the matrix's `.differences.json`, the hits where ICU4X can't express
+//! the exact combination, or its data differs from the host's ICU, and renders its closest output; those are pinned to
+//! the values the same generator recorded, so a change that makes one match (or drift) fails here until the recordings
+//! are regenerated.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -33,12 +35,22 @@ fn read(path: &Path) -> String {
 
 #[test]
 fn date_locale() {
+    check("date-locale");
+}
+
+#[test]
+fn number_locale() {
+    check("number-locale");
+}
+
+/// Replays the matrix `conformance/<name>.json` against its `<name>.differences.json`.
+fn check(name: &str) {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../conformance");
-    let matrix: Matrix = serde_json::from_str(&read(&dir.join("date-locale.json")))
-        .unwrap_or_else(|e| panic!("date-locale.json: {e}"));
+    let matrix: Matrix = serde_json::from_str(&read(&dir.join(format!("{name}.json"))))
+        .unwrap_or_else(|e| panic!("{name}.json: {e}"));
     let differences: Differences =
-        serde_json::from_str(&read(&dir.join("date-locale.differences.json")))
-            .unwrap_or_else(|e| panic!("date-locale.differences.json: {e}"));
+        serde_json::from_str(&read(&dir.join(format!("{name}.differences.json"))))
+            .unwrap_or_else(|e| panic!("{name}.differences.json: {e}"));
     let known: HashMap<usize, &Difference> = differences
         .differences
         .iter()
@@ -81,7 +93,7 @@ fn date_locale() {
                     ));
                 } else if actual_str == expected_str {
                     problems.push(format!(
-                        "case {i}: now matches the reference; regenerate date-locale.differences.json to drop it"
+                        "case {i}: now matches the reference; regenerate {name}.differences.json to drop it"
                     ));
                 }
             }
@@ -104,13 +116,13 @@ fn date_locale() {
     }
     assert!(
         problems.is_empty(),
-        "{} of {} date-locale cases differ:\n{}",
+        "{} of {} {name} cases differ:\n{}",
         problems.len(),
         matrix.cases.len(),
         problems.join("\n\n")
     );
     println!(
-        "{} date-locale cases passed ({} recorded differences)",
+        "{} {name} cases passed ({} recorded differences)",
         matrix.cases.len(),
         differences.differences.len()
     );
@@ -132,8 +144,12 @@ fn describe(
     } else {
         case.locale.to_string()
     };
+    let receiver = case
+        .value
+        .clone()
+        .unwrap_or_else(|| format!("new Date({})", case.instant));
     format!(
-        "case {i} {} ({} {} {}):\n  reference: {expected}\n  rust:      {actual}",
+        "case {i} {} ({receiver}.{} {} {}):\n  reference: {expected}\n  rust:      {actual}",
         what, case.method, locale, case.options,
     )
 }

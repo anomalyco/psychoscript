@@ -72,6 +72,14 @@ Only TypeScript has:
 - [`parseProgram`](https://github.com/anomalyco/psychoscript/blob/dev/src/runtime/execute.ts), the program's ESTree AST; Rust's `Runtime::compile` only reports its errors.
 - [`formatLocation`](https://github.com/anomalyco/psychoscript/blob/dev/src/runtime/model.ts) and [`moduleName`](https://github.com/anomalyco/psychoscript/blob/dev/src/runtime/modules.ts), two small exported helpers.
 - Date's locale formatting through the host's ICU4C: Rust uses ICU4X, with [recorded differences](https://github.com/anomalyco/psychoscript/blob/dev/rust/conformance/date-locale.differences.json) (see Parity).
+- Number and BigInt `toLocaleString` through the host's `Intl.NumberFormat`: Rust formats the decimal style with ICU4X,
+  with [recorded differences](https://github.com/anomalyco/psychoscript/blob/dev/rust/conformance/number-locale.differences.json),
+  and refuses with a RangeError what it doesn't format: `style` `"percent"`, `"currency"` or `"unit"`, and `notation`
+  `"scientific"`, `"engineering"` or `"compact"` (so `currency`, `currencyDisplay`, `currencySign`, `unit`,
+  `unitDisplay` and `compactDisplay` only take effect in TypeScript; Rust validates them and leaves the decimal style as
+  it is).
+- A host failure thrown inside a built-in the reference writes as bytecode with handlers (`Map.prototype.forEach`, the
+  iterator helpers) becomes an ordinary error there; Rust's native built-ins keep its host kind.
 
 ## Commands
 
@@ -92,6 +100,7 @@ them pass:
 ```sh
 bun conformance/generate.ts && bun conformance/host.ts && bun conformance/boundary.ts && bun conformance/streaming.ts
 bun conformance/date-locale.ts # the Date locale matrix, its expected output and its differences from ICU4X
+bun conformance/number-locale.ts # the same for Number and BigInt toLocaleString
 ```
 
 ## Parity
@@ -122,6 +131,12 @@ Known differences:
   inside a date, numeric dates where a locale's `yMd` pattern differs from its short style, a standalone minute or
   second (ICU4X prefixes the hour), flexible day periods (`b`/`B`), and the CJK separators and zone names whose data
   differs from ICU's.
+- Number and BigInt `toLocaleString` likewise, in the decimal style: every option the reference honours there (integer,
+  fraction and significant digits, the rounding modes, increments and priority, `trailingZeroDisplay`, `useGrouping`,
+  `signDisplay`, `numberingSystem`), and every error kind and message, match. `conformance/number-locale.ts` records
+  the differences in `conformance/number-locale.differences.json`, pinned by `bench/tests/date_locale.rs`: NaN is
+  `NaN` in every locale (ICU4X has no localized name for it), a numbering system other than the locale's keeps the
+  locale's separators, and a few regions whose CLDR data is newer in ICU4X (`de-AT`, `fr-CH`, `bn-BD`).
 
 ## Design
 

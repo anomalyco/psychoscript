@@ -922,15 +922,23 @@ const DATE_TIME_OPTIONS: [&str; 20] = [
     "timeStyle",
 ];
 
-fn locale_read(
+/// The locale tags as text, and the options present as primitives with their position in the option names.
+pub(crate) type LocaleArgs = (Vec<String>, Vec<(usize, Value)>);
+
+/// The reference's `formatLocale` read of a `toLocale*String` call's arguments: the locale tags (a real array's items,
+/// an array-like's elements, or the one value) and, in the order of `names`, each option the options object has, read
+/// through its getters; `boolean` names the option read as `Boolean(value)`. The tags and options are then one list of
+/// conversions (strings, and the number hint where `numeric` says), as the reference hands them to the host: the tags
+/// come back as text, the options as primitives, with their position in `names`.
+pub(crate) fn read_locale_args(
     vm: &mut Vm,
     c: &mut Conversions,
-    kind: date_locale::Kind,
-    t: f64,
     locales: Value,
     options: Value,
-) -> Res {
-    // The raw tag values and, in order, the option values with their position in `DATE_TIME_OPTIONS`.
+    names: &[&'static str],
+    boolean: Option<usize>,
+    numeric: impl Fn(usize) -> bool,
+) -> Result<LocaleArgs, Value> {
     let (tags, opted) = vm.reading(|vm| {
         let mut tags = Vec::new();
         match locales {
@@ -963,7 +971,7 @@ fn locale_read(
         }
         let mut opted = Vec::new();
         if let Value::Obj(id) = options {
-            for (at, name) in DATE_TIME_OPTIONS.iter().enumerate() {
+            for (at, name) in names.iter().enumerate() {
                 let key = vm.atoms.intern_static(name);
                 let value = vm.get_obj(id, key);
                 if matches!(value, Value::Undef) {
@@ -972,7 +980,7 @@ fn locale_read(
                 // `Boolean(value)`, no user code, as the reference reads it.
                 opted.push((
                     at,
-                    if at == 3 {
+                    if Some(at) == boolean {
                         Value::Bool(vm.truthy(&value))
                     } else {
                         value
@@ -989,8 +997,7 @@ fn locale_read(
     hints.extend(std::iter::repeat_n(Hint::String, n));
     for (at, value) in &opted {
         values.push(*value);
-        // `fractionalSecondDigits` converts with the number hint; the rest with the string hint.
-        hints.push(if *at == 15 {
+        hints.push(if numeric(*at) {
             Hint::Number
         } else {
             Hint::String
@@ -998,17 +1005,38 @@ fn locale_read(
     }
     c.convert(vm, &hints, &mut values, false)?;
     let (tag_values, opt_values) = values.split_at(n);
-    let mut tags = Vec::with_capacity(n);
+    let mut texts = Vec::with_capacity(n);
     for tag in tag_values {
         let text = vm.string_of(tag)?;
-        tags.push(vm.text(text).to_owned());
+        texts.push(vm.text(text).to_owned());
     }
+    let opted = opted
+        .iter()
+        .zip(opt_values)
+        .map(|((at, _), value)| (*at, *value))
+        .collect();
+    Ok((texts, opted))
+}
+
+fn locale_read(
+    vm: &mut Vm,
+    c: &mut Conversions,
+    kind: date_locale::Kind,
+    t: f64,
+    locales: Value,
+    options: Value,
+) -> Res {
+    // `fractionalSecondDigits` converts with the number hint; `hour12` reads as a boolean.
+    let (tags, opted) =
+        read_locale_args(vm, c, locales, options, &DATE_TIME_OPTIONS, Some(3), |at| {
+            at == 15
+        })?;
     let text = |vm: &mut Vm, value: &Value| -> Result<String, Value> {
         let s = vm.string_of(value)?;
         Ok(vm.text(s).to_owned())
     };
     let mut resolved = date_locale::Options::default();
-    for ((at, _), value) in opted.iter().zip(opt_values) {
+    for (at, value) in &opted {
         match *at {
             1 => resolved.calendar = Some(text(vm, value)?),
             3 => {

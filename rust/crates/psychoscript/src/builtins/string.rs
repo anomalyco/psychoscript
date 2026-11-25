@@ -1462,28 +1462,15 @@ fn n_value_of(vm: &mut Vm, this: Value, _args: &[Value], _: Id) -> Res {
     Ok(Value::Num(this_num(vm, &this, "valueOf")?))
 }
 
-fn n_to_locale_string(vm: &mut Vm, this: Value, _args: &[Value], _: Id) -> Res {
+// Through ICU4X, as the reference's host `Intl.NumberFormat` (see `number_locale`).
+fn n_to_locale_string(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
     let x = this_num(vm, &this, "toLocaleString")?;
-    if !x.is_finite() {
-        return Ok(vm.string_val(num_to_string(x)));
-    }
-    let fixed = num_to_fixed(x, 3);
-    let fixed = fixed.trim_end_matches('0').trim_end_matches('.');
-    let (int, frac) = fixed.split_once('.').unwrap_or((fixed, ""));
-    let (sign, digits) = int.strip_prefix('-').map(|d| ("-", d)).unwrap_or(("", int));
-    let mut grouped = String::new();
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
-            grouped.push(',');
-        }
-        grouped.push(c);
-    }
-    let out = if frac.is_empty() {
-        format!("{sign}{grouped}")
-    } else {
-        format!("{sign}{grouped}.{frac}")
-    };
-    Ok(vm.string_val(out))
+    super::number_locale::to_locale_string(
+        vm,
+        super::number_locale::Input::Number(x),
+        args,
+        "Number.prototype.toLocaleString",
+    )
 }
 
 // ---------- Math ----------

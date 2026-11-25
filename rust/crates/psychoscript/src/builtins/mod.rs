@@ -10,6 +10,7 @@ mod date_locale;
 pub mod exotic;
 pub(crate) mod fuel;
 pub mod iterator;
+mod number_locale;
 mod numfmt;
 pub(crate) mod object;
 pub mod regexp;
