@@ -1693,19 +1693,14 @@ describe("built-in iterators", () => {
 })
 
 describe("JSON.parse of a value already parsed", () => {
-  test("an object or array is a TypeError at the call, saying it is probably parsed already", async () => {
-    const failure = await run(`const data = { a: 1 }\nconst again = JSON.parse(data)`)
-    expect(failure).toMatchObject({
-      ok: false,
-      error: {
-        kind: "ExecutionFailure",
-        message: "TypeError: JSON.parse expects a string, got an object (is it already parsed?) (line 2, col 15)",
-        location: { line: 2, column: 15 },
-      },
-    })
-    expect(await value(`try { JSON.parse([1, 2]) } catch (e) { return [e.name, e.message] }`)).toEqual([
-      "TypeError",
-      "JSON.parse expects a string, got an array (is it already parsed?)",
+  test("an object or array is returned unchanged", async () => {
+    expect(await value(`const data = { a: 1 }\nconst again = JSON.parse(data)\nreturn [again === data, again]`)).toEqual([
+      true,
+      { a: 1 },
+    ])
+    expect(await value(`const list = [1, 2]\nreturn [JSON.parse(list) === list, JSON.parse(list, () => 0)]`)).toEqual([
+      true,
+      [1, 2],
     ])
   })
 

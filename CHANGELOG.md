@@ -2,9 +2,8 @@
 
 ## Unreleased
 
-- `JSON.parse` given an object or array, which is most likely already parsed, throws
-  `TypeError: JSON.parse expects a string, got an object (is it already parsed?)` at the call, instead of parsing its
-  text. Other non-string values are parsed as before.
+- `JSON.parse` given an object or array, which is already parsed, returns it unchanged instead of parsing its text
+  (`"[object Object]"`, or the array's elements joined). Other non-string values are parsed as before.
 - A default `sort()` or `toSorted()` over numbers only is numeric: `[10, 9, 1].sort()` is `[1, 9, 10]`, not
   JavaScript's `[1, 10, 9]`. Any other mix of elements keeps the string order.
 - A default `sort()` or `toSorted()` that would compare an object throws a `TypeError` at the call asking for a

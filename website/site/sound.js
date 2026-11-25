@@ -1,8 +1,19 @@
-const names = ['beam', 'impact', 'strike', 'rain', 'roar', 'flower', 'burn', 'fried', 'built', 'horizon',
+const names = ['beam', 'impact', 'strike', 'rain', 'roar', 'flower', 'burn', 'fried', 'built', 'horizon', 'sun-tour', 'sun-excuse', 'sun-resume',
   'fx/tab', 'fx/melt', 'fx/comedown', 'fx/ufo', 'fx/pop', 'fx/whale', 'fx/breach', 'fx/splash', 'fx/stomp', 'fx/stomp2',
   'fx/slam', 'fx/boing', 'fx/gulp', 'fx/sizzle', 'fx/spell', 'fx/wink', 'fx/zoom']
-// The recordings are fetched as soon as the page asks, so that they are to hand the moment sound is allowed.
+const priorityNames = ['fx/tab', 'fx/melt', 'sun-tour', 'fx/wink', 'fx/comedown', 'sun-excuse', 'sun-resume']
+const restNames = names.filter(name => !priorityNames.includes(name))
+// The recordings are fetched and pre-decoded ahead of the first press, priority ones first, so that taking the tab sounds at once.
 const fetched = new Map()
+const decoded = new Map()
+const screamWaves = new Map()
+let decoder = null
+const getDecoder = () => {
+  if (decoder !== null) return decoder
+  const Offline = globalThis.OfflineAudioContext || globalThis.webkitOfflineAudioContext
+  try { decoder = Offline ? new Offline(2, 1, 48000) : false } catch { decoder = false }
+  return decoder
+}
 const fetchSample = name => {
   if (!fetched.has(name)) {
     fetched.set(name, fetch(new URL(`./audio/${name}.mp3`, import.meta.url)).then(res => {
@@ -12,11 +23,12 @@ const fetchSample = name => {
   }
   return fetched.get(name)
 }
+const MASTER_GAIN = 0.8
 const panValue = x => Number.isFinite(x) ? Math.max(-1, Math.min(1, x)) : 0
 const unit = x => Math.max(0, panValue(x))
 const fields = ['night', 'rain', 'maw', 'beam', 'tears', 'blood', 'water']
 const cooldown = { flower: .29, built: .45, burn: .27, fried: .22, razed: .54, strike: .22,
-  roar: 1.1, rain: .18, dry: .18, rainbow: 2, sunset: 2, moonrise: 2, moonset: 2, sunrise: 2, tears: .5, blood: .5, key: .03, cast: .3, step: .12, leap: .2, lift: 2, taken: .5, breach: 1, splash: 1, slam: .5, jump: .5, gulp: .5, scream: .12, tab: 1, comedown: 1, zoom: 1.5, wink: .5, steam: .8 }
+  roar: 1.1, rain: .18, dry: .18, rainbow: 2, sunset: 2, moonrise: 2, moonset: 2, sunrise: 2, tears: .5, blood: .5, key: .03, cast: .3, step: .12, leap: .2, lift: 2, taken: .5, breach: 1, splash: 1, slam: .5, jump: .5, gulp: .5, scream: .12, tab: 1, comedown: 1, zoom: 1.5, wink: .5, steam: .8, tour: 0 }
 
 // A very small scream: somebody tiny on the way into a mouth. Made here, sample by
 // sample, so the film renderer can mix exactly the same one.
@@ -50,19 +62,41 @@ function outputCurve() {
   })
 }
 
-async function readSample(ctx, name) {
-  return ctx.decodeAudioData((await fetchSample(name)).slice(0))
+function readSample(ctx, name) {
+  const host = ctx || getDecoder()
+  if (!host) return fetchSample(name).then(() => null)
+  const key = `${host.sampleRate || 48000}:${name}`
+  if (!decoded.has(key)) {
+    const job = fetchSample(name).then(bytes => host.decodeAudioData(bytes.slice(0))).catch(err => {
+      decoded.delete(key)
+      throw err
+    })
+    decoded.set(key, job)
+  }
+  return decoded.get(key)
+}
+
+function screamFor(rate) {
+  let wave = screamWaves.get(rate)
+  if (!wave) {
+    wave = tinyScream(rate)
+    screamWaves.set(rate, wave)
+  }
+  return wave
 }
 
 function makeLoop(ctx, buffer, dest) {
   const src = ctx.createBufferSource(), gain = ctx.createGain()
   const n = Math.min(Math.round(buffer.sampleRate * .052), buffer.length >> 3)
-  // Crossfade the ends, then re-enter just past the splice.
-  for (let c = 0; c < buffer.numberOfChannels; c++) {
-    const ch = buffer.getChannelData(c)
-    for (let j = 0; j < n; j++) {
-      const k = (j + 1) / n, tail = ch.length - n + j
-      ch[tail] = ch[tail] * Math.cos(k * Math.PI / 2) + ch[j] * Math.sin(k * Math.PI / 2)
+  // Crossfade the ends once per decoded buffer, then re-enter just past the splice.
+  if (!buffer._spliced) {
+    buffer._spliced = true
+    for (let c = 0; c < buffer.numberOfChannels; c++) {
+      const ch = buffer.getChannelData(c)
+      for (let j = 0; j < n; j++) {
+        const k = (j + 1) / n, tail = ch.length - n + j
+        ch[tail] = ch[tail] * Math.cos(k * Math.PI / 2) + ch[j] * Math.sin(k * Math.PI / 2)
+      }
     }
   }
   src.buffer = buffer; src.loop = true; src.loopStart = n / buffer.sampleRate
@@ -90,18 +124,29 @@ class Mix {
     const readyVoices = ctx.audioWorklet.addModule(new URL('./voice.worklet.js', import.meta.url)).then(() => {
       this.voice = new AudioWorkletNode(ctx, 'valley-choir', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] })
     })
-    const reads = names.map(async name => {
-      try { this.samples[name.replace('fx/', '')] = await readSample(ctx, name) }
-      catch (e) { console.warn('Valley sound:', name, e) }
-    })
-    await Promise.all([readyVoices, ...reads])
-    this.voice.connect(this.bus)
+    const loadOne = async name => {
+      try {
+        const key = name.replace('fx/', '')
+        const buf = await readSample(ctx, name)
+        if (buf) {
+          this.samples[key] = buf
+          if ((key === 'beam' || key === 'rain') && !this.loops[key]) this.loops[key] = makeLoop(ctx, buf, this.bus)
+        }
+      } catch (e) { console.warn('Valley sound:', name, e) }
+    }
+    await Promise.all([readyVoices, ...priorityNames.map(loadOne)])
+    if (!this.samples.scream) {
+      const wave = screamFor(ctx.sampleRate)
+      this.samples.scream = ctx.createBuffer(1, wave.length, ctx.sampleRate)
+      this.samples.scream.getChannelData(0).set(wave)
+    }
+    this.choirGain = ctx.createGain()
+    this.choirGain.gain.value = 1
+    this.voice.connect(this.choirGain).connect(this.bus)
     // A meter on the choir, so the picture can sing along.
     this.meter = ctx.createAnalyser(); this.meter.fftSize = 256
     this.wave = new Float32Array(256); this.voice.connect(this.meter)
-    for (const name of ['beam', 'rain']) {
-      if (this.samples[name]) this.loops[name] = makeLoop(ctx, this.samples[name], this.bus)
-    }
+    this.restReady = Promise.all(restNames.map(loadOne))
   }
 
   fade(to, seconds) {
@@ -116,9 +161,73 @@ class Mix {
   release() {
     const t = this.ctx.currentTime
     this.fade(0, .48); this.armed = false; this.sent = -1
+    this.stopTour(0.48)
     for (const loop of Object.values(this.loops)) loopLevel(loop, 0, t, .045)
     for (const src of this.active) src.stop(t + .48)
     this.last = Object.create(null)
+  }
+
+  // The sun's tour (audio/sun-tour.mp3): it stops, and the choir comes back up.
+  stopTour(fade = 0.25) {
+    if (!this.tour) return
+    const { src, gain } = this.tour
+    this.tour = null
+    const t = this.ctx.currentTime
+    try {
+      gain.gain.cancelScheduledValues(t)
+      gain.gain.setTargetAtTime(0, t, Math.max(0.02, fade * 0.3))
+      src.stop(t + fade + 0.05)
+    } catch {}
+    this.unduck(t, 0.35)
+  }
+
+  unduck(t, lag) {
+    if (!this.choirGain) return
+    this.choirGain.gain.cancelScheduledValues(t)
+    this.choirGain.gain.setTargetAtTime(1, t, lag)
+  }
+
+  // The sun gives its tour, or a part of it: from detail.offset seconds into the recording (0), for detail.duration
+  // seconds (all the rest of it), beginning detail.delay seconds from now (at once). The choir goes under it: well
+  // under while it is explaining, up a little, with everything else, once it has lost its head (detail.swell
+  // seconds into the recording, if this part gets that far), and back up when it is done. detail.id is whatever
+  // the asker wants to know this telling by (see tourTime). detail.clip is one of the other things it was recorded
+  // saying in the middle of it ('sun-excuse', 'sun-resume'), given the same way in the tour's place.
+  playTour(x = 0, detail = null) {
+    const ctx = this.ctx, buf = this.samples[typeof detail?.clip === 'string' ? detail.clip : 'sun-tour']
+    if (!buf) return
+    this.stopTour(0.1)
+    const offset = Math.max(0, Math.min(buf.duration, detail?.offset > 0 ? detail.offset : 0))
+    const lasts = Math.max(0, Math.min(buf.duration - offset, detail?.duration > 0 ? detail.duration : Infinity))
+    if (!(lasts > 0)) return
+    const t = ctx.currentTime + (detail?.delay > 0 ? detail.delay : 0)
+    const src = ctx.createBufferSource(), gain = ctx.createGain(), pan = ctx.createStereoPanner()
+    src.buffer = buf
+    pan.pan.value = x
+    // (It comes in over detail.rise seconds: quickly, where a word begins at once.)
+    gain.gain.setValueAtTime(0, t)
+    gain.gain.linearRampToValueAtTime(1.05, t + (detail?.rise > 0 ? detail.rise : 0.06))
+    // (A part that stops short of the end is faded out, not cut off: over detail.fade seconds.)
+    if (offset + lasts < buf.duration - 0.01) {
+      gain.gain.setValueAtTime(1.05, t + Math.max(0.06, lasts - (detail?.fade > 0 ? detail.fade : 0.09)))
+      gain.gain.linearRampToValueAtTime(0, t + lasts)
+    }
+    src.connect(gain).connect(pan).connect(this.bus)
+    if (this.choirGain) {
+      const g = this.choirGain.gain, swell = detail?.swell > 0 ? detail.swell : Infinity
+      g.cancelScheduledValues(ctx.currentTime)
+      g.setTargetAtTime(0.22, Math.max(ctx.currentTime, t - 0.4), 0.22)
+      if (swell > offset && swell < offset + lasts) g.setTargetAtTime(0.36, t + swell - offset, 0.7)
+      g.setTargetAtTime(1, t + lasts + 0.25, 0.6)
+    }
+    this.tour = { src, gain, at: t, offset, id: detail?.id }
+    this.active.add(src)
+    src.onended = () => {
+      this.active.delete(src)
+      if (this.tour?.src === src) this.tour = null
+      src.disconnect(); gain.disconnect(); pan.disconnect()
+    }
+    src.start(t, offset, lasts)
   }
 
   attach(src, gain, x, when) {
@@ -132,6 +241,7 @@ class Mix {
   hit(name, x, level, rate = 1) {
     const ctx = this.ctx, buf = this.samples[name]
     if (!buf || this.active.size >= 14) return
+    if (this.tour) level *= .5 // (the sun is giving its tour: nothing is to be heard over it)
     const t = ctx.currentTime, src = ctx.createBufferSource(), g = ctx.createGain()
     src.buffer = buf; src.playbackRate.value = rate
     const end = t + buf.duration / rate
@@ -202,7 +312,7 @@ class Mix {
 
   frame(s, force = false) {
     const t = this.ctx.currentTime, beam = unit(s?.beam)
-    loopLevel(this.loops.beam, .76 * beam ** .80, t, beam ? .035 : .055)
+    loopLevel(this.loops.beam, (this.tour ? .3 : .76) * beam ** .80, t, beam ? .035 : .055)
     if (beam > .40) this.armed = true
     if (this.armed && beam < .09) {
       if (t - (this.last.impact ?? -2) > .22) {
@@ -237,7 +347,7 @@ class Mix {
       case 'gulp': this.hit('gulp', x, .85); break
       case 'scream': {
         if (!this.samples.scream) {
-          const wave = tinyScream(ctx.sampleRate)
+          const wave = screamFor(ctx.sampleRate)
           this.samples.scream = ctx.createBuffer(1, wave.length, ctx.sampleRate)
           this.samples.scream.getChannelData(0).set(wave)
         }
@@ -262,6 +372,7 @@ class Mix {
       case 'rain': loopLevel(this.loops.rain, .68, t, .32); break
       case 'dry': loopLevel(this.loops.rain, 0, t, .49); break
       case 'tears': case 'blood': this.drop(x, kind === 'blood'); break
+      case 'tour': this.playTour(x, detail); break
       case 'rainbow': this.hit('horizon', x, .16, 1.47); break
       default: {
         // Adjacent horizon cues belong to one change of light.
@@ -275,11 +386,35 @@ class Mix {
 }
 
 export function createSound() {
-  let mix, loading, ready = false, wanted = false, timer, version = 0, latest
+  let mix, loading, ready = false, wanted = false, timer, version = 0, latest, priorityReady = null
   return {
     get enabled() { return wanted },
-    // Fetch the recordings ahead of the first press.
-    prepare() { for (const name of names) fetchSample(name).catch(() => {}) },
+    get priorityReady() { return priorityReady ?? Promise.resolve() },
+    // Fetch and pre-decode the recordings ahead of the first press, priority clips first.
+    prepare() {
+      if (priorityReady) return priorityReady
+      const dec = getDecoder()
+      const boot = ['fx/tab', 'fx/melt', 'sun-tour']
+      priorityReady = Promise.all(boot.map(name => (dec ? readSample(dec, name) : fetchSample(name)).catch(() => {}))).then(() => {
+        for (const name of priorityNames) if (!boot.includes(name)) (dec ? readSample(dec, name) : fetchSample(name)).catch(() => {})
+        for (const name of restNames) (dec ? readSample(dec, name) : fetchSample(name)).catch(() => {})
+      })
+      ;(globalThis.requestIdleCallback ?? (fn => setTimeout(fn, 60)))(() => screamFor(dec?.sampleRate || 48000))
+      return priorityReady
+    },
+    // Unlock the AudioContext synchronously inside an early gesture while the page is still arming.
+    unlock() {
+      try {
+        if (!mix || mix.ctx.state === 'closed') {
+          const Context = globalThis.AudioContext || globalThis.webkitAudioContext
+          if (!Context) return
+          mix = new Mix(new Context({latencyHint: 'interactive'})); loading = null; ready = false
+        }
+        clearTimeout(timer)
+        mix.ctx.resume().catch(() => {})
+        loading ??= mix.load()
+      } catch {}
+    },
     async enable() {
       if (wanted && ready && mix?.ctx.state === 'running') return
       const token = ++version
@@ -295,7 +430,7 @@ export function createSound() {
         loading ??= mix.load()
         await Promise.all([unlocked, loading])
         if (!wanted || token !== version) return
-        ready = true; mix.frame(latest, true); mix.fade(1, 2)
+        ready = true; mix.frame(latest, true); mix.fade(MASTER_GAIN, 2)
       } catch (e) {
         if (token !== version) return
         console.warn('Valley sound unavailable:', e)
@@ -315,13 +450,39 @@ export function createSound() {
         }, 510)
       } catch { /* already closed */ }
     },
+    // Whether it can be heard yet: wanted, and everything loaded.
+    get ready() { return wanted && ready },
+    // How far into the recording of its tour the sun is being heard to be, in seconds, wherever in it this telling
+    // began (less what the way out to the speakers takes; being recorded, by way of stream(), nothing: the
+    // recording hears it at once). Before a telling that is still to begin, less than where it begins. null when
+    // it is not giving it, or, asked about one telling (the id it was begun with), when it is giving another.
+    tourTime(id) {
+      if (!wanted || !ready || !mix?.tour || (id !== undefined && mix.tour.id !== id)) return null
+      const ctx = mix.ctx
+      return mix.tour.offset + ctx.currentTime - mix.tour.at - (mix.tap ? 0 : Math.min(.25, ctx.outputLatency || 0))
+    },
+    pitchTime(id) { return this.tourTime(id) },
+    // (The same of whichever of its other recordings it is giving in the tour's place: seconds into that one.)
+    clipTime(id) { return this.tourTime(id) },
     event(kind, detail) {
       if (!wanted || !ready) return
       try {
         // The sun speaks: the choir's fifth throat says line detail.line, or stops.
-        if (kind === 'say' || kind === 'hush') mix.voice.port.postMessage({ type: 'event', kind, x: detail?.line ?? 0 })
+        if (kind === 'say' || kind === 'hush') {
+          if (kind === 'hush') mix.stopTour(0.25)
+          mix.voice.port.postMessage({ type: 'event', kind, x: detail?.line ?? 0 })
+        }
         else mix.event(kind, panValue(detail?.x), detail)
       } catch { /* interrupted audio session */ }
+    },
+    // Tap the live mixed output as a MediaStream when recording a clip.
+    stream() {
+      if (!mix) return null
+      if (!mix.tap) {
+        mix.tap = mix.ctx.createMediaStreamDestination()
+        mix.master.connect(mix.tap)
+      }
+      return mix.tap.stream
     },
     // How loud the choir is right now, 0 to 1.
     level() {
