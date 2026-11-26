@@ -222,13 +222,15 @@ pub struct StrRef<'a> {
 impl Strings {
     pub fn new() -> Self {
         let mut s = Strings {
-            bufs: Vec::new(),
+            // Sized for what a fresh runtime makes (about 380 strings, 250 of them atoms), so setting one up grows none
+            // of these.
+            bufs: Vec::with_capacity(448),
             grow: Vec::new(),
             arena: NO_GROW,
             wtf: Vec::new(),
-            map: FxHashMap::default(),
-            atom_str: Vec::new(),
-            atom_index: Vec::new(),
+            map: FxHashMap::with_capacity_and_hasher(448, Default::default()),
+            atom_str: Vec::with_capacity(320),
+            atom_index: Vec::with_capacity(320),
             gc_limit: crate::collector::first_limit(),
             gc: Default::default(),
         };
@@ -243,6 +245,30 @@ impl Strings {
             s.atom_index.push(u32::MAX);
         }
         s
+    }
+
+    /// The strings a compile starts from: the fresh runtime's (`builtins::image`), so they have the same ids in
+    /// every run and a run's VM is a copy of the image.
+    pub fn fresh() -> Self {
+        let image = &crate::builtins::image().atoms;
+        // Copied with room for a short program's own strings and names: a plain copy has none, and its first push
+        // would double it.
+        fn roomy<T: Clone>(from: &[T], room: usize) -> Vec<T> {
+            let mut v = Vec::with_capacity(from.len() + room);
+            v.extend_from_slice(from);
+            v
+        }
+        Strings {
+            bufs: roomy(&image.bufs, 64),
+            grow: image.grow.clone(),
+            arena: image.arena,
+            wtf: image.wtf.clone(),
+            map: image.map.clone(),
+            atom_str: roomy(&image.atom_str, 32),
+            atom_index: roomy(&image.atom_index, 32),
+            gc_limit: image.gc_limit,
+            gc: image.gc.clone(),
+        }
     }
 
     #[inline]

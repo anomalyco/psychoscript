@@ -172,6 +172,7 @@ pub enum Job {
     },
 }
 
+#[derive(Clone)]
 pub struct Names {
     pub length: Atom,
     pub name: Atom,
@@ -197,7 +198,7 @@ pub struct Names {
     pub buffer: Atom,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Realm {
     pub object_proto: Id,
     pub function_proto: Id,
@@ -359,7 +360,29 @@ pub struct Vm {
 }
 
 impl Vm {
+    /// A VM with the fresh runtime's built-ins in it. One whose strings start as the image's (`Strings::fresh`, which
+    /// every compile starts from) copies the image, made once for the process; any other is set up from scratch by
+    /// `setup`, as the image itself is.
     pub fn new(host: crate::host::RunHost, limits: Limits, atoms: Strings) -> Self {
+        let image = crate::builtins::image();
+        if !image.seeds(&atoms) {
+            return Self::new_scratch(host, limits, atoms);
+        }
+        let mut vm = Self::bare(
+            host,
+            limits,
+            atoms,
+            image.names.clone(),
+            image.char_strs.clone(),
+        );
+        vm.heap = image.heap.clone_base();
+        vm.realm = image.realm.clone();
+        vm.global_map = image.global_map.clone();
+        vm
+    }
+
+    /// A VM with no built-ins yet, its names interned here.
+    pub(crate) fn new_scratch(host: crate::host::RunHost, limits: Limits, atoms: Strings) -> Self {
         let mut atoms = atoms;
         let names = Names {
             length: atoms.intern_static("length"),
@@ -385,18 +408,32 @@ impl Vm {
             byte_offset: atoms.intern_static("byteOffset"),
             buffer: atoms.intern_static("buffer"),
         };
-        let char_strs = (0u8..128)
-            .map(|c| atoms.alloc((c as char).to_string()))
+        // Static text, as the built-in names are: a copy of the image's strings then allocates none of them.
+        const ASCII: &str = "\0\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\x0c\r\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~\x7f";
+        let char_strs = (0..128)
+            .map(|c| atoms.alloc_static(&ASCII[c..c + 1]))
             .collect();
+        Self::bare(host, limits, atoms, names, char_strs)
+    }
+
+    fn bare(
+        host: crate::host::RunHost,
+        limits: Limits,
+        atoms: Strings,
+        names: Names,
+        char_strs: Vec<StrId>,
+    ) -> Self {
         let seed = crate::time::SystemTime::now()
             .duration_since(crate::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(0x9e3779b97f4a7c15);
         Vm {
-            heap: Heap::with_capacity(1024),
+            // Room for what a fresh runtime makes (about 290 objects) and a small program's own: a waiting run keeps
+            // this, so it is not sized for a large one, which grows it.
+            heap: Heap::with_capacity(320),
             cells: Vec::new(),
             atoms,
-            stack: Vec::with_capacity(1024),
+            stack: Vec::with_capacity(128),
             frames: Vec::with_capacity(64),
             spare_frames: Vec::new(),
             handlers: Vec::new(),

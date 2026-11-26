@@ -170,7 +170,7 @@ fn compile_as(source: &str, atoms: &mut Strings, internal: bool) -> R<Program> {
         bigints: c.bigints,
         globals: c.globals,
         templates: c.templates,
-        names_constructor: c.atoms.lookup("constructor").is_some(),
+        names_constructor: c.names_constructor,
     })
 }
 
@@ -1205,6 +1205,9 @@ struct Compiler<'a, 's> {
     readonly: FxHashSet<SymbolId>,
     /// The name `await` names were renamed to for parsing (see `rename_await_names`), which compiles as `await`.
     await_alias: Option<String>,
+    /// The program names `constructor` as a key or a binding (`Program::names_constructor`). Its strings start as
+    /// the image's, which hold the name already, so they do not say.
+    names_constructor: bool,
     /// Parameters of a function with parameter expressions, which are in their TDZ until bound in order.
     param_tdz: FxHashSet<SymbolId>,
     /// Function scopes whose `arguments` is read, and whether an arrow inside reads it.
@@ -1256,6 +1259,7 @@ impl<'a, 's> Compiler<'a, 's> {
             switch_scopes: FxHashSet::default(),
             readonly: FxHashSet::default(),
             await_alias: None,
+            names_constructor: false,
             param_tdz: FxHashSet::default(),
             args_owner: FxHashMap::default(),
             unbound: FxHashSet::default(),
@@ -1462,6 +1466,7 @@ impl<'a, 's> Compiler<'a, 's> {
 
     fn atom(&mut self, s: &str) -> Atom {
         let s = self.real_name(s);
+        self.names_constructor |= s == "constructor";
         self.atoms.intern(s)
     }
 

@@ -25,8 +25,53 @@ use crate::object::*;
 use crate::value::{Id, Value};
 use crate::vm::{NativeFn, Res, Vm};
 
+/// The fresh runtime, made once for the process: what `Vm::new_scratch` and `Vm::setup` make before any program or
+/// host global, which is the same for every run. A run copies it instead of making it again, which was most of what
+/// a short program cost. Its strings come first in every run's (`Strings::fresh`), so its atoms and string ids are
+/// the same in all of them.
+pub(crate) struct Image {
+    pub atoms: crate::strings::Strings,
+    pub heap: crate::collector::Heap,
+    pub realm: crate::vm::Realm,
+    pub names: crate::vm::Names,
+    pub global_map: rustc_hash::FxHashMap<Atom, Value>,
+    pub char_strs: Vec<crate::strings::StrId>,
+}
+
+impl Image {
+    /// Whether `atoms` started as this image's: its strings and atoms are the first of them.
+    pub fn seeds(&self, atoms: &crate::strings::Strings) -> bool {
+        let (bufs, count) = self.atoms.counts();
+        let (have_bufs, have) = atoms.counts();
+        have_bufs >= bufs
+            && have >= count
+            && atoms.lookup("length") == Some(self.names.length)
+            && atoms.lookup("buffer") == Some(self.names.buffer)
+    }
+}
+
+pub(crate) fn image() -> &'static Image {
+    static IMAGE: std::sync::OnceLock<Image> = std::sync::OnceLock::new();
+    IMAGE.get_or_init(|| {
+        let mut vm = Vm::new_scratch(
+            crate::host::RunHost::bare(),
+            crate::Limits::default(),
+            crate::strings::Strings::new(),
+        );
+        vm.setup();
+        Image {
+            atoms: std::mem::replace(&mut vm.atoms, crate::strings::Strings::new()),
+            heap: vm.heap.clone_base(),
+            realm: vm.realm.clone(),
+            names: vm.names.clone(),
+            global_map: std::mem::take(&mut vm.global_map),
+            char_strs: std::mem::take(&mut vm.char_strs),
+        }
+    })
+}
+
 /// Prototypes of the standard-library kinds beyond the core ones in `Realm`.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct StdProtos {
     pub regexp: Id,
     pub date: Id,
@@ -342,7 +387,11 @@ impl Vm {
         Value::Obj(id)
     }
 
+    /// Makes the fresh runtime's built-ins, unless the VM was made with them (`Vm::new` from the image).
     pub fn setup(&mut self) {
+        if !self.heap.is_empty() {
+            return;
+        }
         let object_proto = self.alloc(Obj::new(None, Kind::Ordinary));
         self.realm.object_proto = object_proto;
         // Function.prototype is itself a function that accepts anything and returns undefined, as in JS.

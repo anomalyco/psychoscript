@@ -58,7 +58,7 @@ fn diagnostic(kind: DiagnosticKind, message: String) -> Diagnostic {
 fn run_here(code: &str, timeout_ms: u64) -> Run {
     let probe = 0u8;
     DONE.with(|d| *d.borrow_mut() = None);
-    let mut atoms = Strings::new();
+    let mut atoms = Strings::fresh();
     let program = match compiler::compile(code, &mut atoms) {
         Ok(p) => p,
         Err(e) => {
