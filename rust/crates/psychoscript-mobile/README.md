@@ -1,14 +1,18 @@
 # psychoscript-mobile
 
 PsychoScript for iOS and Android: UniFFI bindings over the `psychoscript` crate, with no JavaScript engine. A host
-hands a program JSON and reads JSON back. With the `widget-gpu` feature (on by default) it also replays OpenCode widgets'
-GPU canvases on the device's GPU (wgpu: Metal on iOS, Vulkan on Android) and presents them into the app's surfaces
-([GPU canvases](#gpu-canvases)).
+hands a program JSON and reads JSON back, or bytes in its own format ([Bytes instead of JSON](#bytes-instead-of-json)).
+With the `gpu` feature (on by default) it also replays a live run's GPU canvases (`psychoscript-gpu`) on the device's
+GPU (wgpu: Metal on iOS, Vulkan on Android) and presents them into the app's surfaces ([GPU canvases](#gpu-canvases)).
 
 | | Swift | Kotlin |
 | --- | --- | --- |
 | Module / package | `import PsychoScript` | `com.anomalyco.psychoscript` |
 | Native library | `PsychoScriptFFI.xcframework` (static) | `libpsychoscript_mobile.so` (JNA) |
+
+A host with exports of its own (an encoder, its own GPU canvases) builds its own library that links this crate, and
+ships it instead: the same API, in the same Swift module, from that library ([Building](#building)). OpenCode's widget
+layer (the widget encoder, the `wgsl` shorthand's `ShaderCanvas`) is one: opencode `packages/widgets-rs`.
 
 ## API
 
@@ -29,10 +33,10 @@ val out = program.run("""{"n":21}""", RunOptions(timeoutMs = 250uL))
   size limit and heap cap, all off by default.
 - `program.session(fieldsJson) -> RunSession` parses a JSON object once; `session.run(inputJson, options)` runs with
   those fields followed by `inputJson`'s own (a JSON object) as the input. The program sees the same input as
-  `run` with the whole object (shared fields first). For a widget, keep a session per widget with its `data`, and send
-  only `{ phase, state, event | frame }` per step. That saves sending and parsing `data` on every step: on a Mac JVM
-  (Android-style JNA) bench with 25.6 KB of `data`, a trivial step went from ~400 to ~350 µs. Most of what remains is
-  the VM turning the input into its own values, which every run pays.
+  `run` with the whole object (shared fields first). For inputs with a large part that doesn't change, keep a
+  session holding it and send only the rest per run. That saves sending and parsing it on every run: on a Mac JVM
+  (Android-style JNA) bench with 25.6 KB of shared fields, a trivial run went from ~400 to ~350 µs. Most of what
+  remains is the VM turning the input into its own values, which every run pays.
 - `PsychoScriptError` (Kotlin `PsychoScriptException`); `reason` is the message, `kind` the language's diagnostic kind,
   `line`/`column` 1-based in the source:
   - `Syntax(kind, reason, line, column)`: `ParseError`, or `UnsupportedSyntax` (which may surface only when a run
@@ -47,70 +51,39 @@ Swift errors also get `.reason` on the enum. Kotlin exceptions' `message` lists 
 
 ### Bytes instead of JSON
 
-A `ValueEncoder` writes what a program hands its host as bytes in its own format. The crate carries them and knows
-nothing of the format. `ValueEncoder.widget()` (feature `widget-wire`, on by default) is OpenCode widgets' binary
-format (opencode `specs/v2/widgets-binary.md`, crate `widget-wire`) for a native host of widget protocol 2
-(`widgets.md`, Native hosts): it builds the view tree (ids, keys, handlers) itself while it encodes, from the view as
-the program built it. Runs with an encoder pass program functions to the host as markers (psychoscript
-`translate: { functions: "mark" }`). Runs with the widget encoder (steps and live runs) also have psychoscript's typed
-arrays (`typedArrays: true`: `ArrayBuffer`, `Float32Array`, `Uint16Array`, `Uint32Array`, `Int32Array`,
-`Float64Array`), for a GPU batch's bytes; other runs keep psychoscript's default, without them (only `Uint8Array`).
-A snapshot resumes only with the same setting, so restore a widget run with the widget encoder.
+A `ValueEncoder` writes what a program hands its host as bytes in the host's own format. The crate carries them and
+knows nothing of the format. An encoder is Rust: a host's own crate that links this one implements `EncodeValues`
+(with `EncodeStep` for a step and `EncodePosts` for a live run's posts), wraps it with `ValueEncoder::new`, and exports
+a function returning it. Runs with an encoder pass program functions to the host as
+markers (psychoscript `translate: { functions: "mark" }`), and run with the encoder's boundary value depth
+(`EncodeValues::max_value_depth`, else the language's 32).
 
-- **Checked before running.** `runBytes` and `startLive` with an encoder first let it check the program's first line;
-  a refused program doesn't run, and the call fails with `Runtime` of the encoder's kind. The widget encoder runs only
-  protocol 2 (`const __widget_protocol = 2`): an older program fails with kind `OlderProtocol` and the message
-  `This widget was built with an older widget runtime; ask the agent to post it again` (a program error in the phase
-  of the step or run refused: `init`, `event`, `draw`, `main`), a newer one with kind `NewerProtocol` and
-  `This widget needs a newer version of this app` (a client error: show it, don't report it).
+- **Checked before running.** `runBytes` and `startLive` with an encoder first let it check the program's first line
+  (`EncodeValues::check`); a refused program doesn't run, and the call fails with `Runtime` of the encoder's kind and
+  message.
 - `program.runBytes(inputJson, encoder, options = RunOptions())`, also on `RunSession`, defines the host global
-  `encoder.emitName()` (`__widget_emit`) beside the input function, and returns the bytes the encoder makes of what
-  the program passed to the global and of the run's result, instead of the result's JSON. For widgets: the encoder
-  reads the step's `phase` from the input. In `init` and `event` steps the view goes through `__widget_emit`, and
-  `{ state, submit?, dismiss?, send? }` is the run's result, so it keeps the JSON path's rules exactly (`toJSON`, an
-  `Error`'s fields, a typed array failing the step). In `draw` steps the commands go through `__widget_emit`, read as
-  JSON reads them (functions left out), and the run has no result.
-  `maxOutputBytes` limits the bytes. Failures (`Runtime`, by kind):
-  - `InvalidView`, no line: the view breaks Keys and depth (`A node's key must be a string, a number or a boolean`,
-    `The view nests more than 100 levels`), whatever the run did after;
-  - `InvalidDraw`, no line: a draw step's commands failing the Draw command checks (`widgets.md`, Canvas), with
-    exactly that section's message, e.g. `draw command 2: a text weight must be 400, 500, 600 or 700` (after the
-    run; the run's own failure first). Clients get the normalised commands (clamped values, defaults for absent
-    fields);
-  - `ExecutionFailure` `TypeError: Argument <n> to __widget_emit contains a function, which cannot be passed to the
-    host. (line, col)`: a function in the view anywhere but a node's `onPress`, `onChange`, `onPointer`;
-  - `InvalidDataValue` `The step gave no view`: an init or event step that never called `__widget_emit`;
-  - and the run's own failures, as `run` has them.
+  `encoder.emitName()` beside the input function, and returns the bytes the encoder makes of what the program passed
+  to the global and of the run's result (`EncodeStep`: `emit` per call, then `finish` with the result), instead of the
+  result's JSON. `maxOutputBytes` limits the bytes. Failures (`Runtime`, by kind): a value the encoder can't write, of
+  its kind, at the emit call when it threw there; a program error the emitted values make (`EncodeStep::failure`),
+  whatever the run did after; and the run's own failures, as `run` has them.
 - With `startLive(..., encoder:)` (and `LiveRun.restore(..., encoder:)`, with the same encoder), every post reaches
-  `handler.onPostsBytes(messages)` as the encoder's bytes, a wake-up's posts in one call, and `onPosts` is never
-  called. `__host.post` returns what the encoder says: for a widget `render`, whether the view has handlers (the
-  prelude keeps the run going on it), else `undefined`. A post the encoder can't write throws at `__host.post`:
-  uncaught, the run ends with `Failed(Runtime)` of the encoder's kind, located at the post. A live draw's commands
-  get a draw step's checks and message (kind `InvalidDraw`, the message without an `invalid post:` prefix). A view
-  breaking Keys and depth doesn't throw: the run ends at once with `Failed(Runtime(kind: "InvalidView"))`, no line.
-  What the encoder keeps (a widget's canvases by key) goes into a snapshot.
-- **An encoder may hold posts back** and hand them over later: the crate asks it again when it says (its timer wakes
-  the waiting run, whose next poll hands them over), and takes all of them when the run ends, before `onExit`,
-  unless `stop()` ended it (then they're dropped). The widget encoder holds back for the **post rate**
-  (`widgets-live.md`, Post rate): `render` and `draw` posts take a token from a bucket of 8 refilled at 240 a second;
-  without one they wait, a newer render replacing the waiting render and a newer draw the waiting draw of its canvas
-  key, and go out in order as tokens come. Every post is checked when it's posted (errors and `post`'s answer don't
-  wait). `submit` and `dismiss` hand over what waits first; `frame`, `send` and `capture` go at once. A post carrying
-  a GPU batch takes no token but waits behind waiting posts, in order (the frame request it rides in too); a frame
-  request while one is pending (no `frame` delivered since) sends nothing, its batch still applies. GPU batches never
-  reach `onPostsBytes`: they are replayed here ([GPU canvases](#gpu-canvases)). Nothing is dropped and the rate is
-  never an error. A `draw` post whose `key` isn't a string ends the run with
-  `Failed(Runtime(kind: "InvalidDataValue", reason: "A draw post needs a string key"))`, no line.
+  `handler.onPostsBytes(messages)` as the encoder's bytes (`EncodePosts::post`), a wake-up's posts in one call, and
+  `onPosts` is never called. `__host.post` returns what the encoder says. A post the encoder can't write throws at
+  `__host.post` (`Reject`): a failure of the encoder's kind (uncaught, the run ends with `Failed(Runtime)` of that
+  kind, located at the post), a value of its own for the program to catch, or the function `TypeError` below; or,
+  for `Reject::End`, the run ends at once with `Failed(Runtime)` of its kind, no line. The encoder is also told of
+  each message delivered and each one received, gives the run's input (`__input()`), may give the run its GPU
+  (`EncodePosts::surfaces`, [GPU canvases](#gpu-canvases)), and what it keeps goes into a snapshot
+  (`EncodePosts::save`, `load`).
+- **An encoder may hold posts back** and hand them over later (a post rate, say): the crate asks it again when it
+  says (`EncodePosts::next_due`: its timer wakes the waiting run, whose next poll hands them over), and takes all of
+  them when the run ends, before `onExit`, unless `stop()` ended it (then they're dropped). The crate limits no post
+  rate itself.
 - A function (marker) in the argument of a host function the encoder doesn't handle, or where the encoder allows none
-  (a post's values, draw commands, `fetch`'s request), fails the call with the runtime's `TypeError`
+  (`fetch`'s request, what the encoder refuses), fails the call with the runtime's `TypeError`
   `Argument <n> to <name> contains a function, which cannot be passed to the host.` at the call, as it does without
   an encoder: a real `TypeError` the program can catch, located at the call when uncaught.
-- Widget live draws name their canvas by key (`{ type: "draw", key, commands }`); the encoder sends the canvas's id
-  from the last render. An unknown key, or a canvas drawn by its `wgsl` or by the GPU (`gpu: true`), throws an
-  `Error` at the post that the program can catch, as the prelude does.
-- The widget encoder's kinds name the spec's phase for the report: `InvalidView` (phase `view`), `InvalidDraw`
-  (`draw`). Anything else it can't write (an unknown post type) is `InvalidDataValue`, an invalid post as today. A GPU
-  batch's errors don't end the run: they stop canvases (`onGpuCanvas`, phase `gpu`).
 
 ## Live runs
 
@@ -133,9 +106,9 @@ its own until it returns or is stopped. Beside its input function it gets `__hos
   credentials in the URL, ...), for the app to log in dev mode (the crate logs nothing). Both run on the run's thread: hand
   them to the UI thread and return. `onExit(LiveExit)` runs once on the run's thread:
   `Finished(resultJson)`, `Failed(error)` (`SliceBudget`, `Runtime`, ...), or `Stopped`. `onGpuCanvas(key, state)`
-  tells a widget run's GPU canvas states ([GPU canvases](#gpu-canvases)); implement it as a no-op otherwise.
+  tells a run's GPU canvas states ([GPU canvases](#gpu-canvases)); implement it as a no-op otherwise.
 - `LiveOptions(sliceBudgetMs = 50, httpsHosts = nil, allowLocalNetwork = false, maxHeapBytes = nil)`. The crate
-  limits no post rate: a widget's is its encoder's (above).
+  limits no post rate: an encoder may (above).
   - **Slice budget:** a run computing past the budget without waiting is stopped with `SliceBudget`. Only the VM's
     own execution counts, in its thread's CPU time, so time the OS doesn't schedule the thread (a loaded device, a
     paused emulator) isn't compute: not the time it waits on pending host calls (several at once included), and not time
@@ -150,7 +123,7 @@ its own until it returns or is stopped. Beside its input function it gets `__hos
     which the VM polls as soon as it waits and can't while it computes. An unanswered probe (30 ms grace) means the run
     is still computing.
   - **Heap:** `maxHeapBytes` caps the run's heap: over it the run ends with `Failed(MemoryLimitExceeded)`. The
-    contract's default for live widgets is 32 MB (`32 * 1024 * 1024`), but the crate sets no default: pass it.
+    crate sets no default: pass it.
     A snapshot keeps the cap it ran with.
 - `deliver(json)`, `pause()`, `resume()`, `snapshot()`, `stop()`, `isRunning()`, `attachSurface(key, surface, width,
   height)`, `detachSurface(key)` ([GPU canvases](#gpu-canvases));
@@ -177,7 +150,7 @@ its own until it returns or is stopped. Beside its input function it gets `__hos
 
 ### fetch
 
-`options.httpsHosts` is the template's `https` capability: exact names, `*.` suffixes (not the bare domain), or `*`,
+`options.httpsHosts` is the `https` capability: exact names, `*.` suffixes (not the bare domain), or `*`,
 each optionally with a `:port` (`localhost:4097`) that then must match. Without it, or without a transport, every
 fetch rejects with `CapabilityDenied`. The program passes `{ url, method?, headers?, body? | body64? }` and gets
 `{ status, url, headers, body | body64 }`: the body is text when it's UTF-8, else base64. Headers come lowercased,
@@ -362,19 +335,34 @@ Logs (`console.log`) are kept for the run and dropped; the timeout bounds them.
 
 ## GPU canvases
 
-With feature `widget-gpu` (on by default), a widget run replays its GPU canvases itself (opencode
-`specs/v2/widgets-gpu.md`, `widget-gpu` crate): the app attaches a surface per canvas and shows placeholders; batches,
-WebGPU, shader translation and presenting are this crate's.
+With feature `gpu` (on by default), a live run replays its GPU canvases itself (`psychoscript-gpu`, whose README is the
+contract: batches, canvas size, limits, host checks, errors and device loss): the app attaches a surface per canvas and
+shows placeholders; batches, WebGPU, shader translation and presenting are this crate's.
 
-- **The device:** one per app, shared by every widget run, made when first needed (a live run with
-  `ValueEncoder.widget()`, or the first `ShaderCanvas`), never for steps, on a thread of its own: a live run's
-  `__input()` doesn't wait for it, and what the program posts meanwhile replays once it is there. Metal on iOS; Vulkan
-  1.1 or newer on Android 15 or newer (API 35 and up), else none. On the iOS Simulator only, whose GPU is under some of the
-  spec's limits (`max_inter_stage_shader_variables` 15), the device has the Simulator's where they fall short (said once
-  on stderr), and a program over them gets wgpu's validation error there; real devices have the spec's. The program's
-  input gets `gpu: { available, format }`
-  (`format` `bgra8unorm` on iOS, `rgba8unorm` on Android). While the device is still being made, that is
-  `available: true` (where the platform has a GPU); if it then can't be made, the canvases go `unavailable` and the
+A run has a GPU when its encoder gives it one: the encoder's live posts make a `gpu::LiveGpu` (`LiveGpu::new(ctx)`),
+return it from `EncodePosts::surfaces`, and hand it what the program posts, in the order it posted it: `batch(ops,
+bytes)` (or `shape_error` for a batch that isn't one), `end_frame()` at each frame request, `canvases(keys)` for the
+canvases the program may draw (the host's keys), and `resize(key, width, height)` for the size the program received;
+`due()` when the run asks for what is due, `finish()` as the run ends and `ended()` once it ended. `input()` is what to
+tell the program of its GPU, `{ available, format }`, for the encoder to put in the run's input; `saved()` and
+`restored(last, keys, stops)` carry its GPU through a snapshot. `LiveGpu` tells the program the rest through the run's
+messages:
+
+- `{ type: "canvas", key, width, height }`: the size of a canvas the app attached (clamped, `clamp_size`), when it
+  changes;
+- `{ type: "gpu", lost: reason, message? }`: a device loss, before the app is told, and as a restored run starts.
+
+A host's own GPU canvases, outside a run, use the same device (`gpu::device`) and presenter (`gpu::present`, an
+`Attached` surface per canvas).
+
+- **The device:** one per app, shared by every run's GPU and the host's own canvases, made when first needed (a run's
+  `LiveGpu`, or `gpu::device::prepare`), never for steps, on a thread of its own: a live run's `__input()` doesn't
+  wait for it, and what the program posts meanwhile replays once it is there. Metal on iOS; Vulkan 1.1 or newer on
+  Android 15 or newer (API 35 and up), else none. On the iOS Simulator only, whose GPU is under some of the
+  `psychoscript-gpu` limits (`max_inter_stage_shader_variables` 15), the device has the Simulator's where they fall
+  short (said once on stderr), and a program over them gets wgpu's validation error there; real devices have the
+  crate's. `input()`'s `format` is `bgra8unorm` on iOS, `rgba8unorm` on Android. While the device is still being made,
+  `available` is `true` (where the platform has a GPU); if it then can't be made, the canvases go `unavailable` and the
   program gets `{ type: "gpu", lost: "unknown", message }`, as on a device loss (its device and handles are gone, and
   what it posts is dropped). Once it is known there is none, runs get `available: false`. After a device loss the
   crate makes a new device, tells the program (`{ type: "gpu", lost }`) and replays on it; what the program posted
@@ -385,23 +373,22 @@ WebGPU, shader translation and presenting are this crate's.
 - **Surfaces:** `GpuSurface.metal(layer)` (Swift, a `CAMetalLayer`, retained while the surface lives; Rust/FFI
   `GpuSurface.metalLayer(pointer:)`), `PsychoScriptGpu.surface(surface)` (Kotlin, an `android.view.Surface`, e.g.
   `SurfaceHolder.surface` in `surfaceCreated`; it holds the `ANativeWindow` until the `GpuSurface` is dropped).
-- **`liveRun.attachSurface(key, surface, width, height)`:** the `gpu: true` canvas `key` (from the decoded view) is
-  presented into `surface`, `width` × `height` physical pixels (its view's size × scale). The program gets that size,
-  clamped to 4096 a side with the aspect kept, before its next frame; a clamped canvas is scaled to the surface. Call
-  it again with the new size when the view's size changes (or with a new surface). A surface not laid out yet (a side
-  0) is attached, but the program gets its size only once both sides are positive.
+- **`liveRun.attachSurface(key, surface, width, height)`:** the GPU canvas `key` is presented into `surface`, `width`
+  × `height` physical pixels (its view's size × scale). The program gets that size, clamped to 4096 a side with the
+  aspect kept, before its next frame; a clamped canvas is scaled to the surface. Call it again with the new size when
+  the view's size changes (or with a new surface). A surface not laid out yet (a side 0) is attached, but the program
+  gets its size only once both sides are positive. A run without a GPU ignores it.
 - **`liveRun.detachSurface(key)`:** before the surface goes (Android `surfaceDestroyed`, an iOS view leaving its
   window): once it returns (it waits for a present in progress, at most a frame), the surface is never touched again.
 - **`handler.onGpuCanvas(key, state)`:** `key` the canvas, or `nil` for every GPU canvas of the run (now and later).
-  On the run's thread, like the other callbacks. Show the surface for `live`, the canvas's placeholder (`poster`, else
-  `alt`, else "GPU canvas not supported") for anything else:
+  On the run's thread, like the other callbacks. Show the surface for `live`, the canvas's placeholder for anything
+  else:
   - `live(opaque)`: it has an image. `opaque` is whether the program configured its context `alphaMode: "opaque"`
     (the default) rather than `"premultiplied"`: no transparency (Android: `TextureView.setOpaque(opaque)`). Told as
-    the canvas goes live, and again only if a reconfigure changes it. A `ShaderCanvas` (`wgsl`) is always
-    premultiplied: not opaque;
+    the canvas goes live, and again only if a reconfigure changes it;
   - `unavailable(reason)`: no GPU here (a client error, nothing to report). `reason` says why, worked out once when
     the canvases go unavailable: the Android version (`GPU canvases need Android 15 or newer (API 35), not API
-    34`), no Vulkan adapter (wgpu's text), the GPU's Vulkan version, each limit under the spec's with the GPU's value
+    34`), no Vulkan adapter (wgpu's text), the GPU's Vulkan version, each limit under the crate's with the GPU's value
     and the one needed (`the GPU (Mali-G715, Vulkan, driver ...) is under the spec's limits:
     maxStorageBuffersPerShaderStage 4 (needs 8)`), or wgpu's error making the device;
   - `stopped(kind, message, report)`: an error stopped it for the rest of the run, with `message`. `report` once per
@@ -412,36 +399,25 @@ WebGPU, shader translation and presenting are this crate's.
     the program draws on the new one. A canvas an error stopped isn't told `lost`: it stays stopped.
 
   Each `reason` and a client error's `message` are worked out once, when the state changes, never per frame, batch or
-  call; the crate logs nothing. In dev mode (`widgets.md`, Failures) log them and show them under the placeholder;
-  otherwise ignore them.
+  call; the crate logs nothing. In a dev mode, log them and show them under the placeholder; otherwise ignore them.
 - **Threading:** batches replay on the run's thread, with the program's bytes in place (no copy, nothing crosses to
   Swift or Kotlin); a thread of the run's own presents (one copy of the canvas into the surface's next texture, or a
   scaled draw), so a slow, hidden or detached surface never holds up the run. Presents beyond the surface's rate are
   skipped. `attachSurface` never blocks (a new size or surface applies at the next present); `detachSurface` waits
   only for a present in progress.
-- **Heavy GPU work** (`widgets-gpu.md`, GPU hang): a run's batch replays once the GPU is done with the one before its
+- **Heavy GPU work** (`psychoscript-gpu`, GPU hang): a run's batch replays once the GPU is done with the one before its
   last, so the GPU draws a frame while the next replays, and a program whose frames take the GPU longer than the
-  display's waits for it on its own thread, with at most one batch queued behind the GPU. Work still unfinished 250 ms after its submit stops the canvases it draws into: `stopped(client, "the GPU work
-  hung; the canvas is stopped")`. Apple's GPUs stop work themselves sooner (after 0.05 to 0.6 s on an M5 Max) and fail
-  what follows it on the queue: with the vendored wgpu-hal (`rust/vendor/`, gfx-rs/wgpu#10875; stock wgpu-hal counts
-  such work finished and tells nothing) that loses the device: every run gets `lost` and draws again on a new one. A loss
-  with a run's GPU work in flight is a strike against it; a second within 30 s stops every canvas of the run, the
-  same `stopped(client, "the GPU work hung; the canvas is stopped")`, so a widget can't keep resetting the GPU. The
-  app's thread never waits on any of it. On the iOS Simulator only, such a timeout can bring down the Simulator's
-  Metal host, which then kills the app (`OS_REASON_METAL`, "Connection to SimMetalHost ... lost"), or leave other Metal
-  work of the process stuck.
-- **`ShaderCanvas(wgsl:, surface:, width:, height:)`:** the `wgsl` shorthand, in steps and live widgets (`widgets.md`,
-  GPU canvases). It returns at once (create it on the UI thread). `render(time:, scale:, pointer:, values:)` on the
-  display link at the canvas's `fps` only records the frame (a few µs); a thread of the canvas's own waits for the
-  device, compiles the shader, and draws and presents the newest frame (frames faster than the surface are skipped).
-  Nothing is drawn or reported before the device is ready. `render` returns, once, what stopped the canvas for good,
-  its `reason` the message: `GpuFailure.program` for a WGSL error (its line the template's: report it, phase `gpu`),
-  `.client` without a GPU (log it); show the placeholder then. A shader over 50 ms a frame three frames in a row stops
-  on its last frame (`widgets-gpu.md`): `render` returns `.client` with reason `the shader took over 50 ms a frame,
-  three frames in a row` once; log it and keep the surface (its last frame), not the placeholder. A frame the GPU hung
-  on (Heavy GPU work, above) returns `.client` with `the GPU work hung; the canvas is stopped`: log it, show the
-  placeholder. After a device loss it draws again on the new device. `resize(width:, height:)` takes effect at the
-  next frame. Drop it before its surface goes: once dropped, it never touches the surface again (a present in progress finishes first).
+  display's waits for it on its own thread, with at most one batch queued behind the GPU. Work still unfinished 250 ms
+  after its submit stops the canvases it draws into: `stopped(client, "the GPU work hung; the canvas is stopped")`.
+  Apple's GPUs stop work themselves sooner (after 0.05 to 0.6 s on an M5 Max) and fail what follows it on the queue:
+  with the vendored wgpu-hal (`rust/vendor/`, gfx-rs/wgpu#10875; stock wgpu-hal counts such work finished and tells
+  nothing) that loses the device: every run gets `lost` and draws again on a new one. A loss with a run's GPU work in
+  flight is a strike against it; a second within 30 s stops every canvas of the run, the same `stopped(client, "the
+  GPU work hung; the canvas is stopped")`, so a program can't keep resetting the GPU. The app's thread never waits on
+  any of it. On the iOS Simulator only, such a timeout can bring down the Simulator's Metal host, which then kills the
+  app (`OS_REASON_METAL`, "Connection to SimMetalHost ... lost"), or leave other Metal work of the process stuck. A
+  host's library that links this crate patches `wgpu-hal` to the same vendored copy (`[patch.crates-io]`, as
+  `rust/Cargo.toml` does).
 
 ```swift
 let surface = try GpuSurface.metal(metalView.layer as! CAMetalLayer)
@@ -466,17 +442,25 @@ ANDROID_NDK_HOME=… rust/crates/psychoscript-mobile/scripts/build-android.sh <o
 ```
 
 Both need the toolchain in `rust/rust-toolchain.toml` with the targets they name (`rustup target add …`), and
-`cargo install cargo-ndk` for Android. They write `<out>/REVISION` (the commit) and copy this README.
-`FEATURES=--no-default-features` builds the language alone; `FEATURES="--no-default-features --features widget-wire"`
-the widget encoder without GPU canvases (no wgpu). The ICU data the language
+`cargo install cargo-ndk` for Android. They write `<out>/REVISION` (the repository and commit) and copy this README.
+`FEATURES=--no-default-features` builds the language alone, without GPU canvases (no wgpu). The ICU data the language
 crate compiles in for `Intl`-style date formatting and collation (most of the ~5 MB of read-only data) can't be left
 out from this crate: that would need a feature in `psychoscript` itself.
+
+**A host's own library.** A crate that links this one and adds UniFFI exports of its own (it calls
+`uniffi::setup_scaffolding!`, has a `cli` feature and the `uniffi-bindgen` and `uniffi-bindgen-swift` binaries, as
+this crate does) builds with the same scripts, from its own workspace: `CRATE=<its package>`, `ROOT=<its Cargo
+workspace>`, `REPO=<its repository's name, for REVISION>`, `README=<its README, copied instead of this one>`. iOS: the
+same `PsychoScript` package, one Swift file per crate's bindings in the one module (its `uniffi.toml` names the module
+`PsychoScript` and the FFI module `PsychoScriptFFI`, with an `ffi_module_filename` of its own). Android:
+`lib<its lib>.so`, with this crate's Kotlin bindings (which load the library they were made from) and its own beside
+them, in the package its `uniffi.toml` names.
 
 ### In an app: pin a rev, build into a gitignored directory
 
 ```sh
 # scripts/psychoscript.sh in the app; .psychoscript/ and Vendor/PsychoScript/ in .gitignore
-REV=<commit on anomalyco/psychoscript mobile>
+REV=<commit on anomalyco/psychoscript>
 [ -d .psychoscript ] || git clone https://github.com/anomalyco/psychoscript .psychoscript
 git -C .psychoscript fetch origin "$REV" && git -C .psychoscript checkout --detach "$REV"
 .psychoscript/rust/crates/psychoscript-mobile/scripts/build-ios.sh Vendor/PsychoScript         # iOS
@@ -488,48 +472,7 @@ git -C .psychoscript fetch origin "$REV" && git -C .psychoscript checkout --deta
 - Android: `android { sourceSets["main"].jniLibs.srcDir("…/vendor/psychoscript/jniLibs") }`, add
   `…/vendor/psychoscript/kotlin` as a Kotlin source dir (`sourceSets["main"].kotlin.srcDir(...)`), and
   `implementation("net.java.dev.jna:jna:5.17.0@aar")`. With R8: keep `com.sun.jna.**` and
-  `com.anomalyco.psychoscript.**`, and `-dontwarn java.awt.**`.
+  `com.anomalyco.psychoscript.**` (and a host library's own package), and `-dontwarn java.awt.**`.
 
-## OpenCode widgets on this API
-
-The widget glue lives in the apps; with this API it's a few lines. A widget template's served `program` is
-`prelude + "\n" + source`, and the step ABI is one entry call:
-
-```swift
-let program = try Program(source: served.program + "\nreturn __widget_step(__input())")
-let step = RunOptions(timeoutMs: 250), draw = RunOptions(timeoutMs: 8)
-let out = try program.run(inputJson: #"{"phase":"init","data":\#(dataJson)}"#, options: step)   // {state, view, ...}
-let frame = try program.run(inputJson: drawInputJson, options: draw)                               // {commands}
-```
-
-```kotlin
-val program = Program(served.program + "\nreturn __widget_step(__input())")
-val out = program.run("""{"phase":"init","data":$dataJson}""", RunOptions(timeoutMs = 250uL))
-val frame = program.run(drawInputJson, RunOptions(timeoutMs = 8uL))   // a Timeout here counts as a draw overrun
-```
-
-With the binary format (widget protocol 2, a native host): the step program ends in
-`return __widget_native_step(__input())` instead of `return __widget_step(__input())`, a live one in
-`return await __widget_live(__input(), true)`, and the app decodes the bytes (`widgets-binary.md`) rather than parsing
-JSON. Live posts arrive in `onPostsBytes`:
-
-```swift
-let wire = ValueEncoder.widget()
-let program = try Program(source: served.program + "\nreturn __widget_native_step(__input())")
-let liveProgram = try Program(source: served.program + "\nreturn await __widget_live(__input(), true)")
-let bytes = try program.runBytes(inputJson: stepInputJson, encoder: wire, options: step)    // 01 'S' ... or 01 'D' ...
-let run = try liveProgram.startLive(inputJson: input, handler: handler, options: opts, transport: t, encoder: wire)
-```
-
-```kotlin
-val wire = ValueEncoder.widget()
-val program = Program(served.program + "\nreturn __widget_native_step(__input())")
-val liveProgram = Program(served.program + "\nreturn await __widget_live(__input(), true)")
-val bytes = program.runBytes(stepInputJson, wire, RunOptions(timeoutMs = 250uL))
-val run = liveProgram.startLive(input, handler, opts, transport, wire)          // handler.onPostsBytes(List<ByteArray>)
-```
-
-`examples/wire_bench.rs` times both paths on opencode's bench workloads (`tests/fixtures/workloads`).
-
-A `wgsl` canvas, in a step or a live widget: a [`ShaderCanvas`](#gpu-canvases) per canvas, drawn on the display link.
-The 16 KB source cap, the draw command cap and output parsing are the app's, per the spec.
+An app that ships a host's own library builds that instead, with the host's scripts; the package and the steps above
+are the same.

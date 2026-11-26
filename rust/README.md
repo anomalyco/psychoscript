@@ -170,8 +170,10 @@ Known differences:
   sixteenth of the slice, so it may run up to that much past it. On wasm32 the clocks are `performance.now()` and
   `Date.now()` (`web-time`), and `ThreadCpu` counts wall-clock time.
 - Layout: `crates/psychoscript` (compiler on `oxc_parser`, VM, standard library, host functions, snapshots, and
-  `thread_clock`: a thread's CPU time, read on it or from another thread, for hosts too), `conformance/` (generators
-  and recordings), `bench/`, `test262/`.
+  `thread_clock`: a thread's CPU time, read on it or from another thread, for hosts too), `crates/psychoscript-gpu`
+  (GPU canvases: a program's WebGPU batches checked and replayed on a host's `wgpu` device, its `README.md`),
+  `crates/psychoscript-mobile` (UniFFI bindings for iOS and Android, its `README.md`), `conformance/` (generators and
+  recordings), `bench/`, `test262/`.
 
 Rules: pure Rust and few dependencies, no `unsafe` (outside the `thread_clock` module, whose blocks are each one
 documented OS call), never panic on user input, and unsupported syntax throws `UnsupportedSyntax` with a location where
