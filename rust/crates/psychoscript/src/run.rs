@@ -112,7 +112,12 @@ pub fn execute(rt: &Runtime, code: Code<'_>, options: &ProgramOptions) -> Outcom
 /// budget, whatever its length; a deeper one compiles on a thread with the stack its nesting needs. Running needs no
 /// more native stack for deep syntax, so only compiling moves.
 pub fn compile(code: &str, atoms: &mut Strings) -> Result<Program, CompileError> {
-    let need = nesting::bound(code).saturating_mul(COMPILE_STACK_PER_LEVEL);
+    // A program nests no deeper than it has bytes, so a short one needs no scan to know it fits.
+    let fits = |levels: usize| levels.saturating_mul(COMPILE_STACK_PER_LEVEL) <= RUN_STACK_BUDGET;
+    let need = match fits(code.len()) {
+        true => 0,
+        false => nesting::bound(code).saturating_mul(COMPILE_STACK_PER_LEVEL),
+    };
     if need <= RUN_STACK_BUDGET {
         return compiler::compile(code, atoms);
     }

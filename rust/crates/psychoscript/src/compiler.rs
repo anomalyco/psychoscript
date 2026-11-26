@@ -49,7 +49,35 @@ pub(crate) fn compile_internal(source: &str, atoms: &mut Strings) -> R<Program> 
     compile_as(source, atoms, true)
 }
 
+/// The most a thread's parse arena keeps between compiles: a larger one, grown by a large program, is let go.
+const ARENA_KEEP_BYTES: usize = 256 * 1024;
+
 fn compile_as(source: &str, atoms: &mut Strings, internal: bool) -> R<Program> {
+    thread_local! {
+        /// The arena the parser and the analysis allocate in, kept from one compile to the next on the thread:
+        /// a short program's compile then allocates no arena of its own.
+        static ARENA: std::cell::RefCell<Allocator> = std::cell::RefCell::new(Allocator::default());
+    }
+    ARENA.with(|arena| match arena.try_borrow_mut() {
+        Ok(mut arena) => {
+            let r = compile_in(&arena, source, atoms, internal);
+            match arena.capacity() > ARENA_KEEP_BYTES {
+                true => *arena = Allocator::default(),
+                false => arena.reset(),
+            }
+            r
+        }
+        // A compile within a compile on one thread: none is, but it would only cost an arena.
+        Err(_) => compile_in(&Allocator::default(), source, atoms, internal),
+    })
+}
+
+fn compile_in(
+    allocator: &Allocator,
+    source: &str,
+    atoms: &mut Strings,
+    internal: bool,
+) -> R<Program> {
     if source.len() > MAX_SOURCE_BYTES {
         return Err(CompileError {
             kind: DiagnosticKind::ParseError,
@@ -66,8 +94,7 @@ fn compile_as(source: &str, atoms: &mut Strings, internal: bool) -> R<Program> {
     }
     let renamed: String;
     let mut await_alias = None;
-    let allocator = Allocator::default();
-    let mut parsed = parse(&allocator, source, SourceType::mjs());
+    let mut parsed = parse(allocator, source, SourceType::mjs());
     // The reference parses a script that allows top-level `await`: `await` is a plain name there, read as the
     // operator only where an expression starts with it. A program whose first error is naming something `await` is
     // parsed again as a script, unless it also uses `await` as an expression at the top level; then the names are
@@ -78,7 +105,7 @@ fn compile_as(source: &str, atoms: &mut Strings, internal: bool) -> R<Program> {
         .next()
         .is_some_and(|d| names_await(source, d))
     {
-        let script = parse(&allocator, source, SourceType::script());
+        let script = parse(allocator, source, SourceType::script());
         if script.diagnostics.errors().next().is_none()
             && !script.fatal_error
             && !TopLevelAwait::uses(&script.program)
@@ -86,7 +113,7 @@ fn compile_as(source: &str, atoms: &mut Strings, internal: bool) -> R<Program> {
             parsed = script;
         } else if let Some((text, alias)) = rename_await_names(source) {
             renamed = text;
-            parsed = parse(&allocator, &renamed, SourceType::mjs());
+            parsed = parse(allocator, &renamed, SourceType::mjs());
             await_alias = Some(alias);
         }
     }
