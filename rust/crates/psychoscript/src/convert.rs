@@ -1593,10 +1593,10 @@ impl<'s> Parser<'s> {
     #[inline(never)]
     fn scalar(&mut self, vm: &mut Vm, c: u8) -> Res {
         match c {
-            b'"' => {
-                let s = self.string(vm)?;
-                Ok(vm.string_val(s))
-            }
+            b'"' => Ok(match self.string(vm)? {
+                std::borrow::Cow::Borrowed(s) => vm.string_of_str(s),
+                std::borrow::Cow::Owned(s) => vm.string_val(s),
+            }),
             b't' if self.s[self.i..].starts_with(b"true") => {
                 self.i += 4;
                 Ok(Value::Bool(true))
@@ -1652,9 +1652,12 @@ impl<'s> Parser<'s> {
         }
     }
 
-    fn string(&mut self, vm: &mut Vm) -> Result<String, Value> {
+    /// A string's text: the input's own when it has no escape, which is nearly every key and most values, so
+    /// reading it allocates nothing.
+    fn string(&mut self, vm: &mut Vm) -> Result<std::borrow::Cow<'s, str>, Value> {
         self.i += 1;
         let mut out = String::new();
+        let mut escaped = false;
         let mut start = self.i;
         loop {
             let Some(&c) = self.s.get(self.i) else {
@@ -1662,11 +1665,17 @@ impl<'s> Parser<'s> {
             };
             match c {
                 b'"' => {
-                    out.push_str(&self.text[start..self.i]);
+                    let text: &'s str = self.text;
+                    let rest = &text[start..self.i];
                     self.i += 1;
-                    return Ok(out);
+                    if !escaped {
+                        return Ok(std::borrow::Cow::Borrowed(rest));
+                    }
+                    out.push_str(rest);
+                    return Ok(std::borrow::Cow::Owned(out));
                 }
                 b'\\' => {
+                    escaped = true;
                     out.push_str(&self.text[start..self.i]);
                     self.i += 1;
                     let Some(&e) = self.s.get(self.i) else {
