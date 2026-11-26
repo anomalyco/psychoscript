@@ -44,7 +44,9 @@ oxc_semantic = "0.159"
 oxc_span = "0.159"
 oxc_str = "0.159"
 oxc_syntax = "0.159"
-regress = { version = "0.12.0", default-features = false, features = ["std", "utf16"] }
+# The backtracking budget (`find_from_budgeted` and its UTF-16 and UCS-2 forms) is on regress's main branch, not yet
+# released: back to a version once it is.
+regress = { git = "https://github.com/ridiculousfish/regress", rev = "371ab3947748d29f978bce3984ceae2416571334", default-features = false, features = ["std", "utf16"] }
 rustc-hash = "2"
 # `float_roundtrip`: a saved state's numbers read back from `to_bytes` exactly, not to the nearest few ulps.
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }

@@ -1177,6 +1177,30 @@ impl Vm {
         Ok(())
     }
 
+    /// The least time the run can still compute before its timeout or its slice could end it (`None` without either):
+    /// a thread uses no more CPU time than passes, so the CPU time left is a bound on the wall-clock time too.
+    pub(crate) fn time_left(&mut self) -> Option<Duration> {
+        let timeout = self
+            .limits
+            .timeout_ms
+            .map(|ms| Duration::from_millis(ms).saturating_sub(self.time_used()));
+        let slice = match (self.limits.slice_ms, self.slice.as_deref()) {
+            (Some(ms), Some(s)) => {
+                let used = match (self.cpu.as_deref_mut(), s.from) {
+                    (None, _) => s.wall.elapsed(),
+                    (Some(_), None) => Duration::ZERO,
+                    (Some(c), Some((used0, _))) => c.read().0.saturating_sub(used0),
+                };
+                Some(Duration::from_millis(ms).saturating_sub(used))
+            }
+            _ => None,
+        };
+        match (timeout, slice) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
     /// With `Limits::slice_ms`, whether the stretch in progress is over it.
     #[cold]
     #[inline(never)]

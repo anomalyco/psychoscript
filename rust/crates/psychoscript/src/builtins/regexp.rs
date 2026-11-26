@@ -506,20 +506,56 @@ impl Subject {
     }
 }
 
-/// The leftmost match starting at or after `start`.
+/// The backtracks a search makes before the run first checks its limits, per code unit of the subject and at least:
+/// more than an ordinary pattern makes scanning a text, and well under a millisecond of backtracking (its second try,
+/// twice that, is the first whose pace is measured).
+const FIRST_BUDGET_PER_UNIT: u64 = 64;
+const FIRST_BUDGET: u64 = 1 << 16;
+
+/// The leftmost match starting at or after `start`, of the regex `re` reads from the run (a RegExp's own).
+///
+/// A backtracking search has no bound of its own (`/(a+)+$/` doubles its work with each `a`), so the run's limits
+/// bound it: it searches on a budget of backtracks, and when that runs out the run checks its timeout and slice,
+/// which end it as they would a loop. Otherwise it searches again, with twice the budget, but no more than the time
+/// left before the nearest limit allows at the pace the last search went: a search that ends takes at most about
+/// twice its own work, and one that doesn't stops at the limit.
 pub fn find(
-    re: &regress::Regex,
+    vm: &mut Vm,
+    re: impl Fn(&Vm) -> &regress::Regex,
     unicode: bool,
     subject: &Subject,
     start: usize,
-) -> Option<regress::Match> {
+) -> Result<Option<regress::Match>, Value> {
     if start > subject.len() {
-        return None;
+        return Ok(None);
     }
-    match &subject.units {
-        None => re.find_from(&subject.text, start).next(),
-        Some(units) if unicode => re.find_from_utf16(units, start).next(),
-        Some(units) => re.find_from_ucs2(units, start).next(),
+    let mut budget = (subject.len() as u64)
+        .saturating_mul(FIRST_BUDGET_PER_UNIT)
+        .max(FIRST_BUDGET);
+    // When the search last began, from its second try: a search that ends on its first budget reads no clock.
+    let mut began: Option<crate::time::Instant> = None;
+    loop {
+        let regex = re(vm);
+        let found = match &subject.units {
+            None => regex.find_from_budgeted(&subject.text, start, budget),
+            Some(units) if unicode => regex.find_from_utf16_budgeted(units, start, budget),
+            Some(units) => regex.find_from_ucs2_budgeted(units, start, budget),
+        };
+        match found {
+            regress::BudgetedMatch::Match(m) => return Ok(Some(m)),
+            regress::BudgetedMatch::NoMatch => return Ok(None),
+            regress::BudgetedMatch::BudgetExhausted => {}
+        }
+        vm.check_time()?;
+        let doubled = budget.saturating_mul(2);
+        budget = match (began, vm.time_left()) {
+            (Some(at), Some(left)) => {
+                let pace = budget as f64 / at.elapsed().as_secs_f64().max(1e-9);
+                doubled.min((pace * left.as_secs_f64()) as u64).max(1)
+            }
+            _ => doubled,
+        };
+        began = Some(crate::time::Instant::now());
     }
 }
 
@@ -537,7 +573,7 @@ fn exec_raw(vm: &mut Vm, id: Id, subject: &Subject) -> Result<Option<regress::Ma
         return Ok(None);
     }
     let start = start as usize;
-    let m = find(&data(vm, id).regex, unicode, subject, start);
+    let m = find(vm, |vm| &data(vm, id).regex, unicode, subject, start)?;
     let m = match m {
         Some(m) if !sticky || m.start() == start => m,
         _ => {
@@ -886,7 +922,7 @@ pub fn string_search(vm: &mut Vm, s: StrId, pat: &Value) -> Res {
     let subject = Subject::new(vm, s);
     let r = data(vm, id);
     let (sticky, unicode) = (r.sticky(), r.full_unicode());
-    let m = find(&r.regex, unicode, &subject, 0);
+    let m = find(vm, |vm| &data(vm, id).regex, unicode, &subject, 0)?;
     Ok(Value::Num(match m {
         Some(m) if !sticky || m.start() == 0 => m.start() as f64,
         _ => -1.0,
@@ -1139,14 +1175,14 @@ pub fn string_split(vm: &mut Vm, s: StrId, re: Id, limit: Value) -> Res {
     let subject = Subject::new(vm, s);
     let r = data(vm, re);
     let unicode = r.full_unicode();
-    let regex = r.regex.clone();
     let mut out: Vec<Value> = Vec::new();
     if lim == 0 {
         return Ok(vm.new_array(out));
     }
     let size = subject.len();
     if size == 0 {
-        if find(&regex, unicode, &subject, 0).is_some_and(|m| m.start() == 0) {
+        if find(vm, |vm| &data(vm, re).regex, unicode, &subject, 0)?.is_some_and(|m| m.start() == 0)
+        {
             return Ok(vm.new_array(out));
         }
         return Ok(vm.new_array(vec![Value::Str(s)]));
@@ -1154,7 +1190,7 @@ pub fn string_split(vm: &mut Vm, s: StrId, re: Id, limit: Value) -> Res {
     let mut p = 0;
     let mut q = 0;
     while q < size {
-        let Some(m) = find(&regex, unicode, &subject, q) else {
+        let Some(m) = find(vm, |vm| &data(vm, re).regex, unicode, &subject, q)? else {
             break;
         };
         if m.start() >= size {
