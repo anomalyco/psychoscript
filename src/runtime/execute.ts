@@ -161,10 +161,28 @@ export const compileProgram = (
   code: string,
 ): { readonly ok: true; readonly compiled: Compiled } | { readonly ok: false; readonly error: Diagnostic } => {
   if (code.trim().length === 0) return { ok: false, error: { kind: "ParseError", message: "Code cannot be empty." } }
+  const known = compiledBefore.get(code)
+  if (known !== undefined) {
+    // Most recently used last.
+    compiledBefore.delete(code)
+    compiledBefore.set(code, known)
+    return { ok: true, compiled: known }
+  }
   const parsed = parseProgram(code)
   if (!parsed.ok) return parsed
-  return { ok: true, compiled: new Compiled(code, parsed.source, compileCodes(parsed.source)) }
+  const compiled = new Compiled(code, parsed.source, compileCodes(parsed.source))
+  if (code.length <= COMPILED_MAX_LENGTH) {
+    if (compiledBefore.size >= COMPILED_MAX) compiledBefore.delete(compiledBefore.keys().next().value!)
+    compiledBefore.set(code, compiled)
+  }
+  return { ok: true, compiled }
 }
+
+// The last programs compiled, by their text: a program run again (a retry, a loop of the same snippet) is not parsed
+// and compiled again. A compiled program is made to run many times (`Runtime.compile`).
+const compiledBefore = new Map<string, Compiled>()
+const COMPILED_MAX = 64
+const COMPILED_MAX_LENGTH = 32 * 1024
 
 /** A program ready to run on the VM: nothing runs until `run`. */
 export const startProgram = <R>(
@@ -177,7 +195,7 @@ export const startProgram = <R>(
     const compiled = typeof code === "string" ? compileProgram(code) : { ok: true as const, compiled: code }
     if (!compiled.ok) return { ok: false, error: compiled.error, metadata: null }
     const run: Run = { id: runId, metadata: null }
-    const runtime = instantiate(setup, run, bindings)
+    const runtime = instantiate(setup, run, bindings, true)
     runtime.vm.hosts.runId = runId
     runtime.vm.start(compiled.compiled.source, compiled.compiled.codes)
     return [runtime, run] as const
@@ -236,21 +254,44 @@ const restoreInto = (saved: unknown, vm: Vm): Snapshot =>
     interruption: () => new Interruption(),
   })
 
-// A new runtime for a run: intrinsics, the host globals, the program's bindings, and its VM.
-const instantiate = <R>(setup: Setup<R>, run: Run, bindings?: Readonly<Record<string, Json>>): Interpreter<R> => {
-  const ctx = new Interpreter<R>({
-    builtins: createBuiltins(),
+// Runtimes whose runs ended leaving them as made (`Interpreter.reusable`), by the setup they were made for: the next
+// run of that setup takes one instead of making several hundred built-ins again, most of what a short program cost.
+const spare = new WeakMap<object, Array<Interpreter<any>>>()
+const SPARE_MAX = 4
+
+const release = <R>(setup: Setup<R>, ctx: Interpreter<R>): void => {
+  if (roundTrip || !ctx.reusable()) return
+  const list = spare.get(setup) ?? []
+  if (list.length < SPARE_MAX) list.push(ctx)
+  spare.set(setup, list)
+}
+
+// A runtime for a run: intrinsics, the host globals, the program's bindings, and its VM. `reuse` takes a spare one.
+const instantiate = <R>(
+  setup: Setup<R>,
+  run: Run,
+  bindings?: Readonly<Record<string, Json>>,
+  reuse = false,
+): Interpreter<R> => {
+  const taken = reuse && !roundTrip ? (spare.get(setup)?.pop() as Interpreter<R> | undefined) : undefined
+  const options = {
+    builtins: undefined as unknown as ReturnType<typeof createBuiltins>,
     logs: [],
     modules: setup.modules,
-    globals: (ctx) => [
+    globals: (ctx: Interpreter<R>) => [
       ...(setup.programGlobals?.(ctx) ?? []),
       ...(setup.globals === undefined ? [] : hostGlobals(ctx, setup.globals(run), setup.translate, setup.adapt)),
     ],
     bindings:
       bindings === undefined
         ? undefined
-        : (ctx) => Object.entries(bindings).map(([name, value]) => [name, fromJson(ctx, value)] as const),
-  })
+        : (ctx: Interpreter<R>) => Object.entries(bindings).map(([name, value]) => [name, fromJson(ctx, value)] as const),
+  }
+  if (taken !== undefined) {
+    taken.recycle(options)
+    return taken
+  }
+  const ctx = new Interpreter<R>({ ...options, builtins: createBuiltins() })
   if (roundTrip) ctx.vm.tripEvery = ROUND_TRIP_TICKS
   return ctx
 }
@@ -361,13 +402,16 @@ export class Running<R> {
         // Host work the program left running is interrupted, not awaited.
         await driver.interrupt()
         const warnings = vm.diagnostics()
-        return {
+        const done = {
           ok: true,
           value: result,
           ...(warnings.length > 0 ? { warnings } : {}),
           ...logged(),
           metadata: metadata(),
         } satisfies Result
+        // The run ended on its own and its result is copied out: its runtime may serve another.
+        release(this.setup, this.ctx)
+        return done
       } finally {
         await driver.interrupt()
       }
