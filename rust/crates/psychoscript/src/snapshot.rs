@@ -30,7 +30,7 @@ use crate::vm::{
 use crate::{DiagnosticKind, Json, Limits};
 
 /// Bumped whenever the shape of saved state changes.
-pub const FORMAT: u64 = 2;
+pub const FORMAT: u64 = 3;
 
 /// A run's saved state: plain JSON, with a `header` that says where it can resume. A state changed since it was saved
 /// is refused, by a hash of it in the header; the hash guards against damage, not forgery, so resume only states your
@@ -120,7 +120,7 @@ fn natives() -> &'static Natives {
         let mut vm = Vm::new(
             host::RunHost::bare(),
             Limits::default(),
-            crate::strings::Strings::new(),
+            crate::strings::Strings::fresh(),
         );
         vm.setup();
         let base = vm.heap.len();
@@ -391,7 +391,7 @@ pub fn capture(vm: &Vm, c: &Capture) -> Result<Snapshot, Refusal> {
     };
     let state = enc.state(c).map_err(|e| Refusal::Other(e.message))?;
     let base = vm.snapshot_base;
-    let program = crate::run::compile(c.code, &mut crate::strings::Strings::new())
+    let program = crate::run::compile(c.code, &mut crate::strings::Strings::fresh())
         .map_err(|e| Refusal::Other(e.message))?;
     let limits = *vm.limits;
     let metadata = vm.host.run.metadata();
@@ -947,7 +947,7 @@ fn hex_bytes(s: &str) -> R<Vec<u8>> {
 
 /// Each object of a fresh run's base, encoded, to see which ones the run changed.
 fn baseline(vm: &Vm, code: &str) -> R<Vec<J>> {
-    let mut atoms = crate::strings::Strings::new();
+    let mut atoms = crate::strings::Strings::fresh();
     let program =
         crate::run::compile(code, &mut atoms).map_err(|e| SnapshotError::new(e.message))?;
     let h = &vm.host;

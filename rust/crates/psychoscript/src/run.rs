@@ -83,7 +83,7 @@ impl<'a> From<&'a Compiled> for Code<'a> {
 
 /// Parses and compiles a program, or the diagnostic a run of it would fail with before running anything.
 pub fn compile_program(code: &str) -> Result<Compiled, Diagnostic> {
-    let mut atoms = Strings::new();
+    let mut atoms = Strings::fresh();
     let program = compile(code, &mut atoms).map_err(|e| compile_diagnostic(code, e))?;
     Ok(Compiled(Arc::new(CompiledProgram {
         code: Arc::from(code),
@@ -166,7 +166,7 @@ pub fn start(
     let (code, mut program, atoms) = match code {
         Code::Compiled(c) => (c.0.code.clone(), c.0.program.clone(), c.0.atoms.clone()),
         Code::Source(code) => {
-            let mut atoms = Strings::new();
+            let mut atoms = Strings::fresh();
             match compile(code, &mut atoms) {
                 Ok(p) => (Arc::from(code), p, atoms),
                 Err(e) => return Err(Box::new(failed(compile_diagnostic(code, e)))),
@@ -211,7 +211,7 @@ pub fn start_for_resume(
     restored: crate::snapshot::Restored,
 ) -> Result<Resumed, crate::snapshot::SnapshotError> {
     let code = restored.code;
-    let mut atoms = Strings::new();
+    let mut atoms = Strings::fresh();
     let mut program = compile(&code, &mut atoms).map_err(|_| {
         crate::snapshot::SnapshotError::new(
             "Source main does not compile in this build, so it can't resume.",

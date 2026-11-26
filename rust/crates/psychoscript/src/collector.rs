@@ -118,6 +118,16 @@ impl Heap {
         }
     }
 
+    /// A copy of a fresh runtime's heap, which holds only what `Obj::clone_base` copies, with room for a small
+    /// program's own objects.
+    pub(crate) fn clone_base(&self) -> Heap {
+        let mut heap = Heap::with_capacity(self.len() + 34);
+        for o in self.iter() {
+            heap.push(o.clone_base());
+        }
+        heap
+    }
+
     /// The bytes of storage object `i` (`Kind::Storage`), past the barrier: bytes hold no references, so writing them
     /// changes nothing marking must see.
     #[inline(always)]

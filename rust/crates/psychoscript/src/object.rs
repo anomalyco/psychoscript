@@ -654,6 +654,39 @@ impl Obj {
         }
     }
 
+    /// A copy of an object of the fresh runtime, whose kinds are the few with nothing a run owns alone.
+    pub(crate) fn clone_base(&self) -> Obj {
+        let kind = match &self.kind {
+            Kind::Ordinary => Kind::Ordinary,
+            Kind::Array(items) => Kind::Array(items.clone()),
+            Kind::Native {
+                f,
+                data,
+                name,
+                length,
+                ctor,
+            } => Kind::Native {
+                f: *f,
+                data: *data,
+                name: *name,
+                length: *length,
+                ctor: *ctor,
+            },
+            Kind::Accessor(a) => Kind::Accessor(a.clone()),
+            Kind::Namespace(n) => Kind::Namespace(*n),
+            Kind::Error(None) => Kind::Error(None),
+            Kind::Date(t) => Kind::Date(*t),
+            _ => unreachable!("a fresh runtime makes no object of this kind"),
+        };
+        Obj {
+            proto: self.proto,
+            props: self.props.clone(),
+            kind,
+            flags: self.flags,
+            visit: 0,
+        }
+    }
+
     pub fn is_callable(&self) -> bool {
         match &self.kind {
             Kind::Closure(_) | Kind::Native { .. } | Kind::Bound(_) => true,
