@@ -9,7 +9,7 @@ use crate::bytecode::FuncProto;
 pub use crate::strings::{
     Atom, SYM_ASYNC_ITERATOR, SYM_ITERATOR, SYM_LAST, SYM_TO_PRIMITIVE, SYM_TO_STRING_TAG,
 };
-use crate::value::{Id, Value};
+use crate::value::{Id, Slot, Value};
 use crate::vm::{NativeFn, SavedFrame};
 
 pub const ENUMERABLE: u8 = 1;
@@ -25,11 +25,33 @@ pub const ACCESSOR: u8 = 8;
 /// `stack.rs`).
 pub const PENDING_STACK: u8 = 16;
 
+/// One property: 16 bytes, its value packed in a word as on the stack.
 #[derive(Clone)]
 pub struct Prop {
+    value: Slot,
     pub key: Atom,
-    pub value: Value,
     pub flags: u8,
+}
+
+impl Prop {
+    #[inline(always)]
+    pub fn new(key: Atom, value: Value, flags: u8) -> Prop {
+        Prop {
+            value: Slot::pack(value),
+            key,
+            flags,
+        }
+    }
+
+    #[inline(always)]
+    pub fn value(&self) -> Value {
+        self.value.get()
+    }
+
+    #[inline(always)]
+    pub fn set_value(&mut self, value: Value) {
+        self.value = Slot::pack(value);
+    }
 }
 
 /// Insertion-ordered properties; small objects scan linearly, larger ones keep a hash index.
@@ -45,9 +67,15 @@ impl Props {
     pub fn from_items(items: Vec<Prop>) -> Self {
         let mut props = Props::default();
         for p in items {
-            props.push_new(p.key, p.value, p.flags);
+            props.push_new(p.key, p.value(), p.flags);
         }
         props
+    }
+
+    /// Room for exactly `n` properties, for an object whose count is known as it is made.
+    #[inline]
+    pub fn reserve_exact(&mut self, n: usize) {
+        self.items.reserve_exact(n);
     }
 
     #[inline]
@@ -59,13 +87,13 @@ impl Props {
     }
 
     #[inline]
-    pub fn get(&self, key: Atom) -> Option<&Value> {
-        self.find(key).map(|i| &self.items[i].value)
+    pub fn get(&self, key: Atom) -> Option<Value> {
+        self.find(key).map(|i| self.items[i].value())
     }
 
     pub fn insert(&mut self, key: Atom, value: Value, flags: u8) {
         if let Some(i) = self.find(key) {
-            self.items[i].value = value;
+            self.items[i].set_value(value);
             return;
         }
         self.push_new(key, value, flags);
@@ -74,7 +102,11 @@ impl Props {
     /// Appends a key known to be absent.
     pub fn push_new(&mut self, key: Atom, value: Value, flags: u8) {
         let i = self.items.len();
-        self.items.push(Prop { key, value, flags });
+        // The first allocation holds two properties, not the four a vector starts with: most objects are small.
+        if self.items.capacity() == 0 {
+            self.items.reserve_exact(2);
+        }
+        self.items.push(Prop::new(key, value, flags));
         if let Some(idx) = &mut self.index {
             idx.insert(key, i as u32);
         } else if self.items.len() > INDEX_THRESHOLD {
@@ -93,7 +125,7 @@ impl Props {
         let Some(i) = self.find(before) else {
             return self.push_new(key, value, flags);
         };
-        self.items.insert(i, Prop { key, value, flags });
+        self.items.insert(i, Prop::new(key, value, flags));
         if self.index.is_some() || self.items.len() > INDEX_THRESHOLD {
             let map = self
                 .items

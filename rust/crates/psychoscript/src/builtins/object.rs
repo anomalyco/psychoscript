@@ -1186,7 +1186,7 @@ fn error_proto(vm: &mut Vm, callee: Id, fallback: Id) -> Id {
         return proto;
     };
     match vm.heap[nt as usize].props.prop(vm.names.prototype) {
-        Some(p) if p.flags & ACCESSOR == 0 => p.value.as_obj().unwrap_or(proto),
+        Some(p) if p.flags & ACCESSOR == 0 => p.value().as_obj().unwrap_or(proto),
         _ => proto,
     }
 }
@@ -1587,11 +1587,7 @@ pub(crate) fn revive_step(
             let child = match snapshot {
                 Value::Obj(children) => {
                     let a = vm.key_of(&k)?;
-                    vm.heap[children as usize]
-                        .props
-                        .get(a)
-                        .copied()
-                        .unwrap_or_default()
+                    vm.heap[children as usize].props.get(a).unwrap_or_default()
                 }
                 _ => Value::Undef,
             };

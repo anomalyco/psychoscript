@@ -575,7 +575,7 @@ impl Enc<'_> {
             .props
             .items
             .iter()
-            .map(|p| json!([p.key, val(&p.value), p.flags]))
+            .map(|p| json!([p.key, val(&p.value()), p.flags]))
             .collect();
         Ok(json!([
             opt_id(o.proto),
@@ -1757,11 +1757,11 @@ impl Dec<'_> {
             .as_array()
             .ok_or_else(|| invalid("properties are not a list."))?
         {
-            items.push(Prop {
-                key: u32_(at(p, 0)?)?,
-                value: self.val(at(p, 1)?)?,
-                flags: u32_(at(p, 2)?)? as u8,
-            });
+            items.push(Prop::new(
+                u32_(at(p, 0)?)?,
+                self.val(at(p, 1)?)?,
+                u32_(at(p, 2)?)? as u8,
+            ));
         }
         let kind = self.kind(vm, at(j, 3)?)?;
         Ok(Obj {

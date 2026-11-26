@@ -185,7 +185,7 @@ pub fn bulk(o: &Obj, from: usize, to: usize, visit: &mut impl FnMut(Ref)) {
     let props = &o.props.items;
     for p in range(props, from, to) {
         t.atom(p.key);
-        t.val(&p.value);
+        t.val(&p.value());
     }
     let (from, to) = (
         from.saturating_sub(props.len()),

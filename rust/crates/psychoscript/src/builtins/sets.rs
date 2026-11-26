@@ -290,7 +290,7 @@ fn object_groups(vm: &mut Vm, pairs: impl Iterator<Item = (Value, Value)>) -> Re
     let id = vm.alloc(Obj::new(None, Kind::Ordinary));
     for (k, item) in pairs {
         let atom = vm.key_of(&k)?;
-        match vm.heap[id as usize].props.get(atom).copied() {
+        match vm.heap[id as usize].props.get(atom) {
             Some(Value::Obj(arr)) => {
                 if let Kind::Array(items) = &mut vm.heap[arr as usize].kind {
                     items.push(item);

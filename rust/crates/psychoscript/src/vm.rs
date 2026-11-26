@@ -3777,8 +3777,11 @@ impl Vm {
                             self.define(id, a, v);
                         }
                     }
-                    Op::NewObject => {
+                    Op::NewObject(n) => {
                         let id = self.new_object();
+                        if n != 0 {
+                            self.heap[id as usize].props.reserve_exact(n as usize);
+                        }
                         self.push(Value::Obj(id));
                     }
                     Op::NewArray(n) => {

@@ -144,7 +144,7 @@ impl Vm {
         let o = &mut self.heap[id as usize];
         match o.props.find(key) {
             Some(i) => {
-                o.props.items[i].value = val;
+                o.props.items[i].set_value(val);
                 o.props.items[i].flags = flags;
             }
             None => o.props.push_new(key, val, flags),
@@ -226,7 +226,7 @@ impl Vm {
         self.heap[fid as usize]
             .props
             .prop(self.names.name)
-            .is_some_and(|p| p.flags & ACCESSOR != 0 || !matches!(p.value, Value::Str(_)))
+            .is_some_and(|p| p.flags & ACCESSOR != 0 || !matches!(p.value(), Value::Str(_)))
     }
 
     /// `Op::SetFields`.
@@ -387,13 +387,13 @@ impl Vm {
         while let Some(c) = cur {
             if let Some(p) = self.heap[c as usize].props.prop(key) {
                 if p.flags & ACCESSOR == 0 {
-                    if let Value::Uninit = p.value {
+                    if let Value::Uninit = p.value() {
                         // A built-in accessor serves the receiver if it is of its kind.
                         return self.companion_value(receiver, key);
                     }
-                    return p.value;
+                    return p.value();
                 }
-                let pair = p.value;
+                let pair = p.value();
                 self.op_access = true;
                 let v = self.accessor_read(pair, receiver, key);
                 self.op_access = false;
@@ -465,9 +465,9 @@ impl Vm {
         while let Some(c) = cur {
             if let Some(p) = self.heap[c as usize].props.prop(key) {
                 if p.flags & ACCESSOR != 0 {
-                    return Some((p.value, false));
+                    return Some((p.value(), false));
                 }
-                return matches!(p.value, Value::Uninit).then_some((Value::Undef, true));
+                return matches!(p.value(), Value::Uninit).then_some((Value::Undef, true));
             }
             if self.has_own(c, key) {
                 return None;
@@ -583,7 +583,7 @@ impl Vm {
             .props
             .prop(ck)
             .filter(|p| p.flags & ACCESSOR == 0)
-            .map(|p| p.value)?;
+            .map(|p| p.value())?;
         if self.class_of(&ctor) == 0 {
             return None;
         }

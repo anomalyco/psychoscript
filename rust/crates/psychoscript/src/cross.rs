@@ -134,7 +134,7 @@ fn flat(vm: &Vm, v: &Value) -> Option<Json> {
         if k == "__proto__" {
             continue;
         }
-        let j = match p.value {
+        let j = match p.value() {
             Value::Undef | Value::Uninit => continue,
             Value::Null => Json::Null,
             Value::Bool(b) => Json::Bool(b),
@@ -382,7 +382,7 @@ fn plain_json(vm: &Vm, v: &Value) -> Option<Json> {
                 if p.flags & ENUMERABLE == 0 || p.key <= SYM_LAST {
                     continue;
                 }
-                if let Some(j) = plain_json(vm, &p.value) {
+                if let Some(j) = plain_json(vm, &p.value()) {
                     out.insert(vm.atoms.text(p.key).to_owned(), j);
                 }
             }

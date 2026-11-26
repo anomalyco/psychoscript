@@ -119,7 +119,8 @@ pub enum Op {
     CtorReturn(bool),
     /// A class field, `[o, (key), v] -> [o]` (key on the stack when `.1`): defined as data, or a TypeError.
     DefineClassField(Atom, bool),
-    NewObject,
+    /// A new object; the operand is how many properties its literal names, which it gets room for at once.
+    NewObject(u32),
     NewArray(u32),
     ArrayPush,
     ArraySpread,
