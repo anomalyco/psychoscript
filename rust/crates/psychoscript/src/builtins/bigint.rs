@@ -1,11 +1,23 @@
 //! BigInt: the reference's `bigintGlobal` (`src/stdlib/number.ts`), its BigInt operators
 //! (`src/runtime/operations.ts`) and the size cap (`src/runtime/limits.ts`).
 //!
-//! A BigInt is a `Kind::BigInt` heap object, which `Value::Big` refers to and programs never see as an object. The
-//! interner gives each value one object, so `===`, `Object.is` and Map keys compare ids. It is a weak table, as the
-//! strings' interner is: the sweep drops a freed BigInt from it, and one it gives out while a cycle runs survives the
-//! cycle (`Vm::gc_shade_big`).
+//! A BigInt has one of three forms, by its size, and each value has exactly one, so `===`, `Object.is` and Map keys
+//! compare the ids of `Value::Big`:
+//! - under 31 bits, it is in the id itself (`INLINE`): no object, nothing to collect. Counters, small constants and
+//!   `BigInt(i & 255)` are these.
+//! - up to 128 bits, a `Kind::BigInt` heap object holding the integer in place (`BigNum::Small`), with machine
+//!   arithmetic: no allocation beyond the heap slot, which a collected one gives back. 64-bit hashes and ids are these.
+//! - larger, the same object holding a boxed `num_bigint::BigInt`.
+//!
+//! JavaScriptCore, which Bun runs on, has only the heap form: every BigInt is one cell with its digits in it (its
+//! inline 32-bit form was never enabled, and was removed in 2026). The middle form here is that cell; the first goes
+//! further.
+//!
+//! Programs never see the heap object as an object. The interner gives each heap value one object. It is a weak table,
+//! as the strings' interner is: the sweep drops a freed BigInt from it, and one it gives out while a cycle runs
+//! survives the cycle (`Vm::gc_shade_big`).
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
 
 use num_bigint::BigInt;
@@ -37,10 +49,73 @@ pub struct Interned {
     collided: Vec<(u64, Id)>,
 }
 
-fn hash_of(n: &BigInt) -> u64 {
+/// Set in the id of a `Value::Big` that holds its integer, of under 31 bits, in its other bits. Heap ids stay far
+/// below it (`MAX_OBJECTS`).
+pub const INLINE: Id = 1 << 31;
+const INLINE_MIN: i128 = -(1 << 30);
+const INLINE_MAX: i128 = (1 << 30) - 1;
+
+/// Whether `id` is a heap object's, which the collector traces.
+#[inline(always)]
+pub fn on_heap(id: Id) -> bool {
+    id & INLINE == 0
+}
+
+#[inline(always)]
+fn inline_of(id: Id) -> Option<i128> {
+    (id & INLINE != 0).then_some((((id << 1) as i32) >> 1) as i128)
+}
+
+/// A heap BigInt's integer: in place up to 128 bits (as two words, so it aligns as the rest of an object does), else
+/// boxed. One that fits in place is never boxed, and one that fits in an id is never on the heap.
+pub enum BigNum {
+    Small([u64; 2]),
+    Large(Box<BigInt>),
+}
+
+impl BigNum {
+    /// The form of `n`, or `None` for one that belongs in an id.
+    pub(crate) fn heap_form(n: BigInt) -> Option<BigNum> {
+        match n.to_i128() {
+            Some(s) if (INLINE_MIN..=INLINE_MAX).contains(&s) => None,
+            Some(s) => Some(BigNum::small(s)),
+            None => Some(BigNum::Large(Box::new(n))),
+        }
+    }
+
+    fn small(n: i128) -> BigNum {
+        BigNum::Small([n as u64, (n >> 64) as u64])
+    }
+
+    fn get(&self) -> BigRef<'_> {
+        match self {
+            BigNum::Small([lo, hi]) => BigRef::Small(((*hi as i128) << 64) | *lo as i128),
+            BigNum::Large(n) => BigRef::Large(n),
+        }
+    }
+
+    pub(crate) fn to_big(&self) -> BigInt {
+        match self.get() {
+            BigRef::Small(s) => BigInt::from(s),
+            BigRef::Large(n) => n.clone(),
+        }
+    }
+}
+
+/// A BigInt's integer, read without copying it.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum BigRef<'a> {
+    Small(i128),
+    Large(&'a BigInt),
+}
+
+fn hash_of(n: BigRef) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = FxHasher::default();
-    n.hash(&mut h);
+    match n {
+        BigRef::Small(s) => s.hash(&mut h),
+        BigRef::Large(n) => n.hash(&mut h),
+    }
     h.finish()
 }
 
@@ -55,8 +130,8 @@ impl Interned {
     }
 
     /// Drops the freed BigInt `id` of value `n`.
-    pub(crate) fn forget(&mut self, id: Id, n: &BigInt) {
-        let h = hash_of(n);
+    pub(crate) fn forget(&mut self, id: Id, n: &BigNum) {
+        let h = hash_of(n.get());
         if self.by_hash.get(&h) == Some(&id) {
             self.by_hash.remove(&h);
             if let Some(i) = self.collided.iter().position(|e| e.0 == h) {
@@ -76,35 +151,78 @@ enum Fail {
 }
 
 impl Vm {
-    /// The value of BigInt `id`.
-    pub fn big(&self, id: Id) -> &BigInt {
+    /// The integer of BigInt `id`, in whichever form it has.
+    #[inline]
+    pub(crate) fn big_ref(&self, id: Id) -> BigRef<'_> {
+        if let Some(s) = inline_of(id) {
+            return BigRef::Small(s);
+        }
         match &self.heap[id as usize].kind {
-            Kind::BigInt(n) => n,
-            _ => &BigInt::ZERO,
+            Kind::BigInt(n) => n.get(),
+            _ => BigRef::Small(0),
         }
     }
 
-    fn find_big(&self, h: u64, n: &BigInt) -> Option<Id> {
+    /// The integer of BigInt `id` when it is at most 128 bits: the operators' fast path.
+    #[inline]
+    fn small_of(&self, id: Id) -> Option<i128> {
+        match self.big_ref(id) {
+            BigRef::Small(s) => Some(s),
+            BigRef::Large(_) => None,
+        }
+    }
+
+    /// The value of BigInt `id`, for the paths that need the arbitrary-precision form: a copy unless it is one.
+    pub fn big(&self, id: Id) -> Cow<'_, BigInt> {
+        match self.big_ref(id) {
+            BigRef::Small(s) => Cow::Owned(BigInt::from(s)),
+            BigRef::Large(n) => Cow::Borrowed(n),
+        }
+    }
+
+    /// Whether BigInt `id` is `0n`.
+    pub(crate) fn big_is_zero(&self, id: Id) -> bool {
+        self.big_ref(id) == BigRef::Small(0)
+    }
+
+    fn find_big(&self, h: u64, n: BigRef) -> Option<Id> {
         let first = *self.bigints.by_hash.get(&h)?;
-        if self.big(first) == n {
+        if self.big_ref(first) == n {
             return Some(first);
         }
         let mut others = self.bigints.collided.iter();
         others
-            .find(|(c, id)| *c == h && self.big(*id) == n)
+            .find(|(c, id)| *c == h && self.big_ref(*id) == n)
             .map(|e| e.1)
+    }
+
+    /// The one heap object of `n`, which is in its heap form.
+    fn heap_big(&mut self, n: BigNum) -> Value {
+        let h = hash_of(n.get());
+        if let Some(id) = self.find_big(h, n.get()) {
+            self.gc_shade_big(id);
+            return Value::Big(id);
+        }
+        let id = self.alloc(Obj::new(None, Kind::BigInt(n)));
+        self.bigints.add(h, id);
+        Value::Big(id)
+    }
+
+    /// The BigInt `n` of at most 128 bits: in its id when it fits there, which makes no object.
+    #[inline]
+    pub fn big_small(&mut self, n: i128) -> Value {
+        if (INLINE_MIN..=INLINE_MAX).contains(&n) {
+            return Value::Big(INLINE | (n as u32 & !INLINE));
+        }
+        self.heap_big(BigNum::small(n))
     }
 
     /// The BigInt `n`, unchecked against the cap.
     pub fn big_val(&mut self, n: BigInt) -> Value {
-        let h = hash_of(&n);
-        if let Some(id) = self.find_big(h, &n) {
-            self.gc_shade_big(id);
-            return Value::Big(id);
+        match n.to_i128() {
+            Some(s) => self.big_small(s),
+            None => self.heap_big(BigNum::Large(Box::new(n))),
         }
-        let id = self.alloc(Obj::new(None, Kind::BigInt(Box::new(n))));
-        self.bigints.add(h, id);
-        Value::Big(id)
     }
 
     /// The BigInt `n`, or the RangeError of a value past the cap.
@@ -119,8 +237,8 @@ impl Vm {
     pub(crate) fn intern_restored(&mut self, from: usize) -> bool {
         for id in from..self.heap.len() {
             if let Kind::BigInt(n) = &self.heap[id].kind {
-                let h = hash_of(n);
-                if self.find_big(h, n).is_some() {
+                let h = hash_of(n.get());
+                if self.find_big(h, n.get()).is_some() {
                     return false;
                 }
                 self.bigints.add(h, id as Id);
@@ -144,7 +262,12 @@ impl Vm {
         let (Value::Big(x), Value::Big(y)) = (*a, *b) else {
             return Err(self.type_error(MIX));
         };
-        let r = big_op(op, self.big(x), self.big(y));
+        if let (Some(a), Some(b)) = (self.small_of(x), self.small_of(y))
+            && let Some(r) = small_op(op, a, b)
+        {
+            return Ok(self.big_small(r));
+        }
+        let r = big_op(op, &self.big(x), &self.big(y));
         match r {
             Ok(n) => self.checked_big(n),
             Err(f) => Err(self.fail(f)),
@@ -155,7 +278,18 @@ impl Vm {
     #[cold]
     #[inline(never)]
     pub(crate) fn big_unary(&mut self, op: u8, id: Id) -> Res {
-        let x = self.big(id);
+        if let Some(a) = self.small_of(id) {
+            let r = match op {
+                code::NEG => a.checked_neg(),
+                code::BIT_NOT => Some(!a),
+                code::INC => a.checked_add(1),
+                _ => a.checked_sub(1),
+            };
+            if let Some(r) = r {
+                return Ok(self.big_small(r));
+            }
+        }
+        let x = &*self.big(id);
         let n = match op {
             code::NEG => -x,
             code::BIT_NOT => !x,
@@ -175,6 +309,11 @@ impl Vm {
     /// How primitives one of which is a BigInt order, by their mathematical values; `None` for NaN or a string that
     /// is no integer.
     fn big_compare(&mut self, a: &Value, b: &Value) -> Result<Option<Ordering>, Value> {
+        if let (Value::Big(x), Value::Big(y)) = (*a, *b)
+            && let (Some(x), Some(y)) = (self.small_of(x), self.small_of(y))
+        {
+            return Ok(Some(x.cmp(&y)));
+        }
         let (x, y) = (self.numeric(a)?, self.numeric(b)?);
         Ok(match (x, y) {
             (Numeric::Big(x), Numeric::Big(y)) => Some(x.cmp(&y)),
@@ -192,7 +331,7 @@ impl Vm {
     /// A comparison operand: a BigInt, a string read as one (StringToBigInt), or ToNumber of anything else.
     fn numeric(&mut self, v: &Value) -> Result<Numeric, Value> {
         Ok(match v {
-            Value::Big(id) => Numeric::Big(self.big(*id).clone()),
+            Value::Big(id) => Numeric::Big(self.big(*id).into_owned()),
             Value::Str(s) => text_numeric(self.atoms.get(*s)),
             v => Numeric::Num(self.number_of(v)?),
         })
@@ -200,14 +339,17 @@ impl Vm {
 
     /// The decimal text of BigInt `id`.
     pub fn big_text(&self, id: Id) -> String {
-        self.big(id).to_str_radix(10)
+        match self.big_ref(id) {
+            BigRef::Small(s) => s.to_string(),
+            BigRef::Large(n) => n.to_str_radix(10),
+        }
     }
 
     /// ToBigInt of a primitive: numbers are refused, unlike `BigInt(n)`.
     fn bigint_of(&mut self, v: &Value) -> Res {
         match v {
             Value::Big(_) => Ok(*v),
-            Value::Bool(b) => Ok(self.big_val(BigInt::from(*b as u8))),
+            Value::Bool(b) => Ok(self.big_small(*b as i128)),
             Value::Str(s) => {
                 let s = *s;
                 self.string_to_big(s)
@@ -244,6 +386,29 @@ impl Vm {
 /// `maxDecimalDigits`.
 fn max_decimal_digits() -> usize {
     (MAX_BIGINT_BITS as f64 * 2f64.log10()).ceil() as usize + 1
+}
+
+/// A binary operator on integers of at most 128 bits, in machine arithmetic; `None` for a result that may not fit,
+/// and for whatever fails or is rare, which `big_op` then computes.
+#[inline]
+fn small_op(op: u8, a: i128, b: i128) -> Option<i128> {
+    match op {
+        code::ADD => a.checked_add(b),
+        code::SUB => a.checked_sub(b),
+        code::MUL => a.checked_mul(b),
+        code::DIV => a.checked_div(b),
+        code::MOD => a.checked_rem(b),
+        code::BIT_AND => Some(a & b),
+        code::BIT_OR => Some(a | b),
+        code::BIT_XOR => Some(a ^ b),
+        // A left shift that keeps every bit: the value and the shift are both small.
+        code::SHL if (0..64).contains(&b) && (-(1i128 << 62)..(1i128 << 62)).contains(&a) => {
+            Some(a << b)
+        }
+        // A right shift floors, as an arithmetic shift does; past the value's bits it leaves its sign.
+        code::SHR if b >= 0 => Some(a >> b.min(127)),
+        _ => None,
+    }
 }
 
 fn big_op(op: u8, x: &BigInt, y: &BigInt) -> Result<BigInt, Fail> {
@@ -462,6 +627,10 @@ fn bigint_call(vm: &mut Vm, _this: Value, args: &[Value], _: Id) -> Res {
             return vm.bigint_of(&v);
         };
         if n.is_finite() && n.fract() == 0.0 {
+            // Every integer below 2^63 converts exactly.
+            if n.abs() < 9223372036854775808.0 {
+                return Ok(vm.big_small(n as i64 as i128));
+            }
             return Ok(vm.big_val(BigInt::from_f64(n).unwrap_or_default()));
         }
         let text = crate::value::num_to_string(n);
@@ -489,7 +658,19 @@ fn wrap(vm: &mut Vm, args: &[Value], signed: bool) -> Res {
             let Value::Big(id) = vm.bigint_of(&value)? else {
                 return Ok(Value::Undef);
             };
-            let n = vm.big(id);
+            // At most 128 bits wrapped to at most 64: machine arithmetic, the mask applied to the two's complement.
+            if let Some(s) = vm.small_of(id)
+                && width <= 64.0
+            {
+                let w = width as u32;
+                let mask = (1i128 << w) - 1;
+                let mut r = s & mask;
+                if signed && w > 0 && r >> (w - 1) != 0 {
+                    r -= mask + 1;
+                }
+                return Ok(vm.big_small(r));
+            }
+            let n = &*vm.big(id);
             if width > MAX_BIGINT_BITS as f64 {
                 if !signed && n.is_negative() {
                     return Err(vm.range_error(TOO_BIG));
@@ -549,7 +730,10 @@ fn to_string(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
         if !(2.0..=36.0).contains(&base) {
             return Err(vm.range_error("toString() radix must be between 2 and 36."));
         }
-        let text = vm.big(id).to_str_radix(base as u32);
+        let text = match base as u32 {
+            10 => vm.big_text(id),
+            radix => vm.big(id).to_str_radix(radix),
+        };
         Ok(vm.string_val(text))
     })
 }
