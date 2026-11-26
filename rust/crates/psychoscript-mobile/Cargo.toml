@@ -5,8 +5,12 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-publish = false
 description = "PsychoScript for iOS (Swift) and Android (Kotlin): UniFFI bindings that compile a program once and run it with a JSON input"
+readme = "README.md"
+keywords = ["uniffi", "ios", "android", "interpreter", "psychoscript"]
+categories = ["api-bindings", "development-tools::ffi"]
+# The tests read psychoscript-gpu's fixtures, in the repository.
+exclude = ["tests/"]
 
 # A plain `lib` for workspace builds, and for a host's library that links it; the build scripts ask for `staticlib`
 # (iOS) and `cdylib` (Android).
@@ -36,8 +40,8 @@ path = "src/bin/uniffi-bindgen-swift.rs"
 required-features = ["cli"]
 
 [dependencies]
-psychoscript = { path = "../psychoscript" }
-psychoscript-gpu = { path = "../psychoscript-gpu", optional = true }
+psychoscript = { version = "0.1", path = "../psychoscript" }
+psychoscript-gpu = { version = "0.1", path = "../psychoscript-gpu", optional = true }
 libc = "0.2"
 serde = "1"
 serde_json = { version = "1", features = ["preserve_order"] }

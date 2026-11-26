@@ -5,9 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-publish = false
 description = "GPU canvases for PsychoScript programs: checks and replays the WebGPU batches a program records on a wgpu device the host gives"
 readme = "README.md"
+keywords = ["webgpu", "wgpu", "gpu", "sandbox", "psychoscript"]
+categories = ["graphics", "rendering"]
 # The conformance fixtures stay in the repository.
 exclude = ["tests/"]
 

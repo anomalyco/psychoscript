@@ -247,6 +247,13 @@ Each canvas is a texture the crate owns at the canvas's size, which the host com
 surface. `poll(device)` polls a device without waiting, false when it is lost, for GPU work a host replays on the same
 device itself.
 
+On Metal, a host needs wgpu-hal with gfx-rs/wgpu#10875 (any command buffer that fails loses the device, as in Dawn;
+stock wgpu-hal counts failed work finished and tells nothing), or the GPU hang and Strikes rules can't see Apple's own
+GPU timeouts. Until a wgpu release has it, the host patches `wgpu-hal` in its own workspace (a `[patch]` doesn't reach a
+crate's dependents): `[patch.crates-io] wgpu-hal = { git = "https://github.com/anomalyco/psychoscript", rev = "<rev>" }`
+for this repository's `rust/vendor/wgpu-hal` (wgpu-hal 30.0.2 plus the fix), as opencode's `packages/widgets-rs` does;
+Rune desktop patches it to Rune's own wgpu-hal, which has the same fix.
+
 ## Tests
 
 Run from `rust/`:

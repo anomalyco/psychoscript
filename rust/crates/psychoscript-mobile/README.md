@@ -415,9 +415,13 @@ A host's own GPU canvases, outside a run, use the same device (`gpu::device`) an
   flight is a strike against it; a second within 30 s stops every canvas of the run, the same `stopped(client, "the
   GPU work hung; the canvas is stopped")`, so a program can't keep resetting the GPU. The app's thread never waits on
   any of it. On the iOS Simulator only, such a timeout can bring down the Simulator's Metal host, which then kills the
-  app (`OS_REASON_METAL`, "Connection to SimMetalHost ... lost"), or leave other Metal work of the process stuck. A
-  host's library that links this crate patches `wgpu-hal` to the same vendored copy (`[patch.crates-io]`, as
-  `rust/Cargo.toml` does).
+  app (`OS_REASON_METAL`, "Connection to SimMetalHost ... lost"), or leave other Metal work of the process stuck.
+- **The Metal fix is the app's to apply.** A `[patch]` applies only in the workspace that declares it, never to a
+  crate's dependents, and the published crate can't carry the vendored copy. So an app or host library that links
+  this crate (from crates.io or by git) patches `wgpu-hal` itself in its own workspace, to a copy with the fix:
+  `[patch.crates-io] wgpu-hal = { git = "https://github.com/anomalyco/psychoscript", rev = "<rev>" }` (cargo finds
+  `rust/vendor/wgpu-hal` there), as opencode's `packages/widgets-rs` does, or a fork with the same fix. Without it,
+  stock wgpu-hal builds and runs, but a Metal timeout doesn't lose the device.
 
 ```swift
 let surface = try GpuSurface.metal(metalView.layer as! CAMetalLayer)
