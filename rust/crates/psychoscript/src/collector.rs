@@ -685,6 +685,7 @@ impl Marker<'_> {
                 {
                     *k = BLACK;
                     match self.vm.cells[c as usize].get() {
+                        Value::Big(id) if !crate::builtins::bigint::on_heap(id) => {}
                         Value::Obj(id) | Value::Big(id) => self.mark(Ref::Obj(id)),
                         Value::Str(s) => self.mark_str(s),
                         _ => {}
@@ -830,6 +831,7 @@ impl Vm {
             return;
         };
         match v.get() {
+            Value::Big(id) if !crate::builtins::bigint::on_heap(id) => {}
             Value::Obj(id) | Value::Big(id) => {
                 if self.heap.marks.color.get(id as usize) == Some(&WHITE) {
                     self.heap.marks.color[id as usize] = GREY;

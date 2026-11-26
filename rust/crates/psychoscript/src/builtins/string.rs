@@ -1339,7 +1339,7 @@ fn number_ctor(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
     }
     fuel::with_primitives(vm, &[Hint::Number], [args[0]], false, |vm, [v]| {
         if let Value::Big(id) = v {
-            return Ok(Value::Num(super::bigint::big_to_f64(vm.big(id))));
+            return Ok(Value::Num(super::bigint::big_to_f64(&vm.big(id))));
         }
         Ok(Value::Num(vm.number_of(&v)?))
     })

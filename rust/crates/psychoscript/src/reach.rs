@@ -233,6 +233,7 @@ impl<F: FnMut(Ref)> Tracer<'_, F> {
 
     fn val(&mut self, v: &Value) {
         match v {
+            Value::Big(id) if !crate::builtins::bigint::on_heap(*id) => {}
             Value::Obj(id) | Value::Big(id) => (self.0)(Ref::Obj(*id)),
             Value::Str(s) => (self.0)(Ref::Str(*s)),
             _ => {}

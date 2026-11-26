@@ -659,7 +659,7 @@ impl Enc<'_> {
             Kind::Bytes(b) => json!(["y", b.store, b.start, b.len, b.buffer, b.elem.code()]),
             Kind::Storage(data) => json!(["st", bytes_hex(data)]),
             // Hexadecimal converts in linear time either way; decimal is quadratic for large values.
-            Kind::BigInt(n) => json!(["bi", n.to_str_radix(16)]),
+            Kind::BigInt(n) => json!(["bi", n.to_big().to_str_radix(16)]),
             Kind::TextDecoder(d) => {
                 json!(["td", d.fatal, d.ignore_bom, bytes_hex(&d.queued), d.seen])
             }
@@ -1507,7 +1507,7 @@ impl Dec<'_> {
                 }
                 t if t.starts_with('b') => {
                     let b = id(t)?;
-                    if b as usize >= self.heap_len {
+                    if crate::builtins::bigint::on_heap(b) && b as usize >= self.heap_len {
                         return Err(invalid("a BigInt reference is out of range."));
                     }
                     Value::Big(b)
@@ -1993,9 +1993,9 @@ impl Dec<'_> {
                     .then(|| num_bigint::BigInt::parse_bytes(digits.as_bytes(), 16))
                     .flatten()
                     .filter(|_| magnitude.bytes().all(|c| c.is_ascii_hexdigit()));
-                Kind::BigInt(Box::new(
-                    n.ok_or_else(|| invalid("a BigInt is malformed."))?,
-                ))
+                // One small enough for an id is never an object: a state that holds one is not one this wrote.
+                let n = n.and_then(crate::builtins::bigint::BigNum::heap_form);
+                Kind::BigInt(n.ok_or_else(|| invalid("a BigInt is malformed."))?)
             }
             "td" => Kind::TextDecoder(Box::new(crate::builtins::bytes::Decoder {
                 fatal: boolean(f(1)?)?,

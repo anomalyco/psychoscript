@@ -1632,7 +1632,7 @@ impl Vm {
             Value::Bool(b) => *b,
             Value::Num(n) => *n != 0.0 && !n.is_nan(),
             Value::Str(s) => !self.atoms.get(*s).is_empty(),
-            Value::Big(id) => !num_traits::Zero::is_zero(self.big(*id)),
+            Value::Big(id) => !self.big_is_zero(*id),
             Value::Obj(_) | Value::Sym(_) => true,
             Value::Undef | Value::Null | Value::Uninit => false,
         }
