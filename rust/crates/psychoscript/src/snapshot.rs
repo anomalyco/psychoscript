@@ -30,7 +30,7 @@ use crate::vm::{
 use crate::{DiagnosticKind, Json, Limits};
 
 /// Bumped whenever the shape of saved state changes.
-pub const FORMAT: u64 = 2;
+pub const FORMAT: u64 = 3;
 
 /// A run's saved state: plain JSON, with a `header` that says where it can resume. A state changed since it was saved
 /// is refused, by a hash of it in the header; the hash guards against damage, not forgery, so resume only states your
