@@ -29,8 +29,8 @@ val out = program.run("""{"n":21}""", RunOptions(timeoutMs = 250uL))
 - `Program(source, inputName = "__input")` compiles once. Fails with `Syntax`.
 - `run(inputJson, options = RunOptions())` runs it: `inputName()` is a sync host function returning the input, and the
   result is the program's completion value (a top-level `return`'s, or the last expression statement's) as compact
-  JSON, `undefined` as `null`. `RunOptions(timeoutMs?, maxOutputBytes?, maxHeapBytes?)`: active-time limit, result
-  size limit and heap cap, all off by default.
+  JSON, `undefined` as `null`. `RunOptions(timeoutMs?, maxOutputBytes?, maxHeapBytes?, programLines?)`: active-time limit, result
+  size limit, heap cap and the program's own lines (Live runs), all off by default.
 - `program.session(fieldsJson) -> RunSession` parses a JSON object once; `session.run(inputJson, options)` runs with
   those fields followed by `inputJson`'s own (a JSON object) as the input. The program sees the same input as
   `run` with the whole object (shared fields first). For inputs with a large part that doesn't change, keep a
@@ -107,8 +107,12 @@ its own until it returns or is stopped. Beside its input function it gets `__hos
   them to the UI thread and return. `onExit(LiveExit)` runs once on the run's thread:
   `Finished(resultJson)`, `Failed(error)` (`SliceBudget`, `Runtime`, ...), or `Stopped`. `onGpuCanvas(key, state)`
   tells a run's GPU canvas states ([GPU canvases](#gpu-canvases)); implement it as a no-op otherwise.
-- `LiveOptions(sliceBudgetMs = 50, httpsHosts = nil, allowLocalNetwork = false, maxHeapBytes = nil)`. The crate
-  limits no post rate: an encoder may (above).
+- `LiveOptions(sliceBudgetMs = 50, httpsHosts = nil, allowLocalNetwork = false, maxHeapBytes = nil, programLines =
+  nil)`. The crate limits no post rate: an encoder may (above).
+  - **Program lines:** `programLines` (also in `RunOptions`), `ProgramLines(first, last)`, are the source's lines
+    that are the program's own; the rest is the host's code around it (a prelude, the entry call). An error raised
+    there, or by a host function called from there, is at the nearest line of the program, a GPU batch's error at
+    the program's line that posted it (psychoscript's `Runtime::program_lines`).
   - **Slice budget:** a run computing past the budget without waiting is stopped with `SliceBudget`. Only the VM's
     own execution counts, in its thread's CPU time, so time the OS doesn't schedule the thread (a loaded device, a
     paused emulator) isn't compute: not the time it waits on pending host calls (several at once included), and not time
@@ -155,7 +159,8 @@ each optionally with a `:port` (`localhost:4097`) that then must match. Without 
 fetch rejects with `CapabilityDenied`. The program passes `{ url, method?, headers?, body? | body64? }` and gets
 `{ status, url, headers, body | body64 }`: the body is text when it's UTF-8, else base64. Headers come lowercased,
 with repeats joined and `set-cookie` dropped. Rejections are errors with `kind` (`CapabilityDenied`, `Network`,
-`Timeout`, `TooLarge`, `RateLimited`) and `message`.
+`Timeout`, `TooLarge`, `RateLimited`) and `message`, located at the `fetch` call; uncaught, the run fails with
+`Runtime` of that kind.
 
 The crate enforces:
 - `https:` only, and no credentials in the URL.
@@ -391,7 +396,8 @@ A host's own GPU canvases, outside a run, use the same device (`gpu::device`) an
     34`), no Vulkan adapter (wgpu's text), the GPU's Vulkan version, each limit under the crate's with the GPU's value
     and the one needed (`the GPU (Mali-G715, Vulkan, driver ...) is under the spec's limits:
     maxStorageBuffersPerShaderStage 4 (needs 8)`), or wgpu's error making the device;
-  - `stopped(kind, message, report)`: an error stopped it for the rest of the run, with `message`. `report` once per
+  - `stopped(kind, message, report, line, column)`: an error stopped it for the rest of the run, with `message`, a
+    batch's error at the line and column of the post that carried it (else none). `report` once per
     error (`kind` `program`: report it, phase `gpu`); `kind` `client` (a driver failure, out of GPU memory, a GPU hang
     or timeout, below, a surface that failed or was lost: attach a new one; one that can't be configured says what was
     asked, its size, format, alpha and present mode, and wgpu's error);

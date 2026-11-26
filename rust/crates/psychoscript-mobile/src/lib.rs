@@ -41,7 +41,7 @@ pub use gpu::{
     gpu_lose_device_at_frame_end, gpu_submit_times, gpu_wait_idle,
 };
 pub use live::{LiveContext, LiveExit, LiveHandler, LiveOptions, LiveRun, LiveSurfaces};
-pub use program::{Program, RunOptions, RunSession};
+pub use program::{Program, ProgramLines, RunOptions, RunSession};
 pub use psychoscript::{Failure, HostValue};
 
 uniffi::setup_scaffolding!("psychoscript_mobile");
