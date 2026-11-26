@@ -66,6 +66,7 @@ Only Rust has:
 - A value depth limit: [`Limits::max_value_depth`](https://github.com/anomalyco/psychoscript/blob/dev/rust/crates/psychoscript/src/diagnostic.rs), at most [`MAX_VALUE_DEPTH_LIMIT`](https://github.com/anomalyco/psychoscript/blob/dev/rust/crates/psychoscript/src/convert.rs).
 - Located host errors: [`HostError::located`](https://github.com/anomalyco/psychoscript/blob/dev/rust/crates/psychoscript/src/host_function.rs) (`HostValue::Located`), caught as a standard error at the call.
 - Always-on typed arrays: `ArrayBuffer`, `Uint16Array`, `Uint32Array`, `Int32Array`, `Float32Array`, `Float64Array`, as [`HostValue::TypedArray`](https://github.com/anomalyco/psychoscript/blob/dev/rust/crates/psychoscript/src/host_function.rs): lent without a copy to sync host functions, copied for async and durable ones.
+- Regular expressions the run's limits stop: a search that backtracks without end ends at `timeout_ms` or `slice_ms` (see Design); the reference's, its host engine's, can't be interrupted.
 - Lazy built-in groups: [`LAZY`](https://github.com/anomalyco/psychoscript/blob/dev/rust/crates/psychoscript/src/builtins/mod.rs) sets up `RegExp`, `Date`, the typed arrays and the other groups only when a program uses them.
 
 Only TypeScript has:
@@ -141,8 +142,6 @@ Known differences:
 
 ## Known issues
 
-- A regular expression's backtracking can't be interrupted: one match (`/(a|a)*b/` on a long run of `a`s) runs past
-  `timeout_ms` and `slice_ms`, as in the reference. `regress` has no step budget; bound untrusted patterns or inputs.
 - A saved state changed since it was saved is refused (its header holds a hash of it), but resuming doesn't validate a
   forged one in full and may panic (in safe Rust): store saved states as you would code.
 - On wasm32, a run driven as a future that waits on a host call notices its timeout only when it is next polled.
@@ -155,6 +154,10 @@ Known differences:
   run's own while host code is always handed back to the executor, in the same order. On wasm32, without threads, the
   run yields to its executor there instead, and a thread can't wait: a synchronous run waiting on host work that
   isn't ready, or a sync host function's `Returned::Block` work, ends in an `ExecutionFailure` saying so.
+- **Regular expressions:** a search backtracks on a budget (`regress`'s). When it runs out, the run checks its
+  `timeout_ms` and `slice_ms`, which stop a pattern that backtracks without end (`/(a+)+$/` on a long run of `a`s)
+  with `TimeoutExceeded` or `SliceExceeded`; otherwise the search is made again with twice the budget, at most what
+  the time left allows at the pace measured, so a search that ends costs at most about twice its work.
 - **Memory:** an incremental, non-moving mark-sweep collector (`collector.rs`) frees what a run can no longer reach,
   at safe points only (`bench/GC.md`). `Limits::max_heap_bytes` caps what a run can reach, in the size model of
   `heap.rs`.
