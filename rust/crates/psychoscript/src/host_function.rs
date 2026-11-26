@@ -671,15 +671,30 @@ pub struct Call {
     run_id: RunId,
     call: u64,
     suspending: Arc<AtomicBool>,
+    /// The call's site, and the source it is in.
+    site: Option<(u32, Arc<str>)>,
 }
 
 impl Call {
-    pub(crate) fn new(run_id: RunId, call: u64, suspending: Arc<AtomicBool>) -> Self {
+    pub(crate) fn new(
+        run_id: RunId,
+        call: u64,
+        suspending: Arc<AtomicBool>,
+        site: Option<(u32, Arc<str>)>,
+    ) -> Self {
         Self {
             run_id,
             call,
             suspending,
+            site,
         }
+    }
+
+    /// The 1-based line and column of the call in the program, or with
+    /// [`Runtime::program_lines`](crate::Runtime::program_lines) of the nearest frame of the program when it was made.
+    pub fn location(&self) -> Option<(u32, u32)> {
+        let (offset, code) = self.site.as_ref()?;
+        Some(crate::run::line_col(code, *offset))
     }
 
     /// The call's key, `<runId>:<callId>`: the same across a suspended run's resumes.
