@@ -10,6 +10,7 @@ import {
   hidden,
   isRuntimeReference,
   Arr,
+  ArrayBufferObj,
   Bytes,
   DateObj,
   ErrorObj,
@@ -47,6 +48,12 @@ export const structuredCloneGlobal = <R>(ctx: Interpreter<R>) =>
     if (args.length === 0) throw typeError("structuredClone requires 1 argument")
     const builtins = ctx.builtins
     const memo = new Map<Obj, Obj>()
+    const memories = new Map<ArrayBuffer, ArrayBuffer>()
+    const memory = (data: ArrayBuffer) => {
+      let copy = memories.get(data)
+      if (copy === undefined) memories.set(data, (copy = data.slice(0)))
+      return copy
+    }
     const clone = (value: Value): Value => {
       if (typeof value === "symbol" || value instanceof HostNamespace) {
         throw typeError(`DataCloneError: ${describeValue(value)} could not be cloned.`)
@@ -72,7 +79,14 @@ export const structuredCloneGlobal = <R>(ctx: Interpreter<R>) =>
       if (value instanceof RegExpObj) {
         return remember(new RegExpObj(builtins.RegExp, value.source, value.flags))
       }
-      if (value instanceof Bytes) return remember(new Bytes(builtins.Uint8Array, new Uint8Array(value.bytes)))
+      // Views keep sharing memory in the copy: each buffer is copied once.
+      if (value instanceof ArrayBufferObj) return remember(new ArrayBufferObj(builtins.ArrayBuffer, memory(value.data)))
+      if (value instanceof Bytes) {
+        const bytes = value.bytes
+        const copy = new Uint8Array(memory(value.memory), bytes.byteOffset, bytes.length)
+        const buffer = value.buffer === undefined ? undefined : (clone(value.buffer) as ArrayBufferObj)
+        return remember(new Bytes(builtins.Uint8Array, copy, buffer))
+      }
       if (value instanceof ErrorObj) {
         const name = get(value, "name")
         const message = get(value, "message")
@@ -98,6 +112,7 @@ export const structuredCloneGlobal = <R>(ctx: Interpreter<R>) =>
     }
     return withReads(() => {
       memo.clear()
+      memories.clear()
       return clone(args[0])
     })
   })

@@ -204,7 +204,7 @@ const refusal = (snapshot: unknown) => {
 describe("snapshots", () => {
   test("hold code by source and function index, with the source's bytecode hash, and never bytecode", () => {
     const snapshot = sliced()
-    expect(snapshot.format).toBe(3)
+    expect(snapshot.format).toBe(4)
     const source = snapshot.header.sources[0]!
     expect(source.id).toBe("main")
     expect(source.bytecode).toBe(hashOf(compileSource(parse(source.code))))

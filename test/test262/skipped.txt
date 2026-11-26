@@ -2044,8 +2044,6 @@ built-ins/Object/seal/seal-asyncarrowfunction.js  # TypeError: The Function cons
 built-ins/Object/seal/seal-asyncfunction.js  # TypeError: The Function constructor is not supported; write the function inline.
 built-ins/Object/seal/seal-asyncgeneratorfunction.js  # TypeError: The Function constructor is not supported; write the function inline.
 built-ins/Object/seal/seal-generatorfunction.js  # TypeError: The Function constructor is not supported; write the function inline.
-built-ins/Object/seal/seal-promise.js  # The program is waiting on a promise that can never settle: nothing else is running, so nothing can r
-built-ins/Object/seal/seal-uint8array.js  # TypeError: A Uint8Array cannot cross to the host; pass text instead, e.g. `new TextDecoder().decode(
 built-ins/Object/values/inherited-properties-omitted.js  # TypeError: Cannot read properties of undefined (reading '…').
 built-ins/Promise/all/S25.4.4.1_A4.1_T1.js  # Expected a TypeError to be thrown but no exception was thrown at all
 built-ins/Promise/all/call-resolve-element-after-return.js  # callCount after call to all() Expected SameValue(«0», «1») to be true
@@ -2545,6 +2543,8 @@ language/statements/class/subclass/builtin-objects/Array/contructor-calls-super-
 language/statements/class/subclass/builtin-objects/Array/length.js  # TypeError: Extending the built-in Array is not supported. Only classes and Error types can be extend
 language/statements/class/subclass/builtin-objects/Array/regular-subclassing.js  # TypeError: Extending the built-in Array is not supported. Only classes and Error types can be extend
 language/statements/class/subclass/builtin-objects/Array/super-must-be-called.js  # TypeError: Extending the built-in Array is not supported. Only classes and Error types can be extend
+language/statements/class/subclass/builtin-objects/ArrayBuffer/regular-subclassing.js  # TypeError: Extending the built-in ArrayBuffer is not supported. Only classes and Error types can be 
+language/statements/class/subclass/builtin-objects/ArrayBuffer/super-must-be-called.js  # TypeError: Extending the built-in ArrayBuffer is not supported. Only classes and Error types can be 
 language/statements/class/subclass/builtin-objects/Boolean/regular-subclassing.js  # TypeError: Class extends value a function is not a constructor or null.
 language/statements/class/subclass/builtin-objects/Boolean/super-must-be-called.js  # TypeError: Class extends value a function is not a constructor or null.
 language/statements/class/subclass/builtin-objects/Date/regular-subclassing.js  # TypeError: Extending the built-in Date is not supported. Only classes and Error types can be extende

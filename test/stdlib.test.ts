@@ -1420,7 +1420,7 @@ describe("TextEncoder and TextDecoder", () => {
       "not valid utf-8",
     )
     expect((await error(`new TextDecoder().decode("text")`)).message).toContain(
-      "expects a Uint8Array, received a string",
+      "expects an ArrayBuffer or a Uint8Array, received a string",
     )
     expect((await error(`TextDecoder()`)).message).toContain("requires 'new'")
   })

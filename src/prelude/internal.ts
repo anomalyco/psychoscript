@@ -6,7 +6,8 @@ import { invalidData, rangeError, typeError } from "../runtime/model.js"
 import {
   Arr,
   Builtin,
-  Bytes,
+  ArrayBufferObj,
+  binaryBytes,
   Callable,
   coerceToNumber,
   coerceToString,
@@ -42,6 +43,12 @@ import type { Resolving } from "../scheduler.js"
 import type { Code } from "../code.js"
 import { builtinCodes } from "../prelude/bytecode.js"
 import { type Vm, VmInternalFn } from "../vm.js"
+
+/** The failure for bytes reaching the result boundary, which takes text. */
+const binaryAtBoundary = (value: Obj) =>
+  invalidData(
+    `${value instanceof ArrayBufferObj ? "An ArrayBuffer" : "A Uint8Array"} cannot cross to the host; pass text instead, e.g. \`new TextDecoder().decode(bytes)\` or \`bytes.toBase64()\`.`,
+  )
 
 /**
  * Lightweight internal callable for VM-only `$` intrinsics. Does not extend `Obj` or `Native`,
@@ -425,11 +432,7 @@ export const registerVmIntrinsics = (map: Map<string, unknown>, vm: Vm): void =>
     if (val === null || typeof val === "string" || typeof val === "boolean") return 1
     if (typeof val === "bigint") throw bigintJson(boundary as boolean)
     if (!(val instanceof Obj)) return 3
-    if (boundary && val instanceof Bytes) {
-      throw invalidData(
-        "A Uint8Array cannot cross to the host; pass text instead, e.g. `new TextDecoder().decode(bytes)` or `bytes.toBase64()`.",
-      )
-    }
+    if (boundary && binaryBytes(val) !== undefined) throw binaryAtBoundary(val)
     if ((boundary && val instanceof URLSearchParamsObj) || val instanceof HeadersObj) return 3
     if ((ancestors as Arr).items.includes(val)) throw typeError("Converting circular structure to JSON.")
     if (boundary && val instanceof SetObj) return 4
@@ -593,11 +596,7 @@ export const tryFastBoundaryOrJson = (
       }
       return { ok: false }
     }
-    if (boundary && cur instanceof Bytes) {
-      throw invalidData(
-        "A Uint8Array cannot cross to the host; pass text instead, e.g. `new TextDecoder().decode(bytes)` or `bytes.toBase64()`.",
-      )
-    }
+    if (boundary && binaryBytes(cur) !== undefined) throw binaryAtBoundary(cur)
     if (boundary && cur instanceof URLSearchParamsObj) return { ok: true, json: cur.params.toString() }
     if (cur instanceof HeadersObj) return { ok: true, json: Object.fromEntries(cur.headers) }
     if (ancestors.has(cur)) throw typeError("Converting circular structure to JSON.")

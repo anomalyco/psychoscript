@@ -28,6 +28,7 @@ import { headersGlobal } from "../stdlib/headers.js"
 import { iteratorGlobals } from "../stdlib/iterator.js"
 import { coercion } from "../stdlib/value.js"
 import { base64Global, cryptoGlobal, structuredCloneGlobal } from "../stdlib/web.js"
+import { arrayBufferGlobal } from "../stdlib/typed-array.js"
 import { errorGlobal } from "./errors.js"
 import { errorTypes } from "./intrinsics.js"
 import { constants, constructor, fn, methods, native, receiver } from "./native.js"
@@ -177,6 +178,7 @@ const table: Record<string, Factory> = {
   URL: (ctx) => urlGlobal(ctx),
   URLSearchParams: (ctx) => urlSearchParamsGlobal(ctx),
   Headers: (ctx) => headersGlobal(ctx),
+  ArrayBuffer: (ctx) => arrayBufferGlobal(ctx),
   Uint8Array: (ctx) => uint8ArrayGlobal(ctx),
   // Built on the host's Buffer, so only where there is one (Node and Bun, not browsers).
   ...(typeof Buffer === "undefined" ? {} : { Buffer: <R>(ctx: Interpreter<R>) => bufferGlobal(ctx) }),
