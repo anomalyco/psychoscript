@@ -201,6 +201,59 @@ pub fn num_to_fixed(x: f64, digits: usize) -> String {
     if !x.is_finite() {
         return num_to_string(x);
     }
+    match fixed_fast(x, digits) {
+        Some(out) => out,
+        None => fixed_exact(x, digits),
+    }
+}
+
+/// `num_to_fixed` in machine arithmetic, for a number whose digits fit in 52 bits once scaled, which is nearly every
+/// one a program formats. `x * 10^digits` rounds, so the part the product lost comes from a fused multiply-add, which
+/// gives it exactly: together they say which way the true value rounds. `None` when they are too close to tell, or
+/// the number is out of range, for `fixed_exact`.
+fn fixed_fast(x: f64, digits: usize) -> Option<String> {
+    const POW10: [f64; 16] = [
+        1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15,
+    ];
+    let a = x.abs();
+    let scale = *POW10.get(digits)?;
+    let p = a * scale;
+    // Below 2^52 the product's fraction is exact; a product near the smallest numbers loses more than one rounding.
+    if p >= 4503599627370496.0 || (a != 0.0 && a < 1e-250) {
+        return None;
+    }
+    let lost = a.mul_add(scale, -p);
+    let floor = p.floor();
+    // The true value is `floor + 0.5 + past + lost`: it rounds up from a half on.
+    let past = (p - floor) - 0.5;
+    let up = if past == 0.0 {
+        lost >= 0.0
+    } else if past.abs() > lost.abs() {
+        past > 0.0
+    } else {
+        return None;
+    };
+    let n = floor as u64 + up as u64;
+    let unit = 10u64.pow(digits as u32);
+    let mut out = String::with_capacity(24);
+    if x < 0.0 && n != 0 {
+        out.push('-');
+    }
+    write_int(&mut out, (n / unit) as i64);
+    if digits > 0 {
+        out.push('.');
+        let frac = n % unit;
+        let mut width = 10u64.pow(digits as u32 - 1);
+        while width > 0 {
+            out.push((b'0' + (frac / width % 10) as u8) as char);
+            width /= 10;
+        }
+    }
+    Some(out)
+}
+
+/// `num_to_fixed` from the number's exact decimal expansion.
+fn fixed_exact(x: f64, digits: usize) -> String {
     let exact = format!("{:.1100}", x.abs());
     let (int, frac) = exact.split_once('.').unwrap_or((&exact, ""));
     let mut buf: Vec<u8> = int.bytes().chain(frac.bytes().take(digits)).collect();
@@ -536,6 +589,53 @@ impl Slot {
             T_BIG => Value::Big(p),
             _ => Value::Uninit,
         }
+    }
+}
+
+#[cfg(test)]
+mod fixed_tests {
+    use super::*;
+
+    /// The fast path gives what the exact one gives, on numbers at and around ties and on a spread of others.
+    #[test]
+    fn fast_path_is_exact() {
+        let mut state = 0x9e3779b97f4a7c15u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let mut checked = 0;
+        let mut check = |x: f64| {
+            for digits in 0..=20 {
+                if let Some(fast) = fixed_fast(x, digits) {
+                    assert_eq!(fast, fixed_exact(x, digits), "{x:e} to {digits} digits");
+                    checked += 1;
+                }
+            }
+        };
+        for x in [
+            0.0, -0.0, 0.5, 1.5, 2.5, 1.005, 1.45, 8.345, 0.000001, 1e21, 123.456, -1.5, -0.0001,
+            1e-7,
+        ] {
+            check(x);
+        }
+        for _ in 0..20_000 {
+            let r = next();
+            // A decimal with up to six places, where ties live, scaled across magnitudes; then any double.
+            let decimal = (r % 2_000_000_000) as f64
+                / [1.0, 10.0, 100.0, 1e3, 1e4, 1e5, 1e6][(r >> 40) as usize % 7];
+            check(decimal);
+            check(-decimal);
+            check(decimal + 0.5);
+            let any = f64::from_bits(next());
+            if any.is_finite() {
+                check(any);
+            }
+            check((next() % 1_000_000) as f64 / 1e9);
+        }
+        assert!(checked > 500_000, "the fast path took {checked} cases");
     }
 }
 
