@@ -551,6 +551,9 @@ impl Vm {
         if self.cells.len() >= self.gc.cell_limit {
             return self.gc_new_cell();
         }
+        if self.cells.len() == self.cells.capacity() {
+            crate::collector::grow_arena(&mut self.cells);
+        }
         self.cells.push(Slot::UNINIT);
         self.cells.len() as u64 - 1
     }
