@@ -36,8 +36,8 @@
       // The page opens as a sensible one; ?awake (or a frozen frame) goes straight to the picture. (Where the picture
       // cannot be drawn live there is nothing to go straight to but the still, and only a frozen frame is given that.)
       document.documentElement.dataset.trip = /[?&]freeze\b/.test(location.search) || (navigator.gpu && /[?&]awake\b/.test(location.search)) ? 'skip' : 'off'
-      // Which sensible one. A first visit gets NormalScript (?first or ?normal: always). Whoever has been through the
-      // trip and come down (the psychoscript_seen cookie), or cannot have the picture drawn live, or asks (?home or
+      // Which sensible one. A first visit gets NormalScript (?first or ?normal: always). Whoever has taken the tab
+      // before (the psychoscript_seen cookie), or cannot have the picture drawn live, or asks (?home or
       // ?after), gets Psychoscript's own page.
       document.documentElement.dataset.front = !navigator.gpu
         ? 'home'

@@ -12058,6 +12058,9 @@ function motionControl() {
     if (!tab || sober === !awake || (awake && (grounded || !armed))) return
     sober = !awake
     taken = true
+    // Whoever has taken the tab is remembered at once (a cookie, for a year), so that coming again, or only
+    // reloading to get out, finds Psychoscript's own page and not the tab to be taken again.
+    if (awake) document.cookie = 'psychoscript_seen=1; max-age=31536000; path=/; SameSite=Lax'
     const anchor = originFor(origin)
     const at = anchor.getBoundingClientRect()
     root.style.setProperty('--trip-x', `${at.left + at.width / 2}px`)
@@ -12093,7 +12096,6 @@ function motionControl() {
   }
   const comeDown = () => {
     if (sober) return
-    document.cookie = 'psychoscript_seen=1; max-age=31536000; path=/; SameSite=Lax'
     motion.setFront('home')
     corp?.scrollTo?.({ top: 0, behavior: 'instant' })
     if (!grounded && !reduced.matches) root.classList.add('lensing')
@@ -13671,8 +13673,8 @@ async function start() {
   }
   // What comes up along the bottom is pressed for itself: the picture takes no notice.
   for (const bar of [dock, comedown]) bar?.addEventListener('pointerdown', (event) => event.stopPropagation())
-  // "I'm ready to come down": the visitor has been through it, and is remembered to have been (a cookie, for a
-  // year); the tour stops and the sound goes; and the picture closes over, not with NormalScript's page this time
+  // "I'm ready to come down": the visitor has been through it (and was remembered to have been when the tab was
+  // taken); the tour stops and the sound goes; and the picture closes over, not with NormalScript's page this time
   // but with Psychoscript's own, which is what they will find here from now on.
   if (comedown) {
     comedown.hidden = false
