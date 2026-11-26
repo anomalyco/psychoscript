@@ -181,7 +181,7 @@ impl Heap {
         self.chunks.iter().flatten()
     }
 
-    #[inline(always)]
+    #[cfg_attr(not(debug_assertions), inline(always))]
     fn slot_mut(&mut self, i: usize) -> &mut Obj {
         &mut self.chunks[i >> HEAP_CHUNK_BITS][i & HEAP_CHUNK_MASK]
     }
@@ -250,14 +250,14 @@ impl Heap {
 impl Index<usize> for Heap {
     type Output = Obj;
 
-    #[inline(always)]
+    #[cfg_attr(not(debug_assertions), inline(always))]
     fn index(&self, i: usize) -> &Obj {
         &self.chunks[i >> HEAP_CHUNK_BITS][i & HEAP_CHUNK_MASK]
     }
 }
 
 impl IndexMut<usize> for Heap {
-    #[inline(always)]
+    #[cfg_attr(not(debug_assertions), inline(always))]
     fn index_mut(&mut self, i: usize) -> &mut Obj {
         if self.marking {
             self.barrier(i);
