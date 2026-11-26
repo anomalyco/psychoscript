@@ -421,6 +421,10 @@ impl<'a> Program<'a> {
                 if r.vm.gc_pending() && r.vm.fatal.is_none() {
                     r.vm.gc_point();
                 }
+                // And where a run that waits collects, in time it was not going to use.
+                if r.vm.fatal.is_none() && r.vm.outcome.is_none() && !r.vm.suspended {
+                    r.vm.gc_idle();
+                }
                 if r.vm.heap_meter.is_some() && r.vm.fatal.is_none() && r.vm.outcome.is_none() {
                     r.vm.heap_point(0);
                 }
