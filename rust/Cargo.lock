@@ -1495,6 +1495,7 @@ dependencies = [
  "icu_time",
  "idna_adapter",
  "libc",
+ "memchr",
  "num-bigint",
  "num-traits",
  "oxc_allocator",

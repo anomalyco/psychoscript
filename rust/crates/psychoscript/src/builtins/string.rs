@@ -414,13 +414,20 @@ fn s_at(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {
     })
 }
 
+/// Where `needle` first is in `hay`, in bytes. The standard library's search sets up a two-way searcher for each
+/// call, which costs more than the search itself for the short needles programs look for.
+#[inline]
+fn find_text(hay: &str, needle: &str) -> Option<usize> {
+    memchr::memmem::find(hay.as_bytes(), needle.as_bytes())
+}
+
 /// Finds `needle` in `hay` at or after code unit `from`, in code units.
 fn find16(hay: StrRef, needle: StrRef, from: usize) -> Option<usize> {
     if hay.ascii && needle.ascii {
         if from > hay.s.len() {
             return None;
         }
-        return hay.s[from..].find(needle.s).map(|i| i + from);
+        return find_text(&hay.s[from..], needle.s).map(|i| i + from);
     }
     let h = hay.utf16();
     let n = needle.utf16();
@@ -767,13 +774,20 @@ fn split(vm: &mut Vm, c: &mut Conversions, s: StrId, args: &[Value]) -> Res {
                     .map(|p| Value::Str(vm.atoms.alloc_units(p)))
                     .collect()
             } else {
-                let pieces: Vec<String> = vm
-                    .text(s)
-                    .split(vm.text(sep))
-                    .take(limit)
-                    .map(str::to_owned)
-                    .collect();
-                pieces.into_iter().map(|p| vm.string_val(p)).collect()
+                // One copy of the text and one searcher for the separator, then each piece is a short string.
+                let (text, sep) = (vm.text(s).to_owned(), vm.text(sep).to_owned());
+                let finder = memchr::memmem::Finder::new(sep.as_bytes());
+                let mut pieces = Vec::new();
+                let mut from = 0;
+                while pieces.len() < limit {
+                    let at = finder.find(&text.as_bytes()[from..]).map(|i| from + i);
+                    pieces.push(vm.string_of_str(&text[from..at.unwrap_or(text.len())]));
+                    match at {
+                        Some(at) => from = at + sep.len(),
+                        None => break,
+                    }
+                }
+                pieces
             }
         }
     };
@@ -875,7 +889,7 @@ fn replace_in(vm: &mut Vm, c: &mut Conversions, s: StrId, args: &[Value], all: b
         }
     } else {
         let mut from = 0;
-        while let Some(i) = subject[from..].find(&needle) {
+        while let Some(i) = find_text(&subject[from..], &needle) {
             positions.push(from + i);
             from += i + needle.len();
             if !all {

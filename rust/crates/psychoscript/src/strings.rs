@@ -247,6 +247,19 @@ impl Strings {
         s
     }
 
+    /// A string of text borrowed from elsewhere, a piece of another string as a rule. A short one goes at the end of
+    /// the buffer short strings share, so it allocates nothing of its own.
+    pub fn alloc_str(&mut self, s: &str) -> StrId {
+        if s.len() >= GROW_MIN || !s.is_ascii() {
+            return self.alloc(s.to_owned());
+        }
+        let g = self.arena();
+        let mut buf = std::mem::take(&mut self.grow[g]);
+        let start = buf.len();
+        buf.push_str(s);
+        self.push_grown(buf, g, start, true)
+    }
+
     /// The strings a compile starts from: the fresh runtime's (`builtins::image`), so they have the same ids in
     /// every run and a run's VM is a copy of the image.
     pub fn fresh() -> Self {
