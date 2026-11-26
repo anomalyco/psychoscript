@@ -48,11 +48,19 @@ const GREY: u8 = 1;
 const BLACK: u8 = 2;
 const FREE: u8 = 3;
 
-/// Slots in use (objects, cells and strings) at which the first cycle starts. A reducer event stays far below it, and
-/// of the benchmark programs only the JSON round trip reaches it.
+/// Slots in use (objects, cells and strings) at which the first cycle starts while the program computes. A short
+/// program, which most are, stays below it and never collects: it ends first, and its whole heap goes at once.
 const FIRST: usize = 64 * 1024;
-/// The least room a cycle leaves before the next one starts, so a small heap does not collect all the time.
+/// The least room a cycle leaves before the next one starts while the program computes, so a small heap does not
+/// collect all the time.
 const FLOOR: usize = 64 * 1024;
+/// A run that stops to wait for the host collects there, whole, once it has made this many slots since its last
+/// cycle (and half of what that cycle left): the wait is time the program was not going to use, so a long-lived run,
+/// which waits between its events, stays small without a program that only computes paying for it.
+const IDLE_ROOM: usize = 8 * 1024;
+/// The most slots in use for a whole cycle at a wait: beyond it a cycle takes longer than a wait should, and the
+/// run collects in steps as it allocates.
+const IDLE_MAX: usize = 256 * 1024;
 /// Allocations between steps.
 const STEP: usize = 256;
 /// Work units per allocation: enough to finish a cycle before the heap grows by about half. A unit is about what
@@ -897,6 +905,38 @@ impl Vm {
             self.suspend_wanted = false;
         }
         true
+    }
+
+    /// The run stopped to wait for the host: collects now, a whole cycle, if it has made enough since its last one
+    /// (`IDLE_ROOM`) and is small enough for that to be quick (`IDLE_MAX`).
+    pub(crate) fn gc_idle(&mut self) {
+        let busy = self.replay_meter.is_some()
+            || !self.replay.is_empty()
+            || self.convert_req.is_some()
+            || self.json_walk != 0;
+        if busy || stress() {
+            return;
+        }
+        let used = self.gc_used();
+        if used > IDLE_MAX {
+            return;
+        }
+        if self.gc.phase == Phase::Idle && used < self.gc.live + IDLE_ROOM.max(self.gc.live / 2) {
+            return;
+        }
+        loop {
+            self.gc.debt = MAX_WORK;
+            self.gc_step();
+            if self.gc.phase == Phase::Idle {
+                break;
+            }
+        }
+        // A step the cycle had asked for is done with it.
+        self.gc.requested = false;
+        if self.gc.owns_suspend {
+            self.gc.owns_suspend = false;
+            self.suspend_wanted = false;
+        }
     }
 
     /// Whether a step is due, for the host stop.
