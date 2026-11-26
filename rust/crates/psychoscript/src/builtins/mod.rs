@@ -61,7 +61,7 @@ pub(crate) fn image() -> &'static Image {
         vm.setup();
         Image {
             atoms: std::mem::replace(&mut vm.atoms, crate::strings::Strings::new()),
-            heap: vm.heap.clone_base(),
+            heap: std::mem::replace(&mut vm.heap, crate::collector::Heap::with_capacity(0)),
             realm: vm.realm.clone(),
             names: vm.names.clone(),
             global_map: std::mem::take(&mut vm.global_map),

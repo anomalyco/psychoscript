@@ -54,10 +54,74 @@ impl Prop {
     }
 }
 
+/// An object's properties in insertion order: its own vector, or for a built-in of the fresh runtime that the run
+/// has not changed, the image's (`builtins::image`), which every run reads in place. The first write through it
+/// (`DerefMut`, `own`) copies them, so a run pays for the built-ins it changes and no others.
+#[derive(Clone)]
+pub enum Items {
+    Shared(&'static [Prop]),
+    Own(Vec<Prop>),
+}
+
+impl Default for Items {
+    fn default() -> Self {
+        Items::Own(Vec::new())
+    }
+}
+
+impl Items {
+    /// The properties as the object's own vector, copied from the image's first if they are still its.
+    #[inline]
+    pub fn own(&mut self) -> &mut Vec<Prop> {
+        if let Items::Shared(shared) = *self {
+            *self = Items::Own(shared.to_vec());
+        }
+        match self {
+            Items::Own(items) => items,
+            Items::Shared(_) => unreachable!("made its own above"),
+        }
+    }
+
+    fn capacity(&self) -> usize {
+        match self {
+            Items::Own(items) => items.capacity(),
+            Items::Shared(_) => 0,
+        }
+    }
+}
+
+impl std::ops::Deref for Items {
+    type Target = [Prop];
+
+    #[inline(always)]
+    fn deref(&self) -> &[Prop] {
+        match self {
+            Items::Own(items) => items,
+            Items::Shared(items) => items,
+        }
+    }
+}
+
+impl std::ops::DerefMut for Items {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut [Prop] {
+        self.own()
+    }
+}
+
+impl<'a> IntoIterator for &'a Items {
+    type Item = &'a Prop;
+    type IntoIter = std::slice::Iter<'a, Prop>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
 /// Insertion-ordered properties; small objects scan linearly, larger ones keep a hash index.
 #[derive(Default, Clone)]
 pub struct Props {
-    pub items: Vec<Prop>,
+    pub items: Items,
     index: Option<Box<FxHashMap<Atom, u32>>>,
 }
 
@@ -75,7 +139,15 @@ impl Props {
     /// Room for exactly `n` properties, for an object whose count is known as it is made.
     #[inline]
     pub fn reserve_exact(&mut self, n: usize) {
-        self.items.reserve_exact(n);
+        self.items.own().reserve_exact(n);
+    }
+
+    /// These properties, read in place from the image's object they are of.
+    pub(crate) fn shared(&'static self) -> Props {
+        Props {
+            items: Items::Shared(&self.items),
+            index: self.index.clone(),
+        }
     }
 
     #[inline]
@@ -104,9 +176,10 @@ impl Props {
         let i = self.items.len();
         // The first allocation holds two properties, not the four a vector starts with: most objects are small.
         if self.items.capacity() == 0 {
-            self.items.reserve_exact(2);
+            let n = self.items.len();
+            self.items.own().reserve_exact(n.max(2));
         }
-        self.items.push(Prop::new(key, value, flags));
+        self.items.own().push(Prop::new(key, value, flags));
         if let Some(idx) = &mut self.index {
             idx.insert(key, i as u32);
         } else if self.items.len() > INDEX_THRESHOLD {
@@ -125,7 +198,7 @@ impl Props {
         let Some(i) = self.find(before) else {
             return self.push_new(key, value, flags);
         };
-        self.items.insert(i, Prop::new(key, value, flags));
+        self.items.own().insert(i, Prop::new(key, value, flags));
         if self.index.is_some() || self.items.len() > INDEX_THRESHOLD {
             let map = self
                 .items
@@ -141,7 +214,7 @@ impl Props {
         let Some(i) = self.find(key) else {
             return false;
         };
-        self.items.remove(i);
+        self.items.own().remove(i);
         if self.index.is_some() {
             let map = self
                 .items
@@ -686,8 +759,9 @@ impl Obj {
         }
     }
 
-    /// A copy of an object of the fresh runtime, whose kinds are the few with nothing a run owns alone.
-    pub(crate) fn clone_base(&self) -> Obj {
+    /// A run's copy of an object of the image, whose kinds are the few with nothing a run owns alone. Its properties
+    /// stay the image's until the run writes one.
+    pub(crate) fn clone_base(&'static self) -> Obj {
         let kind = match &self.kind {
             Kind::Ordinary => Kind::Ordinary,
             Kind::Array(items) => Kind::Array(items.clone()),
@@ -712,7 +786,7 @@ impl Obj {
         };
         Obj {
             proto: self.proto,
-            props: self.props.clone(),
+            props: self.props.shared(),
             kind,
             flags: self.flags,
             visit: 0,

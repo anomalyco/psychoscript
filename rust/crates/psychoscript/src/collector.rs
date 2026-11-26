@@ -123,9 +123,28 @@ pub struct Heap {
     /// half of it unused, and macOS does not reuse a large block `realloc` grew once it is freed: a process running
     /// one large program after another kept every heap it ever grew.
     chunks: Vec<Vec<Obj>>,
+    /// The fresh runtime's objects, which have the first ids: the image's own, read in place, until the run writes
+    /// one, which copies them all (`own_base`). Most runs never do. Object `i` past them is at `i - base.len()` in
+    /// the chunks. Empty in a heap made from scratch, as the image's is.
+    base: Base,
     len: usize,
     pub(crate) marking: bool,
     marks: Marks,
+}
+
+enum Base {
+    Shared(&'static [Obj]),
+    Own(Vec<Obj>),
+}
+
+impl Base {
+    #[inline(always)]
+    fn get(&self) -> &[Obj] {
+        match self {
+            Base::Shared(objs) => objs,
+            Base::Own(objs) => objs,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -142,20 +161,34 @@ impl Heap {
     pub fn with_capacity(n: usize) -> Heap {
         Heap {
             chunks: vec![Vec::with_capacity(n.min(HEAP_CHUNK))],
+            base: Base::Own(Vec::new()),
             len: 0,
             marking: false,
             marks: Marks::default(),
         }
     }
 
-    /// A copy of a fresh runtime's heap, which holds only what `Obj::clone_base` copies, with room for a small
-    /// program's own objects.
-    pub(crate) fn clone_base(&self) -> Heap {
-        let mut heap = Heap::with_capacity(self.len + 34);
-        for o in self.iter() {
-            heap.push(o.clone_base());
-        }
+    /// A run's heap over the image's, whose objects it reads in place, with room for a small program's own.
+    pub(crate) fn clone_base(&'static self) -> Heap {
+        let mut heap = Heap::with_capacity(34);
+        // The image's heap is made from scratch, so all of it is in its first chunk.
+        let objs = &self.chunks[0][..];
+        heap.base = Base::Shared(objs);
+        heap.len = objs.len();
         heap
+    }
+
+    /// The fresh runtime's objects as the run's own, copied from the image's at the first write to one.
+    #[cold]
+    #[inline(never)]
+    fn own_base(&mut self) -> &mut Vec<Obj> {
+        if let Base::Shared(objs) = self.base {
+            self.base = Base::Own(objs.iter().map(Obj::clone_base).collect());
+        }
+        match &mut self.base {
+            Base::Own(objs) => objs,
+            Base::Shared(_) => unreachable!("made its own above"),
+        }
     }
 
     /// The bytes of storage object `i` (`Kind::Storage`), past the barrier: bytes hold no references, so writing them
@@ -178,11 +211,28 @@ impl Heap {
 
     /// The objects in id order.
     pub fn iter(&self) -> impl Iterator<Item = &Obj> {
-        self.chunks.iter().flatten()
+        self.base.get().iter().chain(self.chunks.iter().flatten())
+    }
+
+    #[inline(always)]
+    fn slot(&self, i: usize) -> &Obj {
+        let base = self.base.get();
+        match base.get(i) {
+            Some(o) => o,
+            None => {
+                let i = i - base.len();
+                &self.chunks[i >> HEAP_CHUNK_BITS][i & HEAP_CHUNK_MASK]
+            }
+        }
     }
 
     #[cfg_attr(not(debug_assertions), inline(always))]
     fn slot_mut(&mut self, i: usize) -> &mut Obj {
+        let base = self.base.get().len();
+        if i < base {
+            return &mut self.own_base()[i];
+        }
+        let i = i - base;
         &mut self.chunks[i >> HEAP_CHUNK_BITS][i & HEAP_CHUNK_MASK]
     }
 
@@ -232,18 +282,25 @@ impl Heap {
         }
         m.color[i] = BLACK;
         // Objects are greyed here; strings, cells and atoms wait for the next step.
-        crate::reach::children(
-            &self.chunks[i >> HEAP_CHUNK_BITS][i & HEAP_CHUNK_MASK],
-            &mut |r| match r {
-                Ref::Obj(id) => {
-                    if m.color.get(id as usize) == Some(&WHITE) {
-                        m.color[id as usize] = GREY;
-                        m.grey.push(id);
-                    }
+        let o = {
+            let base = self.base.get();
+            match base.get(i) {
+                Some(o) => o,
+                None => {
+                    let i = i - base.len();
+                    &self.chunks[i >> HEAP_CHUNK_BITS][i & HEAP_CHUNK_MASK]
                 }
-                _ => m.pending.push(r),
-            },
-        );
+            }
+        };
+        crate::reach::children(o, &mut |r| match r {
+            Ref::Obj(id) => {
+                if m.color.get(id as usize) == Some(&WHITE) {
+                    m.color[id as usize] = GREY;
+                    m.grey.push(id);
+                }
+            }
+            _ => m.pending.push(r),
+        });
     }
 }
 
@@ -252,7 +309,7 @@ impl Index<usize> for Heap {
 
     #[cfg_attr(not(debug_assertions), inline(always))]
     fn index(&self, i: usize) -> &Obj {
-        &self.chunks[i >> HEAP_CHUNK_BITS][i & HEAP_CHUNK_MASK]
+        self.slot(i)
     }
 }
 
