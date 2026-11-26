@@ -6,4 +6,5 @@ ffi_module_filename = "PsychoScriptFFI"
 
 [bindings.kotlin]
 package_name = "com.anomalyco.psychoscript"
-cdylib_name = "psychoscript_mobile"
+# No `cdylib_name`: the bindings load the library they were made from (`libpsychoscript_mobile.so`, or the library
+# of a host's crate that links this one).
