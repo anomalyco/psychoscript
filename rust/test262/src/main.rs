@@ -530,7 +530,8 @@ fn run_file(path: &Path) -> Result<(), String> {
     } else {
         ""
     };
-    let code = format!("\"use strict\"; {PRELUDE}\n{source}{drain}");
+    // The trailing `void 0` keeps the script's completion value (a Uint8Array, say) from becoming the result.
+    let code = format!("\"use strict\"; {PRELUDE}\n{source}{drain}\nvoid 0");
     let run = psychoscript::test262::run(&code, TIMEOUT_MS);
     if let Some((phase, kind)) = &meta.negative {
         return match &run.result {
