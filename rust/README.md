@@ -90,6 +90,7 @@ Run from `rust/`, after `bun install` at the repository root:
 cargo fmt --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace                                         # includes every conformance recording
+                                            # on a Mac: --features psychoscript-gpu/metal (its GPU tests, else Vulkan)
 PSYCHOSCRIPT_ROUNDTRIP=1 cargo test --locked -p psychoscript-bench --test conformance
 bash test262/run.sh                                                     # test262, both ways
 bash bench/compare.sh                                                   # against the reference, writes bench/RESULTS.md
@@ -170,9 +171,12 @@ Known differences:
   sixteenth of the slice, so it may run up to that much past it. On wasm32 the clocks are `performance.now()` and
   `Date.now()` (`web-time`), and `ThreadCpu` counts wall-clock time.
 - Layout: `crates/psychoscript` (compiler on `oxc_parser`, VM, standard library, host functions, snapshots, and
-  `thread_clock`: a thread's CPU time, read on it or from another thread, for hosts too), `conformance/` (generators
-  and recordings), `bench/`, `test262/`.
+  `thread_clock`: a thread's CPU time, read on it or from another thread, for hosts too), `crates/psychoscript-gpu`
+  (GPU canvases: a program's WebGPU batches checked and replayed on a host's `wgpu` device, its `README.md`),
+  `crates/psychoscript-mobile` (UniFFI bindings for iOS and Android, its `README.md`), `conformance/` (generators and
+  recordings), `bench/`, `test262/`.
 
 Rules: pure Rust and few dependencies, no `unsafe` (outside the `thread_clock` module, whose blocks are each one
-documented OS call), never panic on user input, and unsupported syntax throws `UnsupportedSyntax` with a location where
+documented OS call; psychoscript-mobile's FFI, JNI and surfaces are its only other `unsafe`, each with its `SAFETY`
+comment), never panic on user input, and unsupported syntax throws `UnsupportedSyntax` with a location where
 it runs.

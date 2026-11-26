@@ -1,0 +1,10 @@
+[bindings.swift]
+# `import PsychoScript`; the C declarations live in the xcframework's `PsychoScriptFFI` module.
+module_name = "PsychoScript"
+ffi_module_name = "PsychoScriptFFI"
+ffi_module_filename = "PsychoScriptFFI"
+
+[bindings.kotlin]
+package_name = "com.anomalyco.psychoscript"
+# No `cdylib_name`: the bindings load the library they were made from (`libpsychoscript_mobile.so`, or the library
+# of a host's crate that links this one).

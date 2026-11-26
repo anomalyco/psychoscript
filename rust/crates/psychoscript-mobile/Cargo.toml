@@ -1,0 +1,64 @@
+[package]
+name = "psychoscript-mobile"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "PsychoScript for iOS (Swift) and Android (Kotlin): UniFFI bindings that compile a program once and run it with a JSON input"
+readme = "README.md"
+keywords = ["uniffi", "ios", "android", "interpreter", "psychoscript"]
+categories = ["api-bindings", "development-tools::ffi"]
+# The tests read psychoscript-gpu's fixtures, in the repository.
+exclude = ["tests/"]
+
+# A plain `lib` for workspace builds, and for a host's library that links it; the build scripts ask for `staticlib`
+# (iOS) and `cdylib` (Android).
+[lib]
+name = "psychoscript_mobile"
+
+[features]
+default = ["gpu"]
+# GPU canvases (`psychoscript-gpu`): live runs replay their GPU batches on wgpu (Metal on iOS and macOS, Vulkan on
+# Android and Linux) and present into the app's surfaces (`gpu::LiveGpu`, `gpu::device`, `gpu::present`). Off, a run
+# has no GPU and surfaces are refused.
+gpu = ["dep:psychoscript-gpu", "dep:wgpu"]
+# The bindings generators (`uniffi-bindgen`, `uniffi-bindgen-swift`), for the build scripts only.
+cli = ["uniffi/cli"]
+# Rust-only hooks for tests, this crate's and a host's (`gpu_lose_device`, `LiveRun::gpu_stats`, `LiveRun::gpu_posted`,
+# ...): never in a release build. The tests turn it on (the dev-dependency below).
+test-hooks = ["psychoscript-gpu?/test-hooks"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["cli"]
+
+[[bin]]
+name = "uniffi-bindgen-swift"
+path = "src/bin/uniffi-bindgen-swift.rs"
+required-features = ["cli"]
+
+[dependencies]
+psychoscript = { version = "0.1", path = "../psychoscript" }
+psychoscript-gpu = { version = "0.1", path = "../psychoscript-gpu", optional = true }
+libc = "0.2"
+serde = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
+uniffi = "0.32"
+url = "2.5"
+
+[target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
+wgpu = { version = "~30.0.1", default-features = false, features = ["std", "wgsl", "metal"], optional = true }
+
+[target.'cfg(any(target_os = "android", target_os = "linux"))'.dependencies]
+wgpu = { version = "~30.0.1", default-features = false, features = ["std", "wgsl", "vulkan"], optional = true }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+# `tests/gpu_metal_loss.rs`'s shared event (features wgpu-hal enables already).
+objc2-metal = { version = "0.3.2", default-features = false, features = ["std", "MTLDevice", "MTLEvent"] }
+
+[dev-dependencies]
+# This crate with its test hooks, for its tests.
+# (Its default features as the build asks: `--no-default-features` tests without them.)
+psychoscript-mobile = { path = ".", default-features = false, features = ["test-hooks"] }
