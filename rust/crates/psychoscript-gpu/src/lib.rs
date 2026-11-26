@@ -444,9 +444,8 @@ impl Gpu {
         self.checks.resources as u64
     }
 
-    /// A `gpu: true` canvas of the last render posted, and its size in physical pixels: call it when sending the
-    /// program its `canvas` message (after applying every batch posted before). Passes into a canvas 0 wide or
-    /// high are skipped.
+    /// A canvas the program may draw, by key, and its size in physical pixels: call it when telling the program that
+    /// size (after applying every batch posted before). Passes into a canvas 0 wide or high are skipped.
     pub fn resize(&mut self, key: &str, width: u32, height: u32) {
         let t = self.target(key);
         t.present = true;

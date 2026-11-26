@@ -18,7 +18,7 @@ enum Native {
 
 /// Where a GPU canvas is presented: from `GpuSurface.metalLayer(pointer:)` (Swift: `GpuSurface.metal(layer)`) or,
 /// on Android, `PsychoScriptGpu.surface(surface)`. It holds the layer or window until it is dropped; attach it to a
-/// run's canvas with [`crate::LiveRun::attach_surface`] or give it to a [`super::ShaderCanvas`].
+/// run's canvas with [`crate::LiveRun::attach_surface`], or present into it with a [`super::present::Attached`].
 #[derive(Debug, uniffi::Object)]
 pub struct GpuSurface {
     native: Native,

@@ -51,7 +51,7 @@ pub struct LiveOptions {
     #[uniffi(default)]
     pub allow_local_network: bool,
     /// Bytes the run's heap may hold (the language's size model, not the process's memory); over it the run ends
-    /// with `Failed(MemoryLimitExceeded)`. The spec's default for live widgets is 32 MB: set it.
+    /// with `Failed(MemoryLimitExceeded)`. Off by default: set it.
     #[uniffi(default)]
     pub max_heap_bytes: Option<u64>,
 }
@@ -77,8 +77,8 @@ pub trait LiveHandler: Send + Sync {
     fn on_posts_bytes(&self, messages: Vec<Vec<u8>>);
     fn on_warning(&self, message: String);
     fn on_exit(&self, exit: LiveExit);
-    /// A GPU canvas's state (widget runs, `widgets-gpu.md`): the canvas `key`, or `None` for every GPU canvas of the
-    /// run (now and later).
+    /// A GPU canvas's state (runs with a GPU, [`crate::gpu::LiveGpu`]): the canvas `key`, or `None` for every GPU canvas
+    /// of the run (now and later).
     fn on_gpu_canvas(&self, key: Option<String>, state: GpuCanvasState);
 }
 
@@ -196,13 +196,13 @@ impl LiveRun {
 /// Rust only, for tests and benchmarks (feature `test-hooks`).
 #[cfg(feature = "test-hooks")]
 impl LiveRun {
-    /// The run's GPU work so far, with feature `widget-gpu`.
+    /// The run's GPU work so far, with feature `gpu`.
     pub fn gpu_stats(&self) -> Option<GpuStats> {
         self.control.surfaces.as_ref().map(|s| s.stats())
     }
 
-    /// The GPU batches the program posted, as the conformance fixtures write them (`{ frame, ops, bytes }` JSON), when
-    /// the run started after [`crate::gpu_record_batches`].
+    /// The GPU batches the program posted, as its encoder recorded them ([`crate::EncodePosts::recorded`]: a host's
+    /// test hook may keep them, e.g. as the conformance fixtures write them).
     pub fn gpu_posted(&self) -> Vec<String> {
         self.control
             .encoded
@@ -248,11 +248,11 @@ impl LiveRun {
         self.deliver_value(message)
     }
 
-    /// Presents the GPU canvas `key` (a `gpu: true` canvas of the view, `widgets-gpu.md`) into `surface`, which is
+    /// Presents the GPU canvas `key` (one the program may draw, [`crate::gpu::LiveGpu::canvases`]) into `surface`, which is
     /// `width` × `height` physical pixels: the program gets that size (clamped to 4096 a side) before its next frame,
     /// and the canvas is scaled to the surface when clamped. Call it again with the new size when the canvas's size
-    /// changes, or with another surface. Presenting happens on a thread of the run's own. No-op for runs without the
-    /// widget encoder's GPU.
+    /// changes, or with another surface. Presenting happens on a thread of the run's own. No-op for runs without a GPU
+    /// (an encoder's [`crate::EncodePosts::surfaces`]).
     pub fn attach_surface(&self, key: String, surface: Arc<GpuSurface>, width: u32, height: u32) {
         if let Some(s) = &self.control.surfaces {
             s.attach(key, surface, width, height);

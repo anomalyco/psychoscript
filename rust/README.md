@@ -90,6 +90,7 @@ Run from `rust/`, after `bun install` at the repository root:
 cargo fmt --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace                                         # includes every conformance recording
+                                            # on a Mac: --features psychoscript-gpu/metal (its GPU tests, else Vulkan)
 PSYCHOSCRIPT_ROUNDTRIP=1 cargo test --locked -p psychoscript-bench --test conformance
 bash test262/run.sh                                                     # test262, both ways
 bash bench/compare.sh                                                   # against the reference, writes bench/RESULTS.md
@@ -176,5 +177,6 @@ Known differences:
   recordings), `bench/`, `test262/`.
 
 Rules: pure Rust and few dependencies, no `unsafe` (outside the `thread_clock` module, whose blocks are each one
-documented OS call), never panic on user input, and unsupported syntax throws `UnsupportedSyntax` with a location where
+documented OS call; psychoscript-mobile's FFI, JNI and surfaces are its only other `unsafe`, each with its `SAFETY`
+comment), never panic on user input, and unsupported syntax throws `UnsupportedSyntax` with a location where
 it runs.
