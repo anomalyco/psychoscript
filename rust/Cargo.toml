@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
-members = ["crates/psychoscript", "bench", "test262"]
+members = ["crates/psychoscript", "crates/psychoscript-mobile", "crates/widget-wire", "crates/widget-gpu", "bench", "test262"]
+# wgpu-hal patched (below), not a member: not built, linted or formatted as ours.
+exclude = ["vendor/wgpu-hal"]
 
 [workspace.package]
 edition = "2024"
@@ -11,3 +13,12 @@ repository = "https://github.com/anomalyco/psychoscript"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# Temporary, until a wgpu release has gfx-rs/wgpu#10875 (then delete `vendor/`, `scripts/vendor-wgpu-hal.sh`, this and
+# the `exclude` above): wgpu-hal as published plus `vendor/wgpu-hal.patch`, made by `scripts/vendor-wgpu-hal.sh
+# <version>`, which with build-ios.sh runs its fence tests. On Metal any command buffer that fails loses the device, as
+# in Dawn, and a submission finishes only with all its command buffers and every earlier one (gfx-rs/wgpu#10570); stock
+# wgpu-hal counts failed work finished and tells nothing. Only Metal's code changes: iOS's; Android's Vulkan is as
+# published. Re-make it at the new version when wgpu is bumped.
+[patch.crates-io]
+wgpu-hal = { path = "vendor/wgpu-hal" }
