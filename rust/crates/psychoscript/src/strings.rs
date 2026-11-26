@@ -343,6 +343,9 @@ impl Strings {
             std::mem::forget(std::mem::replace(&mut self.bufs[id as usize], entry));
             return id;
         }
+        if self.bufs.len() == self.bufs.capacity() {
+            crate::collector::grow_arena(&mut self.bufs);
+        }
         self.bufs.push(entry);
         (self.bufs.len() - 1) as StrId
     }

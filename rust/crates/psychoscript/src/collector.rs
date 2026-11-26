@@ -36,7 +36,6 @@
 
 use std::borrow::Cow;
 use std::ops::{Deref, DerefMut, Index, IndexMut};
-use std::slice::SliceIndex;
 
 use crate::object::{Kind, Obj};
 use crate::reach::Ref;
@@ -87,6 +86,30 @@ fn stress() -> bool {
     *ON.get_or_init(|| std::env::var_os("PSYCHOSCRIPT_GC_STRESS").is_some_and(|v| v == "1"))
 }
 
+/// Objects to a chunk of the heap: 4,096 of them are 256 KiB.
+const HEAP_CHUNK_BITS: u32 = 12;
+const HEAP_CHUNK: usize = 1 << HEAP_CHUNK_BITS;
+const HEAP_CHUNK_MASK: usize = HEAP_CHUNK - 1;
+
+/// From this many slots on, a full arena moves to a new allocation instead of growing in place.
+const ARENA_MOVE_FROM: usize = 4096;
+
+/// Makes room in a full arena (cells, strings) for more slots. A large one moves to a new allocation of twice the
+/// size rather than growing in place: macOS does not reuse a large block that `realloc` grew once it is freed, so a
+/// process running one large program after another would keep every arena it ever grew.
+#[cold]
+#[inline(never)]
+pub(crate) fn grow_arena<T>(v: &mut Vec<T>) {
+    let n = v.len();
+    if n < ARENA_MOVE_FROM {
+        // A small one grows in place by a quarter: doubled, a short program's would be half unused.
+        return v.reserve_exact((n / 4).max(64));
+    }
+    let mut bigger = Vec::with_capacity(n * 2);
+    bigger.append(v);
+    *v = bigger;
+}
+
 pub(crate) fn first_limit() -> usize {
     if stress() { 0 } else { FIRST }
 }
@@ -94,7 +117,13 @@ pub(crate) fn first_limit() -> usize {
 /// The run's objects. The first write to an object while marking traces it first: every `heap[id]` that may write
 /// goes through `IndexMut`.
 pub struct Heap {
-    objs: Vec<Obj>,
+    /// The objects, `CHUNK` to a chunk, every chunk but the last full: object `i` is `chunks[i >> HEAP_CHUNK_BITS][i &
+    /// CHUNK_MASK]`. A chunk is allocated at its full size and never grows, except the first, which starts small for
+    /// the many runs that make few objects. One vector for them all would grow with `realloc`, which leaves up to
+    /// half of it unused, and macOS does not reuse a large block `realloc` grew once it is freed: a process running
+    /// one large program after another kept every heap it ever grew.
+    chunks: Vec<Vec<Obj>>,
+    len: usize,
     pub(crate) marking: bool,
     marks: Marks,
 }
@@ -112,7 +141,8 @@ struct Marks {
 impl Heap {
     pub fn with_capacity(n: usize) -> Heap {
         Heap {
-            objs: Vec::with_capacity(n),
+            chunks: vec![Vec::with_capacity(n.min(HEAP_CHUNK))],
+            len: 0,
             marking: false,
             marks: Marks::default(),
         }
@@ -121,7 +151,7 @@ impl Heap {
     /// A copy of a fresh runtime's heap, which holds only what `Obj::clone_base` copies, with room for a small
     /// program's own objects.
     pub(crate) fn clone_base(&self) -> Heap {
-        let mut heap = Heap::with_capacity(self.len() + 34);
+        let mut heap = Heap::with_capacity(self.len + 34);
         for o in self.iter() {
             heap.push(o.clone_base());
         }
@@ -132,15 +162,56 @@ impl Heap {
     /// changes nothing marking must see.
     #[inline(always)]
     pub(crate) fn bytes_of(&mut self, i: Id) -> Option<&mut Vec<u8>> {
-        match &mut self.objs.get_mut(i as usize)?.kind {
+        if i as usize >= self.len {
+            return None;
+        }
+        match &mut self.slot_mut(i as usize).kind {
             Kind::Storage(data) => Some(data),
             _ => None,
         }
     }
 
     #[inline(always)]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// The objects in id order.
+    pub fn iter(&self) -> impl Iterator<Item = &Obj> {
+        self.chunks.iter().flatten()
+    }
+
+    #[inline(always)]
+    fn slot_mut(&mut self, i: usize) -> &mut Obj {
+        &mut self.chunks[i >> HEAP_CHUNK_BITS][i & HEAP_CHUNK_MASK]
+    }
+
+    #[inline(always)]
     pub fn push(&mut self, o: Obj) {
-        self.objs.push(o);
+        match self.chunks.last_mut() {
+            Some(last) if last.len() < last.capacity() => last.push(o),
+            _ => self.push_slow(o),
+        }
+        self.len += 1;
+    }
+
+    /// `push` with the last chunk at its capacity: the first chunk doubles until it is whole, then each new chunk
+    /// is allocated whole.
+    #[cold]
+    #[inline(never)]
+    fn push_slow(&mut self, o: Obj) {
+        match self.chunks.last_mut() {
+            Some(last) if last.capacity() < HEAP_CHUNK => {
+                let more = last.capacity().clamp(16, HEAP_CHUNK - last.capacity());
+                last.reserve_exact(more);
+                last.push(o);
+            }
+            _ => {
+                let mut chunk = Vec::with_capacity(HEAP_CHUNK);
+                chunk.push(o);
+                self.chunks.push(chunk);
+            }
+        }
     }
 
     /// Fills freed slot `i`, past the barrier: a reused slot is black or white already. The sweep left an empty
@@ -148,7 +219,7 @@ impl Heap {
     /// `alloc`.
     #[inline(always)]
     pub(crate) fn put(&mut self, i: usize, o: Obj) {
-        std::mem::forget(std::mem::replace(&mut self.objs[i], o));
+        std::mem::forget(std::mem::replace(self.slot_mut(i), o));
     }
 
     /// Traces object `i` as it is, before a write, unless it is black already.
@@ -161,33 +232,27 @@ impl Heap {
         }
         m.color[i] = BLACK;
         // Objects are greyed here; strings, cells and atoms wait for the next step.
-        crate::reach::children(&self.objs[i], &mut |r| match r {
-            Ref::Obj(id) => {
-                if m.color.get(id as usize) == Some(&WHITE) {
-                    m.color[id as usize] = GREY;
-                    m.grey.push(id);
+        crate::reach::children(
+            &self.chunks[i >> HEAP_CHUNK_BITS][i & HEAP_CHUNK_MASK],
+            &mut |r| match r {
+                Ref::Obj(id) => {
+                    if m.color.get(id as usize) == Some(&WHITE) {
+                        m.color[id as usize] = GREY;
+                        m.grey.push(id);
+                    }
                 }
-            }
-            _ => m.pending.push(r),
-        });
+                _ => m.pending.push(r),
+            },
+        );
     }
 }
 
-impl Deref for Heap {
-    type Target = Vec<Obj>;
+impl Index<usize> for Heap {
+    type Output = Obj;
 
     #[inline(always)]
-    fn deref(&self) -> &Vec<Obj> {
-        &self.objs
-    }
-}
-
-impl<I: SliceIndex<[Obj]>> Index<I> for Heap {
-    type Output = I::Output;
-
-    #[inline(always)]
-    fn index(&self, i: I) -> &I::Output {
-        &self.objs[i]
+    fn index(&self, i: usize) -> &Obj {
+        &self.chunks[i >> HEAP_CHUNK_BITS][i & HEAP_CHUNK_MASK]
     }
 }
 
@@ -197,7 +262,7 @@ impl IndexMut<usize> for Heap {
         if self.marking {
             self.barrier(i);
         }
-        &mut self.objs[i]
+        self.slot_mut(i)
     }
 }
 
@@ -888,10 +953,10 @@ impl Vm {
             match self.heap.marks.color[at] {
                 WHITE => {
                     self.heap.marks.color[at] = FREE;
-                    if let Kind::BigInt(n) = &self.heap.objs[at].kind {
+                    if let Kind::BigInt(n) = &self.heap[at].kind {
                         self.bigints.forget(at as Id, n);
                     }
-                    self.heap.objs[at] = Obj::new(None, Kind::Ordinary);
+                    *self.heap.slot_mut(at) = Obj::new(None, Kind::Ordinary);
                     self.gc.free.push(at as Id);
                     work += FREE_WORK;
                 }

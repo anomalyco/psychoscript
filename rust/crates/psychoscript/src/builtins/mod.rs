@@ -389,7 +389,7 @@ impl Vm {
 
     /// Makes the fresh runtime's built-ins, unless the VM was made with them (`Vm::new` from the image).
     pub fn setup(&mut self) {
-        if !self.heap.is_empty() {
+        if self.heap.len() != 0 {
             return;
         }
         let object_proto = self.alloc(Obj::new(None, Kind::Ordinary));
