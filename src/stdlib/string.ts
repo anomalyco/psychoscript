@@ -174,6 +174,13 @@ export const stringGlobal = <R>(ctx: Interpreter<R>) => {
       if (thisValue === null || thisValue === undefined) {
         throw typeError(`String.prototype.${name} called on null or undefined.`)
       }
+      // A string receiver with nothing to convert among the arguments, which is nearly every call: no conversion
+      // list to build. The same call makes the same choice when it runs again, so later conversions keep their order.
+      if (typeof thisValue === "string") {
+        let plain = true
+        for (let i = 0; i < hints.length && plain; i++) plain = !(args[i] instanceof Obj)
+        if (plain) return op(thisValue, args)
+      }
       return withPrimitives(
         ["string", ...hints],
         [thisValue, ...args.slice(0, hints.length)],
