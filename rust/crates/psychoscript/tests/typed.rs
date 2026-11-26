@@ -111,7 +111,7 @@ fn programs() {
                 "TypeError: Cannot set property 'buffer' of a Float32Array which has only a getter.",
                 "TypeError: fa.map is not a function.",
                 "TypeError: fa.forEach is not a function.",
-                "TypeError: TextDecoder.decode expects a Uint8Array, received a Float32Array.",
+                "TypeError: TextDecoder.decode expects an ArrayBuffer or a Uint8Array, received a Float32Array.",
                 "TypeError: Float32Array.from expects a function callback.",
                 "ok",
                 "TypeError: Cannot delete property '0'.",

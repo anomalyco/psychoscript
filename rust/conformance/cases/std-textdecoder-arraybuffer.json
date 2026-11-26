@@ -1,0 +1,13 @@
+{
+  "bindings": {},
+  "ok": true,
+  "value": {
+    "buffer": "hé",
+    "view": "é",
+    "empty": "",
+    "array": "TypeError: TextDecoder.decode expects an ArrayBuffer or a Uint8Array, received an array.",
+    "text": "TypeError: TextDecoder.decode expects an ArrayBuffer or a Uint8Array, received a string."
+  },
+  "logs": [],
+  "metadata": null
+}

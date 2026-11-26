@@ -206,7 +206,7 @@
     ],
     [
       "TypeError",
-      "TextDecoder.decode expects a Uint8Array, received an array."
+      "TextDecoder.decode expects an ArrayBuffer or a Uint8Array, received an array."
     ],
     [
       "TypeError",

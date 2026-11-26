@@ -2155,17 +2155,23 @@ fn decoder_decode(vm: &mut Vm, this: Value, args: &[Value], _: Id) -> Res {
         _ => return Err(incompatible(vm, "TextDecoder.prototype.decode", &this)),
     };
     let input = arg(args, 0);
-    let chunk = match input {
-        Value::Undef => Vec::new(),
-        v => match bytes_of(vm, &v) {
-            Some(b) => b,
-            None => {
-                let d = describe_value(vm, &v);
-                return Err(vm.type_error(&format!(
-                    "TextDecoder.decode expects a Uint8Array, received {d}."
-                )));
-            }
+    // A Uint8Array or an ArrayBuffer, as the reference decodes.
+    let bytes = match input {
+        Value::Obj(o) => match &vm.heap[o as usize].kind {
+            Kind::Bytes(b) if matches!(b.elem, Elem::U8 | Elem::ArrayBuffer) => Some(**b),
+            _ => None,
         },
+        _ => None,
+    };
+    let chunk = match (input, bytes) {
+        (Value::Undef, _) => Vec::new(),
+        (_, Some(b)) => b.to_vec(vm),
+        (v, None) => {
+            let d = describe_value(vm, &v);
+            return Err(vm.type_error(&format!(
+                "TextDecoder.decode expects an ArrayBuffer or a Uint8Array, received {d}."
+            )));
+        }
     };
     let stream = match arg(args, 1) {
         Value::Undef => false,
