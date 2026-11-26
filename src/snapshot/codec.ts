@@ -340,7 +340,7 @@ const builtinSpecs = (): ReadonlyArray<ClassSpec> => [
     ctor: Interpreter,
     anchor: "ctx",
     fields: ["logs", "globalScope", "modules", "namespaces", "protector", "consoleState"],
-    skip: ["builtins", "vm", "intrinsics", "hosts", "hostNamespaces", "moduleGlobals", "sources", "prelude"],
+    skip: ["builtins", "vm", "intrinsics", "hosts", "hostNamespaces", "moduleGlobals", "sources", "prelude", "made", "intrinsicGlobals"],
   },
 ]
 

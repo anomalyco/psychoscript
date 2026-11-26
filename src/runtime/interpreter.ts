@@ -22,11 +22,14 @@ export type NamespaceHandler = {
 /** One program execution: the VM that runs it, captured logs, and the global scope built once. */
 export class Interpreter<R> {
   readonly builtins: Builtins
-  readonly logs: Array<string>
+  logs: Array<string>
   /** Runs program code, and keeps the job queue, promises, and host calls the program waits on. */
-  readonly vm: Vm
+  vm!: Vm
   /** Names for this runtime's intrinsics, taken before any program code can change a built-in. */
-  readonly intrinsics: IntrinsicNames
+  intrinsics!: IntrinsicNames
+  // What the intrinsics are made of, kept to bind them again for another run (`recycle`).
+  private readonly made: Array<Obj>
+  private readonly intrinsicGlobals: ReadonlyArray<readonly [string, Value]>
   /** The built-ins written in psychoscript, and the scope they close over. */
   readonly prelude: Prelude
   /** How the program meets its host globals: calls, values crossing, and saving what they return; see `hostGlobals`. */
@@ -66,8 +69,50 @@ export class Interpreter<R> {
       return [intrinsics, new Prelude(this as Interpreter<unknown>, intrinsics)] as const
     })
     this.prelude = prelude
+    this.made = made
+    this.intrinsicGlobals = intrinsics
     this.builtins.Array.guard = { key: IteratorSymbol, protector: this.protector }
     this.builtins.Iterator.guard = { key: "next", protector: this.protector }
+    this.bind(options)
+    nativeRule.sealed.add(this.builtins.Function)
+  }
+
+  /**
+   * Whether another run may take this runtime as it is: the run that had it changed no intrinsic (each is still as
+   * made, by its dirty bit) and left arrays iterable directly. Everything else a run has is made again by `recycle`.
+   */
+  reusable(): boolean {
+    if (!this.protector.intact) return false
+    for (const value of this.made) if (value instanceof Obj && value.intrinsic <= 0) return false
+    return true
+  }
+
+  /** Gives this runtime, which is `reusable`, to another run: its host globals, bindings, names and VM, made anew. */
+  recycle(options: {
+    readonly logs?: Array<string>
+    readonly globals?: (ctx: Interpreter<R>) => ReadonlyArray<readonly [string, Value]>
+    readonly bindings?: (ctx: Interpreter<R>) => ReadonlyArray<readonly [string, Value]>
+  }): void {
+    this.logs = options.logs ?? []
+    this.globalScope.clear()
+    this.globalScope.set("this", { value: undefined })
+    this.modules.clear()
+    this.namespaces.clear()
+    this.sources.clear()
+    this.hostNamespaces.clear()
+    this.hosts = undefined
+    this.consoleState.counts.clear()
+    this.consoleState.timers.clear()
+    this.consoleState.indent = ""
+    this.bind(options)
+  }
+
+  // The part of a runtime that belongs to one run: host globals, bindings, intrinsic names, and the VM.
+  private bind(options: {
+    readonly globals?: (ctx: Interpreter<R>) => ReadonlyArray<readonly [string, Value]>
+    readonly bindings?: (ctx: Interpreter<R>) => ReadonlyArray<readonly [string, Value]>
+  }): void {
+    const [made, intrinsics] = [this.made, this.intrinsicGlobals]
     const hosts = options.globals?.(this) ?? []
     this.intrinsics = new IntrinsicNames(
       made,
@@ -84,7 +129,6 @@ export class Interpreter<R> {
     for (const [name, value] of [...intrinsics, ...(options.bindings?.(this) ?? []), ...hosts]) {
       this.globalScope.set(name, { value })
     }
-    nativeRule.sealed.add(this.builtins.Function)
     // The VM never runs host work itself, so it does not need the services that work runs with.
     this.vm = new Vm(this as Interpreter<unknown>)
   }

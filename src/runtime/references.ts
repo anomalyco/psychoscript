@@ -45,10 +45,14 @@ const find = (
 
 const never = () => false
 
-export const containsRuntimeReference = (value: Value): boolean => find(value, isRuntimeReference, never, new Set())
+// A primitive holds no reference, and most arguments are primitives: no walk is set up for one.
+const primitive = (value: Value): boolean => typeof value !== "object" || value === null
+
+export const containsRuntimeReference = (value: Value): boolean =>
+  !primitive(value) && find(value, isRuntimeReference, never, new Set())
 
 export const containsOpaqueReference = (value: Value): boolean =>
-  find(value, isOpaque, (current) => isRuntimeReference(current) && !isOpaque(current), new Set())
+  !primitive(value) && find(value, isOpaque, (current) => isRuntimeReference(current) && !isOpaque(current), new Set())
 
 // Reject cycles before mutation so later boundary walks remain safe.
 export const rejectCircularInsertion = (
