@@ -1166,18 +1166,17 @@ fn step_output_values_with_to_json_read_as_their_json_does() {
     );
 }
 
-/// Typed arrays besides `Uint8Array` (psychoscript's `typed_arrays`) are on for runs with the widget encoder, step and
-/// live, for a GPU batch's `ArrayBuffer`; other runs keep the default, off.
+/// Typed arrays besides `Uint8Array` are always on in psychoscript: in runs with the widget encoder, step and live (a
+/// GPU batch's `ArrayBuffer`), and in other runs.
 #[test]
-fn widget_runs_have_typed_arrays_and_others_dont() {
+fn every_run_has_typed_arrays() {
     const KINDS: &str =
         "[typeof ArrayBuffer, typeof Float32Array, typeof Uint32Array, typeof Uint8Array]";
     let on = json!(["function", "function", "function", "function"]);
-    let off = json!(["undefined", "undefined", "undefined", "function"]);
     let plain = program(format!("return {KINDS}"))
         .run("{}".into(), RunOptions::default())
         .unwrap();
-    assert_eq!(serde_json::from_str::<Value>(&plain).unwrap(), off);
+    assert_eq!(serde_json::from_str::<Value>(&plain).unwrap(), on);
     let step = run_bytes(
         &format!("__widget_emit({{ type: \"divider\" }})\nreturn {{ state: {KINDS} }}"),
         RunOptions::default(),

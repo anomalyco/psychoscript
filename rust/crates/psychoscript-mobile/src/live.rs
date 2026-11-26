@@ -495,8 +495,6 @@ pub(crate) struct Control {
     surfaces: Option<Arc<dyn LiveSurfaces>>,
     /// The encoder's boundary depth.
     max_value_depth: Option<usize>,
-    /// Whether the encoder's runs have typed arrays.
-    typed_arrays: bool,
     /// When the timer asks for the encoder's held-back posts next.
     due_at: Mutex<Option<Instant>>,
     /// [`LiveContext::wake`] asked for the encoder's [`EncodePosts::due`]: a host call that waits on is polled again
@@ -542,7 +540,6 @@ impl Control {
                 input_name,
                 transport,
                 max_value_depth: encoder.as_ref().and_then(|e| e.0.max_value_depth()),
-                typed_arrays: encoder.as_ref().is_some_and(|e| e.0.typed_arrays()),
                 surfaces: encoded.as_ref().and_then(|e| e.surfaces()),
                 encoded: encoded.map(Mutex::new),
                 delivered: Mutex::new(Vec::new()),
@@ -740,7 +737,6 @@ impl Control {
         Runtime::make()
             .limits(limits)
             .translate(translate)
-            .typed_arrays(self.typed_arrays)
             .globals(move |run| {
                 let text: Arc<str> = match &input {
                     Some(text) => {

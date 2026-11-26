@@ -244,7 +244,7 @@ fn live_run(
 const GPU: &str = r#"const __widget_protocol = 2
 const typed = __input().typed
 const FLOATS = 16384
-// Only widget runs have typed arrays (psychoscript `typed_arrays`): the JSON run keeps its numbers in plain arrays.
+// The JSON run keeps its numbers in plain arrays: a JSON post can't carry typed arrays' bytes.
 const vertices = typed ? new Float32Array(FLOATS) : new Array(FLOATS).fill(0)
 const uniforms = typed ? new Float32Array(16) : new Array(16).fill(0)
 let t = 0

@@ -24,22 +24,18 @@ fn run(src: &str, encode: fn(&HostValue) -> Encoded) -> (Vec<Encoded>, Value) {
         functions: TranslateFunctions::Drop,
         ..Translate::default()
     };
-    // As a widget run has it (psychoscript-mobile): typed arrays on, for GPU batches.
-    let runtime = Runtime::make()
-        .translate(translate)
-        .typed_arrays(true)
-        .globals(move |_run| {
-            let sink = sink.clone();
-            [(
-                "__emit",
-                HostFunction::new(move |args: Vec<HostValue>, _call| {
-                    sink.lock()
-                        .unwrap()
-                        .push(encode(args.first().unwrap_or(&HostValue::Undefined)));
-                    HostValue::Undefined
-                }),
-            )]
-        });
+    let runtime = Runtime::make().translate(translate).globals(move |_run| {
+        let sink = sink.clone();
+        [(
+            "__emit",
+            HostFunction::new(move |args: Vec<HostValue>, _call| {
+                sink.lock()
+                    .unwrap()
+                    .push(encode(args.first().unwrap_or(&HostValue::Undefined)));
+                HostValue::Undefined
+            }),
+        )]
+    });
     let data = runtime
         .execute(src)
         .result

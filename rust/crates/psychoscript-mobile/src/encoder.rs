@@ -23,11 +23,6 @@ pub trait EncodeValues: Send + Sync {
     fn max_value_depth(&self) -> Option<usize> {
         None
     }
-    /// Whether runs with this encoder have the typed arrays besides `Uint8Array` (the language's `typed_arrays`, off
-    /// by default). A snapshot resumes only with the same setting.
-    fn typed_arrays(&self) -> bool {
-        false
-    }
     /// What one `run_bytes` keeps between its emit calls and its result, for a run with this input.
     fn step(&self, input: &HostValue) -> Box<dyn EncodeStep>;
     /// What a live run keeps between its posts, and what it may do with its run (`ctx`).
@@ -143,8 +138,9 @@ pub(crate) fn marked(v: &HostValue) -> bool {
     }
 }
 
-/// What a call with an encoder threw, as the run's error names it. The language locates only its own kinds: an encoder's
-/// failure is thrown as `InvalidDataValue` so the run's error is at the call, then given its own kind there.
+/// What a call with an encoder threw, as the run's error names it. The language locates only the errors a host throws
+/// as [`HostError::located`], which have no kind of their own: an encoder's failure is thrown as a located `Error`, so
+/// the run's error is at the call, then given its own kind there.
 #[derive(Default)]
 pub(crate) struct Thrown(Mutex<Option<Named>>);
 
@@ -162,12 +158,12 @@ impl Thrown {
             Reject::Function { arg } => Some(HostError::located("TypeError", function(label, arg))),
             Reject::Failure(f) => {
                 let message = f.message.to_string_lossy().into_owned();
-                let thrown = Failure::new("InvalidDataValue", message.clone());
+                let thrown = HostError::located("Error", message.as_str());
                 *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(Named {
                     message,
                     kind: f.kind,
                 });
-                Some(HostValue::Failure(thrown))
+                Some(thrown)
             }
         }
     }
@@ -183,7 +179,7 @@ impl Thrown {
             return;
         };
         if let PsychoScriptError::Runtime { kind, reason, .. } = error
-            && kind == "InvalidDataValue"
+            && kind == "ExecutionFailure"
             && reason.contains(&named.message)
         {
             *kind = named.kind;
@@ -238,10 +234,6 @@ mod widget {
         }
         fn max_value_depth(&self) -> Option<usize> {
             Some(widget_wire::MAX_VALUE_DEPTH)
-        }
-        // A GPU batch's bytes are an `ArrayBuffer` (`widgets-gpu.md`).
-        fn typed_arrays(&self) -> bool {
-            true
         }
         fn step(&self, input: &HostValue) -> Box<dyn EncodeStep> {
             let draw = input.get("phase").and_then(HostValue::as_str) == Some("draw");

@@ -1043,16 +1043,16 @@ fn time_the_thread_isnt_scheduled_doesnt_count_against_the_slice() {
     }
 }
 
-/// Runs without the widget encoder keep psychoscript's default: no typed arrays besides `Uint8Array`.
+/// Runs without an encoder have psychoscript's typed arrays too: they are always on.
 #[test]
-fn live_runs_without_an_encoder_have_no_typed_arrays() {
+fn live_runs_without_an_encoder_have_typed_arrays() {
     let (run, rx) = start_source(
         "__host.post([typeof ArrayBuffer, typeof Float32Array, typeof Uint8Array])\nawait __host.receive()",
         LiveOptions::default(),
     );
     assert_eq!(
         post(&rx),
-        serde_json::json!(["undefined", "undefined", "function"])
+        serde_json::json!(["function", "function", "function"])
     );
     run.stop();
 }
