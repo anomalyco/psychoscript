@@ -313,6 +313,8 @@ pub struct Vm {
     pub(crate) arrays_walked: bool,
     /// The program's source, which `stack` lines locate sites in.
     pub(crate) code: std::sync::Arc<str>,
+    /// The byte offsets `[start, end)` of the program's own lines (`Runtime::program_lines`), the rest being the host's.
+    pub(crate) program: Option<(u32, u32)>,
     /// Set while a built-in called from bytecode or a convert frame's rerun runs: a conversion that calls the
     /// program is then restarted instead of made inline (see `conversion.rs`).
     pub(crate) convert_ok: bool,
@@ -442,6 +444,7 @@ impl Vm {
             entered: false,
             arrays_walked: true,
             code: std::sync::Arc::from(""),
+            program: None,
             convert_ok: false,
             convert_req: None,
             replay: VecDeque::new(),
@@ -1760,11 +1763,32 @@ impl Vm {
 
     /// The source offset of that call, where an error about what it returns points.
     pub(crate) fn call_offset(&self) -> Option<u32> {
-        self.frames
+        let own = self
+            .frames
             .iter()
             .rev()
             .find(|f| !matches!(f.kind, FrameKind::Native(..)))
-            .and_then(|f| f.func.pos.get(f.pc.wrapping_sub(1)).copied())
+            .and_then(|f| f.func.pos.get(f.pc.wrapping_sub(1)).copied());
+        match (self.program, own) {
+            (Some(_), Some(o)) if !self.in_program(o) => self.program_site().or(own),
+            _ => own,
+        }
+    }
+
+    /// Whether `offset` is in the program's own lines (`Runtime::program_lines`; every offset without them).
+    fn in_program(&self, offset: u32) -> bool {
+        self.program
+            .is_none_or(|(start, end)| (start..end).contains(&offset))
+    }
+
+    /// The site of the innermost frame on the stack that is in the program's own lines.
+    fn program_site(&self) -> Option<u32> {
+        self.frames
+            .iter()
+            .rev()
+            .filter(|f| !matches!(f.kind, FrameKind::Native(..)))
+            .filter_map(|f| f.func.pos.get(f.pc.wrapping_sub(1)).copied())
+            .find(|&o| self.in_program(o))
     }
 
     #[cold]
@@ -1911,6 +1935,24 @@ impl Vm {
     /// Fills in the source location of a failure raised by the instruction before `pc`.
     #[inline(never)]
     fn locate(&mut self, e: &Value, func: &FuncProto, pc: usize) {
+        // An error the program made, thrown in the host's code (`Runtime::program_lines`): a failure at the nearest
+        // frame of the program, as an error the VM raises there is.
+        if self.program.is_some()
+            && let Value::Obj(id) = *e
+            && matches!(self.heap[id as usize].kind, Kind::Error(None))
+            && (func.pos.get(pc.saturating_sub(1))).is_some_and(|&o| !self.in_program(o))
+            && let Some(p) = self.program_site()
+        {
+            let (_, message) = crate::convert::error_parts(self, id);
+            self.heap[id as usize].kind = Kind::Error(Some(Box::new(Failure {
+                kind: DiagnosticKind::ExecutionFailure,
+                message,
+                offset: Some(p),
+                site: Default::default(),
+                host: false,
+            })));
+            return;
+        }
         if let Value::Obj(id) = e
             && let Kind::Error(Some(f)) = &mut self.heap[*id as usize].kind
             && f.offset.is_none()
@@ -1939,6 +1981,15 @@ impl Vm {
                 && let Kind::Error(Some(f)) = &mut self.heap[*id as usize].kind
             {
                 f.offset = Some(o as u32);
+            }
+            // Raised in the host's code: at the nearest frame of the program.
+            if let Kind::Error(Some(f)) = &self.heap[*id as usize].kind
+                && let Some(o) = f.offset
+                && !self.in_program(o)
+                && let Some(p) = self.program_site()
+                && let Kind::Error(Some(f)) = &mut self.heap[*id as usize].kind
+            {
+                f.offset = Some(p);
             }
             let Kind::Error(Some(f)) = &self.heap[*id as usize].kind else {
                 return;

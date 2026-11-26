@@ -292,12 +292,22 @@ pub fn program(source: &str) -> Program {
 
 /// A live run of `program` with the test encoder, its input `input` and the encoder's `extra` fields.
 pub fn start(program: &Program, input: Value, extra: Vec<(String, HostValue)>) -> Run {
+    start_with(program, input, extra, options())
+}
+
+/// [`start`] with `options`.
+pub fn start_with(
+    program: &Program,
+    input: Value,
+    extra: Vec<(String, HostValue)>,
+    options: LiveOptions,
+) -> Run {
     let (tx, rx) = channel();
     let run = program
         .start_live(
             input.to_string(),
             Box::new(Handler(Mutex::new(tx))),
-            options(),
+            options,
             None,
             Some(encoder(extra)),
         )

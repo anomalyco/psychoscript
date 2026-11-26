@@ -24,6 +24,17 @@ pub struct RunOptions {
     /// fails with `MemoryLimitExceeded`.
     #[uniffi(default)]
     pub max_heap_bytes: Option<u64>,
+    /// The source's lines that are the program's own; the rest is the host's code around it (a prelude, an entry
+    /// call). An error raised there, or by a host function called from there, is at the nearest line of the program.
+    #[uniffi(default)]
+    pub program_lines: Option<ProgramLines>,
+}
+
+/// Lines `first` to `last` of a source (1-based, inclusive).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct ProgramLines {
+    pub first: u32,
+    pub last: u32,
 }
 
 /// A program compiled once, to run as often as needed, from any thread, concurrently too: each run
@@ -282,6 +293,10 @@ impl Program {
                 max_value_depth,
                 ..Default::default()
             });
+        let runtime = match options.program_lines {
+            Some(lines) => runtime.program_lines(lines.first, lines.last),
+            None => runtime,
+        };
         let outcome = runtime.execute(&self.compiled);
         drop(runtime);
         outcome.result.map_err(|d| {

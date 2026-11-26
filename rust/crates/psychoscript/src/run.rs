@@ -195,6 +195,7 @@ pub fn start(
         vm.global_map.insert(a, val);
     }
     vm.code = code.clone();
+    vm.program = setup.program_lines.map(|lines| program_range(&code, lines));
     vm.load(program);
     Ok(Box::new(Running::new(vm, code)))
 }
@@ -236,6 +237,7 @@ pub fn start_for_resume(
     vm.start_heap_meter(true);
     let code: Arc<str> = Arc::from(code);
     vm.code = code.clone();
+    vm.program = setup.program_lines.map(|lines| program_range(&code, lines));
     vm.load(program);
     Ok(Resumed {
         running: Box::new(Running::new(vm, code)),
@@ -448,6 +450,22 @@ fn suffix(location: Option<(u32, u32)>) -> String {
         Some((line, col)) => format!(" (line {line}, col {col})"),
         None => String::new(),
     }
+}
+
+/// The byte offsets `[start, end)` of 1-based lines `first` to `last` (inclusive) of `code`.
+fn program_range(code: &str, (first, last): (u32, u32)) -> (u32, u32) {
+    let start_of = |line: u32| -> usize {
+        if line <= 1 {
+            return 0;
+        }
+        code.match_indices('\n')
+            .nth(line as usize - 2)
+            .map_or(code.len(), |(i, _)| i + 1)
+    };
+    (
+        start_of(first) as u32,
+        start_of(last.saturating_add(1)) as u32,
+    )
 }
 
 /// 1-based line and column (in UTF-16 units) of a byte offset.

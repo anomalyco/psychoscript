@@ -168,6 +168,14 @@ impl Thrown {
         }
     }
 
+    /// The run's error is of kind `kind` when it is the error of `message` thrown (a host function's own kind).
+    pub(crate) fn named(&self, kind: &str, message: &str) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(Named {
+            message: message.to_owned(),
+            kind: kind.to_owned(),
+        });
+    }
+
     /// A function where none may go in argument `arg` of the call `label`.
     pub(crate) fn function(&self, label: &str, arg: usize) -> HostValue {
         HostError::located("TypeError", function(label, arg))

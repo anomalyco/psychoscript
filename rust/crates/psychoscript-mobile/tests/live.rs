@@ -1056,3 +1056,59 @@ fn live_runs_without_an_encoder_have_typed_arrays() {
     );
     run.stop();
 }
+
+/// A fetch the crate denies, uncaught, fails the run with its kind at the program's `fetch` call; with
+/// `program_lines`, a call the host's code makes is at the program's line that called it.
+#[test]
+fn an_uncaught_fetch_denial_has_its_kind_at_the_programs_line() {
+    let host = "const get = (url) => __host.fetch({ url })\n";
+    for (source, options, at) in [
+        (
+            "const url = \"https://example.com/\"\n  await __host.fetch({ url })".to_owned(),
+            LiveOptions::default(),
+            (2, 9),
+        ),
+        (
+            format!("{host}const url = \"https://example.com/\"\n  await get(url)"),
+            LiveOptions {
+                program_lines: Some(psychoscript_mobile::ProgramLines { first: 2, last: 3 }),
+                ..Default::default()
+            },
+            (3, 9),
+        ),
+    ] {
+        let program = Program::new(source, "__input".into()).unwrap();
+        let (h, rx) = handler();
+        let _run = program
+            .start_live("null".into(), h, options, None, None)
+            .unwrap();
+        let exit = loop {
+            match next(&rx) {
+                Event::Exit(exit) => break exit,
+                Event::Warning(_) => {}
+                other => panic!("expected the exit, got {other:?}"),
+            }
+        };
+        let LiveExit::Failed {
+            error:
+                PsychoScriptError::Runtime {
+                    kind,
+                    reason,
+                    line,
+                    column,
+                },
+        } = exit
+        else {
+            panic!("a program error, got {exit:?}")
+        };
+        assert_eq!(
+            (kind.as_str(), line.zip(column)),
+            ("CapabilityDenied", Some(at)),
+            "{reason}"
+        );
+        assert!(
+            reason.contains("this widget has no https capability"),
+            "{reason}"
+        );
+    }
+}

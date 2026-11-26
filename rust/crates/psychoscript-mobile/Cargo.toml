@@ -1,6 +1,6 @@
 [package]
 name = "psychoscript-mobile"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -40,7 +40,7 @@ path = "src/bin/uniffi-bindgen-swift.rs"
 required-features = ["cli"]
 
 [dependencies]
-psychoscript = { version = "0.1", path = "../psychoscript" }
+psychoscript = { version = "0.1.2", path = "../psychoscript" }
 psychoscript-gpu = { version = "0.1", path = "../psychoscript-gpu", optional = true }
 libc = "0.2"
 serde = "1"

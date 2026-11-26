@@ -183,6 +183,7 @@ pub(crate) struct Setup {
     pub modules: Arc<[(String, String)]>,
     pub limits: Limits,
     pub translate: Translate,
+    pub program_lines: Option<(u32, u32)>,
 }
 
 impl Setup {
@@ -269,6 +270,16 @@ impl Runtime {
     /// How host calls' arguments carry functions and promises; see [`Translate`].
     pub fn translate(mut self, translate: Translate) -> Self {
         self.setup.translate = translate;
+        self
+    }
+
+    /// The lines of the source that are the program's own, `first` to `last` (1-based, inclusive); the rest is the
+    /// host's code around it (a prelude, an entry call). An error raised in the host's code, or by a host function
+    /// called from it, is located at the nearest frame of the program on the stack (for an asynchronous host function,
+    /// as the call was made), when there is one; so is [`Call::location`](crate::Call::location). Without it every
+    /// line is the program's.
+    pub fn program_lines(mut self, first: u32, last: u32) -> Self {
+        self.setup.program_lines = Some((first, last));
         self
     }
 

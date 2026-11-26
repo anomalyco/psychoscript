@@ -10,7 +10,9 @@ mod gpu_support;
 use std::time::{Duration, Instant};
 
 use gpu_support::*;
-use psychoscript_mobile::{GpuCanvasState, GpuErrorKind, LiveExit, gpu_device};
+use psychoscript_mobile::{
+    GpuCanvasState, GpuErrorKind, LiveExit, LiveOptions, ProgramLines, gpu_device,
+};
 use serde_json::{Value, json};
 
 #[test]
@@ -102,7 +104,9 @@ fn a_batch_of_the_wrong_shape_stops_the_canvases_and_the_run_goes_on() {
                 GpuCanvasState::Stopped {
                     kind: GpuErrorKind::Program,
                     message: message.into(),
-                    report: true
+                    report: true,
+                    line: Some(16),
+                    column: Some(1),
                 }
             ),
             "{batch}"
@@ -243,12 +247,11 @@ fn a_snapshot_keeps_the_stops_and_drops_handles_from_before() {
     }
     r.frames(3);
     r.frame_request();
-    let stop = GpuCanvasState::Stopped {
-        kind: GpuErrorKind::Program,
-        message: "gpu op 1: no handle 999".into(),
-        report: true,
-    };
-    r.wait(|e| matches!(e, Event::Gpu(Some(k), s) if k == "b" && *s == stop).then_some(()));
+    r.wait(|e| {
+        matches!(e, Event::Gpu(Some(k), GpuCanvasState::Stopped { kind: GpuErrorKind::Program, message, report: true, .. })
+            if k == "b" && message == "gpu op 1: no handle 999")
+        .then_some(())
+    });
     r.live("a");
     r.run.pause().unwrap();
     let snapshot = r.run.snapshot().unwrap();
@@ -261,6 +264,8 @@ fn a_snapshot_keeps_the_stops_and_drops_handles_from_before() {
         kind: GpuErrorKind::Program,
         message: "gpu op 1: no handle 999".into(),
         report: false,
+        line: None,
+        column: None,
     };
     r.wait(|e| matches!(e, Event::Gpu(Some(k), s) if k == "b" && *s == stopped).then_some(()));
     assert_eq!(r.sent(), json!({ "type": "gpu", "lost": "unknown" }));
@@ -339,6 +344,38 @@ fn a_surface_not_laid_out_gives_the_program_no_size() {
     assert_eq!(
         sizes(&mut r),
         [json!({ "type": "canvas", "key": "c", "width": 4096, "height": 50 })]
+    );
+    r.run.stop();
+}
+
+/// With `program_lines`, a batch's error is at the program's line that posted it, not at the host's code that posts.
+#[test]
+fn a_batch_error_is_at_the_programs_post() {
+    // Lines 1 to 15 are the host's (`COMMON`, and `frame` posting), 16 to 18 the program's.
+    let source = "const frame = (gpu) => post({ frame: true, gpu })\npost({ canvases: [\"c\"] })\n  frame(\"x\")\nawait next()";
+    let options = LiveOptions {
+        slice_budget_ms: 60_000,
+        program_lines: Some(ProgramLines {
+            first: 16,
+            last: 18,
+        }),
+        ..Default::default()
+    };
+    let mut r = start_with(&hand_made(source), json!({}), Vec::new(), options);
+    r.run.deliver(canvas("c", 8, 8)).unwrap();
+    let stopped = r.wait(|e| match e {
+        Event::Gpu(_, s @ GpuCanvasState::Stopped { .. }) => Some(s.clone()),
+        _ => None,
+    });
+    assert_eq!(
+        stopped,
+        GpuCanvasState::Stopped {
+            kind: GpuErrorKind::Program,
+            message: "a batch must be an object".into(),
+            report: true,
+            line: Some(17),
+            column: Some(3),
+        }
     );
     r.run.stop();
 }

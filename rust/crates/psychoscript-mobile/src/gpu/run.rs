@@ -22,8 +22,8 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// What waits for a new device after a loss, to replay in order.
 enum Held {
-    Batch(Vec<Arg>, Vec<u8>),
-    Shape(Option<Vec<Arg>>, String),
+    Batch(Vec<Arg>, Vec<u8>, Option<(u32, u32)>),
+    Shape(Option<Vec<Arg>>, String, Option<(u32, u32)>),
     EndFrame,
     Canvases(Vec<String>),
     Resize(String, u32, u32),
@@ -96,7 +96,8 @@ impl LiveGpu {
             .handler(|h| h.on_gpu_canvas(key.map(str::to_owned), state));
     }
 
-    fn stopped(&self, e: &GpuError) {
+    /// `at`: the line and column of the post that carried the batch.
+    fn stopped(&self, e: &GpuError, at: Option<(u32, u32)>) {
         let kind = match e.kind {
             ErrorKind::Program => GpuErrorKind::Program,
             ErrorKind::Client => GpuErrorKind::Client,
@@ -105,6 +106,8 @@ impl LiveGpu {
             kind,
             message: e.message.clone(),
             report: report && kind == GpuErrorKind::Program,
+            line: at.map(|(l, _)| l),
+            column: at.map(|(_, c)| c),
         };
         match &e.canvases {
             Stops::All => self.tell(None, state(true)),
@@ -240,6 +243,8 @@ impl LiveGpu {
                 kind,
                 message: stop.message,
                 report: false,
+                line: None,
+                column: None,
             };
             self.tell(key.as_deref(), state);
         }
@@ -268,7 +273,7 @@ impl LiveGpu {
                 // The program first: when the app hears of it, its message is there.
                 self.ctx.deliver(lost_message(&reason, &message));
                 if let Some(e) = hung {
-                    self.stopped(&e);
+                    self.stopped(&e, None);
                 }
                 let why = match message.is_empty() {
                     true => format!("the GPU device was lost ({reason})"),
@@ -282,7 +287,7 @@ impl LiveGpu {
         }
         let hangs = std::mem::take(&mut *lock(&self.hangs));
         for e in hangs {
-            self.stopped(&e);
+            self.stopped(&e, None);
         }
         if self.replaced.swap(false, Ordering::SeqCst) {
             self.replace();
@@ -294,6 +299,8 @@ impl LiveGpu {
                     kind: GpuErrorKind::Client,
                     message: why,
                     report: false,
+                    line: None,
+                    column: None,
                 },
             );
         }
@@ -344,8 +351,8 @@ impl LiveGpu {
         self.tell_restored(told);
         for h in held {
             match h {
-                Held::Batch(ops, bytes) => self.batch_in(st, &ops, &bytes),
-                Held::Shape(ops, message) => self.shape_in(st, ops.as_deref(), message),
+                Held::Batch(ops, bytes, at) => self.batch_in(st, &ops, &bytes, at),
+                Held::Shape(ops, message, at) => self.shape_in(st, ops.as_deref(), message, at),
                 Held::EndFrame => {
                     if let Some(g) = st.gpu.as_mut() {
                         g.end_frame();
@@ -360,14 +367,20 @@ impl LiveGpu {
     }
 
     /// A batch of the wrong shape ([`LiveGpu::shape_error`]): it stops canvases; nothing replays.
-    fn shape_in(&self, st: &mut State, ops: Option<&[Arg]>, message: String) {
+    fn shape_in(
+        &self,
+        st: &mut State,
+        ops: Option<&[Arg]>,
+        message: String,
+        at: Option<(u32, u32)>,
+    ) {
         let Some(gpu) = st.gpu.as_mut() else { return };
         if let Err(e) = gpu.shape_error(ops, message) {
-            self.stopped(&e);
+            self.stopped(&e, at);
         }
     }
 
-    fn batch_in(&self, st: &mut State, ops: &[Arg], bytes: &[u8]) {
+    fn batch_in(&self, st: &mut State, ops: &[Arg], bytes: &[u8], at: Option<(u32, u32)>) {
         let Some(gpu) = st.gpu.as_mut() else { return };
         #[cfg(feature = "test-hooks")]
         let started = std::time::Instant::now();
@@ -387,7 +400,7 @@ impl LiveGpu {
             if lock(&self.loss).is_some() {
                 return;
             }
-            self.stopped(&e);
+            self.stopped(&e, at);
         }
         st.flights.extend(watch);
         self.present(st);
@@ -512,8 +525,10 @@ fn resize_in(st: &mut State, key: &str, w: u32, h: u32) {
 
 /// What the program posts, in order.
 impl LiveGpu {
-    /// A batch the program posted, its ops and bytes, replayed now (or when the device is there).
+    /// A batch the program posted, its ops and bytes, replayed now (or when the device is there). Its errors are at the
+    /// post's line and column ([`LiveContext::post_location`]).
     pub fn batch(&self, ops: &[Arg], bytes: &[u8]) {
+        let at = self.ctx.post_location();
         // A batch replays once the GPU is done with the run's batch before the last: the GPU draws one while the next
         // replays (on a Pixel the CPU and GPU took turns, the GPU idle a third of the time at a third of its clock),
         // and a program whose frames take the GPU longer than the display's waits for it, on the run's thread, with
@@ -527,21 +542,22 @@ impl LiveGpu {
         }
         let mut st = lock(&self.state);
         if let Some(held) = st.held.as_mut() {
-            held.push(Held::Batch(ops.to_vec(), bytes.to_vec()));
+            held.push(Held::Batch(ops.to_vec(), bytes.to_vec(), at));
             return;
         }
-        self.batch_in(&mut st, ops, bytes);
+        self.batch_in(&mut st, ops, bytes, at);
     }
 
     /// A batch the program posted that isn't one (`psychoscript_gpu::Gpu::shape_error`'s messages): `ops` its ops when
     /// they are a list.
     pub fn shape_error(&self, ops: Option<&[Arg]>, message: String) {
+        let at = self.ctx.post_location();
         let mut st = lock(&self.state);
         if let Some(held) = st.held.as_mut() {
-            held.push(Held::Shape(ops.map(<[Arg]>::to_vec), message));
+            held.push(Held::Shape(ops.map(<[Arg]>::to_vec), message, at));
             return;
         }
-        self.shape_in(&mut st, ops, message);
+        self.shape_in(&mut st, ops, message, at);
     }
 
     /// A frame request, after the batch it carries.

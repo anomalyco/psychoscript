@@ -445,8 +445,12 @@ impl RunHost {
     }
 
     /// What a host function's call gets.
-    pub(crate) fn call(&self, call: u64) -> crate::host_function::Call {
-        crate::host_function::Call::new(self.run.id.clone(), call, self.suspending.clone())
+    pub(crate) fn call(
+        &self,
+        call: u64,
+        site: Option<(u32, std::sync::Arc<str>)>,
+    ) -> crate::host_function::Call {
+        crate::host_function::Call::new(self.run.id.clone(), call, self.suspending.clone(), site)
     }
 
     /// A synchronous host call starts: a suspend is refused until it returns (`SuspendWatch::enter_sync`).
@@ -693,16 +697,19 @@ pub fn settle(vm: &mut Vm, p: Id, s: Settlement) {
 }
 
 /// What a host function threw, as the program sees it: a failure keeps its kind and suggestions, and a
-/// [`HostValue::Located`] is an error of its class located at `site`, the call's.
+/// [`HostValue::Located`] is an error of its class located at `site`, the call's, with its own fields.
 fn thrown_value(vm: &mut Vm, thrown: &HostValue, label: &str, site: Option<u32>) -> Value {
     match thrown {
-        HostValue::Located(e) => {
-            let proto = error_proto(vm, e.name.as_str().unwrap_or_default());
+        HostValue::Located(he) => {
+            let proto = error_proto(vm, he.name.as_str().unwrap_or_default());
             let e = vm.failure(
                 proto,
-                &e.message.to_run_text(),
+                &he.message.to_run_text(),
                 DiagnosticKind::ExecutionFailure,
             );
+            if let Value::Obj(id) = e {
+                error_fields(vm, id, he, label, 0);
+            }
             locate_at(vm, &e, site);
             e
         }
@@ -917,7 +924,9 @@ fn call_host(vm: &mut Vm, f: &Callee, args: &[Value], target: Target, callee: Va
     };
     let call_id = vm.host.next_call();
     vm.host.enter_sync(call_id, target.label.clone());
-    let call = vm.host.call(call_id);
+    let call = vm
+        .host
+        .call(call_id, vm.call_offset().map(|o| (o, vm.code.clone())));
     // Host work, which neither the CPU time nor the stretch under `Limits::slice_ms` counts.
     let span = vm.host_span();
     let returned = match home_of(vm) {
@@ -1135,7 +1144,7 @@ fn track(
 
 /// Starts an async or durable call whose promise is `p`, or starts one again on resume.
 fn spawn_call(vm: &mut Vm, p: Id, f: &Callee, mut r: Restart, holds_functions: bool) {
-    let call = vm.host.call(r.call);
+    let call = vm.host.call(r.call, r.site.map(|o| (o, vm.code.clone())));
     let home = home_of(vm);
     let detached = Arc::new(AtomicBool::new(false));
     let (label, owner, site) = (r.label.clone(), r.owner.clone(), r.site);
@@ -1927,27 +1936,33 @@ fn error_from_host(vm: &mut Vm, e: &HostError, label: &str, depth: usize) -> Res
             let key = vm.names.cause;
             vm.define_hidden(id, key, c);
         }
-        for (k, item) in &e.fields {
-            if matches!(
-                k.as_str(),
-                Some("stack" | "message" | "constructor" | "toString" | "__proto__")
-            ) {
-                continue;
-            }
-            if matches!(
-                item,
-                HostValue::Function(_) | HostValue::Durable(_) | HostValue::Namespace(_)
-            ) {
-                continue;
-            }
-            let shown = k.to_string_lossy();
-            if let Ok(val) = from_host(vm, item, &next(&shown), &Place::default(), depth + 1) {
-                let key = vm.atoms.intern(&k.to_run_text());
-                vm.define(id, key, val);
-            }
-        }
+        error_fields(vm, id, e, label, depth);
     }
     Ok(err)
+}
+
+/// Gives the error `id` the host error's own data, as fields.
+fn error_fields(vm: &mut Vm, id: crate::value::Id, e: &HostError, label: &str, depth: usize) {
+    let next = |key: &str| format!("{label}.{key}");
+    for (k, item) in &e.fields {
+        if matches!(
+            k.as_str(),
+            Some("stack" | "message" | "constructor" | "toString" | "__proto__")
+        ) {
+            continue;
+        }
+        if matches!(
+            item,
+            HostValue::Function(_) | HostValue::Durable(_) | HostValue::Namespace(_)
+        ) {
+            continue;
+        }
+        let shown = k.to_string_lossy();
+        if let Ok(val) = from_host(vm, item, &next(&shown), &Place::default(), depth + 1) {
+            let key = vm.atoms.intern(&k.to_run_text());
+            vm.define(id, key, val);
+        }
+    }
 }
 
 // Apart in a debug build, to keep the frames of a deep value small; inlined in a release build.

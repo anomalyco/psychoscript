@@ -220,8 +220,11 @@ impl Rejection {
         Rejection::new("RateLimited", message)
     }
 
-    pub(crate) fn value(self) -> HostValue {
-        HostValue::Error(Box::new(
+    /// What the program gets: an error with `kind` and `message`, located at the `fetch` call, and uncaught the run's
+    /// error of kind `kind` (`thrown`).
+    pub(crate) fn value(self, thrown: &crate::encoder::Thrown) -> HostValue {
+        thrown.named(self.kind, &self.message);
+        HostValue::Located(Box::new(
             HostError::named(self.kind, self.message.as_str())
                 .with_field("kind", HostValue::String(self.kind.into())),
         ))

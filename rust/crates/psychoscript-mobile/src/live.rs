@@ -54,6 +54,10 @@ pub struct LiveOptions {
     /// with `Failed(MemoryLimitExceeded)`. Off by default: set it.
     #[uniffi(default)]
     pub max_heap_bytes: Option<u64>,
+    /// The source's lines that are the program's own ([`crate::RunOptions::program_lines`]): an error raised in the
+    /// host's code around them, a GPU batch's error included, is at the nearest line of the program.
+    #[uniffi(default)]
+    pub program_lines: Option<crate::ProgramLines>,
 }
 
 impl Default for LiveOptions {
@@ -63,6 +67,7 @@ impl Default for LiveOptions {
             https_hosts: None,
             allow_local_network: false,
             max_heap_bytes: None,
+            program_lines: None,
         }
     }
 }
@@ -111,6 +116,12 @@ impl LiveContext {
             c.woken.store(true, Ordering::SeqCst);
             c.wake_all();
         }
+    }
+
+    /// The line and column of the `__host.post` the run is handling (with `program_lines`, of the nearest line of the
+    /// program), for what an encoder's posts do with it.
+    pub fn post_location(&self) -> Option<(u32, u32)> {
+        self.0.upgrade().and_then(|c| *lock(&c.post_at))
     }
 
     /// The run's handler (call it on the run's thread), unless the run is gone.
@@ -503,6 +514,8 @@ pub(crate) struct Control {
     /// A program error that ended the run at once (a view the encoder refused).
     ended: Mutex<Option<PsychoScriptError>>,
     thrown: Thrown,
+    /// The line and column of the post being handled ([`LiveContext::post_location`]).
+    post_at: Mutex<Option<(u32, u32)>>,
     state: Mutex<State>,
     /// The psychoscript run of the current thread, for its metadata.
     run: Mutex<Option<Run>>,
@@ -547,6 +560,7 @@ impl Control {
                 due_at: Mutex::new(None),
                 woken: AtomicBool::new(false),
                 thrown: Thrown::default(),
+                post_at: Mutex::new(None),
                 state: Mutex::new(State::Starting),
                 run: Mutex::new(None),
                 inbox: Mutex::default(),
@@ -734,7 +748,11 @@ impl Control {
             max_value_depth: self.max_value_depth,
             ..Default::default()
         };
-        Runtime::make()
+        let runtime = match self.options.program_lines {
+            Some(lines) => Runtime::make().program_lines(lines.first, lines.last),
+            None => Runtime::make(),
+        };
+        runtime
             .limits(limits)
             .translate(translate)
             .globals(move |run| {
@@ -760,11 +778,12 @@ impl Control {
                     })
                 });
                 let c = control.clone();
-                let post = HostFunction::new(move |args: Vec<HostValue>, _call| -> HostResult {
+                let post = HostFunction::new(move |args: Vec<HostValue>, call| -> HostResult {
                     c.interrupted()?;
                     c.computing();
                     let _host = HostSection::enter(&c);
                     c.unmarked(&args, 1, "__host.post")?;
+                    *lock(&c.post_at) = call.location();
                     c.post(args.first().unwrap_or(&HostValue::Undefined))
                 });
                 let c = control.clone();
@@ -1358,7 +1377,7 @@ impl Control {
         let reject = |r: Rejection| {
             let mut s = lock(&slot);
             s.denied = r.denial();
-            s.result = Some(Err(r.value()));
+            s.result = Some(Err(r.value(&self.thrown)));
             drop(s);
             slot.clone()
         };
@@ -1394,7 +1413,7 @@ impl Control {
                     &stopping,
                 );
                 let denied = result.as_ref().err().and_then(Rejection::denial);
-                let result = result.map_err(Rejection::value);
+                let result = result.map_err(|r| r.value(&control.thrown));
                 lock(&control.fetch_budget).in_flight -= 1;
                 let waker = {
                     let mut slot = lock(&worker_slot);

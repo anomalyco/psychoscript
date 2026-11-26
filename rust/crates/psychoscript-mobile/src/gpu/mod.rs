@@ -179,11 +179,14 @@ pub enum GpuCanvasState {
     /// making the device), for the app to show or ignore.
     Unavailable { reason: String },
     /// An error stopped it for the rest of the run: its placeholder with `message`. With `report`, report it once
-    /// (a program error); a client error is logged.
+    /// (a program error); a client error is logged. `line` and `column`: a batch's error is at the post that carried
+    /// it (`LiveOptions::program_lines`: the nearest line of the program).
     Stopped {
         kind: GpuErrorKind,
         message: String,
         report: bool,
+        line: Option<u32>,
+        column: Option<u32>,
     },
     /// The device was lost: the placeholder until the program draws it again (`Live`). `reason` is wgpu's, worked
     /// out once at the loss (`the GPU device was lost (unknown): ...`), for the app to show or ignore.
