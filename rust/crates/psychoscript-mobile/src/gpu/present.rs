@@ -1,4 +1,4 @@
-//! Presenting canvases into the app's surfaces. A run's GPU hands each canvas's newest texture to its [`Surfaces`]
+//! Presenting canvases into the app's surfaces. A run's GPU hands each canvas's newest texture to its `Surfaces`
 //! and goes on: a thread of the run's own presents it into the canvas's attached surface (one copy, or a scaled draw
 //! when the sizes or formats differ), so a slow, hidden or detached surface never holds up the run. Presents beyond
 //! one per texture are skipped; detaching waits only for a present in progress. A host's own GPU canvas presents

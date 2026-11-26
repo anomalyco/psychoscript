@@ -17,7 +17,7 @@ pub struct Dev {
     pub adapter: wgpu::Adapter,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
-    /// The canvases' format ([`format`]).
+    /// The canvases' format ([`format()`]).
     pub format: wgpu::TextureFormat,
     /// Counts devices made: a newer one replaced a lost one.
     pub generation: u64,
