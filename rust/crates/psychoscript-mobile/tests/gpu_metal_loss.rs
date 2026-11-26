@@ -3,7 +3,7 @@
 //! event nothing signals, which Metal times out after about 5 s (no shader runs, so the GPU isn't recovered), while
 //! the submission's own work completes. On a device of its own.
 
-#![cfg(all(feature = "widget-gpu", target_os = "macos"))]
+#![cfg(all(feature = "gpu", target_os = "macos"))]
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};

@@ -1,7 +1,8 @@
 //! Presenting canvases into the app's surfaces. A run's GPU hands each canvas's newest texture to its [`Surfaces`]
 //! and goes on: a thread of the run's own presents it into the canvas's attached surface (one copy, or a scaled draw
 //! when the sizes or formats differ), so a slow, hidden or detached surface never holds up the run. Presents beyond
-//! one per texture are skipped; detaching waits only for a present in progress.
+//! one per texture are skipped; detaching waits only for a present in progress. A host's own GPU canvas presents
+//! into its surface with an [`Attached`], on a thread of its own.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -17,14 +18,14 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// A canvas's newest image.
 #[derive(Clone)]
-pub(crate) struct Frame {
+pub struct Frame {
     pub texture: wgpu::Texture,
-    pub alpha: widget_gpu::AlphaMode,
+    pub alpha: psychoscript_gpu::AlphaMode,
     pub dev: Arc<Dev>,
 }
 
 /// A surface attached to a canvas, made into a wgpu surface when first presented to.
-pub(crate) struct Attached {
+pub struct Attached {
     native: Arc<GpuSurface>,
     width: u32,
     height: u32,
@@ -40,12 +41,13 @@ struct Made {
         wgpu::SurfaceConfiguration,
         u64,
         (u32, u32),
-        widget_gpu::AlphaMode,
+        psychoscript_gpu::AlphaMode,
     )>,
 }
 
 impl Attached {
-    pub(crate) fn new(native: Arc<GpuSurface>, width: u32, height: u32) -> Attached {
+    /// `native`, presented into at `width` × `height` physical pixels.
+    pub fn new(native: Arc<GpuSurface>, width: u32, height: u32) -> Attached {
         Attached {
             native,
             width,
@@ -54,12 +56,13 @@ impl Attached {
         }
     }
 
-    pub(crate) fn resize(&mut self, width: u32, height: u32) {
+    /// Its new size, from the next present.
+    pub fn resize(&mut self, width: u32, height: u32) {
         (self.width, self.height) = (width, height);
     }
 
     /// Presents `frame`: copies it into the surface's next texture (scaled when the sizes differ).
-    pub(crate) fn present(&mut self, frame: &Frame, blit: &mut Blit) -> Result<Shown, String> {
+    pub fn present(&mut self, frame: &Frame, blit: &mut Blit) -> Result<Shown, String> {
         let device = &frame.dev.device;
         let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
@@ -227,7 +230,7 @@ impl Attached {
 
 /// How a present went.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Shown {
+pub enum Shown {
     Yes,
     /// The surface gave no texture within its timeout: try again.
     Timeout,
@@ -245,13 +248,13 @@ fn lost(dev: &Dev) -> bool {
 
 fn alpha_mode(
     modes: &[wgpu::CompositeAlphaMode],
-    alpha: widget_gpu::AlphaMode,
+    alpha: psychoscript_gpu::AlphaMode,
 ) -> wgpu::CompositeAlphaMode {
     use wgpu::CompositeAlphaMode as M;
     let want: &[M] = match alpha {
-        widget_gpu::AlphaMode::Opaque => &[M::Opaque, M::Inherit, M::Auto],
+        psychoscript_gpu::AlphaMode::Opaque => &[M::Opaque, M::Inherit, M::Auto],
         // A `CAMetalLayer` that isn't opaque composites premultiplied colors (wgpu calls it post-multiplied).
-        widget_gpu::AlphaMode::Premultiplied => {
+        psychoscript_gpu::AlphaMode::Premultiplied => {
             &[M::PreMultiplied, M::PostMultiplied, M::Inherit, M::Auto]
         }
     };
@@ -266,7 +269,7 @@ fn configure(
     dev: &Dev,
     width: u32,
     height: u32,
-    alpha: widget_gpu::AlphaMode,
+    alpha: psychoscript_gpu::AlphaMode,
 ) -> Result<wgpu::SurfaceConfiguration, String> {
     let caps = surface.get_capabilities(&dev.adapter);
     // A surface larger than the device's textures is configured smaller, its aspect kept: the system scales it.
@@ -346,7 +349,7 @@ struct Out { @builtin(position) p: vec4f, @location(0) uv: vec2f }
 
 /// Draws a canvas into a surface texture of another size or format, filtered: one full-screen triangle.
 #[derive(Default)]
-pub(crate) struct Blit {
+pub struct Blit {
     made: Option<(
         u64,
         wgpu::BindGroupLayout,

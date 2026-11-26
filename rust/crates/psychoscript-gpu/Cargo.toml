@@ -1,0 +1,30 @@
+[package]
+name = "psychoscript-gpu"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "GPU canvases for PsychoScript programs: checks and replays the WebGPU batches a program records on a wgpu device the host gives"
+readme = "README.md"
+# The conformance fixtures stay in the repository.
+exclude = ["tests/"]
+
+[dependencies]
+serde_json = "1"
+# Backends are the host's: it enables the ones it runs on (a desktop host its own, psychoscript-mobile `metal` or
+# `vulkan`).
+wgpu = { version = "~30.0.1", default-features = false, features = ["std", "wgsl"] }
+
+[features]
+# The tests on Metal (macOS) instead of Vulkan: `cargo test -p psychoscript-gpu --features metal`.
+metal = ["wgpu/metal"]
+# Hooks for tests (this crate's and a host's), never in a host's release build.
+test-hooks = []
+
+[dev-dependencies]
+# Tests run on Vulkan: this VM's lavapipe, or a real GPU.
+wgpu = { version = "~30.0.1", default-features = false, features = ["std", "wgsl", "vulkan"] }
+psychoscript = { path = "../psychoscript" }
+psychoscript-gpu = { path = ".", features = ["test-hooks"] }

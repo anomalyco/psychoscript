@@ -90,7 +90,7 @@ impl GpuSurface {
 
 impl GpuSurface {
     /// What wgpu makes a surface from. The surface must not outlive `self`.
-    #[cfg(feature = "widget-gpu")]
+    #[cfg(feature = "gpu")]
     pub(crate) fn target(&self) -> wgpu::SurfaceTargetUnsafe {
         match self.native {
             #[cfg(any(target_os = "ios", target_os = "macos"))]
@@ -116,7 +116,7 @@ impl GpuSurface {
 
     /// The `CAMetalLayer`, for its settings wgpu leaves.
     #[cfg_attr(
-        not(all(feature = "widget-gpu", any(target_os = "ios", target_os = "macos"))),
+        not(all(feature = "gpu", any(target_os = "ios", target_os = "macos"))),
         allow(dead_code)
     )]
     pub(crate) fn layer(&self) -> Option<*mut c_void> {

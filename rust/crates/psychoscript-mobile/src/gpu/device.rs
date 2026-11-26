@@ -1,6 +1,7 @@
-//! The app's one GPU device, shared by every widget run and [`super::ShaderCanvas`]: Metal on iOS and macOS, Vulkan
-//! on Android (Android 15 or newer, API 35 and up: `widgets-gpu.md` names 15 and 16) and Linux. Made when first needed, on a
-//! thread of its own ([`prepare`]), and made again after a loss.
+//! The app's one GPU device, shared by every live run's GPU ([`super::LiveGpu`]) and the host's own GPU canvases:
+//! Metal on iOS and macOS, Vulkan on Android (Android 15 or newer, API 35 and up) and Linux. Made when first needed,
+//! on a thread of its own ([`prepare`]), and made again after a loss: a host's canvas looks at [`current`]'s
+//! `generation` to see a new one.
 
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,12 +12,12 @@ use std::time::Duration;
 use std::time::Instant;
 
 /// A device and what it was made with.
-pub(crate) struct Dev {
+pub struct Dev {
     pub instance: wgpu::Instance,
     pub adapter: wgpu::Adapter,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
-    /// The canvases' format (`gpu.format`).
+    /// The canvases' format ([`format`]).
     pub format: wgpu::TextureFormat,
     /// Counts devices made: a newer one replaced a lost one.
     pub generation: u64,
@@ -66,7 +67,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// Starts making the device on a thread of its own, unless it is made or being made.
-pub(crate) fn prepare() {
+pub fn prepare() {
     let s = shared();
     let mut state = lock(&s.state);
     if matches!(*state, State::Idle) {
@@ -101,7 +102,7 @@ fn make_and_publish() {
 }
 
 /// The device if it is made, why there is none, or `None` while it is being made.
-pub(crate) fn ready() -> Option<Result<Arc<Dev>, String>> {
+pub fn ready() -> Option<Result<Arc<Dev>, String>> {
     match &*lock(&shared().state) {
         State::Ready(dev) => Some(Ok(dev.clone())),
         State::Unavailable(why) => Some(Err(why.clone())),
@@ -109,8 +110,9 @@ pub(crate) fn ready() -> Option<Result<Arc<Dev>, String>> {
     }
 }
 
-/// The canvas format this platform's device has (`gpu.format`), known before it is made; or why there is no GPU.
-pub(crate) fn format() -> Result<&'static str, String> {
+/// The canvas format this platform's device has, as a program names it, known before it is made; or why there is no
+/// GPU.
+pub fn format() -> Result<&'static str, String> {
     Ok(match backends()? {
         wgpu::Backends::METAL => "bgra8unorm",
         _ => "rgba8unorm",
@@ -118,7 +120,7 @@ pub(crate) fn format() -> Result<&'static str, String> {
 }
 
 /// The device, made now if it isn't (waiting for one being made), or why there is none.
-pub(crate) fn get() -> Result<Arc<Dev>, String> {
+pub fn get() -> Result<Arc<Dev>, String> {
     prepare();
     let s = shared();
     let mut state = lock(&s.state);
@@ -134,7 +136,7 @@ pub(crate) fn get() -> Result<Arc<Dev>, String> {
 }
 
 /// The device if one is ready, without waiting.
-pub(crate) fn current() -> Option<Arc<Dev>> {
+pub fn current() -> Option<Arc<Dev>> {
     match &*lock(&shared().state) {
         State::Ready(dev) => Some(dev.clone()),
         _ => None,
@@ -180,7 +182,7 @@ fn listeners() -> Vec<Arc<dyn Loss>> {
 /// `on_submitted_work_done` ([`watch`]), which first submits the writes queued since the last submit (`writeBuffer`
 /// ops a batch replayed without a `submit`), and its `present`, which submits the surface texture's move to the
 /// present state. Never held while waiting for a surface's texture.
-pub(crate) fn submits() -> MutexGuard<'static, ()> {
+pub fn submits() -> MutexGuard<'static, ()> {
     static SUBMITS: Mutex<()> = Mutex::new(());
     lock(&SUBMITS)
 }
@@ -284,12 +286,12 @@ fn make() -> Result<Dev, String> {
             }
         }
     }
-    // The program's limits (`widget_gpu::device_limits`), but the adapter's texture size: the host checks hold
+    // The program's limits (`psychoscript_gpu::device_limits`), but the adapter's texture size: the host checks hold
     // programs to 4096, and a surface (a 5K screen) may be larger.
     let required_limits = wgpu::Limits {
         max_texture_dimension_2d: (adapter.limits().max_texture_dimension_2d)
-            .max(widget_gpu::device_limits().max_texture_dimension_2d),
-        ..widget_gpu::device_limits()
+            .max(psychoscript_gpu::device_limits().max_texture_dimension_2d),
+        ..psychoscript_gpu::device_limits()
     };
     let required_limits = simulator_limits(required_limits, &adapter);
     if let Some(low) = under(&required_limits, &adapter.limits()) {
@@ -313,7 +315,7 @@ fn make() -> Result<Dev, String> {
     };
     device.set_device_lost_callback(move |reason, message| lost(generation, reason, message));
     Ok(Dev {
-        format: widget_gpu::preferred_format(info.backend),
+        format: psychoscript_gpu::preferred_format(info.backend),
         instance,
         adapter,
         device,
@@ -461,20 +463,20 @@ pub(crate) fn poll(device: &wgpu::Device, wait: bool) -> bool {
 pub(crate) static TIMES: Mutex<Option<Vec<f64>>> = Mutex::new(None);
 
 /// The end on the GPU of what was submitted so far ([`watch`]).
-pub(crate) struct Watch {
+pub struct Watch {
     done: AtomicBool,
 }
 
 impl Watch {
     /// Whether the GPU is done with it, looked at now (`dev` its device).
-    pub(crate) fn done(&self, dev: &Dev) -> bool {
+    pub fn done(&self, dev: &Dev) -> bool {
         // A lost device finishes nothing more: done (the loss is told).
         !poll(&dev.device, false) || self.done.load(Ordering::Acquire)
     }
 }
 
 /// Watches what was submitted to `dev` so far; `_submits` is [`submits`], held: this submits the queued writes.
-pub(crate) fn watch(dev: &Dev, _submits: &MutexGuard<'static, ()>) -> Arc<Watch> {
+pub fn watch(dev: &Dev, _submits: &MutexGuard<'static, ()>) -> Arc<Watch> {
     let watch = Arc::new(Watch {
         done: AtomicBool::new(false),
     });
@@ -504,7 +506,7 @@ mod tests {
 
     #[test]
     fn a_reason_names_each_limit_under_the_spec_with_both_values() {
-        let spec = widget_gpu::device_limits();
+        let spec = psychoscript_gpu::device_limits();
         assert_eq!(under(&spec, &spec), None);
         let has = wgpu::Limits {
             max_storage_buffers_per_shader_stage: 4,

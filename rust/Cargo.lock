@@ -1527,20 +1527,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "psychoscript-gpu"
+version = "0.1.0"
+dependencies = [
+ "psychoscript",
+ "psychoscript-gpu",
+ "serde_json",
+ "wgpu",
+]
+
+[[package]]
 name = "psychoscript-mobile"
 version = "0.1.0"
 dependencies = [
  "libc",
  "objc2-metal",
  "psychoscript",
+ "psychoscript-gpu",
  "psychoscript-mobile",
  "serde",
  "serde_json",
  "uniffi",
  "url",
  "wgpu",
- "widget-gpu",
- "widget-wire",
 ]
 
 [[package]]
@@ -2372,26 +2381,6 @@ dependencies = [
  "raw-window-handle",
  "static_assertions",
  "web-sys",
-]
-
-[[package]]
-name = "widget-gpu"
-version = "0.1.0"
-dependencies = [
- "psychoscript",
- "serde_json",
- "wgpu",
- "widget-gpu",
- "widget-wire",
-]
-
-[[package]]
-name = "widget-wire"
-version = "0.1.0"
-dependencies = [
- "psychoscript",
- "serde",
- "serde_json",
 ]
 
 [[package]]

@@ -1,13 +1,13 @@
-//! A widget run's GPU (`widgets-gpu.md`): its batches replayed on the app's device in the order the program posted
-//! them (`widget_wire::GpuHost`), its canvases presented into the app's surfaces, the live input's `gpu`, canvas
-//! sizes, and device loss. All but [`RunGpu::attach`] and the loss callbacks run on the run's thread.
+//! A live run's GPU: its batches replayed on the app's device in the order the program posted them, its canvases
+//! presented into the app's surfaces, what the program is told of its GPU (availability, canvas sizes), and device
+//! loss. All but `LiveSurfaces::attach` and the loss callbacks run on the run's thread.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use psychoscript::HostValue;
-use widget_gpu::{Arg, ErrorKind, Gpu, GpuError, SavedStop, SavedStops, Stops};
+use psychoscript_gpu::{Arg, ErrorKind, Gpu, GpuError, SavedStop, SavedStops, Stops};
 
 #[cfg(feature = "test-hooks")]
 use super::GpuStats;
@@ -49,12 +49,22 @@ struct State {
     flights: VecDeque<Arc<device::Watch>>,
 }
 
-/// A widget run's GPU.
-pub(crate) struct RunGpu {
+/// A live run's GPU, made by its encoder's live posts ([`crate::EncodeValues::live`]) and given to the run as its
+/// surfaces ([`crate::EncodePosts::surfaces`]). The posts hand it what the program posts, in order: [`LiveGpu::batch`]
+/// (or [`LiveGpu::shape_error`] for a batch that isn't one), [`LiveGpu::end_frame`] at each frame request, the canvases
+/// that may be drawn ([`LiveGpu::canvases`]) and the sizes it told the program ([`LiveGpu::resize`]); and they call
+/// [`LiveGpu::due`] when the run asks for what is due, [`LiveGpu::finish`] as the run ends and [`LiveGpu::ended`] once it
+/// ended. The program is told of its GPU through the run's messages:
+/// - the size of a canvas the app attached, `{ type: "canvas", key, width, height }` (clamped,
+///   `psychoscript_gpu::clamp_size`), when it changes;
+/// - a device loss, `{ type: "gpu", lost: reason, message? }`, before the app is told, and when a restored run starts.
+///
+/// Errors and losses reach the app as [`GpuCanvasState`]s (`LiveHandler::on_gpu_canvas`).
+pub struct LiveGpu {
     ctx: LiveContext,
     surfaces: Arc<Surfaces>,
     state: Mutex<State>,
-    /// The sizes sent to the program, by canvas key (from [`RunGpu::attach`], on the app's thread).
+    /// The sizes sent to the program, by canvas key (from [`LiveGpu::attach`], on the app's thread).
     sent: Mutex<HashMap<String, (u32, u32)>>,
     loss: Mutex<Option<(String, String)>>,
     replaced: AtomicBool,
@@ -62,11 +72,11 @@ pub(crate) struct RunGpu {
     hangs: Mutex<Vec<GpuError>>,
 }
 
-impl RunGpu {
+impl LiveGpu {
     /// A run's GPU: its device is made from now on, off the run's thread, unless it is already.
-    pub(crate) fn new(ctx: LiveContext) -> Arc<RunGpu> {
+    pub fn new(ctx: LiveContext) -> Arc<LiveGpu> {
         device::prepare();
-        let run = Arc::new(RunGpu {
+        let run = Arc::new(LiveGpu {
             ctx,
             surfaces: Arc::default(),
             state: Mutex::default(),
@@ -116,9 +126,10 @@ impl RunGpu {
         Ok(())
     }
 
-    /// The live input's `gpu`: `{ available, format }`, at once: while the device is still being made, what the
+    /// What to tell the program of its GPU as it starts, `{ available, format }` (`format` `"bgra8unorm"` or
+    /// `"rgba8unorm"`, the canvas format to configure), at once: while the device is still being made, what the
     /// program posts waits for it. Without a device, every GPU canvas shows its placeholder.
-    pub(crate) fn input(&self) -> HostValue {
+    pub fn input(&self) -> HostValue {
         let mut st = lock(&self.state);
         // Why there is no GPU, when there is none.
         let mut unavailable = None;
@@ -155,7 +166,7 @@ impl RunGpu {
     }
 
     /// The greatest handle the program made and the canvases errors stopped, for a snapshot.
-    pub(crate) fn saved(&self) -> (u64, SavedStops) {
+    pub fn saved(&self) -> (u64, SavedStops) {
         let st = lock(&self.state);
         match (&st.gpu, &st.restore) {
             (Some(gpu), _) => (gpu.last_handle(), gpu.saved_stops()),
@@ -165,10 +176,10 @@ impl RunGpu {
     }
 
     /// A run restored from a snapshot whose program made handles up to `last`, drew `keys` and had the canvases
-    /// `stops` stopped (`widgets-gpu.md`, Errors and device loss): to the program a device loss, told before it runs
-    /// on; handles from before are dropped quietly, the stopped canvases stay stopped and aren't reported again. It
-    /// doesn't wait for the device: while it is being made, what the program posts waits for it.
-    pub(crate) fn restored(&self, last: u64, keys: Vec<String>, stops: SavedStops) {
+    /// `stops` stopped (psychoscript-gpu's `README.md`, A run restored from a snapshot): to the program a device loss,
+    /// told before it runs on; handles from before are dropped quietly, the stopped canvases stay stopped and aren't
+    /// reported again. It doesn't wait for the device: while it is being made, what the program posts waits for it.
+    pub fn restored(&self, last: u64, keys: Vec<String>, stops: SavedStops) {
         let mut st = lock(&self.state);
         for k in &keys {
             st.sizes.entry(k.clone()).or_insert((0, 0));
@@ -235,7 +246,7 @@ impl RunGpu {
     }
 
     /// What waits on the run's thread: a device loss and its new device, a surface that failed.
-    pub(crate) fn due(&self) {
+    pub fn due(&self) {
         if let Some((reason, message)) = lock(&self.loss).take() {
             let mut st = lock(&self.state);
             // A second strike stops every canvas (`Gpu::lost`, then `Gpu::poll` has its error).
@@ -306,7 +317,7 @@ impl RunGpu {
                     dev
                 })
             }
-            (None, _) => Err(widget_gpu::GpuError {
+            (None, _) => Err(psychoscript_gpu::GpuError {
                 kind: ErrorKind::Client,
                 message: match device::ready() {
                     Some(Err(why)) => why,
@@ -348,7 +359,7 @@ impl RunGpu {
         }
     }
 
-    /// A batch of the wrong shape (`widget_wire::GpuHost::shape_error`): it stops canvases; nothing replays.
+    /// A batch of the wrong shape ([`LiveGpu::shape_error`]): it stops canvases; nothing replays.
     fn shape_in(&self, st: &mut State, ops: Option<&[Arg]>, message: String) {
         let Some(gpu) = st.gpu.as_mut() else { return };
         if let Err(e) = gpu.shape_error(ops, message) {
@@ -403,7 +414,7 @@ impl RunGpu {
                 continue;
             }
             let Some(c) = gpu.canvas(key) else { continue };
-            let opaque = c.alpha == widget_gpu::AlphaMode::Opaque;
+            let opaque = c.alpha == psychoscript_gpu::AlphaMode::Opaque;
             let seen = st.versions.insert(key.clone(), (c.version, opaque));
             if seen.is_some_and(|(v, _)| v == c.version) {
                 continue;
@@ -424,7 +435,7 @@ impl RunGpu {
 
     /// The run ends (not stopped by the app): what waits for a device (the first, or a new one after a loss) replays
     /// on it now, so the program's errors are checked and told before the end.
-    pub(crate) fn finish(&self) {
+    pub fn finish(&self) {
         if lock(&self.state).held.is_some() {
             let _ = device::get();
             self.replaced.store(false, Ordering::SeqCst);
@@ -433,18 +444,13 @@ impl RunGpu {
     }
 
     /// The run ended: its device resources and surfaces go.
-    pub(crate) fn ended(&self) {
+    pub fn ended(&self) {
         let mut st = lock(&self.state);
         st.gpu = None;
         st.dev = None;
         st.held = None;
         drop(st);
         self.surfaces.stop();
-    }
-
-    /// The `widget_wire::GpuHost` for the run's posts.
-    pub(crate) fn host(self: &Arc<Self>) -> Box<dyn widget_wire::GpuHost> {
-        Box::new(Host(self.clone()))
     }
 }
 
@@ -504,10 +510,10 @@ fn resize_in(st: &mut State, key: &str, w: u32, h: u32) {
     }
 }
 
-struct Host(Arc<RunGpu>);
-
-impl widget_wire::GpuHost for Host {
-    fn batch(&mut self, ops: &[Arg], bytes: &[u8]) {
+/// What the program posts, in order.
+impl LiveGpu {
+    /// A batch the program posted, its ops and bytes, replayed now (or when the device is there).
+    pub fn batch(&self, ops: &[Arg], bytes: &[u8]) {
         // A batch replays once the GPU is done with the run's batch before the last: the GPU draws one while the next
         // replays (on a Pixel the CPU and GPU took turns, the GPU idle a third of the time at a third of its clock),
         // and a program whose frames take the GPU longer than the display's waits for it, on the run's thread, with
@@ -515,29 +521,32 @@ impl widget_wire::GpuHost for Host {
         // queue then gives up) nor inside a submit (some drivers wait there; `Gpu::poll` looks for a hang meanwhile,
         // counting a submit's time from when the one before it finished, so the batch queued behind a hung one isn't
         // blamed; a hang stops its canvases, and the run waits on behind it, adding nothing).
-        let wait = RunGpu::in_flight(&mut lock(&self.0.state));
+        let wait = LiveGpu::in_flight(&mut lock(&self.state));
         if let Some((dev, watch)) = wait {
-            device::settle(&dev, &watch, || self.0.ctx.interrupted());
+            device::settle(&dev, &watch, || self.ctx.interrupted());
         }
-        let mut st = lock(&self.0.state);
+        let mut st = lock(&self.state);
         if let Some(held) = st.held.as_mut() {
             held.push(Held::Batch(ops.to_vec(), bytes.to_vec()));
             return;
         }
-        self.0.batch_in(&mut st, ops, bytes);
+        self.batch_in(&mut st, ops, bytes);
     }
 
-    fn shape_error(&mut self, ops: Option<&[Arg]>, message: String) {
-        let mut st = lock(&self.0.state);
+    /// A batch the program posted that isn't one (`psychoscript_gpu::Gpu::shape_error`'s messages): `ops` its ops when
+    /// they are a list.
+    pub fn shape_error(&self, ops: Option<&[Arg]>, message: String) {
+        let mut st = lock(&self.state);
         if let Some(held) = st.held.as_mut() {
             held.push(Held::Shape(ops.map(<[Arg]>::to_vec), message));
             return;
         }
-        self.0.shape_in(&mut st, ops, message);
+        self.shape_in(&mut st, ops, message);
     }
 
-    fn end_frame(&mut self) {
-        let mut st = lock(&self.0.state);
+    /// A frame request, after the batch it carries.
+    pub fn end_frame(&self) {
+        let mut st = lock(&self.state);
         let st = &mut *st;
         match (st.held.as_mut(), st.gpu.as_mut()) {
             (Some(held), _) => held.push(Held::EndFrame),
@@ -550,16 +559,18 @@ impl widget_wire::GpuHost for Host {
         }
     }
 
-    fn canvases(&mut self, keys: &[String]) {
-        let mut st = lock(&self.0.state);
+    /// The canvases the program may draw now, by key (each is drawn at the size [`LiveGpu::resize`] last gave it).
+    pub fn canvases(&self, keys: &[String]) {
+        let mut st = lock(&self.state);
         match st.held.as_mut() {
             Some(held) => held.push(Held::Canvases(keys.to_vec())),
             None => canvases_in(&mut st, keys),
         }
     }
 
-    fn resize(&mut self, key: &str, width: u32, height: u32) {
-        let mut st = lock(&self.0.state);
+    /// The size the program received for canvas `key`.
+    pub fn resize(&self, key: &str, width: u32, height: u32) {
+        let mut st = lock(&self.state);
         match st.held.as_mut() {
             Some(held) => held.push(Held::Resize(key.to_owned(), width, height)),
             None => resize_in(&mut st, key, width, height),
@@ -567,7 +578,7 @@ impl widget_wire::GpuHost for Host {
     }
 }
 
-impl device::Loss for RunGpu {
+impl device::Loss for LiveGpu {
     fn lost(&self, reason: &str, message: &str) {
         // At once (`Gpu::lost`: the work running 250 ms hung), unless the run's thread is replaying, in which wgpu
         // may be telling of it: that thread does, before the program is told.
@@ -607,10 +618,10 @@ impl device::Loss for RunGpu {
     }
 }
 
-impl LiveSurfaces for RunGpu {
+impl LiveSurfaces for LiveGpu {
     fn attach(&self, key: String, surface: Arc<GpuSurface>, width: u32, height: u32) {
         // A surface not laid out yet (0 × 0): attached, but the program's size waits for a real one.
-        let size = widget_gpu::clamp_size(width.max(1), height.max(1));
+        let size = psychoscript_gpu::clamp_size(width.max(1), height.max(1));
         let changed =
             width > 0 && height > 0 && lock(&self.sent).insert(key.clone(), size) != Some(size);
         if changed {

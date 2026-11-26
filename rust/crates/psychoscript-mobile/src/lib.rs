@@ -6,12 +6,13 @@
 //! host function (`__input()` unless named otherwise) under [`RunOptions`]' limits, and returns
 //! the program's completion value as JSON, or a [`PsychoScriptError`]. [`Program::start_live`] runs it as a
 //! [`LiveRun`] instead: long-running, on a thread of its own, talking to the host through `__host`. With a
-//! [`ValueEncoder`] ([`ValueEncoder::widget`] with feature `widget-wire`, on by default), [`Program::run_bytes`] and
-//! live posts hand the app the encoder's bytes instead of JSON.
+//! [`ValueEncoder`] (a host's own format, [`EncodeValues`]), [`Program::run_bytes`] and live posts hand the app the
+//! encoder's bytes instead of JSON.
 //!
-//! With feature `widget-gpu` (on by default), widget runs replay their GPU canvases themselves (`widgets-gpu.md`):
-//! the app attaches a [`GpuSurface`] per canvas ([`LiveRun::attach_surface`]), and [`ShaderCanvas`] draws the `wgsl`
-//! shorthand.
+//! With feature `gpu` (on by default), live runs whose encoder gives them a GPU ([`gpu::LiveGpu`]) replay their GPU
+//! canvases themselves (`psychoscript-gpu`): the app attaches a [`GpuSurface`] per canvas
+//! ([`LiveRun::attach_surface`]). A host building on this crate (a library of its own that links it, adding its
+//! UniFFI exports) reaches the device and the presenter through [`gpu`].
 //!
 //! `README.md` covers packaging, threading and what a run copies.
 
@@ -20,7 +21,7 @@ mod encoder;
 mod error;
 mod fetch;
 mod frames;
-mod gpu;
+pub mod gpu;
 mod hint;
 mod json;
 mod live;
@@ -32,12 +33,12 @@ pub use error::PsychoScriptError;
 pub use fetch::{
     FetchCompletion, FetchRequest, FetchResponse, FetchTransport, HttpHeader, is_public_address,
 };
-pub use gpu::{GpuCanvasState, GpuErrorKind, GpuFailure, GpuSurface, ShaderCanvas};
+pub use gpu::{GpuCanvasState, GpuErrorKind, GpuFailure, GpuSurface};
 /// Rust only, for tests (feature `test-hooks`, never in a release build).
 #[cfg(feature = "test-hooks")]
 pub use gpu::{
     GpuDeviceInfo, GpuStats, gpu_device, gpu_fail_devices, gpu_input_format, gpu_lose_device,
-    gpu_lose_device_at_frame_end, gpu_record_batches, gpu_submit_times, gpu_wait_idle,
+    gpu_lose_device_at_frame_end, gpu_submit_times, gpu_wait_idle,
 };
 pub use live::{LiveContext, LiveExit, LiveHandler, LiveOptions, LiveRun, LiveSurfaces};
 pub use program::{Program, RunOptions, RunSession};
