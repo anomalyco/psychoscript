@@ -26,6 +26,8 @@ icu_datetime = { version = "2.4", default-features = false, features = ["compile
 # Number and BigInt `toLocaleString`; already dependencies of icu_datetime.
 icu_decimal = { version = "2.4", default-features = false, features = ["compiled_data"] }
 fixed_decimal = { version = "0.7", default-features = false }
+# Substring search for `includes`, `indexOf`, `split` and `replace`; already a dependency of regress and oxc.
+memchr = "2"
 # Parses the locale tags `localeCompare` takes; already a dependency of icu_collator.
 icu_locale_core = { version = "2.4", default-features = false }
 # Time zone inputs (`ZonedDateTime`, `ZoneNameTimestamp`) for `icu_datetime`.

@@ -650,6 +650,17 @@ impl Vm {
         Value::Str(self.atoms.alloc(s))
     }
 
+    /// `string_val` of borrowed text (`Strings::alloc_str`).
+    pub fn string_of_str(&mut self, s: &str) -> Value {
+        if self.atoms.bufs.len() >= MAX_STRINGS {
+            self.out_of_memory();
+        }
+        if let Some(m) = self.heap_meter.as_deref_mut() {
+            m.debt += 2 * s.len() as u64;
+        }
+        Value::Str(self.atoms.alloc_str(s))
+    }
+
     /// The interned string for a fixed text, without allocating a new one each time.
     pub fn static_str(&mut self, s: &str) -> Value {
         let a = self.atoms.intern(s);
