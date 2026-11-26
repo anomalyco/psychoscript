@@ -3707,7 +3707,12 @@ impl<'a, 's> Compiler<'a, 's> {
     }
 
     fn object_lit(&mut self, o: &'a ObjectExpression<'a>) -> R<()> {
-        self.emit(Op::NewObject);
+        let named = o
+            .properties
+            .iter()
+            .filter(|p| matches!(p, ObjectPropertyKind::ObjectProperty(_)))
+            .count();
+        self.emit(Op::NewObject(named as u32));
         for p in &o.properties {
             match p {
                 ObjectPropertyKind::SpreadProperty(s) => {

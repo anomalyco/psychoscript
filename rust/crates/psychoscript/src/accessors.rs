@@ -276,7 +276,7 @@ impl Vm {
             .props
             .prop(key)
             .filter(|p| p.flags & ACCESSOR != 0)
-            .map(|p| self.pair(p.value));
+            .map(|p| self.pair(p.value()));
         let mut a = current.unwrap_or(Accessor {
             get: Value::Undef,
             set: Value::Undef,
@@ -292,7 +292,7 @@ impl Vm {
         o.flags |= ACCESSORS;
         match o.props.find(key) {
             Some(i) => {
-                o.props.items[i].value = pair;
+                o.props.items[i].set_value(pair);
                 o.props.items[i].flags = flags;
             }
             None => o.props.push_new(key, pair, flags),
@@ -319,7 +319,7 @@ impl Vm {
         while let Some(c) = cur {
             let o = &self.heap[c as usize];
             if let Some(p) = o.props.prop(key) {
-                return (p.flags & ACCESSOR != 0).then(|| self.pair(p.value));
+                return (p.flags & ACCESSOR != 0).then(|| self.pair(p.value()));
             }
             if self.has_own(c, key) {
                 return None;
@@ -361,7 +361,7 @@ impl Vm {
                     .props
                     .prop(k)
                     .filter(|p| p.flags & ACCESSOR != 0)
-                    .map(|p| p.value)
+                    .map(|p| p.value())
                     .filter(|pair| self.is_program_accessor(*pair))
                     .map(|pair| self.accessor_label(pair));
                 match label {
@@ -377,8 +377,8 @@ impl Vm {
         let mut cur = Some(id);
         while let Some(c) = cur {
             if let Some(p) = self.heap[c as usize].props.prop(key) {
-                if p.flags & ACCESSOR != 0 && self.is_program_accessor(p.value) {
-                    return Err(self.accessor_label(p.value));
+                if p.flags & ACCESSOR != 0 && self.is_program_accessor(p.value()) {
+                    return Err(self.accessor_label(p.value()));
                 }
                 break;
             }
@@ -789,7 +789,7 @@ impl Vm {
         while let Some(c) = cur {
             let o = &self.heap[c as usize];
             if let Some(p) = o.props.prop(key) {
-                return p.flags & ACCESSOR != 0 && self.is_program_half(&self.pair(p.value).get);
+                return p.flags & ACCESSOR != 0 && self.is_program_half(&self.pair(p.value()).get);
             }
             if self.has_own(c, key) {
                 return false;
@@ -1015,12 +1015,12 @@ impl Vm {
             self.fix_stack(id, key);
         }
         let p = self.heap[id as usize].props.items[i].clone();
-        if let Value::Uninit = p.value {
+        if let Value::Uninit = p.value() {
             // A built-in accessor: from now on its halves are its companions.
             let (get, set) = self.companions(id, key);
             let pair = self.new_pair(get, set);
             let o = &mut self.heap[id as usize];
-            o.props.items[i].value = pair;
+            o.props.items[i].set_value(pair);
             o.props.items[i].flags = ACCESSOR;
             return Some(OwnSlot {
                 value: SlotValue::Accessor(get, set),
@@ -1032,7 +1032,7 @@ impl Vm {
         let configurable = p.flags & FIXED == 0 && !fixed_all;
         let enumerable = p.flags & ENUMERABLE != 0;
         if p.flags & ACCESSOR != 0 {
-            let a = self.pair(p.value);
+            let a = self.pair(p.value());
             return Some(OwnSlot {
                 value: SlotValue::Accessor(a.get, a.set),
                 writable: false,
@@ -1043,7 +1043,7 @@ impl Vm {
         // A sparse array's far element shares the array's attributes; its length is the array's.
         let writable = p.flags & WRITABLE != 0 && !frozen;
         Some(OwnSlot {
-            value: SlotValue::Data(p.value),
+            value: SlotValue::Data(p.value()),
             writable,
             enumerable,
             configurable,
@@ -1444,7 +1444,7 @@ impl Vm {
         let o = &mut self.heap[id as usize];
         match o.props.find(key) {
             Some(i) => {
-                o.props.items[i].value = value;
+                o.props.items[i].set_value(value);
                 o.props.items[i].flags = flags;
             }
             None => o.props.push_new(key, value, flags),

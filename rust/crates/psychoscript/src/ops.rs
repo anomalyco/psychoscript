@@ -232,9 +232,9 @@ impl Vm {
             let o = &self.heap[cur as usize];
             if let Some(p) = o.props.prop(key) {
                 if p.flags & ACCESSOR == 0 {
-                    return p.value;
+                    return p.value();
                 }
-                let pair = p.value;
+                let pair = p.value();
                 return self.accessor_read(pair, Value::Obj(id), key);
             }
             match o.proto {
@@ -268,7 +268,7 @@ impl Vm {
                     .props
                     .prop(key)
                     .filter(|p| p.flags & ACCESSOR != 0)
-                    .map(|p| p.value);
+                    .map(|p| p.value());
             }
             cur = self.heap[c as usize].proto;
         }
@@ -288,7 +288,7 @@ impl Vm {
                     .props
                     .prop(key)
                     .filter(|p| p.flags & ACCESSOR != 0)
-                    .map(|p| p.value);
+                    .map(|p| p.value());
             }
             cur = self.heap[c as usize].proto;
         }
@@ -341,7 +341,7 @@ impl Vm {
             return None;
         }
         let key = self.atoms.lookup(&i.to_string())?;
-        self.heap[id as usize].props.get(key).copied()
+        self.heap[id as usize].props.get(key)
     }
 
     /// Element `i` of `id`'s prototypes, if one has it. An index never used as a key can still sit in an array
@@ -352,7 +352,7 @@ impl Vm {
             && let Some(key) = self.atoms.lookup(&i.to_string())
             && let Some(v) = self.heap[id as usize].props.get(key)
         {
-            return Some(*v);
+            return Some(v);
         }
         let proto = self.heap[id as usize].proto?;
         if let Some(key) = self.atoms.lookup(&i.to_string()) {
@@ -572,7 +572,7 @@ impl Vm {
                     .items
                     .iter()
                     .filter(|p| p.flags & ACCESSOR == 0)
-                    .filter_map(|p| p.value.as_obj()),
+                    .filter_map(|p| p.value().as_obj()),
             );
         }
         Ok(())
@@ -814,11 +814,11 @@ impl Vm {
             Some(i) => {
                 let p = &o.props.items[i];
                 if p.flags & ACCESSOR != 0 {
-                    let pair = p.value;
+                    let pair = p.value();
                     return self.accessor_write(pair, Value::Obj(id), key, val);
                 }
                 // A built-in accessor on the prototype itself: as the inherited one, its getter takes no write.
-                if matches!(p.value, Value::Uninit) {
+                if matches!(p.value(), Value::Uninit) {
                     let text = self.atoms.text(key).to_owned();
                     if id == self.realm.std.url && text != "origin" && text != "searchParams" {
                         return Err(crate::builtins::incompatible(
@@ -834,7 +834,7 @@ impl Vm {
                 }
                 self.guard(id, key);
                 let p = &mut self.heap[id as usize].props.items[i];
-                p.value = val;
+                p.set_value(val);
                 p.flags &= !PENDING_STACK;
             }
             None => {
@@ -892,7 +892,7 @@ impl Vm {
         let mut cur = self.heap[id as usize].proto;
         while let Some(c) = cur {
             if let Some(p) = self.heap[c as usize].props.prop(key) {
-                if !matches!(p.value, Value::Uninit) {
+                if !matches!(p.value(), Value::Uninit) {
                     return None;
                 }
                 let text = self.atoms.text(key).to_owned();
@@ -1009,7 +1009,7 @@ impl Vm {
         }
         match o.props.find(key) {
             Some(i) => {
-                o.props.items[i].value = val;
+                o.props.items[i].set_value(val);
                 o.props.items[i].flags = DEFAULT_FLAGS;
             }
             None => o.props.push_new(key, val, DEFAULT_FLAGS),
@@ -1226,7 +1226,7 @@ impl Vm {
         let o = &self.heap[id as usize];
         match &o.kind {
             Kind::Array(_) if o.flags & SPARSE != 0 => match o.props.get(self.names.length) {
-                Some(Value::Num(n)) => *n as usize,
+                Some(Value::Num(n)) => n as usize,
                 _ => 0,
             },
             Kind::Array(items) => items.len(),
@@ -1256,7 +1256,7 @@ impl Vm {
             .props
             .items
             .iter()
-            .filter_map(|p| Some((self.atoms.index(p.key)? as usize, p.value)))
+            .filter_map(|p| Some((self.atoms.index(p.key)? as usize, p.value())))
             .collect();
         tail.sort_unstable_by_key(|(i, _)| *i);
         tail
@@ -1374,7 +1374,7 @@ impl Vm {
                     .items
                     .iter()
                     .filter(|p| p.flags & ENUMERABLE != 0 && p.key > SYM_LAST)
-                    .map(|p| (p.key, p.value))
+                    .map(|p| (p.key, p.value()))
                     .collect();
             }
         }
@@ -1570,6 +1570,9 @@ impl Vm {
                 }
                 let mut entries = self.own_entries(*id);
                 entries.extend(self.own_symbol_entries(*id));
+                self.heap[target as usize]
+                    .props
+                    .reserve_exact(entries.len().saturating_sub(excluded.len()));
                 for (k, v) in entries {
                     if !excluded.contains(&k) {
                         self.define(target, k, v);

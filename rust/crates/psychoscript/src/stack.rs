@@ -76,7 +76,7 @@ impl Vm {
     pub(crate) fn stack_at_handler(&mut self, id: Id) {
         let sk = self.names.stack;
         if let Some(i) = self.heap[id as usize].props.find(sk) {
-            self.heap[id as usize].props.items[i].value = Value::Undef;
+            self.heap[id as usize].props.items[i].set_value(Value::Undef);
         }
     }
 
@@ -92,7 +92,7 @@ impl Vm {
             return;
         };
         let p = &self.heap[id as usize].props.items[i];
-        if p.flags & PENDING_STACK == 0 || !matches!(p.value, Value::Undef) {
+        if p.flags & PENDING_STACK == 0 || !matches!(p.value(), Value::Undef) {
             return;
         }
         let f = &self.frames[fi];
@@ -102,7 +102,7 @@ impl Vm {
         };
         let line = offset.map(|o| self.stack_line(o, None)).unwrap_or_default();
         let text = self.string_val(line);
-        self.heap[id as usize].props.items[i].value = text;
+        self.heap[id as usize].props.items[i].set_value(text);
     }
 
     /// Points the lines of a failure's `stack` not read yet at the site `offset` it failed at, once it has one.
@@ -113,13 +113,13 @@ impl Vm {
         };
         let p = &self.heap[id as usize].props.items[i];
         if p.flags & PENDING_STACK == 0
-            || !matches!(p.value, Value::Str(s) if self.text(s).is_empty())
+            || !matches!(p.value(), Value::Str(s) if self.text(s).is_empty())
         {
             return;
         }
         let line = self.stack_line(offset, None);
         let text = self.string_val(line);
-        self.heap[id as usize].props.items[i].value = text;
+        self.heap[id as usize].props.items[i].set_value(text);
     }
 
     /// The `stack` of `id` at its first read: its header, the error's name and message read as display reads them
@@ -129,14 +129,14 @@ impl Vm {
             return Value::Undef;
         };
         // Undefined lines are a host failure's no handler caught.
-        let trace = match self.heap[id as usize].props.items[i].value {
+        let trace = match self.heap[id as usize].props.items[i].value() {
             Value::Str(s) => self.text(s).to_owned(),
             _ => String::new(),
         };
         let header = crate::convert::error_to_string(self, id);
         let text = self.string_val(format!("{header}{trace}"));
         let p = &mut self.heap[id as usize].props.items[i];
-        p.value = text;
+        p.set_value(text);
         p.flags &= !PENDING_STACK;
         text
     }

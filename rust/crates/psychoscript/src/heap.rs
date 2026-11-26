@@ -220,7 +220,7 @@ pub(crate) fn measure(vm: &Vm) -> u64 {
         crate::reach::head(o, &mut |r| w.see(r));
         for p in &o.props.items {
             if !skip.contains(&Some(&p.key)) {
-                w.value(p.value);
+                w.value(p.value());
             }
         }
     }

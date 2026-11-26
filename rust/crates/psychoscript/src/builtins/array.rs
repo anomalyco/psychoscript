@@ -110,7 +110,7 @@ fn tail_elem(vm: &Vm, id: Id, i: usize) -> Option<Value> {
         return None;
     }
     let key = vm.atoms.lookup(&i.to_string())?;
-    vm.heap[id as usize].props.get(key).copied()
+    vm.heap[id as usize].props.get(key)
 }
 
 /// Element `i` as the array holds it, with a hole read as `undefined` and not looked up on the prototypes.

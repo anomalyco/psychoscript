@@ -1054,8 +1054,8 @@ fn plain_prop(
         return None;
     }
     let p = o.props.items.get(fr.index(vm, top(vm, fr) + L_I))?;
-    (p.key == atom && p.flags & ACCESSOR == 0 && !matches!(p.value, Value::Uninit))
-        .then_some(p.value)
+    (p.key == atom && p.flags & ACCESSOR == 0 && !matches!(p.value(), Value::Uninit))
+        .then_some(p.value())
 }
 
 /// The key of the value the walk visits, as a `toJSON` or the replacer receives it.
@@ -1511,6 +1511,10 @@ impl<'s> Parser<'s> {
         let id = vm.new_object();
         let children = self.children(vm);
         self.ws();
+        if self.s.get(self.i) != Some(&b'}') {
+            // Its count is not known yet: room for four, which most parsed objects fill without growing again.
+            vm.heap[id as usize].props.reserve_exact(4);
+        }
         if self.s.get(self.i) == Some(&b'}') {
             self.i += 1;
             self.depth -= 1;
@@ -1870,7 +1874,7 @@ pub fn holds_runtime_reference(vm: &Vm, v: &Value) -> bool {
                 .items
                 .iter()
                 .filter(|p| p.flags & ACCESSOR == 0)
-                .map(|p| p.value),
+                .map(|p| p.value()),
         );
     }
     false
