@@ -78,10 +78,29 @@ export class Fn<R = never> {
     readonly idempotent: boolean,
     readonly snapshot: Snapshot | undefined,
     readonly constructible = false,
-    readonly takesFunctions = false,
+    /** `"back"`: only functions from its results cross, as themselves, as for a plain function among the globals. */
+    readonly takesFunctions: boolean | "back" = false,
     /** The function the program sees the name and length of, when `run` wraps it. */
     readonly source?: Function,
   ) {}
+}
+
+/**
+ * A function written in the program, as a host function that `takesFunctions` gets it in its arguments: plain data,
+ * frozen, kept by a saved run like any other argument. `source` is what `Function.prototype.toString` returns for it.
+ * `captures` are the names from outside the function that it uses, sorted: the enclosing program's variables,
+ * functions, classes and parameters, and for an arrow, `this`, `arguments` and `super` (which are its enclosing
+ * function's). Globals are not captures, and neither is a function declaration's own name. Empty `captures` mean the
+ * source runs the same wherever it is evaluated with the same globals. It can't be called; it isn't the function.
+ */
+export class ProgramFunction {
+  constructor(
+    readonly source: string,
+    readonly captures: ReadonlyArray<string>,
+  ) {
+    Object.freeze(captures)
+    Object.freeze(this)
+  }
 }
 
 /** A host function whose work keeps running across a suspend; see `Host.durableFn`. Each part returns as `Fn.run`. */

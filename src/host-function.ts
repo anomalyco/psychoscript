@@ -28,9 +28,12 @@ export type Options =
        */
       readonly constructible?: boolean
       /**
-       * Lets the program pass back a function that was inside a result, on its own or inside an argument: it arrives
-       * as the host function itself, and the run can't be suspended until the call completes. Without it, such a
-       * function is treated like any other function in an argument (see `Runtime.Translate`).
+       * Lets the function take functions in its arguments, on their own or inside other values. A function that was
+       * inside a result arrives as the host function itself, and the run can't be suspended until the call completes.
+       * A function the program wrote arrives as a `ProgramFunction`: its source text and the names from outside it
+       * that it uses, plain data that a saved run keeps. A built-in or bound function or a class fails the call, and
+       * any other host function is treated as `Runtime.Translate` says. Without it, every function is. A
+       * `ProgramFunction` can't be called; calling it back during the call may come later, through `call`.
        */
       readonly takesFunctions?: boolean
     }

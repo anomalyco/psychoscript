@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- A host function made with `takesFunctions: true` gets a function the program wrote as a `ProgramFunction`, plain
+  frozen data with `source` (what `Function.prototype.toString` returns) and `captures` (the sorted names from
+  outside the function that it uses; an arrow's `this`, `arguments` and `super` count, globals and a function
+  declaration's own name don't), instead of failing the call or being dropped under `translate.functions`. A saved
+  run keeps it. A built-in or bound function or a class now fails such a call with a `TypeError`; functions it
+  returned earlier still arrive as themselves, and other host functions follow `translate` as before. Handing a
+  `ProgramFunction` back to the program fails. In Rust, `HostValue::ProgramFunction(ProgramFunction)`.
 - `Function.prototype.toString` returns a program function's source text as written: an arrow or `function` as is, a
   method or accessor from its name, a class as its whole `class … {}`. Built-in, bound and host functions return
   `function name() { [native code] }`. A host can now keep a function a program hands it as text. `String(fn)` is

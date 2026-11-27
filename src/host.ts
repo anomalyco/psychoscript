@@ -99,10 +99,10 @@ export class HostCalls {
     const hosts = this.ctx.hosts!
     const waiting: Array<PromiseObj> = []
     // The host functions that cross back among the arguments, when the function takes them.
-    const back: Array<Function> | undefined = fn instanceof Fn && fn.takesFunctions ? [] : undefined
+    const back: Array<Function> | undefined = fn instanceof Fn && fn.takesFunctions !== false ? [] : undefined
     // Program getters in the arguments run first, as program code, before anything else happens for the call: no
     // promise, no call id.
-    const crossed = this.cross(values, target.label, waiting, back)
+    const crossed = this.cross(values, target.label, waiting, back, fn instanceof Fn && fn.takesFunctions === true)
     const async = fn instanceof DurableFn || fn.type === "async"
     // An async call reads its getters in a frame that settles its promise, so a getter that throws rejects it.
     if (crossed instanceof Prefetch && async && reads.list === undefined) return this.read(crossed, callee, values, site)
@@ -144,6 +144,7 @@ export class HostCalls {
     label: string,
     waiting: Array<PromiseObj>,
     back: Array<Function> | undefined,
+    programs: boolean,
   ):
     | { readonly ok: true; readonly args: ReadonlyArray<unknown> }
     | { readonly ok: false; readonly error: unknown }
@@ -152,7 +153,7 @@ export class HostCalls {
     reads.missing = undefined
     reads.depth++
     try {
-      const args = this.ctx.hosts!.toHost(values, label, waiting, back)
+      const args = this.ctx.hosts!.toHost(values, label, waiting, back, programs)
       return reads.missing !== undefined ? new Prefetch(reads.missing) : { ok: true, args }
     } catch (error) {
       return reads.missing !== undefined ? new Prefetch(reads.missing) : { ok: false, error }

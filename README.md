@@ -134,8 +134,14 @@ functions act as namespaces (`fs.read(...)`). Arguments reach the host as copies
     be suspended while the call is in progress.
   - `"sync-thenable"`: like `sync`, but an object result can also be awaited.
 
-  `constructible: true` allows `new`; `takesFunctions: true` lets it receive functions it returned earlier;
-  `snapshot: { encode, decode }` keeps functions inside its results across a resume.
+  `constructible: true` allows `new`; `snapshot: { encode, decode }` keeps functions inside its results across a
+  resume. `takesFunctions: true` lets it take functions:
+  - one it returned earlier arrives as itself, and the run can't be suspended until the call completes;
+  - one the program wrote arrives as a `ProgramFunction`: `source` (what `fn.toString()` returns) and `captures`,
+    the sorted names from outside the function that it uses. An arrow's `this`, `arguments` and `super` count;
+    globals and a function declaration's own name don't. Check `captures.length === 0` before saving `source` to run
+    later. It's plain data, so a saved run keeps it, and it can't be called;
+  - a built-in or bound function or a class fails the call; any other host function follows `translate`.
 - **`Host.durableFn({ start, wait, cancel })`**: work that keeps running across a suspend. `start` returns JSON kept in
   the snapshot; `wait(data)` gets the result (again after a resume); `cancel(data)` runs if the run ends without it.
 - **`Host.namespace({ keys, resolve })`**: a lazy object for large catalogs. `resolve(path)` returns the function for
@@ -293,9 +299,10 @@ Promise microtask scheduler, there is no built-in runtime environment.
   must be passed in as a host global.
 - **No module loader or `export`.** `import` and `require` only bind host globals (and configured module aliases) before
   execution starts. Programs can't load files or packages from disk, and `export` is a syntax error.
-- **No passing program functions to the host (yet).** Host call arguments are copied across the boundary, so guest
-  callbacks can't be passed to host functions today (and host objects aren't classes). Passing program functions to the
-  host will be supported in the future.
+- **No callbacks into the program (yet).** Host call arguments are copied across the boundary, so a host function
+  can't call a program function it is passed (and host objects aren't classes). One made with `takesFunctions` gets
+  the function as a `ProgramFunction`, its source text and captures. Calling it back during the call may come later,
+  through the call context.
 
 ### Language and standard library
 

@@ -1100,6 +1100,7 @@ fn scalar_node(v: &HostValue) -> J {
         HostValue::Located(e) => json!(["loc", text(&e.name), text(&e.message)]),
         HostValue::Date(t) => json!(["date", num(*t)]),
         HostValue::RegExp { source, flags } => json!(["re", text(source), flags]),
+        HostValue::ProgramFunction(f) => json!(["pf", text(f.source()), f.captures()]),
         HostValue::Url(href) => json!(["url", href]),
         HostValue::SearchParams(pairs) => json!(["sp", pairs]),
         HostValue::Headers(entries) => json!(["hd", entries]),
@@ -1371,6 +1372,15 @@ fn host_scalar(j: &J) -> R<HostValue> {
                 source: text_from(at(j, 1)?)?,
                 flags: string(at(j, 2)?)?,
             },
+            Some("pf") => HostValue::ProgramFunction(crate::ProgramFunction::new(
+                text_from(at(j, 1)?)?,
+                at(j, 2)?
+                    .as_array()
+                    .ok_or_else(|| invalid("a function's captures are not a list."))?
+                    .iter()
+                    .map(string)
+                    .collect::<R<_>>()?,
+            )),
             Some("url") => HostValue::Url(string(at(j, 1)?)?),
             Some("sp") => HostValue::SearchParams(pairs(at(j, 1)?)?),
             Some("hd") => HostValue::Headers(pairs(at(j, 1)?)?),

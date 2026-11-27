@@ -206,6 +206,23 @@ const compileFunction = (
   }
 }
 
+// The names from outside a function that it uses: its upvalues, but its own declaration's name, which its text binds
+// again. An arrow's `this`, `arguments` and `super` are its enclosing function's, so they count, under those names.
+const outerNames = (fnInfo: FunctionInfo): ReadonlyArray<string> => {
+  const names = fnInfo.upvalues.flatMap((u) => {
+    if (u.decl === fnInfo.ownDecl) return []
+    if (u.decl.kind === "home" || u.decl.kind === "newTarget") return ["super"]
+    return u.decl.name.startsWith("%") ? [] : [u.decl.name]
+  })
+  // By code point, as Rust orders its strings.
+  return [...new Set(names)].sort((a, b) => {
+    const x = [...a].map((c) => c.codePointAt(0)!)
+    const y = [...b].map((c) => c.codePointAt(0)!)
+    for (let i = 0; i < Math.min(x.length, y.length); i++) if (x[i] !== y[i]) return x[i]! - y[i]!
+    return x.length - y.length
+  })
+}
+
 const compileFunctionBody = (
   source: Source,
   sourceRef: Code["source"],
@@ -233,6 +250,7 @@ const compileFunctionBody = (
   builder.wideJumps = wideJumps
   builder.textStart = fnInfo.text.start
   builder.textEnd = fnInfo.text.end
+  builder.outerNames = outerNames(fnInfo)
 
   const controlStack: Array<ControlEntry> = []
   let pendingLabels: Set<string> | undefined

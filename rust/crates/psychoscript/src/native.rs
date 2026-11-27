@@ -143,6 +143,7 @@ pub enum Step {
 /// The code of every native frame, which never runs: one instruction for each place it continues from.
 pub fn proto() -> FuncProto {
     FuncProto {
+        outer: Vec::new(),
         name: 0,
         code: vec![Op::Nop; 4],
         pos: Vec::new(),

@@ -74,6 +74,8 @@ export type FunctionInfo = {
   readonly upvalues: Array<UpvalueInfo>
   readonly upvalueMap: Map<Decl, number>
   thisDecl: Decl | undefined
+  /** A function declaration's own binding, which its source text declares again wherever it runs. */
+  ownDecl: Decl | undefined
   /** A method's home object (`super`), when it or an arrow in it uses `super`. */
   homeDecl: Decl | undefined
   /** A derived constructor's new target, which `super()` passes on. */
@@ -202,6 +204,7 @@ export const analyzeScopes = (source: Source, internal = false): ScopeAnalysis =
       upvalues: [],
       upvalueMap: new Map(),
       thisDecl: undefined,
+      ownDecl: undefined,
       homeDecl: undefined,
       newTargetDecl: undefined,
       argumentsDecl: undefined,
@@ -399,7 +402,10 @@ export const analyzeScopes = (source: Source, internal = false): ScopeAnalysis =
       case "FunctionDeclaration": {
         const childFn = visitFunction(stmt, scope, fnInfo.index)
         const hoisted = scope.hoistedFunctions.find((h) => h.node === stmt)
-        if (hoisted) hoisted.fnIndex = childFn.index
+        if (hoisted) {
+          hoisted.fnIndex = childFn.index
+          childFn.ownDecl = hoisted.decl
+        }
         break
       }
     }

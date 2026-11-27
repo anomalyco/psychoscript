@@ -103,6 +103,9 @@ pub fn describe(v: &HostValue) -> Json {
         HostValue::Function(f) => json!({ "function": f.name() }),
         HostValue::Durable(_) | HostValue::Namespace(_) => json!({ "function": "" }),
         HostValue::FunctionMarker => json!({ "functionMarker": true }),
+        HostValue::ProgramFunction(f) => {
+            json!({ "programFunction": [text(f.source()), f.captures()] })
+        }
         HostValue::Date(t) if t.is_nan() => json!({ "date": "NaN" }),
         HostValue::Date(t) => json!({ "date": number(*t) }),
         HostValue::RegExp { source, flags } => json!({ "regexp": [text(source), flags] }),

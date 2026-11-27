@@ -314,9 +314,41 @@ pub enum HostValue {
     /// reference's `Host.functionMarker`: nothing to call and no identity, only where a function was. `to_json`
     /// leaves it out, as it would the function. It cannot be passed back.
     FunctionMarker,
+    /// A function the program wrote, in the arguments of a host function that
+    /// [takes functions](HostFunction::takes_functions): see [`ProgramFunction`].
+    ProgramFunction(ProgramFunction),
     /// What a host function throws (`Err(HostValue::Interrupt)`) to interrupt the whole run, as the reference's
     /// host functions do with `Effect.interrupt`: the run ends with [`Interrupted`](crate::Interrupted).
     Interrupt,
+}
+
+/// A function the program wrote, as a host function that [takes functions](HostFunction::takes_functions) gets it,
+/// the reference's `ProgramFunction`: plain data that a saved run keeps. `source` is what `Function.prototype.toString`
+/// returns for it. `captures` are the names from outside the function that it uses, sorted: the enclosing program's
+/// variables, functions, classes and parameters, and for an arrow, `this`, `arguments` and `super` (which are its
+/// enclosing function's). Globals are not captures, and neither is a function declaration's own name. It can't be
+/// called; it isn't the function.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProgramFunction {
+    source: HostString,
+    captures: Vec<String>,
+}
+
+impl ProgramFunction {
+    pub fn new(source: impl Into<HostString>, captures: Vec<String>) -> Self {
+        ProgramFunction {
+            source: source.into(),
+            captures,
+        }
+    }
+
+    pub fn source(&self) -> &HostString {
+        &self.source
+    }
+
+    pub fn captures(&self) -> &[String] {
+        &self.captures
+    }
 }
 
 impl HostValue {
@@ -422,6 +454,10 @@ impl HostValue {
             | HostValue::Interrupt => return None,
             HostValue::Null => Json::Null,
             HostValue::Bool(b) => Json::Bool(*b),
+            HostValue::ProgramFunction(f) => serde_json::json!({
+                "source": f.source.to_string_lossy(),
+                "captures": f.captures,
+            }),
             HostValue::Number(n) if n.fract() == 0.0 && n.abs() < 9.0e15 => Json::from(*n as i64),
             HostValue::Number(n) => {
                 serde_json::Number::from_f64(*n).map_or(Json::Null, Json::Number)
@@ -920,9 +956,11 @@ impl HostFunction {
         self
     }
 
-    /// Lets the program pass back a function that was inside a result, on its own or inside an argument: it arrives as
-    /// the host function itself, and the run can't be suspended until the call completes. Without it, such a function
-    /// is treated like any other function in an argument (see [`Translate`](crate::Translate)).
+    /// Lets the function take functions in its arguments, on their own or inside other values. A function that was
+    /// inside a result arrives as the host function itself, and the run can't be suspended until the call completes.
+    /// A function the program wrote arrives as a [`HostValue::ProgramFunction`], plain data that a saved run keeps. A
+    /// built-in or bound function or a class fails the call, and any other host function is treated as
+    /// [`Translate`](crate::Translate) says. Without it, every function is.
     pub fn takes_functions(mut self) -> Self {
         self.takes_functions = true;
         self
