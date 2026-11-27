@@ -133,6 +133,11 @@ export const verifyCode = (c: Code): Array<string> => {
         checkSlot(bx, pc)
         next(-1)
         break
+      case Op.INC_LOCAL:
+        checkSlot(bx, pc)
+        at(pc + 4, d, pc)
+        next(0)
+        break
       case Op.HOLE_LOCAL:
       case Op.NEW_CELL:
       case Op.COPY_CELL:

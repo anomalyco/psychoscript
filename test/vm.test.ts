@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { disassembleSource } from "../script/disasm.js"
+import { disassemble, disassembleSource } from "../script/disasm.js"
 import { hashOf } from "../src/code.js"
 import { compileSource } from "../src/compiler/compile.js"
 import { verifyAll } from "./verify-bytecode.js"
@@ -214,6 +214,49 @@ describe("expressions, evaluation order, and destructuring", () => {
         return [first, third, closed, a, c, rest]
       `),
     ).toEqual([1, 3, [3], 1, 3, { x: 4, y: 5 }])
+  })
+
+  test("`i++;` on a local steps numbers in place and coerces anything else like JS", () => {
+    // Only `i` and `k`: `j` is captured, and `x = i++` uses the value.
+    const src = `let i = 0; i++; let j = 0; const f = () => j; j++; let x = i++; for (let k = 2; k > 0; k--) {}`
+    const incs = [...disassembleSource(src).matchAll(/INC_LOCAL +([+-]1 \d+ \(\w+\))/g)].map((m) => m[1])
+    expect(incs).toEqual(["+1 0 (i)", "-1 4 (k)"])
+    const parsed = parseVmSource(src)
+    if (!parsed.ok) throw new Error(parsed.error.message)
+    const wide = compileSource(parsed.source, { forceExtra: true })
+    expect(disassemble(wide)).not.toContain("INC_LOCAL")
+    expect(verifyAll(wide)).toEqual([])
+    expect(
+      val(`
+        let s = 0
+        for (let i = 0; i < 10; i++) s += i
+        let d = 10
+        d--; d--
+        let f = 0.5
+        f++
+        let neg = -0
+        neg++; neg--
+        let big = 2n ** 64n
+        big++
+        let str = "41"
+        str++
+        let u
+        u++
+        let calls = 0
+        let obj = { valueOf() { calls++; return 7 } }
+        obj++
+        let fns = []
+        let c = 0
+        fns.push(() => c)
+        c++
+        function g(p) { p++; p++; return [p, arguments[0]] }
+        return [s, d, f, Object.is(neg, 0), String(big), str, Number.isNaN(u), obj, calls, fns[0](), g(1)]
+      `),
+    ).toEqual([45, 8, 1.5, true, "18446744073709551617", 42, true, 8, 1, 1, [3, 1]])
+    expect(err(`const k = 0; k++`).message).toContain("constant")
+    expect(err(`{ i++; let i = 0 }`).message).toContain("before initialization")
+    expect(err(`let s = Symbol.iterator; s++`).message).toContain("Cannot convert a symbol to a number")
+    expect(err(`let o = { valueOf() { throw new RangeError("from valueOf") } }; o++`).message).toContain("from valueOf")
   })
 })
 

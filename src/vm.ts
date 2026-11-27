@@ -1113,6 +1113,18 @@ export class Vm {
             pc++
             continue
           }
+          case 99: {
+            // Op.INC_LOCAL
+            const slot = w >>> 16
+            const v = regs[slot]
+            if (typeof v === "number") {
+              regs[slot] = (w & 0xff00) === 0 ? v + 1 : v - 1
+              pc += 4
+              continue
+            }
+            pc++
+            continue
+          }
           case 56: {
             // Op.INC
             const v = regs[sp - 1] as Value

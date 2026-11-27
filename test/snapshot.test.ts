@@ -30,6 +30,18 @@ const programs: Record<string, string> = {
     const steps = new Map()
     for (let i = 1n; i <= 30n; i++) { factorial *= i; steps.set(i, factorial) }
     return [String(factorial), String(steps.get(20n)), typeof [...steps.keys()][0]]`,
+  "`i++;` and `i--;` on locals holding numbers, BigInts, strings and objects": `
+    let s = 0
+    for (let i = 0; i < 2000; i++) s += i
+    let down = 0
+    for (let j = 500; j > 0; j--) down += j
+    let big = 0n
+    for (let k = 0; k < 50; k++) big++
+    let str = "7"
+    for (let k = 0; k < 50; k++) str++
+    let objects = 0
+    for (let k = 0; k < 50; k++) { let o = { n: k, valueOf() { return this.n } }; o++; objects += o }
+    return [s, down, String(big), str, objects]`,
   "closures over per-iteration bindings": `
     const fns = []
     for (let i = 0; i < 5; i++) fns.push(() => i * 2)

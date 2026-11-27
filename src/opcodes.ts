@@ -174,6 +174,9 @@ export const Op = {
   PUT_SUPER: 97,
   // An object literal method that uses `super` gets the object at depth `a` as its home: `[o, .., fn]` unchanged.
   SET_HOME: 98,
+  // `i++;` on an uncaptured mutable local: a number in local `bx` steps by one (a 1: down) and the next three
+  // words (the GET_LOCAL, INC, PUT_LOCAL they stand for) are skipped; anything else runs those words.
+  INC_LOCAL: 99,
 } as const
 
 export type OpCode = (typeof Op)[keyof typeof Op]
