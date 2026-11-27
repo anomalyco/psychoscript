@@ -45,6 +45,11 @@ export type Options<G extends Globals = Globals> = {
   readonly limits?: Limits | undefined
   /** How host calls receive program functions and promises inside arguments; both fail the call by default. */
   readonly translate?: Translate | undefined
+  /**
+   * How a time slice yields back to the host event loop. The default uses setImmediate when the host has it,
+   * otherwise MessageChannel, otherwise a microtask. Hosts whose timers never fire can pass their own yield.
+   */
+  readonly yieldToHost?: (() => Promise<void>) | undefined
 }
 
 /** Options for `Runtime.program`. */
@@ -73,6 +78,7 @@ export const makeSetup = <R>(options: Options<Globals>): Setup<R> => ({
     functions: options.translate?.functions ?? "error",
     promises: options.translate?.promises ?? "error",
   },
+  yieldToHost: options.yieldToHost,
 })
 
 const validateLimit = (name: string, value: number | undefined, minimum: number): number | undefined => {

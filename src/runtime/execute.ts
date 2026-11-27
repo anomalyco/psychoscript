@@ -124,6 +124,8 @@ export type Setup<R> = {
   readonly modules?: Readonly<Record<string, string>> | undefined
   /** Globals made as program values (a test harness), made again the same way for a restored run. */
   readonly programGlobals?: Globals<R> | undefined
+  /** How a time slice yields back to the host event loop; see Options.yieldToHost. */
+  readonly yieldToHost?: (() => Promise<void>) | undefined
 }
 
 /** Turns a suspended outcome into a failure, for callers that only run programs to their end. */
@@ -314,7 +316,7 @@ export class Running<R> {
     const [ctx, run] = prepared as readonly [Interpreter<R>, Run]
     this.ctx = ctx
     this.run_ = run
-    this.driver = new Driver(ctx.vm, options?.context)
+    this.driver = new Driver(ctx.vm, options?.context, this.setup.yieldToHost)
     if (roundTrip) this.driver.checkpoint = () => this.trip()
     this.startedAt = Date.now()
     return this.execute(options?.signal)
