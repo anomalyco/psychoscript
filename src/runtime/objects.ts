@@ -357,6 +357,14 @@ export abstract class Callable extends Opaque {
     const name = get(this, "name")
     return `function ${typeof name === "string" ? name : ""}() { [native code] }`
   }
+  /**
+   * What a host function that takes functions gets for it: a function the program wrote, as its source text and the
+   * names from outside it that it uses; otherwise what kind of function it is, for the error. A host function is
+   * `undefined`: the runtime's translation decides, as for any function.
+   */
+  get crossing(): { readonly source: string; readonly captures: ReadonlyArray<string> } | string | undefined {
+    return "a built-in function"
+  }
 }
 
 /** A program or prelude function: its bytecode, and the cells of the bindings it captured. */
@@ -379,6 +387,11 @@ export class Fn extends Callable {
   override source() {
     if ((this.code.flags & CodeFlags.INTERNAL) !== 0) return super.source()
     return this.code.text ?? super.source()
+  }
+  override get crossing() {
+    if ((this.code.flags & CodeFlags.CLASS_CONSTRUCTOR) !== 0) return "a class"
+    const text = (this.code.flags & CodeFlags.INTERNAL) === 0 ? this.code.text : undefined
+    return text === undefined ? super.crossing : { source: text, captures: this.code.outerNames }
   }
   override inspect() {
     if (this.klass === undefined) return super.inspect()
@@ -479,6 +492,9 @@ export abstract class Builtin extends Callable {
   abstract invoke(thisValue: Value, args: Array<Value>, site: AstNode | undefined): NativeResult
 }
 
+/** The natives a run's host globals made (host functions, a streaming response's methods), also once restored. */
+export const hostMade = new WeakSet<Native>()
+
 export class Native extends Builtin {
   readonly call: NativeCall
   readonly construct: NativeConstruct | undefined
@@ -496,6 +512,11 @@ export class Native extends Builtin {
     this.construct = options.construct
     this.callback = options.callback ?? true
     this.wantsSite = !this.callback || options.call.length >= 3
+    if (options.runtime === "host") hostMade.add(this)
+  }
+
+  override get crossing() {
+    return hostMade.has(this) ? undefined : super.crossing
   }
 
   invoke(thisValue: Value, args: Array<Value>, site: AstNode | undefined): NativeResult {
@@ -507,6 +528,9 @@ export class Native extends Builtin {
 export class BoundFn extends Builtin {
   readonly construct = undefined
   readonly callback = true
+  override get crossing() {
+    return "a bound function"
+  }
   constructor(
     proto: Obj,
     readonly target: Callable,

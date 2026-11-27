@@ -146,6 +146,7 @@ fn constructor(v: &HostValue) -> &'static str {
         HostValue::Set(_) => "Set",
         HostValue::Function(_) | HostValue::Durable(_) | HostValue::Namespace(_) => "Function",
         HostValue::FunctionMarker => "Symbol",
+        HostValue::ProgramFunction(_) => "ProgramFunction",
         HostValue::Error(_) | HostValue::Located(_) | HostValue::Failure(_) => "Error",
         HostValue::Date(_) => "Date",
         HostValue::RegExp { .. } => "RegExp",

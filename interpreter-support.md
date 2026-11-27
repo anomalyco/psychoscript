@@ -27,7 +27,10 @@ the ultimate source of truth. Upstream test262 files run verbatim from `test/tes
       `{ name, message, ...own enumerable }`, and own `__proto__` keys are dropped so merging results cannot replace a
       prototype. An ArrayBuffer or Uint8Array in the result is rejected with a hint to encode it as text. Host function arguments
       cross as copies (see Host functions); a promise or function inside an argument fails the call unless the runtime's
-      `translate` option awaits promises or drops functions. In-program `JSON.stringify` keeps JS behavior except for the Error form and a
+      `translate` option awaits promises or drops functions. A host function made with `takesFunctions` gets a
+      function the program wrote as a `ProgramFunction` (`source`, as `toString` gives it, and the sorted `captures`:
+      outer names it uses, with an arrow's `this`, `arguments` and `super`, but not globals or a function
+      declaration's own name), and a built-in or bound function or a class fails its call. In-program `JSON.stringify` keeps JS behavior except for the Error form and a
       promise, which is a `TypeError` with an await hint rather than a silent `{}`.
 - [x] Live Date, RegExp, Map, Set, URL, URLSearchParams, Headers, ArrayBuffer, and Uint8Array values inside
       psychoscript.

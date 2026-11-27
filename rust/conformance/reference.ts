@@ -102,6 +102,11 @@ export const describe = (v: unknown): unknown => {
   if (typeof v === "string") return text(v)
   if (v === null || typeof v === "string" || typeof v === "number" || typeof v === "boolean") return v
   if (typeof v === "function") return { function: v.name }
+  // A program function a host function that takes functions got, by its class's name: the reference's own module.
+  if (v.constructor?.name === "ProgramFunction") {
+    const f = v as { source: string; captures: ReadonlyArray<string> }
+    return { programFunction: [text(f.source), [...f.captures]] }
+  }
   if (v instanceof Date) return { date: Number.isNaN(v.getTime()) ? "NaN" : v.getTime() }
   if (v instanceof RegExp) return { regexp: [text(v.source), v.flags] }
   if (v instanceof URL) return { url: v.href }

@@ -1,4 +1,13 @@
-import { type Call, DurableFn, Fn, HostWork, Namespace, promiseControllers, type Snapshot } from "./contract.js"
+import {
+  type Call,
+  DurableFn,
+  Fn,
+  HostWork,
+  Namespace,
+  ProgramFunction,
+  promiseControllers,
+  type Snapshot,
+} from "./contract.js"
 import type { HostTarget } from "../host.js"
 import { BufferObj } from "../stdlib/buffer.js"
 import { StreamingResponse } from "../streaming-response.js"
@@ -18,6 +27,7 @@ import {
   keys,
   Arr,
   Bytes,
+  Callable,
   DateObj,
   ErrorObj,
   HeadersObj,
@@ -79,7 +89,7 @@ export const hostGlobals = <R>(
   translate: Required<Translate> = { functions: "error", promises: "error" },
   adapt?: (value: unknown, call: Call) => unknown,
 ): ReadonlyArray<readonly [string, Value]> => {
-  // A plain host function is called like a `sync` host function that takes functions.
+  // A plain host function is called like a `sync` host function that takes the functions from results back.
   const plain = (value: Function) =>
     new Fn(
       adapt === undefined ? (args) => value(...args) : (args, call) => adapt(value(...args), call),
@@ -87,7 +97,7 @@ export const hostGlobals = <R>(
       false,
       undefined,
       false,
-      true,
+      "back",
     )
   const builtins = ctx.builtins
   // The `snapshot` hooks of the host functions among the globals that have them, by label.
@@ -102,7 +112,9 @@ export const hostGlobals = <R>(
   const hosted = new WeakMap<object, Function>()
 
   // With `waiting`, a promise that hasn't fulfilled goes there instead, and the copy is to be made again once it settles.
-  // `back` collects the host functions that cross back; without it they are treated like any function.
+  // `back` collects the host functions that cross back; without it they are treated like any function. With
+  // `programs`, a function the program wrote crosses as a ProgramFunction, and a built-in or bound function or a
+  // class fails the call.
   const toHost = (
     value: Value,
     label: string,
@@ -110,6 +122,7 @@ export const hostGlobals = <R>(
     seen: Set<object>,
     waiting: Array<PromiseObj> | undefined,
     back: Array<Function> | undefined,
+    programs: boolean,
   ): unknown => {
     if (depth > MAX_VALUE_DEPTH) throw typeError(`${label} exceeds the maximum value depth of ${MAX_VALUE_DEPTH}.`)
     if (isPrimitive(value)) return value
@@ -117,6 +130,11 @@ export const hostGlobals = <R>(
     if (back !== undefined && host !== undefined) {
       back.push(host)
       return host
+    }
+    const taken = programs && value instanceof Callable ? value.crossing : undefined
+    if (typeof taken === "object") return new ProgramFunction(taken.source, taken.captures)
+    if (taken !== undefined) {
+      throw typeError(`${label} contains ${taken}, which cannot be passed to the host; only a function written in the program can.`)
     }
     if (translate.functions === "drop" && typeofValue(value) === "function") return OMITTED
     if (seen.has(value as object)) throw typeError(`${label} contains a circular value.`)
@@ -126,7 +144,7 @@ export const hostGlobals = <R>(
         return undefined
       }
       seen.add(value)
-      const copied = toHost(value.result as Value, label, depth + 1, seen, waiting, back)
+      const copied = toHost(value.result as Value, label, depth + 1, seen, waiting, back, programs)
       seen.delete(value)
       return copied
     }
@@ -135,7 +153,7 @@ export const hostGlobals = <R>(
     }
     seen.add(value)
     const next = (item: Value) => {
-      const copied = toHost(item, label, depth + 1, seen, waiting, back)
+      const copied = toHost(item, label, depth + 1, seen, waiting, back, programs)
       return copied === OMITTED && (value instanceof MapObj || value instanceof SetObj) ? undefined : copied
     }
     if (value instanceof ErrorObj) {
@@ -507,7 +525,7 @@ export const hostGlobals = <R>(
 
   ctx.hosts = {
     shape,
-    toHost: (values, label, waiting, back) =>
+    toHost: (values, label, waiting, back, programs) =>
       values.map((item, index) => {
         const copied = toHost(
           item,
@@ -516,6 +534,7 @@ export const hostGlobals = <R>(
           new Set(),
           translate.promises === "await" ? waiting : undefined,
           back,
+          programs,
         )
         return copied === OMITTED ? undefined : copied
       }),

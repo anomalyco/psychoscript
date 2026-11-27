@@ -1417,6 +1417,32 @@ impl ToHost<'_> {
     }
 }
 
+/// A function the program wrote, as a host function that takes functions gets it, or what kind of function it is
+/// otherwise, for the error. A host function is `None`: the runtime's translation decides, as for any function.
+fn program_function(vm: &Vm, id: Id) -> Option<Result<crate::ProgramFunction, &'static str>> {
+    Some(match &vm.heap[id as usize].kind {
+        Kind::Closure(c) if c.proto.class != 0 => Err("a class"),
+        Kind::Closure(c) => {
+            let text = c
+                .proto
+                .text
+                .and_then(|[start, end]| vm.code.get(start as usize..end as usize));
+            match text {
+                Some(text) => Ok(crate::ProgramFunction::new(
+                    HostString::from_run_text(text),
+                    c.proto.outer.clone(),
+                )),
+                None => Err("a built-in function"),
+            }
+        }
+        Kind::Bound(_) => Err("a bound function"),
+        Kind::Native { f, .. } if std::ptr::fn_addr_eq(*f, host_native as crate::vm::NativeFn) => {
+            return None;
+        }
+        _ => Err("a built-in function"),
+    })
+}
+
 /// The host function behind a function the program got inside a host result, which crosses back as itself to a host
 /// function that takes functions. The functions among the globals don't: what the host runs around their calls runs
 /// only when the program calls them.
@@ -1556,6 +1582,24 @@ fn visit(vm: &mut Vm, v: &Value, depth: usize, cx: &mut ToHost) -> Result<Visit,
     {
         *back = true;
         return Ok(Visit::Done(Some(HostValue::Function(f))));
+    }
+    let taken = match cx.back {
+        Some(_) if vm.heap[id as usize].is_callable() && !vm.is_namespace(id) => {
+            program_function(vm, id)
+        }
+        _ => None,
+    };
+    if let Some(taken) = taken {
+        return match taken {
+            Ok(f) => Ok(Visit::Done(Some(HostValue::ProgramFunction(f)))),
+            Err(what) => Err(cannot_cross(
+                vm,
+                cx,
+                format_args!(
+                    "contains {what}, which cannot be passed to the host; only a function written in the program can."
+                ),
+            )),
+        };
     }
     if vm.host.translate.functions != TranslateFunctions::Error
         && vm.heap[id as usize].is_callable()
@@ -1992,6 +2036,10 @@ fn leaf_from_host(
         HostValue::Durable(f) => wrap(vm, Callee::Durable(f.clone()), label, place, None),
         HostValue::FunctionMarker => {
             let msg = format!("{label} produced a function marker, which the program cannot hold.");
+            return Err(vm.type_error(&msg));
+        }
+        HostValue::ProgramFunction(_) => {
+            let msg = format!("{label} produced a ProgramFunction, which the program cannot hold.");
             return Err(vm.type_error(&msg));
         }
         HostValue::Namespace(ns) => match &place.global {

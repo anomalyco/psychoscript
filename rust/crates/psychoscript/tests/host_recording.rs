@@ -90,6 +90,7 @@ fn globals(state: &State, run: &psychoscript::Run) -> Vec<(String, HostValue)> {
     };
     let (note, post, never, grab, wait) = (s.clone(), s.clone(), s.clone(), s.clone(), s.clone());
     let scale = s.clone();
+    let (keep, hold) = (s.clone(), s.clone());
     let (start, waited, cancel) = (s.clone(), s.clone(), s.clone());
     let counting = run.clone();
     vec![
@@ -208,6 +209,35 @@ fn globals(state: &State, run: &psychoscript::Run) -> Vec<(String, HostValue)> {
         (
             "refuses".into(),
             one(HostFunction::new(|_, _| HostValue::Bool(true))),
+        ),
+        (
+            "keep".into(),
+            HostFunction::new(move |args, call| {
+                keep.push(json!(["keep", call.key(), described(&args)]));
+                HostValue::Undefined
+            })
+            .takes_functions()
+            .length(2)
+            .into(),
+        ),
+        (
+            "echo".into(),
+            one(
+                HostFunction::new(|args, _| args.into_iter().next().unwrap_or_default())
+                    .takes_functions(),
+            ),
+        ),
+        (
+            "hold".into(),
+            HostFunction::new_async(move |args, call| {
+                let f = args.first().cloned().unwrap_or_default();
+                hold.push(json!(["hold", call.key(), describe(&f)]));
+                hold.pending(5.0)
+            })
+            .idempotent()
+            .takes_functions()
+            .length(2)
+            .into(),
         ),
         (
             "grab".into(),

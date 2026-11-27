@@ -1,4 +1,4 @@
-import type { DurableFn, Fn } from "../runtime/contract.js"
+import { type DurableFn, type Fn, ProgramFunction } from "../runtime/contract.js"
 import { Interpreter } from "../runtime/interpreter.js"
 import {
   type AstNode,
@@ -31,6 +31,7 @@ import {
   GeneratorObj,
   HeadersObj,
   HostNamespace,
+  hostMade,
   IteratorObj,
   MapObj,
   Native,
@@ -108,13 +109,15 @@ export type HostBridge = {
    * Program values as host values, for a call's arguments. When the runtime awaits promises in arguments, one that
    * hasn't fulfilled goes in `waiting` instead, and the arguments are to cross again once it settles. A function
    * inside a result crosses back as its host function and is added to `back`; without `back` it is treated like any
-   * function.
+   * function. With `programs`, a function the program wrote crosses as a `ProgramFunction`, and any other function that
+   * doesn't cross back fails the call.
    */
   readonly toHost: (
     values: ReadonlyArray<Value>,
     label: string,
     waiting: Array<PromiseObj>,
     back: Array<Function> | undefined,
+    programs: boolean,
   ) => ReadonlyArray<unknown>
   /** A host value as a program value, for what a call returned; `owner`'s `snapshot` hooks can save it. */
   readonly fromHost: (value: unknown, label: string, owner: string | undefined) => Value
@@ -544,6 +547,7 @@ class Encoder {
       return undefined
     }
     if (object instanceof Date) return { t: "Date", v: this.value(object.getTime()) }
+    if (object instanceof ProgramFunction) return { t: "ProgramFunction", s: object.source, c: [...object.captures] }
     if (object instanceof RegExp) return { t: "RegExp", s: object.source, f: object.flags }
     if (object instanceof Headers) return { t: "Headers", e: [...object].map(([key, item]) => [key, item]) }
     if (object instanceof Uint8Array) {
@@ -740,8 +744,11 @@ class Decoder {
         return named
       }
       case "LostNative":
-      case "HostFunction":
-        return Object.create(Native.prototype)
+      case "HostFunction": {
+        const made = Object.create(Native.prototype) as Native
+        hostMade.add(made)
+        return made
+      }
       case "HostValue":
         return {}
       case "Interruption":
@@ -765,6 +772,11 @@ class Decoder {
       }
       case "RegExp":
         return new RegExp(text(record.s, "a pattern"), text(record.f, "flags"))
+      case "ProgramFunction":
+        return new ProgramFunction(
+          text(record.s, "a function's source"),
+          list(record.c, "a function's captures").map((name) => text(name, "a captured name")),
+        )
       case "URL":
         return new URL(text(record.h, "a URL"))
       case "URLSearchParams": {
@@ -886,6 +898,7 @@ class Decoder {
       case "HostValue":
       case "Interruption":
       case "Date":
+      case "ProgramFunction":
       case "RegExp":
       case "URL":
       case "URLSearchParams":

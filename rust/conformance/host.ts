@@ -28,6 +28,10 @@
 //   that gives `"called"`.
 // - `takes(input)`: sync, `takesFunctions: true`; gives whether `input.read` is that same `read` function.
 // - `refuses(input)`: sync; gives `true`.
+// - `keep(...args)`: sync, `takesFunctions: true`; logs `["keep", call.key, args.map(describe)]` and gives `undefined`.
+// - `echo(value)`: sync, `takesFunctions: true`; gives `value` as it crossed.
+// - `hold(f)`: async, `idempotent: true`, `takesFunctions: true`; logs `["hold", call.key, describe(f)]`; never settles
+//   until the entry resumed, then gives 5.
 // - `grab(input)`: async, `idempotent: true`, `takesFunctions: true`; logs `["grab", call.key]`; never settles until the entry
 //   resumed, then gives 3.
 // - `Box(item)`: sync, `constructible: true`; gives `{ item }`.
@@ -111,6 +115,18 @@ const make = (entry: Entry) => {
         open: Host.fn((_: ReadonlyArray<unknown>) => ({ read })),
         takes: Host.fn(([input]: ReadonlyArray<{ read?: unknown }>) => input?.read === read, { takesFunctions: true }),
         refuses: Host.fn((_: ReadonlyArray<unknown>) => true),
+        keep: Host.fn(
+          (args: ReadonlyArray<unknown>, call: { key: string }) => {
+            log.push(["keep", call.key, args.map(describe)])
+          },
+          { takesFunctions: true },
+        ),
+        echo: Host.fn(([value]: ReadonlyArray<unknown>) => value, { takesFunctions: true }),
+        hold: Host.fn(
+          ([f]: ReadonlyArray<unknown>, call: { key: string }) =>
+            Effect.suspend(() => (log.push(["hold", call.key, describe(f)]), state.resumed ? Effect.succeed(5) : pending())),
+          { type: "async", idempotent: true, takesFunctions: true },
+        ),
         grab: Host.fn(
           (_: ReadonlyArray<unknown>, call: { key: string }) =>
             Effect.suspend(() => (log.push(["grab", call.key]), state.resumed ? Effect.succeed(3) : pending())),
@@ -245,6 +261,58 @@ const executes: Array<Entry> = [
   { code: `refuses(open().read)` },
   { code: `takes(takes)` },
   { code: `takes(() => 1)` },
+  // A function that takes functions gets a function the program wrote as a ProgramFunction: its source text and the
+  // names from outside it that it uses. Any other function but its own fails the call, whatever the translation.
+  {
+    code: `keep({ name: "t", run: async (input) => { return input.days * 2 } }); note({ run: () => 1 }); return 1`,
+    translate: drop,
+  },
+  {
+    code: `const rate = 2
+let ünïcode = 1
+function helper(x) { return x }
+function fact(n) { return n ? n * fact(n - 1) : 1 }
+const o = { m() { return this.x + arguments.length }, get g() { return rate }, set g(v) { ünïcode = v } }
+function outer(a = rate) { return () => [this, arguments, a] }
+class B { m() { return 1 } }
+class A extends B { m() { return () => super.m() } }
+class C { m() { return C } static s() { return this } }
+const named = function self() { return [self, () => self] }
+class F { f = () => this; g = (x) => x + rate }
+keep(
+  new F().f,
+  new F().g,
+  (input) => input.days * rate + helper(1) + Math.max(1) + ünïcode,
+  fact,
+  o.m,
+  Object.getOwnPropertyDescriptor(o, "g").get,
+  Object.getOwnPropertyDescriptor(o, "g").set,
+  outer(),
+  new A().m(),
+  new C().m,
+  C.s,
+  named,
+  named()[1],
+  (a, { b } = {}, ...rest) => { let c = a; return [b, c, rest] },
+  (x) => { const inner = () => rate; return inner },
+  () => typeof undeclared,
+  function* gen() { yield helper },
+  async function* agen() { await rate },
+  () => this,
+)
+return 1`,
+  },
+  {
+    code: `class A {}
+const errors = []
+for (const f of [Math.max, ((x) => x).bind(null), A, double, Promise.resolve(1).then, open().read.bind(null)])
+  try { keep({ f }) } catch (e) { errors.push(e.message) }
+return errors`,
+    translate: drop,
+  },
+  { code: `const r = open(); keep({ read: r.read, run: () => 2 }, [r.read]); return takes({ read: r.read, run: () => 2 })` },
+  { code: `const f = () => 1; f.toString = () => "x"; keep(f)` },
+  { code: `return echo(() => 1)` },
   // Constructible functions.
   { code: `return [new Box(1).item, new Later(2).item, new Later(...[3]).item, Box(4).item, typeof Box]` },
   { code: `new double(1)` },
@@ -412,6 +480,9 @@ const suspensions: Array<Entry> = [
   { code: `return (await job()) + 1`, runId: "d" },
   { code: `return (await job()) + 1`, runId: "d", compiled: true },
   { code: `const a = job(1, { b: [2] }); const b = job(); return [await a, await b, count()]`, runId: "d" },
+  // A ProgramFunction is plain data: a saved run keeps the call that has one, and the resumed call gets it again.
+  { code: `const rate = 3\nawait hold((x) => x * rate)\nreturn 1`, runId: "p" },
+  { code: `const run = async (x) => { return x }\nawait wait()\nkeep({ run })\nreturn 1`, runId: "p" },
   // promises: "await" keeps waiting across a suspend.
   { code: `return [note({ n: wait() }), await wait()]`, runId: "t", translate: wait },
   // Accessors and their halves are saved with the run.

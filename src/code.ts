@@ -42,6 +42,11 @@ export class Code {
   /** Where the function's source text starts and ends in its source, for `Function.prototype.toString`; -1 for none. */
   readonly textStart: number
   readonly textEnd: number
+  /**
+   * The names from outside the function that it uses, sorted: what a host that takes functions gets as its
+   * `captures` (see `ProgramFunction`).
+   */
+  readonly outerNames: ReadonlyArray<string>
   readonly sourceObj: Source | undefined
 
   constructor(init: {
@@ -64,6 +69,7 @@ export class Code {
     readonly upvalNames?: ReadonlyArray<string> | undefined
     readonly textStart?: number | undefined
     readonly textEnd?: number | undefined
+    readonly outerNames?: ReadonlyArray<string> | undefined
     readonly sourceObj?: Source | undefined
   }) {
     this.source = init.source
@@ -88,6 +94,7 @@ export class Code {
     this.upvalNames = init.upvalNames ?? []
     this.textStart = init.textStart ?? -1
     this.textEnd = init.textEnd ?? -1
+    this.outerNames = init.outerNames ?? []
     this.sourceObj = init.sourceObj
   }
 
@@ -179,6 +186,7 @@ export class CodeBuilder {
   forceExtra = false
   textStart = -1
   textEnd = -1
+  outerNames: ReadonlyArray<string> = []
 
   constructor(
     readonly source: SourceRef,
@@ -385,6 +393,7 @@ export class CodeBuilder {
       upvalNames: this.upvalNames,
       textStart: this.textStart,
       textEnd: this.textEnd,
+      outerNames: this.outerNames,
       sourceObj: this.sourceObj,
     })
   }

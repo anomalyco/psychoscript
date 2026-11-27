@@ -1213,6 +1213,8 @@ struct FnState<'a> {
     new_target: u32,
     /// A method whose `super` reads its home object, or an arrow that takes it from its method.
     home: bool,
+    /// An arrow that reads its enclosing function's `this`, which it takes when it is made.
+    outer_this: bool,
 }
 
 struct Compiler<'a, 's> {
@@ -2102,6 +2104,7 @@ impl<'a, 's> Compiler<'a, 's> {
                 callees: f.callees,
                 sites: f.sites,
                 text: None,
+                outer: Vec::new(),
             },
         );
         // Closure instructions index `protos` assuming the program is not in the list; shift them.
@@ -2128,6 +2131,10 @@ impl<'a, 's> Compiler<'a, 's> {
             FunctionType::FunctionExpression => f.id.as_ref().and_then(|id| id.symbol_id.get()),
             _ => None,
         };
+        let decl_sym = match f.r#type {
+            FunctionType::FunctionDeclaration => f.id.as_ref().and_then(|id| id.symbol_id.get()),
+            _ => None,
+        };
         let idx = self.compile_function(FnSpec {
             name: own_name,
             params: Some(&f.params),
@@ -2140,6 +2147,7 @@ impl<'a, 's> Compiler<'a, 's> {
             is_generator: f.generator,
             is_arrow: false,
             self_sym,
+            decl_sym,
             text: Some([f.span.start, f.span.end]),
         })?;
         self.emit(Op::Closure(idx));
@@ -2170,6 +2178,7 @@ impl<'a, 's> Compiler<'a, 's> {
             is_generator: false,
             is_arrow: true,
             self_sym: None,
+            decl_sym: None,
             text: Some([f.span.start, f.span.end]),
         })?;
         self.emit(Op::Closure(idx));
@@ -2332,6 +2341,7 @@ impl<'a, 's> Compiler<'a, 's> {
             }
         }
         let f = self.fns.pop().expect("function state");
+        let outer = self.outer_names(&f, spec.decl_sym, spec.is_arrow);
         self.last_home = f.home;
         self.chains = saved_chains;
         self.pos = saved_pos;
@@ -2355,8 +2365,38 @@ impl<'a, 's> Compiler<'a, 's> {
             sites: f.sites,
             // A prelude built-in's offsets are in its own source, not the program's.
             text: spec.text.filter(|_| !self.internal),
+            outer,
         });
         Ok(self.protos.len() as u32 - 1)
+    }
+
+    /// The names from outside a function that it uses: its upvalues, but its own declaration's name, which its text
+    /// binds again. An arrow's `this`, `arguments` and `super` are its enclosing function's, so they count, under
+    /// those names.
+    fn outer_names(
+        &self,
+        f: &FnState<'a>,
+        decl_sym: Option<SymbolId>,
+        is_arrow: bool,
+    ) -> Vec<String> {
+        let mut names: Vec<String> = f
+            .upval_of
+            .keys()
+            .filter(|s| Some(**s) != decl_sym)
+            .map(|s| self.atoms.text(self.syms[s].name).to_owned())
+            .collect();
+        if f.args_upval.is_some() {
+            names.push("arguments".to_owned());
+        }
+        if f.this_upval.is_some() || f.outer_this {
+            names.push("this".to_owned());
+        }
+        if is_arrow && f.home {
+            names.push("super".to_owned());
+        }
+        names.sort();
+        names.dedup();
+        names
     }
 
     // ---------- statements ----------
@@ -4255,6 +4295,8 @@ struct FnSpec<'a, 'n> {
     is_generator: bool,
     is_arrow: bool,
     self_sym: Option<SymbolId>,
+    /// A function declaration's own binding.
+    decl_sym: Option<SymbolId>,
     /// The function's source text, as `Function.prototype.toString` returns it (see `FuncProto::text`).
     text: Option<[u32; 2]>,
 }
@@ -4284,6 +4326,7 @@ impl<'a> FnState<'a> {
             this_upval: None,
             new_target: 0,
             home: false,
+            outer_this: false,
         }
     }
 }
@@ -4496,7 +4539,11 @@ impl<'a, 's> Compiler<'a, 's> {
 
     /// `this`: a derived constructor's binding (also from its arrows), checked for `super()`, or the frame's.
     fn emit_this(&mut self) -> R<()> {
-        let Some(d) = self.fns.iter().rposition(|f| !f.is_arrow) else {
+        let d = self.fns.iter().rposition(|f| !f.is_arrow);
+        for f in &mut self.fns[d.map_or(0, |d| d + 1)..] {
+            f.outer_this = true;
+        }
+        let Some(d) = d else {
             self.emit(Op::This);
             return Ok(());
         };
@@ -4657,6 +4704,7 @@ impl<'a, 's> Compiler<'a, 's> {
                     is_generator: false,
                     is_arrow: false,
                     self_sym: None,
+                    decl_sym: None,
                     text: Some([c.span.start, c.span.end]),
                 })?
             }
@@ -4672,6 +4720,7 @@ impl<'a, 's> Compiler<'a, 's> {
                 is_generator: false,
                 is_arrow: false,
                 self_sym: None,
+                decl_sym: None,
                 text: Some([c.span.start, c.span.end]),
             })?,
         };
@@ -4737,6 +4786,7 @@ impl<'a, 's> Compiler<'a, 's> {
                 is_generator: false,
                 is_arrow: false,
                 self_sym: None,
+                decl_sym: None,
                 text: None,
             })?;
             self.pos = c.span.start;
@@ -4762,6 +4812,7 @@ impl<'a, 's> Compiler<'a, 's> {
                 is_generator: false,
                 is_arrow: false,
                 self_sym: None,
+                decl_sym: None,
                 text: None,
             })?;
             self.pos = c.span.start;
@@ -4797,6 +4848,7 @@ impl<'a, 's> Compiler<'a, 's> {
             is_generator: f.generator,
             is_arrow: false,
             self_sym: None,
+            decl_sym: None,
             text: Some(text),
         })?;
         self.emit(Op::Closure(idx));
@@ -4894,6 +4946,7 @@ impl<'a, 's> Compiler<'a, 's> {
                     is_generator: f.generator,
                     is_arrow: false,
                     self_sym: None,
+                    decl_sym: None,
                     text: Some(text),
                 })?;
                 self.emit(Op::Closure(idx));

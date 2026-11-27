@@ -472,7 +472,7 @@ console.log(result.value)
                   <li><strong>Built-ins:</strong> Object, Array, String, Number, BigInt, Math, JSON, Date, RegExp, Map, Set, WeakMap, WeakSet, Promise, Iterator helpers, and errors.</li>
                   <li><strong>Pure-data helpers:</strong> URL, URLSearchParams, Headers, TextEncoder/TextDecoder, atob/btoa, structuredClone, crypto.randomUUID/getRandomValues, Uint8Array, Node's Buffer, and console.</li>
                   <li><strong>Imports:</strong> import and require bind host globals by module name before the script runs.</li>
-                  <li><strong>Host function options:</strong> type is sync (the default), async, or sync-thenable. idempotent permits a suspend mid-call. constructible allows new. takesFunctions accepts functions the host returned earlier. snapshot keeps functions in results across a resume.</li>
+                  <li><strong>Host function options:</strong> type is sync (the default), async, or sync-thenable. idempotent permits a suspend mid-call. constructible allows new. takesFunctions accepts functions the host returned earlier, and functions the program wrote as a ProgramFunction (source text and captured names). snapshot keeps functions in results across a resume.</li>
                   <li><strong>Argument translation:</strong> A script function or promise inside a host argument fails the call by default. The translate option can drop functions and await promises instead.</li>
                   <li><strong>Conformance:</strong> test262 at pinned revision 250f204f, excluding features out of scope by design. Of 22,253 files kept, 19,408 pass and 2,845 are skipped as known gaps. None fail. Not yet run in CI.</li>
                 </ul>

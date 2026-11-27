@@ -53,6 +53,7 @@ let mesh = HostFunction::new(|_, _| HostValue::TypedArray(TypedArray::from_f32(&
 | `toBytes`, `fromBytes` | `to_bytes`, `from_bytes` |
 | `limits.timeoutMs`, `limits.maxOutputBytes` | `Limits::timeout_ms`, `Limits::max_output_bytes` |
 | `translate: { functions, promises }` | `Translate { functions, promises }` |
+| `takesFunctions: true`, `ProgramFunction` | `HostFunction::takes_functions()`, `HostValue::ProgramFunction(ProgramFunction)` |
 | an `AbortSignal` | dropping the future or the `Program` |
 
 ## Differences from the TypeScript implementation

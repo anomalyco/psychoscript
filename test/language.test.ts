@@ -88,7 +88,7 @@ describe("Host.fn", () => {
       }),
     })
     expect(await value(runtime, `return takes({ read: open().read })`)).toBe(true)
-    for (const code of [`refuses(open().read)`, `takes(takes)`, `takes(() => 1)`]) {
+    for (const code of [`refuses(open().read)`, `takes(takes)`]) {
       expect(await run(runtime, code)).toMatchObject({
         ok: false,
         error: { message: expect.stringContaining("contains a function, which cannot be passed to the host") },

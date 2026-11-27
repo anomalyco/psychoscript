@@ -286,7 +286,7 @@ fn a_function_inside_a_result_crosses_back_as_itself_only_to_a_function_that_tak
         value(&rt, "return takes({ read: open().read })"),
         json!(true)
     );
-    for code in ["refuses(open().read)", "takes(takes)", "takes(() => 1)"] {
+    for code in ["refuses(open().read)", "takes(takes)"] {
         let e = error(&rt, code);
         assert!(
             e.message_lossy()

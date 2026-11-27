@@ -320,6 +320,8 @@ pub struct FuncProto {
     /// Where the function's source text starts and ends in the program, as `Function.prototype.toString` returns
     /// it; `None` for built-in or compiler-made code.
     pub text: Option<[u32; 2]>,
+    /// The names from outside the function that it uses, sorted, as a [`crate::ProgramFunction`]'s `captures`.
+    pub outer: Vec<String>,
 }
 
 impl FuncProto {
