@@ -18,10 +18,15 @@ import {
   type Value,
 } from "../runtime/objects.js"
 import { containsOpaqueReference, typeofValue } from "../runtime/references.js"
-import { isSupportedCallback, requireCallback, withPrimitives, withReads } from "../runtime/callback.js"
+import { conversions, isSupportedCallback, requireCallback, withPrimitives, withReads } from "../runtime/callback.js"
 import type { Interpreter } from "../runtime/interpreter.js"
 import { matchToValue, withHostRegex } from "./regexp.js"
 import { coerce } from "./value.js"
+
+const primitiveHead = (args: Array<Value>, count: number): boolean => {
+  for (let index = 0; index < count; index++) if (args[index] instanceof Obj) return false
+  return true
+}
 
 // console is intercepted by the interpreter before reaching here.
 const requireDataArgument = (name: string, index: number, arg: Value): Value => {
@@ -167,20 +172,31 @@ export const stringGlobal = <R>(ctx: Interpreter<R>) => {
     length: number,
     op: (value: string, args: Array<Value>) => NativeResult,
     hints: ReadonlyArray<Hint> = [],
-  ): Method => [
-    name,
-    length,
-    (thisValue, args) => {
-      if (thisValue === null || thisValue === undefined) {
-        throw typeError(`String.prototype.${name} called on null or undefined.`)
-      }
-      return withPrimitives(
-        ["string", ...hints],
-        [thisValue, ...args.slice(0, hints.length)],
-        ([value, ...primitives]) => op(coerceToString(value), [...primitives, ...args.slice(hints.length)]),
-      )
-    },
-  ]
+  ): Method => {
+    const allHints: ReadonlyArray<Hint> = ["string", ...hints]
+    return [
+      name,
+      length,
+      (thisValue, args) => {
+        if (thisValue === null || thisValue === undefined) {
+          throw typeError(`String.prototype.${name} called on null or undefined.`)
+        }
+        // Primitives convert as they are: what withPrimitives would do, without its arrays.
+        if (typeof thisValue === "string" && primitiveHead(args, hints.length)) {
+          conversions.count++
+          return op(thisValue, args)
+        }
+        if (hints.length === 0) {
+          return withPrimitives(allHints, [thisValue], ([value]) => op(coerceToString(value), args))
+        }
+        return withPrimitives(
+          allHints,
+          [thisValue, ...args.slice(0, hints.length)],
+          ([value, ...primitives]) => op(coerceToString(value), [...primitives, ...args.slice(hints.length)]),
+        )
+      },
+    ]
+  }
   // includes, startsWith, and endsWith reject a RegExp before converting their search string and position.
   const searching = (name: string, op: (value: string, search: string, position: number | undefined) => boolean) =>
     simple(name, 1, (value, args) => {
@@ -188,6 +204,10 @@ export const stringGlobal = <R>(ctx: Interpreter<R>) => {
         throw typeError(
           `String.${name} cannot take a regular expression; use regex.test(string) or String.search instead.`,
         )
+      }
+      if (primitiveHead(args, 2)) {
+        conversions.count++
+        return op(value, str(name, args, 0), optNum(name, args, 1))
       }
       return withPrimitives(["string", "number"], args.slice(0, 2), (primitives) =>
         op(value, str(name, primitives, 0), optNum(name, primitives, 1)),

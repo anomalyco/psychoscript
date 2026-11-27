@@ -167,6 +167,48 @@ export const hostGlobals = <R>(
   const hostGetter = (name: string, read: () => boolean) =>
     native(builtins, { runtime: "host", name: `get ${name}`, call: () => read() })
 
+  // Plain arrays and records, the usual tool result, copied without the checks for the host kinds that need them.
+  const copyPlain = (value: unknown, label: string, depth: number, seen: Set<object>): Value | typeof NOT_PLAIN => {
+    // A primitive one level down is taken as is unless it is past the depth limit, which `fromHost` reports.
+    const shallow = depth < MAX_VALUE_DEPTH
+    if (Array.isArray(value)) {
+      if (Object.getPrototypeOf(value) !== Array.prototype) return NOT_PLAIN
+      const length = value.length
+      if (length > MAX_ARRAY_LENGTH) {
+        throw rangeError(`${label} produced an array of ${length} items; at most ${MAX_ARRAY_LENGTH} can cross.`)
+      }
+      if (seen.has(value)) throw typeError(`${label} produced a circular value.`)
+      seen.add(value)
+      const items: Array<Value> = []
+      for (let index = 0; index < length; index += 1) {
+        if (!(index in value)) continue
+        const item = value[index]
+        items[index] = shallow && isPrimitive(item) ? item : fromHost(item, `${label}[${index}]`, depth + 1, seen)
+      }
+      items.length = length
+      seen.delete(value)
+      return new Arr(builtins.Array, items)
+    }
+    const prototype = Object.getPrototypeOf(value)
+    if (prototype !== Object.prototype && prototype !== null) return NOT_PLAIN
+    if (seen.has(value as object)) throw typeError(`${label} produced a circular value.`)
+    seen.add(value as object)
+    const copied = new Obj(builtins.Object)
+    for (const key in value as object) {
+      if (!Object.hasOwn(value as object, key)) continue
+      const item = (value as Record<string, unknown>)[key]
+      // A fresh ordinary object: defining a key is adding its default data slot.
+      copied.props.set(key, {
+        value: shallow && isPrimitive(item) ? item : fromHost(item, `${label}.${key}`, depth + 1, seen),
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      })
+    }
+    seen.delete(value as object)
+    return copied
+  }
+
   const fromHost = (value: unknown, label: string, depth = 0, seen = new Set<object>(), place: Place = {}): Value => {
     if (depth > MAX_VALUE_DEPTH) throw typeError(`${label} exceeds the maximum value depth of ${MAX_VALUE_DEPTH}.`)
     if (isPrimitive(value)) return value
@@ -190,6 +232,10 @@ export const hostGlobals = <R>(
         origins.set(made, { owner: within.owner, root: within.root, path: within.path, label })
       }
       return made
+    }
+    if (place.global === undefined && place.within === undefined && place.installed === undefined) {
+      const plainCopy = copyPlain(value, label, depth, seen)
+      if (plainCopy !== NOT_PLAIN) return plainCopy
     }
     if (value !== null && typeof value === "object") {
       const next = (item: unknown, path: string, key?: string | number) =>
@@ -579,6 +625,7 @@ const hostStep = <A>(owner: string, what: "save" | "restore", step: () => A): A 
  */
 const uncrossed = new Set(["stack", "message", "constructor", "toString", "__proto__"])
 const left = Symbol("left behind")
+const NOT_PLAIN = Symbol("not plain")
 const crossing = <T>(convert: () => T): T | typeof left => {
   try {
     return convert()

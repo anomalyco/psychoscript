@@ -1,6 +1,6 @@
 import { constants, type Method, methods } from "../runtime/native.js"
 import { Obj, coerceToNumber } from "../runtime/objects.js"
-import { withPrimitives } from "../runtime/callback.js"
+import { conversions, withPrimitives } from "../runtime/callback.js"
 import type { Interpreter } from "../runtime/interpreter.js"
 
 export const mathGlobal = <R>(ctx: Interpreter<R>) => {
@@ -11,12 +11,27 @@ export const mathGlobal = <R>(ctx: Interpreter<R>) => {
   const unary = (name: string, op: (a: number) => number): Method => [
     name,
     1,
-    (_, args) => withPrimitives("number", [args[0]], ([a]) => op(coerceToNumber(a))),
+    (_, args) => {
+      const a = args[0]
+      if (typeof a === "number") {
+        conversions.count++
+        return op(a)
+      }
+      return withPrimitives("number", [a], ([a]) => op(coerceToNumber(a)))
+    },
   ]
   const binary = (name: string, op: (a: number, b: number) => number): Method => [
     name,
     2,
-    (_, args) => withPrimitives("number", [args[0], args[1]], ([a, b]) => op(coerceToNumber(a), coerceToNumber(b))),
+    (_, args) => {
+      const a = args[0]
+      const b = args[1]
+      if (typeof a === "number" && typeof b === "number") {
+        conversions.count++
+        return op(a, b)
+      }
+      return withPrimitives("number", [a, b], ([a, b]) => op(coerceToNumber(a), coerceToNumber(b)))
+    },
   ]
   const variadic = (name: string, op: (...values: Array<number>) => number): Method => [
     name,
