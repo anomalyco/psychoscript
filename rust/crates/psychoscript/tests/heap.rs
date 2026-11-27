@@ -239,3 +239,12 @@ fn finished_async_functions_dont_pile_up() {
         assert_eq!(result, Ok(json!(100000)), "{code}");
     }
 }
+
+#[test]
+fn duplicate_fresh_strings_count_each_allocation() {
+    // Separately allocated identical strings each hold their own buffer in the string arena and must not bypass
+    // `max_heap_bytes` (whereas shared references to the same string still count once, tested above).
+    let rt = capped(2 * 1024 * 1024);
+    let code = "const a = []; for (let i = 0; i < 10_000; i++) a.push('x'.repeat(10_000)); return a.length";
+    assert_eq!(kind(&rt, code), DiagnosticKind::MemoryLimitExceeded);
+}
