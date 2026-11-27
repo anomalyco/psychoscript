@@ -317,6 +317,9 @@ pub struct FuncProto {
     /// The source offsets of the object and the key of each member instruction whose errors may point at them
     /// instead of at the member, by the instruction's index, ascending.
     pub sites: Vec<(u32, [u32; 2])>,
+    /// Where the function's source text starts and ends in the program, as `Function.prototype.toString` returns
+    /// it; `None` for built-in or compiler-made code.
+    pub text: Option<[u32; 2]>,
 }
 
 impl FuncProto {

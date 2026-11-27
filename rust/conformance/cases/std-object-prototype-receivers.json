@@ -206,7 +206,7 @@
     ],
     [
       "toLocaleString",
-      "[object Function]"
+      "() => 1"
     ],
     [
       "toLocaleString",

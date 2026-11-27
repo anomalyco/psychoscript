@@ -58,6 +58,7 @@ pub fn setup(vm: &mut Vm) {
     vm.methods(
         fp,
         &[
+            ("toString", 0, function_to_string),
             ("call", 1, function_call),
             ("apply", 2, function_apply),
             ("bind", 1, function_bind),
@@ -1038,6 +1039,29 @@ fn function_receiver(vm: &mut Vm, this: &Value, method: &str) -> Result<(), Valu
     Err(vm.type_error(&format!(
         "Function.prototype.{method} called on incompatible receiver {d}."
     )))
+}
+
+// A program function's source text as written; a built-in, host or bound function has none, so it gets the spec's
+// NativeFunction form. Conversions such as `String(fn)` don't use it.
+fn function_to_string(vm: &mut Vm, this: Value, _: &[Value], _: Id) -> Res {
+    function_receiver(vm, &this, "toString")?;
+    let Some(id) = this.as_obj() else {
+        return Err(vm.type_error("Function.prototype.toString called on incompatible receiver."));
+    };
+    let span = match &vm.heap[id as usize].kind {
+        Kind::Closure(c) => c.proto.text,
+        _ => None,
+    };
+    if let Some(text) = span.and_then(|[start, end]| vm.code.get(start as usize..end as usize)) {
+        let text = text.to_owned();
+        return Ok(vm.string_val(text));
+    }
+    let nk = vm.names.name;
+    let name = match vm.get_obj(id, nk) {
+        Value::Str(s) => vm.text(s).to_owned(),
+        _ => String::new(),
+    };
+    Ok(vm.string_val(format!("function {name}() {{ [native code] }}")))
 }
 
 fn function_call(vm: &mut Vm, this: Value, args: &[Value], callee: Id) -> Res {

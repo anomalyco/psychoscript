@@ -39,6 +39,9 @@ export class Code {
   readonly sites: Int32Array
   readonly localNames: ReadonlyArray<string>
   readonly upvalNames: ReadonlyArray<string>
+  /** Where the function's source text starts and ends in its source, for `Function.prototype.toString`; -1 for none. */
+  readonly textStart: number
+  readonly textEnd: number
   readonly sourceObj: Source | undefined
 
   constructor(init: {
@@ -59,6 +62,8 @@ export class Code {
     readonly sites: Int32Array
     readonly localNames: ReadonlyArray<string>
     readonly upvalNames?: ReadonlyArray<string> | undefined
+    readonly textStart?: number | undefined
+    readonly textEnd?: number | undefined
     readonly sourceObj?: Source | undefined
   }) {
     this.source = init.source
@@ -81,7 +86,15 @@ export class Code {
     this.sites = init.sites
     this.localNames = init.localNames
     this.upvalNames = init.upvalNames ?? []
+    this.textStart = init.textStart ?? -1
+    this.textEnd = init.textEnd ?? -1
     this.sourceObj = init.sourceObj
+  }
+
+  /** The function's source text, as it was written; undefined when it has none, such as compiler-made code. */
+  get text(): string | undefined {
+    if (this.textStart < 0 || this.sourceObj === undefined) return undefined
+    return this.sourceObj.code.slice(this.textStart, this.textEnd)
   }
 
   /** Resolves the AST node index recorded for `pc`, or `-1` when none was recorded. */
@@ -164,6 +177,8 @@ export class CodeBuilder {
   maxStack = 0
   wideJumps = false
   forceExtra = false
+  textStart = -1
+  textEnd = -1
 
   constructor(
     readonly source: SourceRef,
@@ -368,6 +383,8 @@ export class CodeBuilder {
       sites: new Int32Array(this.sitePairs),
       localNames: this.localNames,
       upvalNames: this.upvalNames,
+      textStart: this.textStart,
+      textEnd: this.textEnd,
       sourceObj: this.sourceObj,
     })
   }

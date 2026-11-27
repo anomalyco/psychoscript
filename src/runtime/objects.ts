@@ -349,6 +349,14 @@ export abstract class Callable extends Opaque {
   override get describe() {
     return "a function"
   }
+  /**
+   * What `Function.prototype.toString` returns: a program function's source text as written. A built-in, host or bound
+   * function has none, so it gets the spec's NativeFunction form. Conversions such as `String(fn)` don't use it.
+   */
+  source(): string {
+    const name = get(this, "name")
+    return `function ${typeof name === "string" ? name : ""}() { [native code] }`
+  }
 }
 
 /** A program or prelude function: its bytecode, and the cells of the bindings it captured. */
@@ -367,6 +375,10 @@ export class Fn extends Callable {
   klass: ClassInfo | undefined = undefined
   get generator(): boolean {
     return (this.code.flags & CodeFlags.GENERATOR) !== 0
+  }
+  override source() {
+    if ((this.code.flags & CodeFlags.INTERNAL) !== 0) return super.source()
+    return this.code.text ?? super.source()
   }
   override inspect() {
     if (this.klass === undefined) return super.inspect()
