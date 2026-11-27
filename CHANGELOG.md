@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- psychoscript loads in Safari and other JavaScriptCore runtimes. The BigInt size limit was checked against
+  2^(2^20), which takes one bit more than JavaScriptCore allows a BigInt, so importing psychoscript threw
+  `RangeError: Out of memory: BigInt generated from this operation is too big`. The limit itself is unchanged.
 - `Function.prototype.toString` returns a program function's source text as written: an arrow or `function` as is, a
   method or accessor from its name, a class as its whole `class … {}`. Built-in, bound and host functions return
   `function name() { [native code] }`. A host can now keep a function a program hands it as text. `String(fn)` is

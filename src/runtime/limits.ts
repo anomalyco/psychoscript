@@ -14,11 +14,14 @@ export const MAX_VALUE_DEPTH = 32
 
 /** Most bits a BigInt may have. Past about a million bits, one multiplication, division or decimal conversion can take tens of milliseconds. */
 export const MAX_BIGINT_BITS = 1 << 20
-// Both bounds are made once: negating a million-bit BigInt on every check would copy it each time.
-const bigintBound = 1n << BigInt(MAX_BIGINT_BITS)
-const negativeBigintBound = -bigintBound
+// Both bounds are made once: negating a million-bit BigInt on every check would copy it each time. They are the
+// largest values that fit rather than the first that don't: JavaScriptCore (Safari) caps a BigInt at 2^20 bits, so
+// 2^MAX_BIGINT_BITS would throw a RangeError as this module loads. asUintN makes 2^MAX_BIGINT_BITS - 1 without an
+// intermediate that JavaScriptCore would size past its cap, as `+` or `*` on a million-bit operand would.
+const largestBigInt = BigInt.asUintN(MAX_BIGINT_BITS, -1n)
+const smallestBigInt = -largestBigInt
 
-export const fitsBigIntSize = (value: bigint): boolean => value < bigintBound && value > negativeBigintBound
+export const fitsBigIntSize = (value: bigint): boolean => value <= largestBigInt && value >= smallestBigInt
 
 export const checkBigIntSize = (value: bigint): bigint => {
   if (!fitsBigIntSize(value)) throw rangeError("Maximum BigInt size exceeded")
