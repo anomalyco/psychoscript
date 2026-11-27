@@ -227,6 +227,19 @@ fn a_gpu_moves_between_threads() {
     send::<Gpu>();
 }
 
+/// A shared device whose host caps `max_non_sampler_bindings` (wgpu's own limit, not WebGPU's), as Rune does at
+/// 65,536, is a device for GPU canvases.
+#[test]
+fn a_device_with_fewer_non_sampler_bindings_is_one() {
+    let limits = wgpu::Limits {
+        max_non_sampler_bindings: 65_536,
+        ..psychoscript_gpu::device_limits()
+    };
+    let (device, queue) = common::device_with(common::adapter(), limits);
+    assert_eq!(device.limits().max_non_sampler_bindings, 65_536);
+    assert!(Gpu::new(device, queue, RGBA).is_ok());
+}
+
 #[test]
 fn clear() {
     let mut f = fixture();

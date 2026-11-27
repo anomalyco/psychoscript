@@ -69,13 +69,18 @@ pub fn hang_device() -> Option<(wgpu::Device, wgpu::Queue)> {
 }
 
 fn device_of(adapter: wgpu::Adapter) -> (wgpu::Device, wgpu::Queue) {
+    device_with(adapter, psychoscript_gpu::device_limits())
+}
+
+/// A device of `adapter` with `limits`.
+pub fn device_with(adapter: wgpu::Adapter, limits: wgpu::Limits) -> (wgpu::Device, wgpu::Queue) {
     let info = adapter.get_info();
     eprintln!(
         "adapter: {} ({:?}, {:?})",
         info.name, info.backend, info.device_type
     );
     block(adapter.request_device(&wgpu::DeviceDescriptor {
-        required_limits: psychoscript_gpu::device_limits(),
+        required_limits: limits,
         ..Default::default()
     }))
     .expect("a device")

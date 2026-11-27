@@ -367,7 +367,13 @@ fn check_device(device: &wgpu::Device, format: wgpu::TextureFormat) -> Result<()
         return Err(client(format!("{format:?} is not a canvas format")));
     }
     let mut low = Vec::new();
-    device_limits().check_limits_with_fail_fn(&device.limits(), false, |name, _, _| low.push(name));
+    device_limits().check_limits_with_fail_fn(&device.limits(), false, |name, _, _| {
+        // Not a WebGPU limit but wgpu's own (`device_limits` has wgpu's default, 1,000,000): a host may cap it on a
+        // device it shares (Rune: 65,536, its D3D12 descriptor heap), which programs never see.
+        if name != "max_non_sampler_bindings" {
+            low.push(name)
+        }
+    });
     // The iOS Simulator's GPU is under some of them (`max_inter_stage_shader_variables` 15): there a host requests
     // the adapter's where they fall short, and a program over them gets wgpu's validation error. Real devices keep
     // the check (decided as the crate is built).
