@@ -15,6 +15,26 @@ export const CANCELLED: unique symbol = Symbol("psychoscript.cancelled")
 /** For tests: `onPark` is called each time a run has nothing to do but wait on host calls in flight. */
 export const parking: { onPark?: () => void } = {}
 
+/** Yields to the host event loop after a VM time slice. */
+export const defaultYieldToHost = (): Promise<void> =>
+  new Promise((resolve) => {
+    if (typeof setImmediate === "function") {
+      setImmediate(resolve)
+      return
+    }
+    if (typeof MessageChannel === "function") {
+      const { port1, port2 } = new MessageChannel()
+      port1.onmessage = () => {
+        port1.close()
+        port2.close()
+        resolve()
+      }
+      port2.postMessage(null)
+      return
+    }
+    Promise.resolve().then(resolve)
+  })
+
 /**
  * Runs the VM (see `Vm`): the only place program execution meets the host. It calls `vm.run` until the program ends,
  * and does what each stop asks: yields to the event loop for a slice, and starts the host calls the VM queued,
@@ -44,6 +64,7 @@ export class Driver {
     public vm: Vm,
     /** The run's opaque context, given to every host call. */
     private readonly context: unknown,
+    private readonly yieldToHost: () => Promise<void> = defaultYieldToHost,
   ) {}
 
   /**
@@ -60,7 +81,7 @@ export class Driver {
       const stop = this.vm.run()
       if (stop.kind === "slice") {
         this.checkpoint?.()
-        await new Promise<void>((resolve) => setImmediate(resolve))
+        await this.yieldToHost()
         continue
       }
       if (stop.kind === "host") {
