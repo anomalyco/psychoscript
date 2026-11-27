@@ -129,3 +129,42 @@ fn without_program_lines_the_hosts_code_is_located_as_before() {
         ("TypeError: bad".into(), None)
     );
 }
+
+#[test]
+fn async_returned_block_plain_error_in_prelude_is_located_at_program_call() {
+    use std::task::{Context, Poll, Waker};
+    let rt = Runtime::make()
+        .globals(|_| {
+            [(
+                "blockFail",
+                HostValue::from(HostFunction::new(|_, _| {
+                    let mut yielded = false;
+                    psychoscript::Returned::Block(Box::pin(std::future::poll_fn(move |cx| {
+                        if !yielded {
+                            yielded = true;
+                            cx.waker().wake_by_ref();
+                            return Poll::Pending;
+                        }
+                        Poll::Ready(Err(HostError::new("boom").into()))
+                    })))
+                })),
+            )]
+        })
+        .program_lines(4, 7);
+    let code = "const pre = { call: () => blockFail() }\n// line 2\n// line 3\nasync function main() {\n  await null\n  pre.call()\n}\nreturn await main()";
+    let sync_err = error(&rt, code);
+    let options = psychoscript::ProgramOptions::new();
+    let mut fut = Box::pin(rt.execute_async(code, &options));
+    let waker = Waker::noop();
+    let mut cx = Context::from_waker(waker);
+    let async_err = loop {
+        if let Poll::Ready(res) = fut.as_mut().poll(&mut cx) {
+            break res.unwrap().result.unwrap_err();
+        }
+    };
+    assert_eq!(async_err.location, Some((6, 3)));
+    assert_eq!(
+        (async_err.message_lossy(), async_err.location),
+        (sync_err.message_lossy(), sync_err.location)
+    );
+}

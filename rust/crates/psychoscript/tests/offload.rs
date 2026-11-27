@@ -349,3 +349,401 @@ fn drive<F: Future>(future: F) -> F::Output {
         thread::park();
     }
 }
+
+/// Cooperative single-threaded executor: drives `main` and only pumps `tasks` between `Poll::Pending` returns.
+/// If `main` ever blocks the thread waiting on a deferred future, `tasks` never runs and the test fails/deadlocks.
+type CoopTask = Box<dyn FnOnce() + Send>;
+
+#[derive(Clone, Default)]
+struct CoopQueue {
+    tasks: Arc<Mutex<Vec<CoopTask>>>,
+}
+
+#[derive(Default)]
+struct DeferState {
+    result: Option<Result<HostValue, HostValue>>,
+    waker: Option<Waker>,
+}
+
+impl CoopQueue {
+    fn defer_result(
+        &self,
+        result: Result<HostValue, HostValue>,
+    ) -> impl Future<Output = Result<HostValue, HostValue>> + 'static {
+        let state = Arc::new(Mutex::new(DeferState::default()));
+        let queue = self.clone();
+        let mut enqueued = false;
+        let mut result = Some(result);
+        std::future::poll_fn(move |cx| {
+            let mut guard = state.lock().unwrap();
+            if let Some(res) = guard.result.take() {
+                return Poll::Ready(res);
+            }
+            guard.waker = Some(cx.waker().clone());
+            if !enqueued {
+                enqueued = true;
+                let res = result.take().unwrap();
+                let st = state.clone();
+                queue.tasks.lock().unwrap().push(Box::new(move || {
+                    let mut g = st.lock().unwrap();
+                    g.result = Some(res);
+                    if let Some(w) = g.waker.take() {
+                        w.wake();
+                    }
+                }));
+            }
+            Poll::Pending
+        })
+    }
+
+    fn drive<F: Future>(&self, future: F) -> F::Output {
+        let waker = Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        let mut future = std::pin::pin!(future);
+        for _ in 0..10_000 {
+            if let Poll::Ready(v) = future.as_mut().poll(&mut cx) {
+                return v;
+            }
+            let batch: Vec<CoopTask> = std::mem::take(&mut *self.tasks.lock().unwrap());
+            if batch.is_empty() {
+                // Worker thread may still be computing; yield briefly so it can send `ToHome::Await`/`Back`.
+                thread::sleep(Duration::from_millis(1));
+            } else {
+                for task in batch {
+                    task();
+                }
+            }
+        }
+        panic!("single-threaded cooperative executor stalled (future never completed)");
+    }
+}
+
+#[test]
+fn returned_block_yields_to_single_threaded_executor_before_and_after_offload() {
+    let queue = CoopQueue::default();
+    let q1 = queue.clone();
+    let q2 = queue.clone();
+    let q3 = queue.clone();
+
+    let rt = Runtime::make()
+        .limits(psychoscript::Limits {
+            timeout_ms: Some(2_000),
+            ..Default::default()
+        })
+        .globals(move |_| {
+            let q1 = q1.clone();
+            let q2 = q2.clone();
+            let q3 = q3.clone();
+            let block_ok = HostFunction::new(move |args, _| {
+                let val = first(args);
+                Returned::Block(Box::pin(q1.defer_result(Ok(val))))
+            })
+            .thenable();
+            let block_err = HostFunction::new(move |_, _| {
+                Returned::Block(Box::pin(q2.defer_result(Err(
+                    psychoscript::HostError::new("deferred boom").into(),
+                ))))
+            });
+            let ns = Namespace::new(
+                |_| Ok(vec![HostString::from("read")]),
+                move |_| {
+                    let q3 = q3.clone();
+                    HostFunction::new(move |args, _| {
+                        let val = first(args);
+                        Returned::Block(Box::pin(q3.defer_result(Ok(val))))
+                    })
+                },
+            );
+            vec![
+                ("blockOk", HostValue::from(block_ok)),
+                ("blockErr", HostValue::from(block_err)),
+                ("ns", HostValue::from(ns)),
+            ]
+        });
+
+    // 1) Immediate (<1ms, before offload): direct call, thenable await, namespace call, and try/catch error.
+    // 2) Post-offload (>1ms, on worker thread): spin long enough to move to the worker, then call `blockOk` again.
+    let code = r#"
+        const a = blockOk(1);
+        const b = await blockOk(2);
+        const c = ns.read(3);
+        let caught = null;
+        try {
+            blockErr();
+        } catch (e) {
+            caught = e.message;
+        }
+        let n = 0;
+        for (let i = 0; i < 2e6; i++) n += i % 7;
+        const d = blockOk(4);
+        return [a, b, c, caught, d, n > 0];
+    "#;
+
+    let outcome = queue
+        .drive(rt.execute_async(code, &ProgramOptions::new()))
+        .unwrap();
+    assert_eq!(
+        outcome.json().unwrap(),
+        json!([1, 2, 3, "deferred boom", 4, true])
+    );
+}
+
+#[test]
+fn dropping_a_run_awaiting_returned_block_cancels_on_the_executor() {
+    use std::sync::atomic::AtomicBool;
+    for spin in [false, true] {
+        let entered = Arc::new(AtomicBool::new(false));
+        let dropped = Arc::new(Mutex::new(None));
+        let seen = dropped.clone();
+        let flag = entered.clone();
+        let rt = Runtime::make().globals(move |_| {
+            let seen = seen.clone();
+            let flag = flag.clone();
+            [(
+                "blockNever",
+                HostFunction::new(move |_, _| {
+                    flag.store(true, Ordering::SeqCst);
+                    Returned::Block(Box::pin(Forever(seen.clone())))
+                }),
+            )]
+        });
+        let code = if spin {
+            "let n = 0; for (let i = 0; i < 2e5; i++) n += i % 7; return blockNever()"
+        } else {
+            "return blockNever()"
+        };
+        let options = ProgramOptions::new();
+        let mut run = Box::pin(rt.execute_async(code, &options));
+        let waker = Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        assert!(run.as_mut().poll(&mut cx).is_pending());
+        while !entered.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(1));
+            assert!(run.as_mut().poll(&mut cx).is_pending());
+        }
+        // Poll once more so `ToHome::Await` is handed to `Worker::awaiting`.
+        assert!(run.as_mut().poll(&mut cx).is_pending());
+        drop(run);
+        assert_eq!(
+            *dropped.lock().unwrap(),
+            Some(thread::current().id()),
+            "spin={spin}"
+        );
+    }
+}
+
+#[test]
+fn returned_block_inside_builtin_conversions_does_not_corrupt_state() {
+    let rt = Runtime::make().globals(|_| {
+        let block_str = HostFunction::new(|_, _| {
+            Returned::Block(Box::pin(async {
+                Ok(later(5, HostValue::from("123")).await)
+            }))
+        });
+        let block_neg = HostFunction::new(|_, _| {
+            Returned::Block(Box::pin(async {
+                Ok(later(5, HostValue::Number(-5.0)).await)
+            }))
+        });
+        let block_four = HostFunction::new(|_, _| {
+            Returned::Block(Box::pin(async {
+                Ok(later(5, HostValue::Number(4.0)).await)
+            }))
+        });
+        let block_nine = HostFunction::new(|_, _| {
+            Returned::Block(Box::pin(async {
+                Ok(later(5, HostValue::Number(9.0)).await)
+            }))
+        });
+        let block_len = HostFunction::new(|_, _| {
+            Returned::Block(Box::pin(async {
+                Ok(later(5, HostValue::Number(2.0)).await)
+            }))
+        });
+        vec![
+            ("blockStr", HostValue::from(block_str)),
+            ("blockNeg", HostValue::from(block_neg)),
+            ("blockFour", HostValue::from(block_four)),
+            ("blockNine", HostValue::from(block_nine)),
+            ("blockLen", HostValue::from(block_len)),
+        ]
+    });
+
+    // Built-ins invoking direct `HostFunction`s as `{ valueOf }` inline must not observe `can_yield`:
+    // - `Number` must return numeric 123 (not raw string "123")
+    // - `Math.abs` must return +5 (not raw -5)
+    // - `Math.max` with two direct `HostFunction` conversions must return 9 without overwriting pending state
+    // - `Array.from` with a mapper must return [7, 7] without pushing onto the wrong frame
+    let code = r#"
+        const n = Number({ valueOf: blockStr });
+        const a = Math.abs({ valueOf: blockNeg });
+        const m = Math.max({ valueOf: blockFour }, { valueOf: blockNine });
+        const arr = Array.from({ length: { valueOf: blockLen } }, () => 7);
+        return [typeof n, n, a, m, arr];
+    "#;
+    let outcome = drive(rt.execute_async(code, &ProgramOptions::new())).unwrap();
+    assert_eq!(
+        outcome.json().unwrap(),
+        json!(["number", 123, 5, 9, [7, 7]])
+    );
+}
+
+#[test]
+fn returned_block_yields_across_new_callbacks_promises_and_getters() {
+    let queue = CoopQueue::default();
+    let q1 = queue.clone();
+    let q2 = queue.clone();
+    let q3 = queue.clone();
+    let q4 = queue.clone();
+
+    let rt = Runtime::make()
+        .limits(psychoscript::Limits {
+            timeout_ms: Some(2_000),
+            ..Default::default()
+        })
+        .globals(move |_| {
+            let q1 = q1.clone();
+            let q2 = q2.clone();
+            let q3 = q3.clone();
+            let q4 = q4.clone();
+            let block_ok = HostFunction::new(move |args, _| {
+                let val = first(args);
+                Returned::Block(Box::pin(q1.defer_result(Ok(val))))
+            });
+            let block_ctor = HostFunction::new(move |args, _| {
+                let val = first(args);
+                Returned::Block(Box::pin(q2.defer_result(Ok(val))))
+            })
+            .constructible();
+            let block_err = HostFunction::new(move |_, _| {
+                Returned::Block(Box::pin(
+                    q3.defer_result(Err(psychoscript::HostError::new("cb boom").into())),
+                ))
+            });
+            let ns = Namespace::new(
+                |_| Ok(vec![HostString::from("echo")]),
+                move |_| {
+                    let q4 = q4.clone();
+                    HostFunction::new(move |args, _| {
+                        let val = first(args);
+                        Returned::Block(Box::pin(q4.defer_result(Ok(val))))
+                    })
+                },
+            );
+            vec![
+                ("blockOk", HostValue::from(block_ok)),
+                ("BlockCtor", HostValue::from(block_ctor)),
+                ("blockErr", HostValue::from(block_err)),
+                ("ns", HostValue::from(ns)),
+            ]
+        });
+
+    let code = r#"
+        const n1 = new BlockCtor({ v: 1 });
+        const n2 = new BlockCtor(...[{ v: 2 }]);
+        const mapped = [10, 20].map(blockOk);
+        const called = blockOk.call(null, 30);
+        const applied = blockOk.apply(null, [40]);
+        const bound = blockOk.bind(null, 50)();
+        const promised = await Promise.resolve(60).then(blockOk);
+        const fromGetter = blockOk({ get x() { return 70; } });
+        const nsGetter = ns.echo({ get y() { return 80; } });
+        let mapCaught = null;
+        try {
+            [1].map(blockErr);
+        } catch (e) {
+            mapCaught = e.message;
+        }
+        const promCaught = await Promise.resolve(1).then(blockErr).catch(e => e.message);
+        return [n1.v, n2.v, mapped, called, applied, bound, promised, fromGetter.x, nsGetter.y, mapCaught, promCaught];
+    "#;
+
+    let outcome = queue
+        .drive(rt.execute_async(code, &ProgramOptions::new()))
+        .unwrap();
+    assert_eq!(
+        outcome.json().unwrap(),
+        json!([1, 2, [10, 20], 30, 40, 50, 60, 70, 80, "cb boom", "cb boom"])
+    );
+}
+
+#[test]
+fn returned_block_timeout_wakes_updated_waker_after_migration() {
+    use std::sync::atomic::AtomicBool;
+    struct FlagWake {
+        woken: AtomicBool,
+        thread: thread::Thread,
+    }
+    impl std::task::Wake for FlagWake {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.woken.store(true, Ordering::SeqCst);
+            self.thread.unpark();
+        }
+    }
+
+    for spin in [false, true] {
+        let entered = Arc::new(AtomicBool::new(false));
+        let flag = entered.clone();
+        let rt = Runtime::make()
+            .limits(psychoscript::Limits {
+                timeout_ms: Some(80),
+                ..Default::default()
+            })
+            .globals(move |_| {
+                let flag = flag.clone();
+                [(
+                    "blockNever",
+                    HostFunction::new(move |_, _| {
+                        flag.store(true, Ordering::SeqCst);
+                        Returned::Block(Box::pin(std::future::pending()))
+                    }),
+                )]
+            });
+        let code = if spin {
+            "let n = 0; for (let i = 0; i < 2e5; i++) n += i % 7; return blockNever()"
+        } else {
+            "return blockNever()"
+        };
+        let options = ProgramOptions::new();
+        let mut run = Box::pin(rt.execute_async(code, &options));
+
+        // First polls use Waker A (which arms the deadline timer).
+        let waker_a = Waker::noop();
+        let mut cx_a = Context::from_waker(waker_a);
+        assert!(run.as_mut().poll(&mut cx_a).is_pending());
+        while !entered.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(1));
+            assert!(run.as_mut().poll(&mut cx_a).is_pending());
+        }
+        if spin {
+            // Ensure the worker has delivered `ToHome::Await` and armed the timer under Waker A.
+            assert!(run.as_mut().poll(&mut cx_a).is_pending());
+        }
+
+        // Migrate the future to Waker B before the deadline fires.
+        let wake_b = Arc::new(FlagWake {
+            woken: AtomicBool::new(false),
+            thread: thread::current(),
+        });
+        let waker_b = Waker::from(wake_b.clone());
+        let mut cx_b = Context::from_waker(&waker_b);
+        let outcome = loop {
+            match run.as_mut().poll(&mut cx_b) {
+                Poll::Ready(res) => break res.unwrap(),
+                Poll::Pending => thread::park_timeout(Duration::from_secs(2)),
+            }
+            assert!(
+                wake_b.woken.load(Ordering::SeqCst),
+                "spin={spin}: deadline timer did not wake migrated Waker B"
+            );
+        };
+        assert_eq!(
+            outcome.result.unwrap_err().kind,
+            psychoscript::DiagnosticKind::TimeoutExceeded,
+            "spin={spin}"
+        );
+    }
+}

@@ -1035,10 +1035,10 @@ fn rerun_native(vm: &mut Vm, fr: Frame) -> Result<Step, Value> {
     let Some(id) = fr.slot(vm, CALLEE).obj() else {
         return Ok(Step::Done(Value::Undef));
     };
-    let f = match &vm.heap[id as usize].kind {
-        Kind::Native { f, .. } => *f,
+    let (f, host_call): (crate::vm::NativeFn, bool) = match &vm.heap[id as usize].kind {
+        Kind::Native { f, .. } => (*f, crate::host::is_host_native(*f)),
         // A host call through a namespace, whose arguments' getters were read ahead.
-        Kind::Namespace(_) => namespace_call,
+        Kind::Namespace(_) => (namespace_call, true),
         _ => return Ok(Step::Done(Value::Undef)),
     };
     let counted = matches!(fr.get(vm, COUNTED), Value::Bool(true));
@@ -1054,7 +1054,14 @@ fn rerun_native(vm: &mut Vm, fr: Frame) -> Result<Step, Value> {
     vm.reads.fault = None;
     let table = reads_of(vm, fr);
     let outer = std::mem::replace(&mut vm.reads.table, table);
+    let allow_yield = vm.in_resumable && host_call;
+    if allow_yield {
+        vm.host.set_can_yield(true);
+    }
     let r = f(vm, this, &args, id);
+    if allow_yield {
+        vm.host.set_can_yield(false);
+    }
     vm.reads.table = outer;
     let r = vm.checked_native(r);
     vm.convert_ok = false;
@@ -1063,6 +1070,12 @@ fn rerun_native(vm: &mut Vm, fr: Frame) -> Result<Step, Value> {
         return convert_next(vm, fr);
     }
     vm.end_replay(false);
+    if vm.suspended && vm.host.has_pending_block() {
+        let me = vm.frames.len() - 1;
+        vm.frames[me].argc = 0;
+        fr.set_index(vm, PHASE, WAITING);
+        return Ok(Step::Pushed);
+    }
     if std::mem::take(&mut vm.entered) {
         // The built-in went on in a frame of its own: its result is the call's.
         if let Some(inner) = vm.frames.last_mut() {

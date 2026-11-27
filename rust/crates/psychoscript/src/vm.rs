@@ -296,6 +296,8 @@ pub struct Vm {
     /// Set by a driver entry point before it runs bytecode that may stop at a back-edge and continue from its
     /// frames later: the program's body, a resumed `await`.
     pub resumable_run: bool,
+    /// True while inside a top-level resumable `run_frames(true)` invocation.
+    pub(crate) in_resumable: bool,
     /// What a fresh runtime makes before the program runs, which a snapshot saves only the changes to.
     pub snapshot_base: crate::snapshot::Base,
     /// Restored from a snapshot: the program's body already started.
@@ -474,6 +476,7 @@ impl Vm {
             roundtrip_every: 0,
             run_depth: 0,
             resumable_run: false,
+            in_resumable: false,
             snapshot_base: crate::snapshot::Base::default(),
             resumed: false,
             native_proto: Arc::new(crate::native::proto()),
@@ -888,9 +891,28 @@ impl Vm {
     /// A native call from bytecode costs fifty, unless the built-in is one the reference writes in its bytecode
     /// prelude, which spent that bytecode's fuel itself (see `builtins/fuel.rs`).
     #[inline]
-    fn native_spent(&mut self) {
+    pub(crate) fn native_spent(&mut self) {
         if !std::mem::take(&mut self.host.meter.bytecode) {
             self.spend(NATIVE_FUEL);
+        }
+    }
+
+    /// Delivers an error thrown by a `Returned::Block` call that resumed asynchronously on the driving thread.
+    pub(crate) fn throw_pending_block(&mut self, e: Value) {
+        if let Some(fi) = self.frames.len().checked_sub(1) {
+            match self.frames[fi].kind {
+                FrameKind::Native(..) => self.locate_native(&e, fi),
+                _ => {
+                    let (func, pc) = (self.frames[fi].func.clone(), self.frames[fi].pc);
+                    self.locate(&e, &func, pc);
+                }
+            }
+        }
+        if let Err(Err(uncaught)) = self.handle_throw(e)
+            && self.fatal.is_none()
+            && self.outcome.is_none()
+        {
+            self.outcome = Some(Err(uncaught));
         }
     }
 
@@ -1688,6 +1710,11 @@ impl Vm {
     /// The `Call` instruction: returns whether a frame was pushed.
     #[inline(never)]
     pub(crate) fn call_op(&mut self, argc: usize) -> Result<bool, Value> {
+        self.call_op_inner(argc, false)
+    }
+
+    #[inline(never)]
+    fn call_op_inner(&mut self, argc: usize, resumable: bool) -> Result<bool, Value> {
         let fpos = self.stack.len() - argc - 2;
         let callee = self.stack[fpos].get();
         let Value::Obj(id) = callee else {
@@ -1723,7 +1750,14 @@ impl Vm {
                 self.host.meter.counted = true;
                 self.convert_ok = true;
                 self.reads.fault = None;
+                let allow_yield = resumable && crate::host::is_host_native(f);
+                if allow_yield {
+                    self.host.set_can_yield(true);
+                }
                 let r = f(self, this, &args, id);
+                if allow_yield {
+                    self.host.set_can_yield(false);
+                }
                 let r = self.checked_native(r);
                 self.convert_ok = false;
                 if self.convert_req.is_some() {
@@ -1735,6 +1769,9 @@ impl Vm {
                 }
                 args.clear();
                 self.arg_pool.push(args);
+                if self.suspended && self.host.has_pending_block() {
+                    return Ok(true);
+                }
                 if self.entered {
                     // The frame says how its call ends when it finishes; nothing set before that counts.
                     self.entered = false;
@@ -1756,7 +1793,7 @@ impl Vm {
                 let tail = self.stack.split_off(fpos + 2);
                 self.stack.extend(bargs.into_iter().map(Slot::pack));
                 self.stack.extend(tail);
-                self.call_op(argc + n)
+                self.call_op_inner(argc + n, resumable)
             }
             // The namespace itself is not a function.
             Kind::Namespace(ns) if ns.is_root() => {
@@ -1769,12 +1806,22 @@ impl Vm {
                 let callee = self.stack[fpos].get();
                 let args: Vec<Value> = self.stack.drain(fpos + 2..).map(Slot::get).collect();
                 self.stack.truncate(fpos);
+                self.host.meter.counted = false;
                 // Program getters in the arguments are read ahead, then the call made again (see `conversion.rs`).
                 self.convert_ok = true;
+                if resumable {
+                    self.host.set_can_yield(true);
+                }
                 let r = crate::host::call_namespace(self, id, &args, callee);
+                if resumable {
+                    self.host.set_can_yield(false);
+                }
                 self.convert_ok = false;
                 if self.convert_req.is_some() {
                     self.convert_native(id, Value::Undef, &args, false, false)?;
+                    return Ok(true);
+                }
+                if self.suspended && self.host.has_pending_block() {
                     return Ok(true);
                 }
                 let r = r?;
@@ -1852,6 +1899,11 @@ impl Vm {
 
     #[inline(never)]
     pub(crate) fn construct_op(&mut self, argc: usize) -> Result<bool, Value> {
+        self.construct_op_inner(argc, false)
+    }
+
+    #[inline(never)]
+    fn construct_op_inner(&mut self, argc: usize, resumable: bool) -> Result<bool, Value> {
         let fpos = self.stack.len() - argc - 2;
         let callee = self.stack[fpos].get();
         if let Value::Obj(id) = callee
@@ -1869,11 +1921,21 @@ impl Vm {
             self.host.meter.counted = false;
             self.convert_ok = true;
             self.reads.fault = None;
+            let allow_yield = resumable && crate::host::is_host_native(f);
+            if allow_yield {
+                self.host.set_can_yield(true);
+            }
             let r = f(self, Value::Uninit, &args, id);
+            if allow_yield {
+                self.host.set_can_yield(false);
+            }
             let r = self.checked_native(r);
             self.convert_ok = false;
             if self.convert_req.is_some() {
                 self.convert_native(id, Value::Uninit, &args, false, true)?;
+                return Ok(true);
+            }
+            if self.suspended && self.host.has_pending_block() {
                 return Ok(true);
             }
             if std::mem::take(&mut self.entered) {
@@ -2072,6 +2134,7 @@ impl Vm {
         sub: u16,
         base: usize,
         mode: usize,
+        resumable: bool,
     ) -> Result<Option<Slot>, Value> {
         let input = match mode {
             crate::native::RETURNED => {
@@ -2102,7 +2165,7 @@ impl Vm {
         };
         match stepped? {
             crate::native::Step::Call(argc) => {
-                self.call_op(argc)?;
+                self.call_op_inner(argc, resumable)?;
                 if self.park
                     && let Some(result) = self.parked()
                 {
@@ -2121,11 +2184,11 @@ impl Vm {
                 Ok(is_base.then_some(Slot::UNDEF))
             }
             crate::native::Step::CallUncounted(argc) => {
-                self.call_op_uncounted(argc)?;
+                self.call_op_uncounted(argc, resumable)?;
                 Ok(None)
             }
             crate::native::Step::CallSettling(argc) => {
-                self.call_op_settling(argc)?;
+                self.call_op_settling(argc, resumable)?;
                 Ok(None)
             }
             crate::native::Step::Done(v) => {
@@ -2166,10 +2229,10 @@ impl Vm {
     /// costs no fifty.
     #[cold]
     #[inline(never)]
-    fn call_op_uncounted(&mut self, argc: usize) -> Result<bool, Value> {
+    fn call_op_uncounted(&mut self, argc: usize, resumable: bool) -> Result<bool, Value> {
         let fpos = self.stack.len() - argc - 2;
         let Some(id) = self.stack[fpos].obj() else {
-            return self.call_op(argc);
+            return self.call_op_inner(argc, resumable);
         };
         match &self.heap[id as usize].kind {
             Kind::Native { f, .. } => {
@@ -2181,7 +2244,14 @@ impl Vm {
                 self.host.meter.counted = false;
                 self.convert_ok = true;
                 self.reads.fault = None;
+                let allow_yield = resumable && crate::host::is_host_native(f);
+                if allow_yield {
+                    self.host.set_can_yield(true);
+                }
                 let r = f(self, this, &args, id);
+                if allow_yield {
+                    self.host.set_can_yield(false);
+                }
                 let r = self.checked_native(r);
                 self.convert_ok = false;
                 if self.convert_req.is_some() {
@@ -2193,6 +2263,9 @@ impl Vm {
                 }
                 args.clear();
                 self.arg_pool.push(args);
+                if self.suspended && self.host.has_pending_block() {
+                    return Ok(true);
+                }
                 if std::mem::take(&mut self.entered) {
                     return Ok(true);
                 }
@@ -2208,9 +2281,9 @@ impl Vm {
                 let tail = self.stack.split_off(fpos + 2);
                 self.stack.extend(bargs.into_iter().map(Slot::pack));
                 self.stack.extend(tail);
-                self.call_op_uncounted(argc + n)
+                self.call_op_uncounted(argc + n, resumable)
             }
-            _ => self.call_op(argc),
+            _ => self.call_op_inner(argc, resumable),
         }
     }
 
@@ -2219,10 +2292,10 @@ impl Vm {
     /// generator function one unit, a native fifty.
     #[cold]
     #[inline(never)]
-    fn call_op_settling(&mut self, argc: usize) -> Result<bool, Value> {
+    fn call_op_settling(&mut self, argc: usize, resumable: bool) -> Result<bool, Value> {
         let fpos = self.stack.len() - argc - 2;
         let Some(id) = self.stack[fpos].obj() else {
-            return self.call_op(argc);
+            return self.call_op_inner(argc, resumable);
         };
         match &self.heap[id as usize].kind {
             Kind::Bound(b) => {
@@ -2233,20 +2306,20 @@ impl Vm {
                 let tail = self.stack.split_off(fpos + 2);
                 self.stack.extend(bargs.into_iter().map(Slot::pack));
                 self.stack.extend(tail);
-                self.call_op_settling(argc + n)
+                self.call_op_settling(argc + n, resumable)
             }
             Kind::Closure(c) if !c.proto.is_async && !c.proto.is_generator => {
                 // Its frame's unit is not spent: credit the budget the call takes it from.
                 self.budget += 1;
-                self.call_op(argc)
+                self.call_op_inner(argc, resumable)
             }
             Kind::Native {
                 data: Value::Obj(state),
                 ..
             } if matches!(self.heap[*state as usize].kind, Kind::Resolvers { .. }) => {
-                self.call_op_uncounted(argc)
+                self.call_op_uncounted(argc, resumable)
             }
-            _ => self.call_op(argc),
+            _ => self.call_op_inner(argc, resumable),
         }
     }
 
@@ -3100,9 +3173,11 @@ impl Vm {
 
     pub fn run(&mut self) -> Result<Exit, Value> {
         let resumable = std::mem::take(&mut self.resumable_run) && self.run_depth == 0;
+        let prev = std::mem::replace(&mut self.in_resumable, resumable);
         self.run_depth += 1;
         let r = self.run_frames(resumable);
         self.run_depth -= 1;
+        self.in_resumable = prev;
         r
     }
 
@@ -3113,9 +3188,11 @@ impl Vm {
         if self.resumable_run {
             return self.run();
         }
+        let prev = std::mem::replace(&mut self.in_resumable, false);
         self.run_depth += 1;
         let r = self.run_frames(false);
         self.run_depth -= 1;
+        self.in_resumable = prev;
         r
     }
 
@@ -3137,8 +3214,13 @@ impl Vm {
             if let FrameKind::Native(op, sub) = self.frames[fi].kind {
                 // A native frame runs its step function, not code: where it is to continue is its `pc`.
                 let (base, mode) = (self.frames[fi].base, self.frames[fi].pc);
-                match self.native_op(fi, op, sub, base, mode) {
-                    Ok(None) => continue 'outer,
+                match self.native_op(fi, op, sub, base, mode, resumable) {
+                    Ok(None) => {
+                        if self.suspended && self.host.has_pending_block() {
+                            return Ok(Exit::Suspend);
+                        }
+                        continue 'outer;
+                    }
                     Ok(Some(v)) => return Ok(Exit::Return(v)),
                     Err(e) => {
                         self.locate_native(&e, fi);
@@ -4268,7 +4350,10 @@ impl Vm {
                     }
                     Op::Call(argc) => {
                         self.frames[fi].pc = pc;
-                        if tri!(self.call_op(argc as usize)) {
+                        if tri!(self.call_op_inner(argc as usize, resumable)) {
+                            if self.suspended && self.host.has_pending_block() {
+                                return Ok(Exit::Suspend);
+                            }
                             if self.park
                                 && let Some(result) = self.parked()
                             {
@@ -4289,7 +4374,10 @@ impl Vm {
                         };
                         let argc = args.len();
                         self.stack.extend(args.into_iter().map(Slot::pack));
-                        if tri!(self.call_op(argc)) {
+                        if tri!(self.call_op_inner(argc, resumable)) {
+                            if self.suspended && self.host.has_pending_block() {
+                                return Ok(Exit::Suspend);
+                            }
                             if self.park
                                 && let Some(result) = self.parked()
                             {
@@ -4300,7 +4388,10 @@ impl Vm {
                     }
                     Op::New(argc) => {
                         self.frames[fi].pc = pc;
-                        if tri!(self.construct_op(argc as usize)) {
+                        if tri!(self.construct_op_inner(argc as usize, resumable)) {
+                            if self.suspended && self.host.has_pending_block() {
+                                return Ok(Exit::Suspend);
+                            }
                             continue 'outer;
                         }
                     }
@@ -4316,7 +4407,10 @@ impl Vm {
                         };
                         let argc = args.len();
                         self.stack.extend(args.into_iter().map(Slot::pack));
-                        if tri!(self.construct_op(argc)) {
+                        if tri!(self.construct_op_inner(argc, resumable)) {
+                            if self.suspended && self.host.has_pending_block() {
+                                return Ok(Exit::Suspend);
+                            }
                             continue 'outer;
                         }
                     }

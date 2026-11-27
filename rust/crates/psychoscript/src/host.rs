@@ -821,6 +821,7 @@ struct Target {
 /// A synchronous one is called now: its value crosses back at once, and work it left pending is a promise. When the
 /// runtime awaits promises in arguments and one hasn't fulfilled, the call waits for them first.
 fn call_host(vm: &mut Vm, f: &Callee, args: &[Value], target: Target, callee: Value) -> Res {
+    let can_yield = vm.host.take_can_yield();
     let takes = matches!(f, Callee::Fn(f) if f.takes_functions);
     vm.lends.clear();
     let concurrent = match f {
@@ -942,6 +943,26 @@ fn call_host(vm: &mut Vm, f: &Callee, args: &[Value], target: Target, callee: Va
         Returned::Block(work) => {
             vm.host.next_epoch();
             launch(vm);
+            if home_of(vm).is_none() && can_yield {
+                // Close the sync `body()` span before yielding so wait time isn't credited as host CPU time later.
+                vm.end_host_span(span);
+                let began = crate::time::Instant::now();
+                let deadline = block_deadline(vm, began);
+                let counted = vm.host.meter.counted;
+                vm.host.offload().pending = Some(Box::new(PendingBlock {
+                    f: f.clone(),
+                    target,
+                    call_id,
+                    began,
+                    work,
+                    deadline,
+                    armed: false,
+                    counted,
+                    settled: Vec::new(),
+                }));
+                vm.suspended = true;
+                return Ok(Value::Undef);
+            }
             Returned::Now(block(vm, work))
         }
         returned => returned,
@@ -1042,28 +1063,147 @@ fn take_back(vm: &mut Vm) {
     vm.lends = lends;
 }
 
+/// State of a `Returned::Block` future suspended on the driving executor thread during `run_async`.
+pub struct PendingBlock {
+    f: HostFunction,
+    target: Target,
+    call_id: u64,
+    began: crate::time::Instant,
+    work: BoxFuture<'static, HostResult>,
+    deadline: Option<crate::time::Instant>,
+    armed: bool,
+    counted: bool,
+    settled: Vec<(Id, Settlement)>,
+}
+
+impl RunHost {
+    #[inline]
+    pub(crate) fn has_pending_block(&self) -> bool {
+        self.offload.as_deref().is_some_and(|o| o.pending.is_some())
+    }
+
+    #[inline]
+    pub(crate) fn set_can_yield(&mut self, allow: bool) {
+        if let Some(o) = self.offload.as_deref_mut() {
+            o.can_yield = allow;
+        }
+    }
+
+    #[inline]
+    pub(crate) fn take_can_yield(&mut self) -> bool {
+        self.offload
+            .as_deref_mut()
+            .is_some_and(|o| std::mem::take(&mut o.can_yield))
+    }
+}
+
+pub(crate) fn is_host_native(f: NativeFn) -> bool {
+    std::ptr::fn_addr_eq(f, host_native as NativeFn)
+}
+
+fn block_deadline(vm: &Vm, now: crate::time::Instant) -> Option<crate::time::Instant> {
+    vm.limits.timeout_ms.map(|ms| match &vm.cpu {
+        None => vm.start + std::time::Duration::from_millis(ms),
+        Some(c) => now + c.wait_left(std::time::Duration::from_millis(ms)),
+    })
+}
+
+/// Polls a `Returned::Block` future yielded on the driving thread using the executor's own context, finishing the
+/// synchronous host call once the future resolves or the deadline expires.
+pub(crate) fn poll_pending_block(vm: &mut Vm, cx: &mut std::task::Context<'_>) -> Poll<()> {
+    let Some(mut b) = vm
+        .host
+        .offload
+        .as_deref_mut()
+        .and_then(|o| o.pending.take())
+    else {
+        return Poll::Ready(());
+    };
+    vm.host.tasks.set_parent(Some(cx.waker()));
+    b.settled.extend(vm.host.tasks.poll_ready());
+    let poll_span = vm.cpu.is_some().then(crate::time::Instant::now);
+    let polled = b.work.as_mut().poll(cx);
+    if let (Some(c), Some(at)) = (vm.cpu.as_deref_mut(), poll_span) {
+        c.host(at.elapsed());
+    }
+    let done = if let Poll::Ready(r) = polled {
+        Some(Some(r))
+    } else {
+        match b.deadline {
+            Some(at) if crate::time::Instant::now() >= at => Some(None),
+            Some(at) if !b.armed => {
+                b.armed = true;
+                crate::exec::wake_at(at, &vm.host.tasks.parent_waker());
+                None
+            }
+            _ => None,
+        }
+    };
+    let Some(done) = done else {
+        vm.host.offload().pending = Some(b);
+        return Poll::Pending;
+    };
+    vm.host.tasks.set_parent(None);
+    // Under `Clock::ThreadCpu`, `Program::advance`'s `wait_since` already counted the wait on `Poll::Pending`; under
+    // wall-clock `slice_ms`, exclude the blocking wait from the stretch.
+    if vm.cpu.is_none()
+        && let Some(s) = vm.slice.as_deref_mut()
+    {
+        s.wall += b.began.elapsed();
+    }
+    for (p, s) in b.settled {
+        vm.host.settled(p);
+        vm.inbox.push_back((p, s));
+    }
+    let result = match done {
+        Some(r) => r,
+        None => {
+            if vm.check_time().is_ok()
+                && let Some(ms) = vm.limits.timeout_ms
+            {
+                vm.fatal = Some((
+                    DiagnosticKind::TimeoutExceeded,
+                    format!("Execution timed out after {ms}ms."),
+                ));
+            }
+            Err(HostValue::Undefined)
+        }
+    };
+    vm.host.leave_sync();
+    take_back(vm);
+    let r = sync_result(vm, &b.f, Returned::Now(result), b.target, b.call_id);
+    vm.lends.clear();
+    vm.suspended = false;
+    match r {
+        Ok(val) => {
+            vm.push(val);
+            if b.counted {
+                vm.native_spent();
+            } else {
+                vm.host.meter.bytecode = false;
+            }
+        }
+        Err(e) => vm.throw_pending_block(e),
+    }
+    Poll::Ready(())
+}
+
 /// Waits on the thread for work a synchronous call blocks on, while the run's other host calls keep running: what they
 /// complete with waits in the inbox. The run's timeout stops the wait; the call then fails as the run times out. While
-/// the run is on its worker, the wait and the other calls' polls happen where the run is driven.
+/// the run is on its worker, the wait and the other calls' polls happen asynchronously on the driving executor.
 fn block(vm: &mut Vm, work: BoxFuture<'static, HostResult>) -> HostResult {
     // Under `Clock::ThreadCpu`, the wait counts on the wall clock, against the backstop (see `cpu.rs`).
-    let deadline = vm.limits.timeout_ms.map(|ms| match &vm.cpu {
-        None => vm.start + std::time::Duration::from_millis(ms),
-        Some(c) => crate::time::Instant::now() + c.wait_left(std::time::Duration::from_millis(ms)),
-    });
     let began = crate::time::Instant::now();
+    let deadline = block_deadline(vm, began);
     let (settled, done) = match home_of(vm) {
         None => wait(&mut vm.host.tasks, work, deadline),
         Some(home) => {
-            let mut tasks = std::mem::take(&mut vm.host.tasks);
-            let Some((tasks, waited)) = home.run(move || {
-                let waited = wait(&mut tasks, work, deadline);
-                (tasks, waited)
-            }) else {
+            let tasks = std::mem::take(&mut vm.host.tasks);
+            let Some((tasks, settled, waited)) = home.await_block(tasks, work, deadline) else {
                 return Err(HostValue::Interrupt);
             };
             vm.host.tasks = tasks;
-            waited
+            (settled, Some(waited))
         }
     };
     if let Some(c) = &mut vm.cpu {
@@ -1076,7 +1216,14 @@ fn block(vm: &mut Vm, work: BoxFuture<'static, HostResult>) -> HostResult {
     match done {
         Some(Some(r)) => r,
         Some(None) => {
-            let _ = vm.check_time();
+            if vm.check_time().is_ok()
+                && let Some(ms) = vm.limits.timeout_ms
+            {
+                vm.fatal = Some((
+                    DiagnosticKind::TimeoutExceeded,
+                    format!("Execution timed out after {ms}ms."),
+                ));
+            }
             Err(HostValue::Undefined)
         }
         None => {
