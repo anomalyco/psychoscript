@@ -153,7 +153,7 @@ type ControlEntry =
 const idx = (node: AstNode | undefined | null): number => (node ? (nodeId(node)?.index ?? -1) : -1)
 
 /** Bump when the compiler emits different bytecode for the same source; it is part of the snapshot build id. */
-export const COMPILER_VERSION = 5
+export const COMPILER_VERSION = 6
 
 const compileCache = new Map<string, ReadonlyArray<Code>>()
 const MAX_CACHE_SIZE = 64
@@ -1045,6 +1045,9 @@ const compileFunctionBody = (
     }
     if (expr.type === "UpdateExpression" && expr.argument.type === "Identifier") {
       const ref = analysis.refs.get(expr.argument)!
+      if (ref.kind === "local" && !ref.decl.captured && ref.decl.mutable && ref.decl.slot <= 0xffff && !builder.forceExtra) {
+        builder.emit(Op.INC_LOCAL, expr.operator === "++" ? 0 : 1, ref.decl.slot, idx(expr), 0)
+      }
       emitLoadRef(ref, expr.argument)
       builder.emit(Op.INC, expr.operator === "++" ? 0 : 1, 0, idx(expr), 0)
       emitStoreRef(ref, false, expr.argument)

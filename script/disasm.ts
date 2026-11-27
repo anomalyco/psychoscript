@@ -203,6 +203,8 @@ const formatOperand = (c: Code, op: number, a: number, bx: number, sbx: number):
       return UnaryOpSymbols[a] ?? String(a)
     case Op.INC:
       return a === 0 ? "+1" : "-1"
+    case Op.INC_LOCAL:
+      return `${a === 0 ? "+1" : "-1"} ${bx} (${c.localNames[bx] ?? "?"})`
     case Op.JUMP:
     case Op.LOOP:
     case Op.JUMP_IF_FALSE:
