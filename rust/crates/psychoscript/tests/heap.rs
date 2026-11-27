@@ -239,3 +239,32 @@ fn finished_async_functions_dont_pile_up() {
         assert_eq!(result, Ok(json!(100000)), "{code}");
     }
 }
+
+#[test]
+fn duplicate_fresh_strings_count_each_allocation() {
+    // Separately allocated identical strings each hold their own buffer in the string arena and must not bypass
+    // `max_heap_bytes` (whereas shared references to the same string still count once, tested above).
+    let rt = capped(2 * 1024 * 1024);
+    let code = "const a = []; for (let i = 0; i < 10_000; i++) a.push('x'.repeat(10_000)); return a.length";
+    assert_eq!(kind(&rt, code), DiagnosticKind::MemoryLimitExceeded);
+}
+
+#[test]
+fn large_bigints_count_toward_the_heap_limit() {
+    // Distinct large BigInts (~125 KB each) must trip `max_heap_bytes`.
+    let rt = capped(2 * 1024 * 1024);
+    let over = "const base = 1n << 1_000_000n; const a = []; for (let i = 0; i < 100; i++) a.push(base + BigInt(i)); return a.length";
+    assert_eq!(kind(&rt, over), DiagnosticKind::MemoryLimitExceeded);
+
+    // Shared references to the same interned BigInt count once.
+    let shared =
+        "const big = 1n << 1_000_000n; const a = new Array(1000).fill(big); return a.length";
+    assert_eq!(
+        capped(256 * 1024).execute(shared).result.unwrap(),
+        json!(1000)
+    );
+
+    // Unreachable large BigInts are collected and do not trip the limit.
+    let churn = "let x = 0n; const base = 1n << 500_000n; for (let i = 0; i < 200; i++) x = base + BigInt(i); return x > 0n";
+    assert_eq!(rt.execute(churn).result.unwrap(), json!(true));
+}
