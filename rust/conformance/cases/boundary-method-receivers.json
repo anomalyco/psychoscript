@@ -185,7 +185,7 @@
         "TypeError",
         "Set.isSubsetOf received a Set-like object with an invalid size."
       ],
-      "[object Function]",
+      "() => 1",
       1,
       null,
       [

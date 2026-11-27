@@ -7,7 +7,7 @@
     "Buffer.prototype.__proto__": "constructor,BYTES_PER_ELEMENT,length,byteLength,byteOffset,at,slice,subarray,set,fill,reverse,sort,toSorted,toReversed,with,copyWithin,indexOf,lastIndexOf,includes,join,toString,toBase64,toHex,setFromBase64,setFromHex,keys,values,entries,map,filter,forEach,some,every,find,findIndex,findLast,findLastIndex,reduce,reduceRight",
     "Buffer.prototype.__proto__.__proto__": "constructor,hasOwnProperty,isPrototypeOf,propertyIsEnumerable,toString,toLocaleString,valueOf",
     "Buffer.__proto__": "length,name,prototype,from,of,fromBase64,fromHex,BYTES_PER_ELEMENT",
-    "Buffer.__proto__.__proto__": "length,name,call,apply,bind,caller,arguments,constructor",
+    "Buffer.__proto__.__proto__": "length,name,toString,call,apply,bind,caller,arguments,constructor",
     "TextEncoder": "length,name,prototype",
     "TextEncoder.prototype": "encoding,encode,encodeInto,constructor",
     "TextDecoder": "length,name,prototype",

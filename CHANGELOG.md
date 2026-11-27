@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `Function.prototype.toString` returns a program function's source text as written: an arrow or `function` as is, a
+  method or accessor from its name, a class as its whole `class … {}`. Built-in, bound and host functions return
+  `function name() { [native code] }`. A host can now keep a function a program hands it as text. `String(fn)` is
+  unchanged.
 - `ArrayBuffer`: the constructor, `byteLength`, `slice`, `ArrayBuffer.isView`, and the `resizable`, `maxByteLength`
   and `detached` accessors. `Uint8Array` and `Buffer` sit on real `ArrayBuffer`s: `.buffer` works,
   `new Uint8Array(arrayBuffer, offset, length)`, `subarray` and `Buffer.from(arrayBuffer, offset, length)` view its

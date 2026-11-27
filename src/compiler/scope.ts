@@ -60,6 +60,8 @@ type UpvalueInfo = {
 export type FunctionInfo = {
   readonly index: number
   readonly node: FunctionNode
+  /** Where the function's source text starts and ends, as `Function.prototype.toString` returns it; -1 for none. */
+  text: { start: number; end: number }
   readonly parentIndex: number
   readonly name: string
   flags: number
@@ -120,6 +122,13 @@ const plainKey = (key: Expression | PrivateIdentifier): boolean =>
  * Pass 1: walks the AST to build lexical/var scopes, assign pre-order function indices,
  * resolve all identifier and `this` references, mark captured bindings, and assign local/upvalue slots.
  */
+// The offset of the first token after a class element's leading `static`.
+const skipStatic = (code: string, start: number): number => {
+  let at = start + "static".length
+  while (at < code.length && /\s/.test(code[at]!)) at++
+  return at
+}
+
 export const analyzeScopes = (source: Source, internal = false): ScopeAnalysis => {
   const functions: Array<FunctionInfo> = []
   const nodeToFunction = new Map<FunctionNode, FunctionInfo>()
@@ -180,6 +189,7 @@ export const analyzeScopes = (source: Source, internal = false): ScopeAnalysis =
     const fnInfo: FunctionInfo = {
       index,
       node,
+      text: { start: node.start, end: node.end },
       parentIndex: parentFnIndex,
       name: isProgram ? "<program>" : isArrow ? "" : (className ?? node.id?.name ?? ""),
       flags,
@@ -507,7 +517,12 @@ export const analyzeScopes = (source: Source, internal = false): ScopeAnalysis =
             if (prop.computed) visit(prop.key)
             visit(prop.value)
             // Object literal methods and accessors have the object as their home, for `super`.
-            if (prop.method || prop.kind !== "init") nodeToFunction.get(prop.value as FunctionExpression)!.flags |= CodeFlags.METHOD
+            if (prop.method || prop.kind !== "init") {
+              const method = nodeToFunction.get(prop.value as FunctionExpression)!
+              method.flags |= CodeFlags.METHOD
+              // A method's source text starts at its name (or `get`, `async`, `*`), not at its parameters.
+              method.text = { start: prop.start, end: prop.end }
+            }
           }
         }
         break
@@ -534,6 +549,8 @@ export const analyzeScopes = (source: Source, internal = false): ScopeAnalysis =
     classConstructors.set(node, ctor)
     const ctorInfo = visitFunction(ctor, classScope, fnInfo.index, node.id?.name ?? "")
     ctorInfo.flags |= CodeFlags.CLASS_CONSTRUCTOR | CodeFlags.METHOD
+    // A class is its constructor, and its source text is the whole class.
+    ctorInfo.text = { start: node.start, end: node.end }
     if (node.superClass) {
       // `this` starts uninitialized: `super()` binds it, and the return rules read it.
       ctorInfo.flags |= CodeFlags.DERIVED
@@ -551,7 +568,10 @@ export const analyzeScopes = (source: Source, internal = false): ScopeAnalysis =
     }
     for (const m of methods) {
       if (m.kind === "constructor") continue
-      visitFunction(m.value, classScope, fnInfo.index).flags |= CodeFlags.METHOD
+      const method = visitFunction(m.value, classScope, fnInfo.index)
+      method.flags |= CodeFlags.METHOD
+      // `static` belongs to the class element, not the method, so the text starts after it.
+      method.text = { start: m.static ? skipStatic(source.code, m.start) : m.start, end: m.end }
     }
     const fields = node.body.body.filter((m) => m.type === "PropertyDefinition")
     const instance = fieldInit(
@@ -628,7 +648,10 @@ export const analyzeScopes = (source: Source, internal = false): ScopeAnalysis =
       ...at,
     } as FunctionExpression
     fieldInitMembers.set(fn, fields)
-    visitFunction(fn, classScope, fnInfo.index, name).flags |= CodeFlags.METHOD | CodeFlags.FIELD_INIT
+    const init = visitFunction(fn, classScope, fnInfo.index, name)
+    init.flags |= CodeFlags.METHOD | CodeFlags.FIELD_INIT
+    // Made by the compiler, so no source text is its own.
+    init.text = { start: -1, end: -1 }
     return fn
   }
 

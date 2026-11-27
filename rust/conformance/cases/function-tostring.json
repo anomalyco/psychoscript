@@ -1,0 +1,30 @@
+{
+  "bindings": {},
+  "ok": true,
+  "value": [
+    "async (input) => { return input.x + 1 }",
+    "function declared(a, b = 2) {\n  return a + b // é\n}",
+    "function named() {}",
+    "x => x * 2",
+    "m(x) { return \"ü\" + x }",
+    "get g() { return 1 }",
+    "set g(v) {}",
+    "async *gen() {}",
+    "[\"com\" + \"puted\"]() {}",
+    "class A extends Base {\n  constructor() { super() }\n  foo() { return 1 }\n  static   bar() {}\n  static async *baz() {}\n  get size() { return 0 }\n}",
+    "foo() { return 1 }",
+    "bar() {}",
+    "async *baz() {}",
+    "class Empty {}",
+    "get size() { return 0 }",
+    "function max() { [native code] }",
+    "function map() { [native code] }",
+    "function bound declared() { [native code] }",
+    "function fromAsync() { [native code] }",
+    "[object Function]",
+    "async (input) => { return input.x + 1 }",
+    "TypeError"
+  ],
+  "logs": [],
+  "metadata": null
+}

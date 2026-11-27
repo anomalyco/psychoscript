@@ -159,6 +159,7 @@ pub fn proto() -> FuncProto {
         needs_extra: false,
         callees: Vec::new(),
         sites: Vec::new(),
+        text: None,
     }
 }
 

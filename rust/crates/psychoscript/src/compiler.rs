@@ -49,6 +49,12 @@ pub(crate) fn compile_internal(source: &str, atoms: &mut Strings) -> R<Program> 
     compile_as(source, atoms, true)
 }
 
+/// The offset of the first token after a class element's leading `static`.
+fn skip_static(source: &str, start: u32) -> u32 {
+    let rest = &source[start as usize + "static".len()..];
+    (source.len() - rest.trim_start().len()) as u32
+}
+
 /// The most a thread's parse arena keeps between compiles: a larger one, grown by a large program, is let go.
 const ARENA_KEEP_BYTES: usize = 256 * 1024;
 
@@ -187,6 +193,7 @@ fn compile_in(
     let mut c = Compiler::new(scoping, semantic.semantic.nodes(), atoms);
     c.await_alias = await_alias;
     c.internal = internal;
+    c.source = program.source_text;
     c.find_unbound(program);
     c.find_field_values(program);
     c.compute_captured();
@@ -1253,6 +1260,8 @@ struct Compiler<'a, 's> {
     last_home: bool,
     /// Compiling a prelude built-in (see `compile_internal`).
     internal: bool,
+    /// The text the program was parsed from, which spans index.
+    source: &'a str,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1296,6 +1305,7 @@ impl<'a, 's> Compiler<'a, 's> {
             pseudo: 0,
             last_home: false,
             internal: false,
+            source: "",
         }
     }
 
@@ -2091,6 +2101,7 @@ impl<'a, 's> Compiler<'a, 's> {
                 needs_extra: false,
                 callees: f.callees,
                 sites: f.sites,
+                text: None,
             },
         );
         // Closure instructions index `protos` assuming the program is not in the list; shift them.
@@ -2129,6 +2140,7 @@ impl<'a, 's> Compiler<'a, 's> {
             is_generator: f.generator,
             is_arrow: false,
             self_sym,
+            text: Some([f.span.start, f.span.end]),
         })?;
         self.emit(Op::Closure(idx));
         Ok(())
@@ -2158,6 +2170,7 @@ impl<'a, 's> Compiler<'a, 's> {
             is_generator: false,
             is_arrow: true,
             self_sym: None,
+            text: Some([f.span.start, f.span.end]),
         })?;
         self.emit(Op::Closure(idx));
         Ok(())
@@ -2340,6 +2353,8 @@ impl<'a, 's> Compiler<'a, 's> {
             needs_extra: f.needs_extra,
             callees: f.callees,
             sites: f.sites,
+            // A prelude built-in's offsets are in its own source, not the program's.
+            text: spec.text.filter(|_| !self.internal),
         });
         Ok(self.protos.len() as u32 - 1)
     }
@@ -3754,7 +3769,7 @@ impl<'a, 's> Compiler<'a, 's> {
                         match static_key(&p.key, p.computed) {
                             Some(k) => {
                                 let name = format!("{} {k}", if setter { "set" } else { "get" });
-                                self.object_method(&p.value, &name)?;
+                                self.object_method(&p.value, &name, [p.span.start, p.span.end])?;
                                 self.set_home(1);
                                 let a = self.atom(&k);
                                 self.pos = p.span.start;
@@ -3766,7 +3781,7 @@ impl<'a, 's> Compiler<'a, 's> {
                                 };
                                 self.expr(e)?;
                                 self.emit_at(e.without_parentheses().span().start, Op::ToKey);
-                                self.object_method(&p.value, "")?;
+                                self.object_method(&p.value, "", [p.span.start, p.span.end])?;
                                 self.set_home(2);
                                 self.pos = p.span.start;
                                 self.emit(Op::DefineAccessorElem(setter));
@@ -3778,7 +3793,7 @@ impl<'a, 's> Compiler<'a, 's> {
                     match static_key(&p.key, p.computed) {
                         Some(k) => {
                             if p.method {
-                                self.object_method(&p.value, &k)?;
+                                self.object_method(&p.value, &k, [p.span.start, p.span.end])?;
                                 self.set_home(1);
                             } else {
                                 self.expr_named(&p.value, Some(&k))?;
@@ -3794,7 +3809,7 @@ impl<'a, 's> Compiler<'a, 's> {
                             self.expr(e)?;
                             self.emit_at(e.without_parentheses().span().start, Op::ToKey);
                             if p.method {
-                                self.object_method(&p.value, "")?;
+                                self.object_method(&p.value, "", [p.span.start, p.span.end])?;
                             } else {
                                 self.expr(&p.value)?;
                             }
@@ -4240,6 +4255,8 @@ struct FnSpec<'a, 'n> {
     is_generator: bool,
     is_arrow: bool,
     self_sym: Option<SymbolId>,
+    /// The function's source text, as `Function.prototype.toString` returns it (see `FuncProto::text`).
+    text: Option<[u32; 2]>,
 }
 
 impl<'a> FnState<'a> {
@@ -4640,6 +4657,7 @@ impl<'a, 's> Compiler<'a, 's> {
                     is_generator: false,
                     is_arrow: false,
                     self_sym: None,
+                    text: Some([c.span.start, c.span.end]),
                 })?
             }
             None => self.compile_function(FnSpec {
@@ -4654,6 +4672,7 @@ impl<'a, 's> Compiler<'a, 's> {
                 is_generator: false,
                 is_arrow: false,
                 self_sym: None,
+                text: Some([c.span.start, c.span.end]),
             })?,
         };
         self.pos = c.span.start;
@@ -4693,7 +4712,12 @@ impl<'a, 's> Compiler<'a, 's> {
                     };
                     let flags = u8::from(d.r#static) | if d.computed { 2 } else { 0 } | kind;
                     self.pos = d.span.start;
-                    self.closure_for_method(&d.value, "")?;
+                    // `static` belongs to the class element, not the method, so the text starts after it.
+                    let start = match d.r#static {
+                        true => skip_static(self.source, d.span.start),
+                        false => d.span.start,
+                    };
+                    self.closure_for_method(&d.value, "", [start, d.span.end])?;
                     self.pos = d.span.start;
                     self.emit(Op::DefineMethod(key, flags));
                 }
@@ -4713,6 +4737,7 @@ impl<'a, 's> Compiler<'a, 's> {
                 is_generator: false,
                 is_arrow: false,
                 self_sym: None,
+                text: None,
             })?;
             self.pos = c.span.start;
             self.emit(Op::Closure(idx));
@@ -4737,6 +4762,7 @@ impl<'a, 's> Compiler<'a, 's> {
                 is_generator: false,
                 is_arrow: false,
                 self_sym: None,
+                text: None,
             })?;
             self.pos = c.span.start;
             self.emit(Op::Dup);
@@ -4755,7 +4781,7 @@ impl<'a, 's> Compiler<'a, 's> {
     }
 
     /// A method's closure: a function that may use `super`.
-    fn closure_for_method(&mut self, f: &'a Function<'a>, name: &str) -> R<()> {
+    fn closure_for_method(&mut self, f: &'a Function<'a>, name: &str, text: [u32; 2]) -> R<()> {
         let Some(body) = &f.body else {
             return Err(unsupported("Function declarations without a body", f.span));
         };
@@ -4771,6 +4797,7 @@ impl<'a, 's> Compiler<'a, 's> {
             is_generator: f.generator,
             is_arrow: false,
             self_sym: None,
+            text: Some(text),
         })?;
         self.emit(Op::Closure(idx));
         Ok(())
@@ -4846,7 +4873,7 @@ impl<'a, 's> Compiler<'a, 's> {
     }
 
     /// An object literal's method or accessor: a method's closure, so it may use `super`.
-    fn object_method(&mut self, v: &'a Expression<'a>, name: &str) -> R<()> {
+    fn object_method(&mut self, v: &'a Expression<'a>, name: &str, text: [u32; 2]) -> R<()> {
         self.last_home = false;
         match v {
             Expression::FunctionExpression(f) => {
@@ -4867,6 +4894,7 @@ impl<'a, 's> Compiler<'a, 's> {
                     is_generator: f.generator,
                     is_arrow: false,
                     self_sym: None,
+                    text: Some(text),
                 })?;
                 self.emit(Op::Closure(idx));
                 Ok(())

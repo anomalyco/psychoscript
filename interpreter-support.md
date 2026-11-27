@@ -181,6 +181,10 @@ Math.floor)` is `"3"`). A detached method loses its receiver, as in JS: `values.
       `Array.prototype.push.call(arr, 1)`, `Math.max.apply(null, values)`, `fn.bind(obj, first)`. `apply` accepts an
       array, an array-like object (its `length` clamped and capped like `Array.from`), or `null`/`undefined`. A
       bound function is named `bound f`, has its remaining `length`, and is not constructible.
+- [x] `Function.prototype.toString` gives a program function's source text as written: an arrow or `function` as is,
+      a method or accessor from its name (`get g() {}`, `async *gen() {}`, without a class element's `static`), and
+      a class its whole `class … {}`. The text survives a suspend and resume. Built-in, bound and host functions give
+      `function name() { [native code] }`. Conversions don't call it: `String(fn)` stays `"[object Function]"`.
 - [x] `JSON.parse` revivers and `JSON.stringify` function replacers see the holder object as `this`. A reviver's third
       argument is `{ source }` for a primitive it has not changed (`JSON.parse("1.0", (k, v, c) => c.source)` is
       `"1.0"`) and `{}` otherwise.
@@ -261,7 +265,7 @@ Math.floor)` is `"3"`). A detached method loses its receiver, as in JS: `values.
       assigning a read-only one (`Math.PI`, `fn.name`) throws a `TypeError`, as in strict mode. `delete` of a
       non-reference (`delete 0`, `delete f()`) evaluates the operand and is `true`; `delete x` on a variable throws.
 - [x] Coercion helpers and template interpolation accept functions and namespaces: `String(fn)` and `${fn}` give
-      `"[object Function]"` rather than the source text, `isNaN(fn)` is `true`.
+      `"[object Function]"` rather than the source text (`fn.toString()` gives the text), `isNaN(fn)` is `true`.
 - [x] `==` and `!=` follow IsLooselyEqual: objects (including functions and host references) compare by identity, a
       nullish operand never coerces the other side, and a data object facing a primitive converts through its own
       `valueOf`/`toString` (default hint) (`fn == null` is `false`, `fn == fn` is `true`, `[1] == 1` and `[1, 2] == "1,2"` are `true`).

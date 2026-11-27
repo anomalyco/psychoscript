@@ -46,6 +46,7 @@ const functionGlobal = <R>(ctx: Interpreter<R>) => {
   }
   const target = (thisValue: Value, method: string) => receiver(Callable, thisValue, `Function.prototype.${method}`)
   methods(ctx.builtins, ctx.builtins.Function, [
+    ["toString", 0, (thisValue) => target(thisValue, "toString").source()],
     ["call", 1, (thisValue, args, site) => new Invoke(target(thisValue, "call"), args[0], args.slice(1), site)],
     [
       "apply",

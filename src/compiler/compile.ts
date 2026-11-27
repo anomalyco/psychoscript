@@ -231,6 +231,8 @@ const compileFunctionBody = (
   )
   builder.forceExtra = forceExtra
   builder.wideJumps = wideJumps
+  builder.textStart = fnInfo.text.start
+  builder.textEnd = fnInfo.text.end
 
   const controlStack: Array<ControlEntry> = []
   let pendingLabels: Set<string> | undefined
