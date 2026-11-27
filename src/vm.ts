@@ -73,7 +73,7 @@ import {
   writableReference,
 } from "./runtime/operations.js"
 import { capability } from "./runtime/promises.js"
-import { describeValue, isOpaque, typeofValue } from "./runtime/references.js"
+import { describeValue, hasCircularReference, isOpaque, typeofValue } from "./runtime/references.js"
 import {
   abrupt,
   type Completion,
@@ -808,10 +808,10 @@ export class Vm {
               typeof keyVal === "number" &&
               keyVal >= 0 &&
               (keyVal | 0) === keyVal &&
-              (typeof v !== "object" || v === null) &&
               o instanceof ArrCtor &&
               o.elements.writable &&
-              o.extensible
+              o.extensible &&
+              (typeof v !== "object" || v === null || !hasCircularReference(o, v))
             ) {
               const items = o.items
               // A hole or a new element looks at the prototypes first, which may hold a program setter there.
@@ -1671,8 +1671,14 @@ export class Vm {
     sp: number,
   ): number {
     if (computed === 0) {
+      // An object literal's own key: the literal is a fresh ordinary object, so this adds or replaces a data slot.
       const v = regs[--sp] as Value
-      define(regs[sp - 1] as Obj, consts[bx] as string, v)
+      ;(regs[sp - 1] as Obj).props.set(consts[bx] as string, {
+        value: v,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      })
       return sp
     }
     const v = regs[--sp] as Value
@@ -2693,7 +2699,7 @@ export class Vm {
               : (regs.slice(base, sp) as Array<Value>)
       frame.pc = pc
       frame.sp = base - 2
-      const site = callee.callback && callee.call.length < 3 ? undefined : callSiteOf(frame, pc)
+      const site = callee.wantsSite ? callSiteOf(frame, pc) : undefined
       const res = callee.call(thisVal, args, site)
       if (this.tripEvery === 0) this.fuel -= NATIVE_FUEL
       if (

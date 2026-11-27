@@ -483,6 +483,8 @@ export class Native extends Builtin {
   readonly call: NativeCall
   readonly construct: NativeConstruct | undefined
   readonly callback: boolean
+  /** Whether a call passes the call site: `call` takes one, or the native isn't admitted at callback sites. */
+  readonly wantsSite: boolean
 
   constructor(proto: Obj, options: NativeOptions) {
     if (nativeRule.check && options.runtime === undefined && nativeRule.sealed.has(proto)) {
@@ -493,6 +495,7 @@ export class Native extends Builtin {
     this.call = options.call
     this.construct = options.construct
     this.callback = options.callback ?? true
+    this.wantsSite = !this.callback || options.call.length >= 3
   }
 
   invoke(thisValue: Value, args: Array<Value>, site: AstNode | undefined): NativeResult {
@@ -1006,6 +1009,8 @@ const MAX_ARRAY_INDEX = 4_294_967_295
 export const parseArrayIndex = (key: string | number): number | undefined => {
   if (typeof key === "number") return Number.isInteger(key) && key >= 0 && key < MAX_ARRAY_INDEX ? key : undefined
   const property = String(key)
+  const first = property.charCodeAt(0)
+  if (!(first >= 48 && first <= 57)) return undefined
   if (!/^(0|[1-9]\d*)$/.test(property)) return undefined
   const index = Number(property)
   return index < MAX_ARRAY_INDEX ? index : undefined
@@ -1480,11 +1485,29 @@ export const enumerableKeys = (target: Obj): Array<string | symbol> =>
   )
 
 /** Own enumerable string keys: `Object.keys`. */
-export const keys = (target: Obj): Array<string> =>
+export const keys = (target: Obj): Array<string> => {
+  // A plain object's string keys, when none is an index, are its slots' in insertion order.
+  if (!isIndexed(target)) {
+    const out: Array<string> = []
+    for (const [key, slot] of target.props) {
+      if (typeof key !== "string") continue
+      if (parseArrayIndex(key) !== undefined) return orderedKeys(target)
+      if (slot.enumerable) out.push(key)
+    }
+    return out
+  }
+  return orderedKeys(target)
+}
+
+const orderedKeys = (target: Obj): Array<string> =>
   ownKeys(target).filter((key): key is string => typeof key === "string" && enumerable(target, key))
 
 /** Own enumerable string entries: `Object.entries` and serialization. */
-export const entries = (target: Obj): Array<[string, Value]> => keys(target).map((key) => [key, getOwn(target, key)])
+export const entries = (target: Obj): Array<[string, Value]> =>
+  keys(target).map((key) => {
+    const slot = isIndexed(target) ? undefined : target.props.get(key)
+    return [key, slot !== undefined && "value" in slot ? slot.value : getOwn(target, key)]
+  })
 
 /** Own enumerable string entries for display, which runs no program code: a program accessor shows as its label. */
 export const shownEntries = (target: Obj): Array<[string, Value]> => {

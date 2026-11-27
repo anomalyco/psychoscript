@@ -45,9 +45,12 @@ const find = (
 
 const never = () => false
 
-export const containsRuntimeReference = (value: Value): boolean => find(value, isRuntimeReference, never, new Set())
+export const containsRuntimeReference = (value: Value): boolean =>
+  typeof value === "object" && value !== null && find(value, isRuntimeReference, never, new Set())
 
 export const containsOpaqueReference = (value: Value): boolean =>
+  typeof value === "object" &&
+  value !== null &&
   find(value, isOpaque, (current) => isRuntimeReference(current) && !isOpaque(current), new Set())
 
 // Reject cycles before mutation so later boundary walks remain safe.
@@ -63,7 +66,30 @@ export const rejectCircularInsertion = (
 export const hasCircularReference = (container: Obj, value: Value, seen?: Set<object>): boolean => {
   if (value === container) return true
   if (!(value instanceof Obj) || isRuntimeReference(value) || holdsNoObjects(value)) return false
-  return find(value, (current) => current === container, isRuntimeReference, seen ?? new Set())
+  return reaches(value, container, seen ?? new Set())
+}
+
+// Whether `target` is among the values reachable from `start`, as `find` would walk them (runtime references are
+// matched but not entered; program accessors are left out), without its key lists and iterators.
+const reaches = (start: Obj, target: Obj, seen: Set<object>): boolean => {
+  const pending: Array<Obj> = [start]
+  while (pending.length > 0) {
+    const current = pending.pop()!
+    if (seen.has(current)) continue
+    seen.add(current)
+    if (current instanceof Arr) {
+      for (const item of current.items) {
+        if (item === target) return true
+        if (item instanceof Obj && !isRuntimeReference(item) && !seen.has(item)) pending.push(item)
+      }
+    }
+    for (const [key, slot] of current.props) {
+      const item = "value" in slot ? slot.value : isProgramAccessor(slot) ? undefined : getOwn(current, key)
+      if (item === target) return true
+      if (item instanceof Obj && !isRuntimeReference(item) && !seen.has(item)) pending.push(item)
+    }
+  }
+  return false
 }
 
 // A plain object or array whose own data slots and elements are all primitives reaches nothing, so it cannot close a
