@@ -11,6 +11,8 @@
 //!   nothing, though the objects the program stored on it do.
 //! - A string value: `STRING_BYTES` plus two per UTF-16 code unit, once per distinct text. Property keys count as part
 //!   of their property, an error's `stack` text as part of the error, and a built-in's own texts nothing.
+//! - A heap `BigInt` (`BigNum::Small` or `BigNum::Large`): `BIGINT_BYTES` plus its byte length (16 bytes for `Small`,
+//!   `bits().div_ceil(8)` for `Large`), once per distinct interned value; inline `BigInt`s in `Value` count nothing.
 //!
 //! Measuring walks the reachable heap (`reach.rs`), so it is paced by allocation: the run counts roughly what it
 //! allocated since the last measurement (objects and strings made, what concatenations copy, array contents, elements
@@ -35,6 +37,7 @@ pub(crate) const PROPERTY_BYTES: u64 = 32;
 pub(crate) const ELEMENT_BYTES: u64 = 16;
 pub(crate) const ENTRY_BYTES: u64 = 32;
 pub(crate) const STRING_BYTES: u64 = 16;
+pub(crate) const BIGINT_BYTES: u64 = 16;
 /// What a unit of fuel is assumed to allocate, for growth nothing else counts (`push`, a property added).
 pub(crate) const FUEL_BYTES: u64 = 2;
 
@@ -241,8 +244,9 @@ fn object_bytes(vm: &Vm, o: &Obj) -> u64 {
     let own = OBJECT_BYTES + PROPERTY_BYTES * props as u64;
     match &o.kind {
         // An accessor's own object is part of its property; a buffer's storage counts as its bytes.
-        // A BigInt counts nothing, as the reference counts its primitives.
-        Kind::Accessor(_) | Kind::Storage(_) | Kind::BigInt(_) => 0,
+        Kind::Accessor(_) | Kind::Storage(_) => 0,
+        // Heap BigInts are interned, so each distinct value counts once (inline BigInts never reach here).
+        Kind::BigInt(n) => BIGINT_BYTES + n.byte_len(),
         // The program's body, which the reference runs with no function object.
         Kind::Closure(c) if vm.protos.first().is_some_and(|p| Arc::ptr_eq(p, &c.proto)) => 0,
         Kind::Array(items) | Kind::Arguments(items) => own + ELEMENT_BYTES * items.len() as u64,
@@ -292,6 +296,7 @@ impl Walk<'_> {
     fn value(&mut self, v: Value) {
         match v {
             Value::Obj(id) => self.see(Ref::Obj(id)),
+            Value::Big(id) if crate::builtins::bigint::on_heap(id) => self.see(Ref::Obj(id)),
             Value::Str(s) => self.string(s),
             _ => {}
         }
