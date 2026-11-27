@@ -343,8 +343,10 @@ export abstract class Callable extends Opaque {
     readonly length: number,
   ) {
     super(proto)
-    define(this, "length", length, readonly)
-    define(this, "name", name, readonly)
+    // As `define` would, without its checks: a function just made is no array, is not an intrinsic yet and has no
+    // guard. A run makes several hundred built-in functions before its program starts.
+    this.props.set("length", { value: length, writable: false, enumerable: false, configurable: true })
+    this.props.set("name", { value: name, writable: false, enumerable: false, configurable: true })
   }
   override get describe() {
     return "a function"

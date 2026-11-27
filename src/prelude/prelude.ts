@@ -1,5 +1,6 @@
 import type { Interpreter } from "../runtime/interpreter.js"
 import { define, Fn, get, hidden, Obj, type Value } from "../runtime/objects.js"
+import type { Code } from "../code.js"
 import { builtinCodes } from "./bytecode.js"
 import { helpers } from "./helpers.js"
 import { code } from "./source.js"
@@ -20,6 +21,11 @@ let compiled: ReturnType<typeof builtinCodes> | undefined
  */
 export const compiledPrelude = () => (compiled ??= builtinCodes("@prelude", code))
 
+let installs: ReadonlyArray<readonly [name: string, made: Code, path: ReadonlyArray<string>]> | undefined
+
+/** The prelude's functions with their names split into where each is installed, once for the process. */
+const preludeInstalls = () => (installs ??= [...compiledPrelude().byName].map(([name, made]) => [name, made, name.split("$")] as const))
+
 /** One runtime's prelude: what its functions' free names see, and its functions and helpers, by name. */
 export class Prelude {
   readonly scope = new Map<string, Value>()
@@ -37,16 +43,17 @@ export class Prelude {
       define(this.helpers, name, value, hidden)
       this.scope.set(name, value)
     }
-    for (const [name, made] of compiledPrelude().byName) {
-      const path = name.split("$")
-      const fn = new Fn(builtins.Function, made, [], path.at(-1))
+    for (const [name, made, path] of preludeInstalls()) {
+      const last = path[path.length - 1]!
+      const fn = new Fn(builtins.Function, made, [], last)
       // The prelude's generators are iterator helpers.
       if (fn.generator) define(fn, "prototype", builtins.IteratorHelper, hidden)
       this.scope.set(name, fn)
       define(this.functions, name, fn, hidden)
       if (path.length === 1) continue
-      const owner = path.slice(1, -1).reduce((value, key) => get(value as Obj, key), this.scope.get(path[0]!))
-      define(owner as Obj, path.at(-1)!, fn, hidden)
+      let owner = this.scope.get(path[0]!)
+      for (let i = 1; i < path.length - 1; i++) owner = get(owner as Obj, path[i]!)
+      define(owner as Obj, last, fn, hidden)
     }
   }
 
