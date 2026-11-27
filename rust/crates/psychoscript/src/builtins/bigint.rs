@@ -100,6 +100,14 @@ impl BigNum {
             BigRef::Large(n) => n.clone(),
         }
     }
+
+    /// The bytes this heap integer holds (16 for inline 128-bit `Small`, rounded-up bit length for `Large`).
+    pub(crate) fn byte_len(&self) -> u64 {
+        match self {
+            BigNum::Small(_) => 16,
+            BigNum::Large(n) => n.bits().div_ceil(8),
+        }
+    }
 }
 
 /// A BigInt's integer, read without copying it.
@@ -203,7 +211,14 @@ impl Vm {
             self.gc_shade_big(id);
             return Value::Big(id);
         }
+        let extra = match n.get() {
+            BigRef::Small(_) => 0,
+            BigRef::Large(b) => b.bits().div_ceil(8),
+        };
         let id = self.alloc(Obj::new(None, Kind::BigInt(n)));
+        if extra > 0 {
+            self.charge_heap(extra);
+        }
         self.bigints.add(h, id);
         Value::Big(id)
     }

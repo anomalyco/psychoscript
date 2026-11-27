@@ -239,3 +239,34 @@ fn finished_async_functions_dont_pile_up() {
         assert_eq!(result, Ok(json!(100000)), "{code}");
     }
 }
+
+#[test]
+fn large_bigints_count_toward_the_heap_limit() {
+    let rt = capped(2 * 1024 * 1024);
+
+    // Distinct large BigInts (~125 KB each) held in an array must trip `max_heap_bytes`.
+    let in_array = "const base = 1n << 1_000_000n; const a = []; for (let i = 0; i < 100; i++) a.push(base + BigInt(i)); return a.length";
+    assert_eq!(kind(&rt, in_array), DiagnosticKind::MemoryLimitExceeded);
+
+    // Distinct large BigInts captured by closures (reached via `Ref::Cell` -> `Walk::value`).
+    let in_closures = "const base = 1n << 1_000_000n; const a = []; for (let i = 0; i < 100; i++) { const x = base + BigInt(i); a.push(() => x); } return a.length";
+    assert_eq!(kind(&rt, in_closures), DiagnosticKind::MemoryLimitExceeded);
+
+    // Distinct large BigInts stored as own properties on functions or errors (walked via `Walk::value`).
+    let on_fn = "const base = 1n << 1_000_000n; const f = () => {}; for (let i = 0; i < 100; i++) f['k' + i] = base + BigInt(i); return typeof f";
+    assert_eq!(kind(&rt, on_fn), DiagnosticKind::MemoryLimitExceeded);
+    let on_err = "const base = 1n << 1_000_000n; const e = new Error('x'); for (let i = 0; i < 100; i++) e['k' + i] = base + BigInt(i); return e.message";
+    assert_eq!(kind(&rt, on_err), DiagnosticKind::MemoryLimitExceeded);
+
+    // Shared references to the same interned BigInt count once.
+    let shared =
+        "const big = 1n << 1_000_000n; const a = new Array(1000).fill(big); return a.length";
+    assert_eq!(
+        capped(256 * 1024).execute(shared).result.unwrap(),
+        json!(1000)
+    );
+
+    // Unreachable large BigInts are collected and do not trip the limit.
+    let churn = "let x = 0n; const base = 1n << 500_000n; for (let i = 0; i < 200; i++) x = base + BigInt(i); return x > 0n";
+    assert_eq!(rt.execute(churn).result.unwrap(), json!(true));
+}
