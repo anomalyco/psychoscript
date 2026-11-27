@@ -515,3 +515,117 @@ fn a_run_starved_by_a_cpu_hog_is_not_timed_out() {
     .join()
     .unwrap();
 }
+
+/// A future that yields `Poll::Pending` and wakes after `ms` on a background thread (using no CPU on the driver).
+fn yield_after(ms: u64) -> impl Future<Output = Result<HostValue, HostValue>> + 'static {
+    let done = Arc::new(std::sync::Mutex::new((false, None::<Waker>)));
+    let started = Arc::new(AtomicBool::new(false));
+    std::future::poll_fn(move |cx| {
+        let mut g = done.lock().unwrap();
+        if g.0 {
+            return Poll::Ready(Ok(HostValue::Undefined));
+        }
+        g.1 = Some(cx.waker().clone());
+        if !started.swap(true, Ordering::SeqCst) {
+            let done = done.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(ms));
+                let mut g = done.lock().unwrap();
+                g.0 = true;
+                if let Some(w) = g.1.take() {
+                    w.wake();
+                }
+            });
+        }
+        Poll::Pending
+    })
+}
+
+#[test]
+fn async_returned_block_does_not_grant_free_cpu_time_or_double_count_wait() {
+    let _quiet = quiet();
+
+    // 1) Under `Clock::ThreadCpu` + `slice_ms: 50`, yielding `Returned::Block` waits must not credit free CPU time
+    // to the code that follows — neither across offload nor across repeated <1ms stretches on the driving thread.
+    let resumed_at = Arc::new(std::sync::Mutex::new(None::<Instant>));
+    let mark = resumed_at.clone();
+    let rt = Runtime::make()
+        .limits(sliced(50, Clock::ThreadCpu))
+        .globals(move |_| {
+            let mark = mark.clone();
+            [(
+                "waitBlock",
+                HostFunction::new(move |args, _| {
+                    let ms = args.first().and_then(HostValue::as_f64).unwrap_or(200.0) as u64;
+                    let mark = mark.clone();
+                    Returned::Block(Box::pin(async move {
+                        let r = yield_after(ms).await;
+                        *mark.lock().unwrap() = Some(Instant::now());
+                        r
+                    }))
+                }),
+            )]
+        });
+    let o =
+        drive(rt.execute_async("waitBlock(200); while (true) {}", &ProgramOptions::new())).unwrap();
+    let after_resume = resumed_at
+        .lock()
+        .unwrap()
+        .expect("waitBlock resumed")
+        .elapsed();
+    assert!(sliced_out(&o), "{:?}", o.result);
+    assert!(
+        after_resume < Duration::from_millis(200),
+        "expected ~50ms after yielding Returned::Block, ran for {after_resume:?}"
+    );
+    // Repeated ~0.5ms CPU bursts interleaved with 5ms yielding `Returned::Block` calls stay on the driving thread
+    // (never offloading) and must still stop near the 50ms CPU slice rather than crediting wait time as host CPU.
+    let clock = psychoscript::thread_clock::ThreadClock::current();
+    let cpu_before = clock.now();
+    let o = drive(rt.execute_async(
+        "while (true) { waitBlock(5); let s = 0; for (let i = 0; i < 4000; i++) s += i; }",
+        &ProgramOptions::new(),
+    ))
+    .unwrap();
+    let cpu_used = clock.now() - cpu_before;
+    assert!(sliced_out(&o), "{:?}", o.result);
+    assert!(
+        cpu_used < Duration::from_millis(250),
+        "expected ~50ms CPU across interleaved Returned::Block calls, used {cpu_used:?}"
+    );
+
+    // 2) Under `Clock::ThreadCpu` + `timeout_ms: 50`, a never-resolving `Returned::Block` under `execute_async`
+    // must wait the full 10x backstop (~500ms), not half of it from double-counting `waited`.
+    let rt = Runtime::make()
+        .limits(limits(50, Clock::ThreadCpu))
+        .globals(|_| {
+            [(
+                "never",
+                HostFunction::new(|_, _| Returned::Block(Box::pin(std::future::pending()))),
+            )]
+        });
+    let start = Instant::now();
+    let o = drive(rt.execute_async("never()", &ProgramOptions::new())).unwrap();
+    let took = start.elapsed();
+    assert!(timed_out(&o), "{:?}", o.result);
+    assert!(
+        took >= Duration::from_millis(450) && took < Duration::from_secs(5),
+        "expected ~500ms backstop, took {took:?}"
+    );
+
+    // 3) Under `Clock::Wall` + `slice_ms: 50`, yielding `Returned::Block` waits must not count toward the slice.
+    let rt = Runtime::make()
+        .limits(sliced(50, Clock::Wall))
+        .globals(|_| {
+            [(
+                "waitBlock",
+                HostFunction::new(|_, _| Returned::Block(Box::pin(yield_after(80)))),
+            )]
+        });
+    let o = drive(rt.execute_async(
+        "waitBlock(); waitBlock(); waitBlock(); return 1",
+        &ProgramOptions::new(),
+    ))
+    .unwrap();
+    assert_eq!(o.result.unwrap(), json!(1));
+}

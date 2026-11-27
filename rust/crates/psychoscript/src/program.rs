@@ -350,7 +350,7 @@ impl<'a> Program<'a> {
             // Back from a stretch of compute on the worker, or still away running its host code.
             let computed = matches!(self.state, State::Away);
             if computed {
-                let Some(worker) = &self.worker else {
+                let Some(worker) = &mut self.worker else {
                     unreachable!("a run is only away on its worker")
                 };
                 match worker.poll(cx) {
@@ -366,6 +366,17 @@ impl<'a> Program<'a> {
             let State::Running(r) = &mut self.state else {
                 return Poll::Pending;
             };
+            if r.vm.host.has_pending_block() {
+                match crate::host::poll_pending_block(&mut r.vm, cx) {
+                    Poll::Pending => return Poll::Pending,
+                    Poll::Ready(()) => {
+                        if r.vm.outcome.is_some() || r.vm.fatal.is_some() {
+                            break;
+                        }
+                        continue;
+                    }
+                }
+            }
             if !computed {
                 // Between jobs no native frame of the run is on the stack, so it may continue from wherever it is polled.
                 r.vm.stack_base = &probe as *const u8 as usize;
@@ -391,6 +402,12 @@ impl<'a> Program<'a> {
                     snapshot::restart_calls(&mut r.vm);
                     if r.vm.frames.is_empty() && !r.resumed() {
                         run::call_main(&mut r.vm);
+                        if r.vm.host.has_pending_block() {
+                            if let Some(o) = &mut r.vm.host.offload {
+                                o.at = None;
+                            }
+                            continue;
+                        }
                     }
                 }
                 for (p, s) in r.vm.host.tasks.poll_ready() {
@@ -414,8 +431,20 @@ impl<'a> Program<'a> {
                     continue;
                 }
                 let _ = r.vm.continue_frames();
+                if r.vm.host.has_pending_block() {
+                    if let Some(o) = &mut r.vm.host.offload {
+                        o.at = None;
+                    }
+                    continue;
+                }
                 if !r.vm.suspended {
                     let _ = r.vm.drive();
+                    if r.vm.host.has_pending_block() {
+                        if let Some(o) = &mut r.vm.host.offload {
+                            o.at = None;
+                        }
+                        continue;
+                    }
                 }
                 // The stop for the host is a safe point: a step that came due on the way finishes here.
                 if r.vm.gc_pending() && r.vm.fatal.is_none() {
@@ -682,7 +711,7 @@ impl Drop for Program<'_> {
     /// A run away on its worker is asked to stop at its next safe point and comes back, so it ends here, where its
     /// host calls are cancelled.
     fn drop(&mut self) {
-        let Some(worker) = self.worker.take() else {
+        let Some(mut worker) = self.worker.take() else {
             return;
         };
         if let State::Away = self.state {

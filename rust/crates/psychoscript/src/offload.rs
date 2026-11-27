@@ -24,17 +24,39 @@ pub const OFFLOAD_AFTER: Duration = Duration::from_millis(1);
 type Job = Box<dyn FnOnce() + Send>;
 
 /// A run's side of moving: when the stretch of compute in progress has run long enough to move, whether it stopped to,
-/// and where its host code runs while it is away.
+/// where its host code runs while it is away, and any `Returned::Block` future suspended on the driving thread.
 #[derive(Default)]
 pub struct Offload {
     pub at: Option<Instant>,
     pub due: bool,
     pub home: Option<Home>,
+    /// Whether the bytecode call frame currently executing can yield back to the executor on `Returned::Block`.
+    pub can_yield: bool,
+    /// A `Returned::Block` future yielded on the driving thread so the executor stays free while it completes.
+    pub pending: Option<Box<crate::host::PendingBlock>>,
 }
+
+/// A `Returned::Block` future handed from the worker thread to the driving executor to poll without blocking.
+pub struct AwaitBlock {
+    pub tasks: crate::exec::Tasks<'static, crate::host::Settlement>,
+    pub work: crate::exec::BoxFuture<'static, crate::HostResult>,
+    pub deadline: Option<Instant>,
+    pub settled: Vec<(crate::value::Id, crate::host::Settlement)>,
+    pub armed: bool,
+    pub reply: mpsc::SyncSender<AwaitResult>,
+}
+
+pub type AwaitResult = (
+    crate::exec::Tasks<'static, crate::host::Settlement>,
+    Vec<(crate::value::Id, crate::host::Settlement)>,
+    Option<crate::HostResult>,
+);
 
 enum ToHome {
     /// Host code for the driving thread to run.
     Job(Job),
+    /// A `Returned::Block` future for the driving thread to poll asynchronously without blocking its executor.
+    Await(Box<AwaitBlock>),
     /// The run, back after a stretch of compute.
     Back(Box<Running>),
     /// The interpreter panicked on the worker; the panic continues where the run is driven, as it would have there.
@@ -64,6 +86,27 @@ impl Home {
         answer.recv().ok()
     }
 
+    /// Hands a `Returned::Block` future to the driving executor to poll without blocking its thread, waiting here on
+    /// the worker until it finishes or the deadline expires; `None` when the run is being dropped.
+    pub fn await_block(
+        &self,
+        tasks: crate::exec::Tasks<'static, crate::host::Settlement>,
+        work: crate::exec::BoxFuture<'static, crate::HostResult>,
+        deadline: Option<Instant>,
+    ) -> Option<AwaitResult> {
+        let (reply, answer) = mpsc::sync_channel(1);
+        self.send(ToHome::Await(Box::new(AwaitBlock {
+            tasks,
+            work,
+            deadline,
+            settled: Vec::new(),
+            armed: false,
+            reply,
+        })))
+        .ok()?;
+        answer.recv().ok()
+    }
+
     fn send(&self, message: ToHome) -> Result<(), ToHome> {
         self.tx.send(message).map_err(|e| e.0)?;
         if let Some(w) = self
@@ -83,6 +126,7 @@ pub struct Worker {
     to_worker: Option<Sender<Box<Running>>>,
     from_worker: Receiver<ToHome>,
     waker: Arc<Mutex<Option<Waker>>>,
+    awaiting: Option<Box<AwaitBlock>>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -115,6 +159,7 @@ impl Worker {
             to_worker: Some(to_worker),
             from_worker,
             waker,
+            awaiting: None,
             thread: Some(thread),
         })
     }
@@ -128,11 +173,39 @@ impl Worker {
     }
 
     /// Runs the host code the worker hands back, until the run comes back.
-    pub fn poll(&self, cx: &Context<'_>) -> Poll<Box<Running>> {
+    pub fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Box<Running>> {
         let mut registered = false;
         loop {
+            if let Some(mut b) = self.awaiting.take() {
+                b.tasks.set_parent(Some(cx.waker()));
+                b.settled.extend(b.tasks.poll_ready());
+                let done = if let Poll::Ready(r) = b.work.as_mut().poll(cx) {
+                    Some(Some(r))
+                } else {
+                    match b.deadline {
+                        Some(at) if Instant::now() >= at => Some(None),
+                        Some(at) if !b.armed => {
+                            b.armed = true;
+                            crate::exec::wake_at(at, &b.tasks.parent_waker());
+                            None
+                        }
+                        _ => None,
+                    }
+                };
+                if let Some(outcome) = done {
+                    b.tasks.set_parent(None);
+                    let _ = b.reply.send((b.tasks, b.settled, outcome));
+                    registered = false;
+                    continue;
+                }
+                self.awaiting = Some(b);
+                return Poll::Pending;
+            }
             match self.from_worker.try_recv() {
                 Ok(ToHome::Job(job)) => job(),
+                Ok(ToHome::Await(b)) => {
+                    self.awaiting = Some(b);
+                }
                 Ok(ToHome::Back(r)) => return Poll::Ready(r),
                 Ok(ToHome::Panicked(panic)) => std::panic::resume_unwind(panic),
                 Err(TryRecvError::Disconnected) => {
@@ -151,10 +224,13 @@ impl Worker {
 
     /// Waits for the run to come back, running none of its host code, so it is dropped on the driving thread. The run
     /// was asked to stop, which it does at its next safe point.
-    pub fn reclaim(&self) -> Option<Box<Running>> {
+    pub fn reclaim(&mut self) -> Option<Box<Running>> {
+        // Drop any awaited `Returned::Block` future on the driving thread first so its worker unblocks immediately.
+        self.awaiting = None;
         loop {
             match self.from_worker.recv() {
                 Ok(ToHome::Job(job)) => drop(job),
+                Ok(ToHome::Await(b)) => drop(b),
                 Ok(ToHome::Back(r)) => return Some(r),
                 Ok(ToHome::Panicked(_)) | Err(_) => return None,
             }
@@ -164,6 +240,7 @@ impl Worker {
 
 impl Drop for Worker {
     fn drop(&mut self) {
+        self.awaiting = None;
         self.to_worker = None;
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
