@@ -1,0 +1,55 @@
+name: Perf
+
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: Harness smoke (Bun and Node)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version: 24.16.0
+          package-manager-cache: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - name: Every cell runs on both engines
+        shell: bash
+        run: bun run script/perf/run.ts --quick --engine bun,node --targets classes --orders fwd --rounds 1 --instr none --no-exits | tee -a "$GITHUB_STEP_SUMMARY"
+
+  exits:
+    # Fails while `Vm.exec` still deoptimizes after the polluted history (origin/dev today: ~755 exits fwd, 500-3,600 rev).
+    # Non-blocking until the main-loop fix lands; then drop continue-on-error so a regression fails the PR.
+    name: JSC exit gate (non-blocking)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - name: exec OSR exits while timing sentinels after the polluted history
+        shell: bash
+        run: bun run script/perf/run.ts gate --orders fwd,rev --max-exits 0 | tee -a "$GITHUB_STEP_SUMMARY"
