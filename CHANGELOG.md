@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `Runtime.make({ engine })`: `"jsc"`, `"v8"` or `"spidermonkey"`, a speed hint naming the JavaScript engine
+  psychoscript runs on. It picks how the VM warms up; without it the engine is guessed from `Error.stack`. On Bun, a
+  process that has run many different programs no longer runs later ones 2–4× slower (classes, method calls and
+  getters were the worst).
 - `Function.prototype.toString` returns a program function's source text as written: an arrow or `function` as is, a
   method or accessor from its name, a class as its whole `class … {}`. Built-in, bound and host functions return
   `function name() { [native code] }`. A host can now keep a function a program hands it as text. `String(fn)` is

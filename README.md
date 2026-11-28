@@ -253,6 +253,14 @@ Fixed caps: a string at most 2^24 characters, an array at most 10,000,000 elemen
 and values nested at most 32 deep when they cross to or from the host. Exceeding one throws a `RangeError` in the
 program. There is no separate memory or step-count limit: bound runs with `timeoutMs`.
 
+### Engine
+
+`Runtime.make({ engine })` names the JavaScript engine running psychoscript: `"jsc"` (Bun, Safari), `"v8"` (Node,
+Chrome) or `"spidermonkey"` (Firefox). It is only a speed hint. The first run in a process warms the VM's main loop up
+with a short program, a wider one on JavaScriptCore and SpiderMonkey so a process that runs many different programs
+stays fast, a smaller one on V8, which doesn't need it. The first runtime made with `engine` decides; without one, the
+engine is guessed from the layout of `Error.stack`, and an unrecognized engine gets the wider warm-up.
+
 ## Security model
 
 - **No ambient I/O.** No `fetch`, `fs`, `process`, timers or host-engine globals; everything outside the program is a
