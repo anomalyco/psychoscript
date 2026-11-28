@@ -1757,16 +1757,86 @@ describe("default sort", () => {
 
   test("any other mix keeps the string order", async () => {
     expect(await value(`return [10, "9", 1].sort()`)).toEqual([1, 10, "9"])
+    expect(await value(`return [10n, "9", 1].sort().map(String)`)).toEqual(["1", "10", "9"])
   })
 
-  test("an object among the elements is a TypeError at the call, asking for a comparator", async () => {
+  test("BigInts, alone or with numbers, sort numerically too", async () => {
+    expect(
+      await value(`return [[10n, 9n, 1n].sort(), [10n, 9, 1n, undefined, , NaN, 2n ** 80n, -Infinity, -2n].toSorted()].map(String)`),
+    ).toEqual(["1,9,10", "-Infinity,-2,1,9,10,1208925819614629174706176,NaN,,"])
+    // -0, 0 and 0n are equal, and so are NaNs, so they keep their order.
+    expect(
+      await value(`const items = [0n, NaN, -0, 1, 0, NaN, -1n]
+        return items.toSorted().map((item) => (Object.is(item, -0) ? "-0" : typeof item + ":" + String(item)))`),
+    ).toEqual(["bigint:-1", "bigint:0", "-0", "number:0", "number:1", "number:NaN", "number:NaN"])
+  })
+
+  test("past one native run, BigInts and numbers still sort numerically", async () => {
+    expect(
+      await value(`const items = Array.from({ length: 10_000 }, (_, i) => (i % 3 ? BigInt((i * 7919) % 10_000) : (i * 7919) % 10_000))
+        items.push(NaN, undefined, -0)
+        const sorted = items.toSorted()
+        return [sorted.slice(0, 10_000).every((item, at) => at === 0 || sorted[at - 1] <= item), String(sorted.slice(-3)), sorted.length]`),
+    ).toEqual([true, "9999,NaN,", 10_003])
+  })
+
+  test("arrays, Dates and other built-ins with a text form sort by their strings", async () => {
+    expect(
+      await value(`return [
+        Object.entries({ b: 1, a: 2 }).sort(),
+        [[2, "x"], [1, "y"]].sort(),
+        [new Date(1), new Date(0)].sort().map(Number),
+        [/b/, /a/g].sort().map(String),
+        [new URL("https://b.test/"), new URL("https://a.test/")].toSorted().map(String),
+        [new URLSearchParams("b=1"), new URLSearchParams("a=1")].sort().map(String),
+        [new Uint8Array([2]), Buffer.from("a"), new Uint8Array([1, 0])].sort().map(String),
+        [new TypeError("b"), new Error("a")].sort().map(String),
+      ]`),
+    ).toEqual([
+      [
+        ["a", 2],
+        ["b", 1],
+      ],
+      [
+        [1, "y"],
+        [2, "x"],
+      ],
+      [0, 1],
+      ["/a/g", "/b/"],
+      ["https://a.test/", "https://b.test/"],
+      ["a=1", "b=1"],
+      ["1,0", "2", "a"],
+      ["Error: a", "TypeError: b"],
+    ])
+  })
+
+  test("objects convert as String() does, program methods included", async () => {
+    expect(
+      await value(`class Tag { constructor(name) { this.name = name } toString() { return this.name } }
+        const days = [new Date(86_400_000), new Date(0)]
+        days[0].toString = () => "0"
+        return [[[new Tag("b")], [new Tag("a")]].sort().map(String), days.sort().map(Number)]`),
+    ).toEqual([["a", "b"], [86_400_000, 0]])
+  })
+
+  test("converting nested arrays runs in steps the timeout can stop", async () => {
+    const result = await Effect.runPromise(
+      Runtime.make({ limits: { timeoutMs: 100 } }).execute(
+        `let a = [1]; for (let i = 0; i < 24; i++) a = [a, a]; return [a, a].sort().length`,
+      ),
+    )
+    expect(result).toMatchObject({ ok: false, error: { message: "Execution timed out after 100ms." } })
+  })
+
+  test("a plain object, class instance or other object among the elements is a TypeError at the call", async () => {
     const message = "without a comparator needs numbers or strings; pass a comparator for objects, e.g. (a, b) => a.age - b.age"
     expect(await run(`const people = [{ age: 2 }, { age: 1 }]\npeople.sort()`)).toMatchObject({
       ok: false,
       error: { message: `TypeError: sort ${message} (line 2, col 1)`, location: { line: 2, column: 1 } },
     })
-    for (const items of ["[[2], [1]]", "[new Date(1), new Date(0)]", "[1, new Map()]", "[() => 1, 2]"]) {
-      expect((await error(`return ${items}.toSorted()`)).message).toContain(`toSorted ${message}`)
+    for (const items of ["[1, new Map()]", "[() => 1, 2]", "[[1], { a: 1 }]", "class C {}; return [new C(), new C()]"]) {
+      const code = items.startsWith("class") ? `${items}.toSorted()` : `return ${items}.toSorted()`
+      expect((await error(code)).message).toContain(`toSorted ${message}`)
     }
   })
 

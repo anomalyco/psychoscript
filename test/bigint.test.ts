@@ -187,7 +187,7 @@ describe("BigInt", () => {
     expect(performance.now() - started).toBeLessThan(500)
   })
 
-  test("the default sort converts equal huge BigInts once", async () => {
+  test("the default sort compares huge BigInts without converting them", async () => {
     const started = performance.now()
     expect(
       await value(`const base = 2n ** 1048575n
@@ -196,6 +196,20 @@ describe("BigInt", () => {
           String(sorted[199] - base)]`),
     ).toEqual([200, "0", "0", "1", "4"])
     expect(performance.now() - started).toBeLessThan(1000)
+  })
+
+  test("a text-order default sort converts equal huge BigInts once", async () => {
+    const started = performance.now()
+    expect(
+      await value(`const base = 2n ** 1048575n
+        const sorted = [...Array.from({ length: 200 }, () => base), "x"].sort()
+        return [sorted.length, sorted[0] === base, sorted[200]]`),
+    ).toEqual([201, true, "x"])
+    expect(performance.now() - started).toBeLessThan(1000)
+  })
+
+  test("URLSearchParams takes a BigInt as its query string", async () => {
+    expect(await value(`return [new URLSearchParams(1n).toString(), new URLSearchParams(-2n).get("-2")]`)).toEqual(["1=", ""])
   })
 
   test("shows a BigInt with its suffix in the console", async () => {

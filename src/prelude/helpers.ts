@@ -1,6 +1,6 @@
 import { isSupportedCallback, requireCallback, withReads } from "../runtime/callback.js"
 import type { Builtins } from "../runtime/intrinsics.js"
-import { SORT_RUN, sortKeys, sorted, type SortInto } from "../stdlib/array.js"
+import { SORT_RUN, keyOrder, sortKeys, sorted, type SortInto } from "../stdlib/array.js"
 import { finishBytes } from "../stdlib/bytes.js"
 import { weakKey } from "../stdlib/collections.js"
 import { buildPairs } from "../stdlib/url.js"
@@ -8,6 +8,7 @@ import type { Interpreter } from "../runtime/interpreter.js"
 import { checkArrayLength } from "../runtime/limits.js"
 import { AsyncIteratorSymbol, invalidData, IteratorSymbol, PendingThrow } from "../runtime/model.js"
 import { native, receiver } from "../runtime/native.js"
+import { compareText } from "../runtime/operations.js"
 import {
   Arr,
   Bytes,
@@ -36,7 +37,6 @@ import {
 } from "../runtime/objects.js"
 import { builtinCursor, requireIteratorObject } from "../runtime/operations.js"
 import { containsOpaqueReference, describeValue, isOpaque } from "../runtime/references.js"
-import { compareText } from "../runtime/operations.js"
 import { Invoke } from "../runtime/signals.js"
 
 // The prelude's privileged helpers: leaf built-ins (they never call program code) bound only in the prelude's scope.
@@ -202,7 +202,7 @@ export const helpers = (ctx: Interpreter<unknown>): Array<readonly [string, Valu
         return undefined
       },
     ],
-    $SortState: [1, ([values]) => sortState(builtins, values as Arr)],
+    $SortState: [1, ([primitives]) => sortState(builtins, primitives as Arr)],
     $SortStep: [1, ([state]) => sortStep(state as Arr)],
     $SortResult: [
       2,
@@ -274,12 +274,12 @@ const table = (builtins: Builtins, op: string, target: Value, key: Value, value:
 const MERGE_STEP = 65_536
 
 /**
- * A default sort's state, as data: the values' string keys, the order so far and a buffer (indices into the values),
+ * A default sort's state, as data: the values' keys (see `sortKeys`), the order so far and a buffer (indices into the values),
  * the next run to sort, and the merge pass's run width, output position, and positions in its two runs. Runs of
  * SORT_RUN are sorted first, then merged in passes of doubling width from the order into the buffer, which swap.
  */
-const sortState = (builtins: Builtins, values: Arr): Arr => {
-  const keys = sortKeys(values.items)
+const sortState = (builtins: Builtins, primitives: Arr): Arr => {
+  const keys = sortKeys(primitives.items)
   const order = keys.map((_, at) => at)
   return new Arr(builtins.Array, [
     new Arr(builtins.Array, keys),
@@ -296,12 +296,16 @@ const sortState = (builtins: Builtins, values: Arr): Arr => {
 // One bounded step of a default sort: one run sorted, or up to MERGE_STEP values merged. Whether work remains.
 const sortStep = (state: Arr): boolean => {
   const slots = state.items
-  const keys = (slots[0] as Arr).items as Array<string>
+  const keys = (slots[0] as Arr).items
   const from = (slots[1] as Arr).items as Array<number>
   const length = keys.length
   const run = slots[3] as number
   const width = slots[4] as number
-  const compare = (left: number, right: number) => compareText(keys[left]!, keys[right]!)
+  const order = keyOrder(keys)
+  const compare =
+    order === compareText
+      ? (left: number, right: number) => compareText(keys[left] as string, keys[right] as string)
+      : (left: number, right: number) => order(keys[left], keys[right])
   if (run < length) {
     const end = Math.min(run + SORT_RUN, length)
     const part = from.slice(run, end).sort(compare)

@@ -267,9 +267,9 @@ function sortWith(target, into, holes, comparator, work, undefs, merges) {
 }
 
 // The default sort over more values than one native sort may take at once: native steps of bounded size (see
-// $SortStep), so the run can pause between them like any loop.
-function sortDefault(target, into, holes, values, undefs) {
-  const state = $SortState(values)
+// $SortStep), so the run can pause between them like any loop. primitives are the values with objects converted.
+function sortDefault(target, into, holes, values, undefs, primitives) {
+  const state = $SortState(primitives)
   while ($SortStep(state)) {}
   return $Sorted(target, into, holes, $SortResult(state, values), undefs)
 }
