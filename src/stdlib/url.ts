@@ -205,7 +205,7 @@ const constructURLSearchParams = <R>(ctx: Interpreter<R>, init: Value, proto: Ob
   if (init === undefined) return wrap(new URLSearchParams())
   if (init instanceof URLSearchParamsObj) return wrap(new URLSearchParams(init.params))
   if (typeof init === "string") return wrap(new URLSearchParams(init))
-  if (init === null || typeof init === "number" || typeof init === "boolean") {
+  if (init === null || typeof init === "number" || typeof init === "bigint" || typeof init === "boolean") {
     return wrap(new URLSearchParams(coerceToString(init)))
   }
   return readPairs(ctx, init, "new URLSearchParams(...)", { kind: "URLSearchParams", proto })

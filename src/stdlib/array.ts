@@ -14,13 +14,19 @@ import {
   set,
   Arr,
   Bytes,
+  DateObj,
+  ErrorObj,
   GeneratorObj,
   Obj,
   PromiseObj,
+  RegExpObj,
+  URLObj,
+  URLSearchParamsObj,
   coerceToInteger,
   coerceToNumber,
   coerceToString,
   rejectAddition,
+  type NativeResult,
   type Value,
 } from "../runtime/objects.js"
 import { describeValue, rejectCircularInsertion, typeofValue } from "../runtime/references.js"
@@ -90,35 +96,32 @@ export const sortArray = <R>(
   target: Arr | Bytes,
   comparator: Value,
   into: SortInto,
-): Value | Invoke => {
+): NativeResult => {
   const builtins = ctx.builtins
   const items = target instanceof Arr ? [...target.items] : [...target.bytes]
   // Counted before any comparator runs; a comparator that changes the array does not change where holes go.
   let holes = 0
   if (target instanceof Arr) for (let index = 0; index < items.length; index++) if (!(index in target.items)) holes++
   const callback = comparator === undefined ? undefined : requireCallback(comparator, into)
-  // Objects have no order of their own: a default sort that would compare one asks for a comparator instead.
-  if (
-    callback === undefined &&
-    items.some((item) => item instanceof Obj) &&
-    items.filter((item) => item !== undefined).length > 1
-  ) {
-    const name = into.endsWith("toSorted") ? "toSorted" : "sort"
-    throw typeError(
-      `${name} without a comparator needs numbers or strings; pass a comparator for objects, e.g. (a, b) => a.age - b.age`,
-    )
-  }
-  if (callback === undefined && items.length <= SORT_RUN) {
-    const keys = sortKeys(items)
-    // Undefined entries stay undefined so sort still puts them last.
-    const keyed = items.map((item, at) => (item === undefined ? undefined : ([keys[at]!, item] as const)))
-    keyed.sort((a, b) => compareText(a![0], b![0]))
-    return sorted(
-      builtins,
-      target,
-      into,
-      holes,
-      keyed.map((entry) => entry?.[1]),
+  if (callback === undefined) {
+    // Plain objects and class instances have no order of their own: a default sort that would compare one asks for a
+    // comparator instead. Built-ins with a text form (arrays, Dates, URLs, ...) sort by it, as in JavaScript.
+    if (items.some(unsortable) && items.filter((item) => item !== undefined).length > 1) {
+      const name = into.endsWith("toSorted") ? "toSorted" : "sort"
+      throw typeError(
+        `${name} without a comparator needs numbers or strings; pass a comparator for objects, e.g. (a, b) => a.age - b.age`,
+      )
+    }
+    // Objects convert as String() would, in program code, so the conversion is interruptible and sees program methods.
+    return withPrimitives(
+      "string",
+      items.filter((item) => item instanceof Obj),
+      (texts) => {
+        let at = 0
+        const primitives = items.map((item) => (item instanceof Obj ? texts[at++] : item))
+        return sortDefault(ctx, target, into, holes, items, primitives)
+      },
+      true,
     )
   }
   const defined = new Arr(
@@ -126,9 +129,6 @@ export const sortArray = <R>(
     items.filter((item) => item !== undefined),
   )
   const undefs = items.length - defined.items.length
-  if (callback === undefined) {
-    return new Invoke(ctx.prelude.fn("sortDefault"), undefined, [target, into, holes, defined, undefs], undefined)
-  }
   const merges: Array<number> = []
   const plan = (low: number, high: number) => {
     if (high - low <= 1) return
@@ -142,30 +142,58 @@ export const sortArray = <R>(
   return new Invoke(ctx.prelude.fn("sortWith"), undefined, args, undefined)
 }
 
-/** The default sort's string keys, each value converted once. Equal BigInts, whose decimal text is slow, share one. */
-// A number's sort key: its float64 bits with the order of their values, as hex, so that comparing keys as text
-// compares the numbers (-0 is 0, and NaN, whose bits are above Infinity's, sorts last).
-const numberKeyView = new DataView(new ArrayBuffer(8))
-const numberKey = (n: number): string => {
-  numberKeyView.setFloat64(0, n === 0 ? 0 : Number.isNaN(n) ? NaN : n)
-  let high = numberKeyView.getUint32(0)
-  let low = numberKeyView.getUint32(4)
-  if (high >= 0x80000000) {
-    high = ~high >>> 0
-    low = ~low >>> 0
-  } else high = (high | 0x80000000) >>> 0
-  return high.toString(16).padStart(8, "0") + low.toString(16).padStart(8, "0")
+const unsortable = (item: Value) =>
+  item instanceof Obj &&
+  !(item instanceof Arr) &&
+  !(item instanceof DateObj) &&
+  !(item instanceof RegExpObj) &&
+  !(item instanceof URLObj) &&
+  !(item instanceof URLSearchParamsObj) &&
+  !(item instanceof Bytes) &&
+  !(item instanceof ErrorObj)
+
+// A default sort of `items` by `primitives`, their values with objects converted to strings: at once, unless there
+// are many, otherwise in bounded steps in the prelude.
+const sortDefault = <R>(
+  ctx: Interpreter<R>,
+  target: Arr | Bytes,
+  into: SortInto,
+  holes: number,
+  items: Array<Value>,
+  primitives: Array<Value>,
+): Value | Invoke => {
+  if (items.length <= SORT_RUN) {
+    const keys = sortKeys(primitives)
+    // Undefined entries stay undefined so sort still puts them last.
+    const keyed = items.map((item, at) => (item === undefined ? undefined : ([keys[at], item] as const)))
+    const compare = keyOrder(keys)
+    keyed.sort((a, b) => compare(a![0], b![0]))
+    return sorted(
+      ctx.builtins,
+      target,
+      into,
+      holes,
+      keyed.map((entry) => entry?.[1]),
+    )
+  }
+  const array = (values: Array<Value>) =>
+    new Arr(
+      ctx.builtins.Array,
+      values.filter((_, at) => items[at] !== undefined),
+    )
+  const defined = array(items)
+  const args = [target, into, holes, defined, items.length - defined.items.length, array(primitives)]
+  return new Invoke(ctx.prelude.fn("sortDefault"), undefined, args, undefined)
 }
 
 /**
- * The keys a default sort compares as text: each value's string, or, when the values are all numbers (undefined is
- * left aside, as the sort puts it last), keys in numeric order. A deliberate difference from JavaScript, whose
- * default sort compares numbers as text (`[10, 9, 1].sort()` is `[1, 10, 9]` there).
+ * The keys a default sort compares (see `keyOrder`): when the values are all numbers and BigInts (undefined is
+ * left aside, as the sort puts it last), the values themselves, compared by value; otherwise each value's string. A
+ * deliberate difference from JavaScript, whose default sort compares numbers as text (`[10, 9, 1].sort()` is
+ * `[1, 10, 9]` there). Equal BigInts, whose decimal text is slow, share one string.
  */
-export const sortKeys = (items: Array<Value>) => {
-  if (items.some((item) => typeof item === "number") && items.every((item) => item === undefined || typeof item === "number")) {
-    return items.map((item) => (item === undefined ? "" : numberKey(item as number)))
-  }
+export const sortKeys = (items: Array<Value>): Array<Value> => {
+  if (items.some(numeric) && items.every((item) => item === undefined || numeric(item))) return items
   const bigints = new Map<bigint, string>()
   return items.map((item) => {
     if (typeof item !== "bigint") return coerceToString(item)
@@ -175,6 +203,18 @@ export const sortKeys = (items: Array<Value>) => {
     bigints.set(item, text)
     return text
   })
+}
+
+const numeric = (item: Value) => typeof item === "number" || typeof item === "bigint"
+
+/** How to compare keys from `sortKeys`: strings as text; numbers and BigInts by value, -0 equal to 0 and NaN last. */
+export const keyOrder = (keys: Array<Value>): ((a: Value, b: Value) => number) =>
+  typeof keys.find((key) => key !== undefined) === "string" ? (compareText as (a: Value, b: Value) => number) : compareNumeric
+
+const compareNumeric = (a: Value, b: Value): number => {
+  if (typeof a === "number" && Number.isNaN(a)) return typeof b === "number" && Number.isNaN(b) ? 0 : 1
+  if (typeof b === "number" && Number.isNaN(b)) return -1
+  return (a as number) < (b as number) ? -1 : (a as number) > (b as number) ? 1 : 0
 }
 
 export const sorted = (

@@ -15,10 +15,14 @@
   don't resume.
 - `JSON.parse` given an object or array, which is already parsed, returns it unchanged instead of parsing its text
   (`"[object Object]"`, or the array's elements joined). Other non-string values are parsed as before.
-- A default `sort()` or `toSorted()` over numbers only is numeric: `[10, 9, 1].sort()` is `[1, 9, 10]`, not
-  JavaScript's `[1, 10, 9]`. Any other mix of elements keeps the string order.
-- A default `sort()` or `toSorted()` that would compare an object throws a `TypeError` at the call asking for a
-  comparator, instead of sorting by `"[object Object]"`.
+- A default `sort()` or `toSorted()` over numbers and BigInts only is numeric: `[10, 9, 1].sort()` is `[1, 9, 10]`,
+  not JavaScript's `[1, 10, 9]`, and `[10n, 9n, 1n].sort()` is `[1n, 9n, 10n]`. Any other mix of elements keeps the
+  string order.
+- A default `sort()` or `toSorted()` that would compare a plain object, class instance or other object without a
+  useful string throws a `TypeError` at the call asking for a comparator, instead of sorting by
+  `"[object Object]"`. Arrays, Dates, RegExps, URLs, URLSearchParams, Uint8Arrays, Buffers and Errors still sort by
+  their strings, so `Object.entries(o).sort()` sorts by key.
+- `new URLSearchParams(1n)` is `"1="`, as in JavaScript, instead of a `TypeError`.
 - `Uint8Array.prototype.byteLength` and `byteOffset`. They were `undefined`, so code that sized bytes with
   `byteLength` (such as a `fetch` response's `arrayBuffer()`) got no size.
 - RegExp: `RegExp(re)` without `new` returns `re` when its `constructor` is `RegExp`; match results always have `groups`, and group objects (including

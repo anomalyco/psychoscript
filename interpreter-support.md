@@ -419,10 +419,14 @@ reject }` object. The resolvers are anonymous (`name` is `""`) with `length` 1, 
       while `lastIndexOf(1)` is `2`.
 - [x] Aggregation: `reduce` and `reduceRight`.
 - [x] Ordering: `sort`, `toSorted`, `reverse`, and `toReversed`.
-- [x] A default `sort` or `toSorted` over numbers only is numeric: `[10, 9, 1].sort()` is `[1, 9, 10]`. A deliberate
-      difference from JavaScript, which gives `[1, 10, 9]`. Any other mix of elements keeps the string order.
-- [x] A default `sort` or `toSorted` that would compare an object (an array, a date, a function, any non-primitive)
-      throws a `TypeError` asking for a comparator; JavaScript would sort by the objects' strings.
+- [x] A default `sort` or `toSorted` over numbers and BigInts only is numeric: `[10, 9, 1].sort()` is `[1, 9, 10]`
+      and `[10n, 9, 1n].sort()` is `[1n, 9, 10n]`, with `NaN` after the other values and `-0`, `0` and `0n` equal. A
+      deliberate difference from JavaScript, which gives `[1, 10, 9]` and `[1n, 10n, 9]`. Any other mix of elements
+      keeps the string order.
+- [x] A default `sort` or `toSorted` over arrays, Dates, RegExps, URLs, URLSearchParams, Uint8Arrays, Buffers or
+      Errors sorts by their strings, as `String` gives them (`Object.entries(o).sort()` sorts by key). One that would
+      compare any other object (a plain object, a class instance, a Map, a function) throws a `TypeError` asking for
+      a comparator; JavaScript would sort those by their strings, usually all `"[object Object]"`.
 - [x] Access/copying: `at`, `slice`, `concat`, `flat`, `with`, `join`, and `toLocaleString` (each element's
       `toLocaleString` with the same locales and options, holes and nullish elements as empty strings).
 - [x] Mutation: `push`, `pop`, `shift`, `unshift`, `splice`, `fill`, and `copyWithin`.
@@ -516,7 +520,8 @@ reject }` object. The resolvers are anonymous (`name` is `""`) with `length` 1, 
 - [x] A BigInt has at most 2^20 bits (about 315,000 decimal digits), so no single operator runs for long; a larger
       result is a `RangeError` (`Maximum BigInt size exceeded`), and `**` and `<<` refuse before computing it.
 - [x] `JSON.stringify` throws a `TypeError` on a BigInt unless the program defines `BigInt.prototype.toJSON`. A BigInt
-      in a result or a host call's arguments fails the same way at the boundary (the `toJSON` applies there too);
+      in a result fails the same way at the boundary unless `toJSON` is defined, which applies there too; one in a
+      host call's arguments always fails, `toJSON` or not;
       `console.log` shows `1n`; snapshots keep BigInts.
 - [ ] Boxed BigInts (`Object(1n)`) and `BigInt64Array`/`BigUint64Array`.
 
