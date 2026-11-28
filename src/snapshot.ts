@@ -1,15 +1,17 @@
 import packageJson from "../package.json" with { type: "json" }
 import type { Interruption } from "./runtime/signals.js"
 import { staticNames, unchanged } from "./runtime/intrinsic-names.js"
-import { Arr, ClassInfo, Fn, Obj } from "./runtime/objects.js"
+import { Arr, Callable, ClassInfo, Fn, GeneratorObj, Obj, Position, PromiseObj } from "./runtime/objects.js"
+import { Convert, Prefetch } from "./runtime/signals.js"
+import { HostCall, Resolving } from "./scheduler.js"
 import { nodeId, type Source } from "./runtime/source.js"
-import { type ClassSpec, codecShape, decode, encode, type Json, SnapshotError } from "./snapshot/codec.js"
+import { type ClassSpec, codecShape, decode, encode, is, type Json, SnapshotError } from "./snapshot/codec.js"
 import { FORMAT, type Header, hash, hostsId, type Snapshot, validate } from "./snapshot/snapshot.js"
 import { AsyncFromSyncCloseTarget, FinallyTarget, VmScheduler } from "./async.js"
 import { Code, hashOf } from "./code.js"
 import { COMPILER_VERSION, compileSource } from "./compiler/compile.js"
 import { HostCalls } from "./host.js"
-import { getInternalPrelude } from "./prelude/internal.js"
+import { getInternalPrelude, VmIntrinsic } from "./prelude/internal.js"
 import { compiledPrelude } from "./prelude/prelude.js"
 import { Cell, CodeFlags, EMPTY_CELLS, HOLE, Op } from "./opcodes.js"
 import { CustomIter, Frame, Mode, Vm, VmInternalFn } from "./vm.js"
@@ -51,6 +53,14 @@ const vmSpecs = (): ReadonlyArray<ClassSpec> =>
       anchor: "vm",
       fields: ["frames", "templates", "scheduler", "hosts", "depth", "sliced", "outcome"],
       skip: ["ctx", "pool", "sourceCodes", "intrinsics", "fuel", "sliceStart", "tripEvery", "redo"],
+      types: {
+        frames: is.list(is.instance(Frame)),
+        templates: is.map(is.string, is.instance(Arr)),
+        scheduler: is.instance(VmScheduler),
+        hosts: is.instance(HostCalls),
+        sliced: is.boolean,
+        outcome: is.optional(is.object),
+      },
       reset: restoreStack,
     },
     {
@@ -59,6 +69,18 @@ const vmSpecs = (): ReadonlyArray<ClassSpec> =>
       anchor: "scheduler",
       fields: ["intrinsicThen", "parked", "queue", "head", "pending", "nextID", "unhandled"],
       skip: ["vm"],
+      types: {
+        intrinsicThen: is.optional(is.instance(Callable)),
+        parked: is.map(is.instance(Frame), is.object),
+        queue: is.list(is.object),
+        head: is.count,
+        pending: is.count,
+        nextID: is.count,
+        unhandled: is.map(is.instance(PromiseObj), is.object),
+      },
+      reset: (scheduler: VmScheduler) => {
+        if (scheduler.head > scheduler.queue.length) invalid("the job queue's head is past its end.")
+      },
     },
     {
       name: "HostCalls",
@@ -66,11 +88,26 @@ const vmSpecs = (): ReadonlyArray<ClassSpec> =>
       anchor: "hosts",
       fields: ["runId", "queued", "running", "inbox", "nextID", "blocked", "input"],
       skip: ["ctx", "promises"],
+      types: {
+        runId: is.string,
+        queued: is.list(is.instance(HostCall)),
+        running: is.map(is.count, is.instance(HostCall)),
+        inbox: is.list(is.object),
+        nextID: is.count,
+        blocked: is.optional(is.instance(HostCall)),
+        input: is.optional(is.object),
+      },
     },
     {
       name: "Frame",
       ctor: Frame,
       fields: ["fn", "code", "pc", "sp", "regs", "thisValue", "args", "mode", "target", "answer", "origin", "counted"],
+      types: {
+        thisValue: is.value,
+        args: is.optional(is.list(is.value)),
+        target: is.optional(is.instance(Arr, Fn, GeneratorObj, Resolving, FinallyTarget, AsyncFromSyncCloseTarget)),
+        answer: is.optional(is.instance(PromiseObj)),
+      },
       view: (frame: Frame) => [
         frame.fn,
         frame.code,
@@ -92,16 +129,42 @@ const vmSpecs = (): ReadonlyArray<ClassSpec> =>
       ctor: Fn,
       fields: ["code", "cells", "home", "klass"],
       skip: ["length"],
+      types: { home: is.optional(is.instance(Obj)), klass: is.optional(is.instance(ClassInfo)) },
       obj: true,
       constants: { tag: "Function" },
       reset: restoreFn,
     },
-    { name: "ClassInfo", ctor: ClassInfo, fields: ["derived", "fields", "errorBase"] },
-    { name: "VmInternalFn", ctor: VmInternalFn, fields: ["code", "boundArgs"] },
-    { name: "FinallyTarget", ctor: FinallyTarget, fields: ["vm", "made", "site", "outcome"] },
-    { name: "AsyncFromSyncCloseTarget", ctor: AsyncFromSyncCloseTarget, fields: ["made", "reason"] },
-    { name: "Cell", ctor: Cell, fields: ["v"] },
-    { name: "CustomIter", ctor: CustomIter, fields: ["done", "rawGen", "iterator", "next"] },
+    {
+      name: "ClassInfo",
+      ctor: ClassInfo,
+      fields: ["derived", "fields", "errorBase"],
+      types: { derived: is.boolean, fields: is.optional(is.instance(Fn)), errorBase: is.optional(is.instance(Obj)) },
+    },
+    {
+      name: "VmInternalFn",
+      ctor: VmInternalFn,
+      fields: ["code", "boundArgs"],
+      types: { code: is.instance(Code), boundArgs: is.optional(is.list(is.value)) },
+    },
+    {
+      name: "FinallyTarget",
+      ctor: FinallyTarget,
+      fields: ["vm", "made", "site", "outcome"],
+      types: { vm: is.instance(Vm), made: is.instance(Resolving), outcome: is.object },
+    },
+    {
+      name: "AsyncFromSyncCloseTarget",
+      ctor: AsyncFromSyncCloseTarget,
+      fields: ["made", "reason"],
+      types: { made: is.instance(Resolving) },
+    },
+    { name: "Cell", ctor: Cell, fields: ["v"], types: { v: (value) => value === HOLE || is.value(value) } },
+    {
+      name: "CustomIter",
+      ctor: CustomIter,
+      fields: ["done", "rawGen", "iterator", "next"],
+      types: { done: is.boolean, rawGen: is.boolean, iterator: is.instance(Obj), next: is.value },
+    },
   ])
 
 /**
@@ -310,6 +373,7 @@ function restoreFrame(frame: Frame): void {
     return invalid(`a frame's stack pointer ${sp} is out of range.`)
   }
   for (let at = code.locals; at < sp; at++) if (regs[at] === HOLE) invalid("a hole is on a frame's operand stack.")
+  if (!regs.every(isRegister)) invalid("a frame's register holds something no instruction leaves there.")
   for (let level = 0; level < code.finallyOffsets.length; level++) {
     const offset = code.finallyOffsets[level]!
     const tag = regs[code.finallies[offset]!]
@@ -335,6 +399,8 @@ function restoreFrame(frame: Frame): void {
   const newTarget =
     frame.mode === Mode.CONSTRUCT && frame.target instanceof Fn && frame.target.klass !== undefined
   if (!settles && frame.target !== undefined && !newTarget) invalid("a frame that settles nothing has a target.")
+  if ((frame.mode === Mode.GENERATOR) !== frame.target instanceof GeneratorObj)
+    invalid("a generator's frame does not settle its generator.")
   if (frame.mode === Mode.REDO) {
     const target = frame.target
     if (!(target instanceof Arr) || !Number.isSafeInteger(target.items[0]) || (target.items[0] as number) < 0)
@@ -348,6 +414,18 @@ function restoreFrame(frame: Frame): void {
   for (let at = sp, size = code.locals + code.maxStack; at < size; at++) regs.push(HOLE)
   frame.cells = fn instanceof Fn ? fn.cells : EMPTY_CELLS
 }
+
+// What a register may hold: a program value, a hole, or the VM's own records an instruction keeps there.
+const isRegister = (value: unknown): boolean =>
+  value === HOLE ||
+  is.value(value) ||
+  value instanceof Cell ||
+  value instanceof Convert ||
+  value instanceof CustomIter ||
+  value instanceof Position ||
+  value instanceof Prefetch ||
+  value instanceof VmIntrinsic ||
+  (is.object(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value)))
 
 // The job stack, checked: frames only, the program's frame only at the bottom, and a caller under every `CALLER` one.
 function restoreStack(vm: Vm): void {

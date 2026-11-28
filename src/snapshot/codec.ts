@@ -48,7 +48,7 @@ import {
   WeakSetObj,
   Protector,
 } from "../runtime/objects.js"
-import { MAX_BIGINT_BITS } from "../runtime/limits.js"
+import { MAX_ARRAY_LENGTH, MAX_BIGINT_BITS } from "../runtime/limits.js"
 import { Convert, Interruption, Invoke, Prefetch } from "../runtime/signals.js"
 import { deleted, OrderedTable } from "../runtime/table.js"
 import { AsyncFromSyncIterator } from "../generators.js"
@@ -204,7 +204,60 @@ export type ClassSpec = {
   readonly reset?: (value: never) => void
   /** The saved fields' values, when they are not the own fields as they are (a frame saves its live registers only). */
   readonly view?: (value: never) => ReadonlyArray<unknown>
+  /**
+   * What saved fields must hold, checked once every record is filled in and before `reset`: a snapshot can say
+   * anything, and the runtime trusts its own state.
+   */
+  readonly types?: Readonly<{ [field: string]: Check }>
 }
+
+/** Whether a restored field holds what its class needs; see `ClassSpec.types`. */
+export type Check = (value: unknown) => boolean
+
+const wellKnown = new Set<unknown>([IteratorSymbol, AsyncIteratorSymbol, ToPrimitiveSymbol, ToStringTagSymbol])
+
+/** Checks for `ClassSpec.types`. */
+export const is = {
+  /** A program value. */
+  value: (value: unknown): boolean =>
+    value === null ||
+    (typeof value !== "object" && typeof value !== "function" && (typeof value !== "symbol" || wellKnown.has(value))) ||
+    value instanceof Obj ||
+    value instanceof HostNamespace ||
+    value instanceof Lost,
+  boolean: (value: unknown) => typeof value === "boolean",
+  string: (value: unknown) => typeof value === "string",
+  number: (value: unknown) => typeof value === "number",
+  count: (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0,
+  object: (value: unknown) => typeof value === "object" && value !== null,
+  oneOf:
+    (...options: ReadonlyArray<unknown>): Check =>
+    (value) =>
+      options.includes(value),
+  instance:
+    (...classes: ReadonlyArray<Function>): Check =>
+    (value) =>
+      classes.some((ctor) => value instanceof ctor),
+  optional:
+    (check: Check): Check =>
+    (value) =>
+      value === undefined || check(value),
+  list:
+    (check?: Check): Check =>
+    (value) =>
+      Array.isArray(value) && (check === undefined || value.every(check)),
+  map:
+    (key: Check, item: Check): Check =>
+    (value) =>
+      value instanceof Map && [...value].every(([k, v]) => key(k) && item(v)),
+}
+
+const attributes = (value: unknown) =>
+  is.object(value) &&
+  ["writable", "enumerable", "configurable"].every((key) => is.boolean((value as { readonly [key: string]: unknown })[key]))
+
+// What a table's key may be: a program value, or the mark a deleted entry leaves.
+const tableKey = (value: unknown) => value === deleted || is.value(value)
 
 // `intrinsic` is not saved: a restored object is the program's, or a named intrinsic that keeps its own.
 const objFields = ["props", "extensible", "proto", "intrinsic"]
@@ -213,8 +266,8 @@ const callable = { tag: "Function" }
 // Built on first use: the VM's modules and this one import each other, so the classes aren't there at load time.
 const builtinSpecs = (): ReadonlyArray<ClassSpec> => [
   { name: "Obj", ctor: Obj, fields: [], obj: true, constants: { tag: "Object" } },
-  { name: "Arr", ctor: Arr, fields: ["items", "elements"], obj: true, constants: { tag: "Array" } },
-  { name: "ErrorObj", ctor: ErrorObj, fields: ["failure"], obj: true, constants: { tag: "Error" } },
+  { name: "Arr", ctor: Arr, fields: ["items", "elements"], obj: true, constants: { tag: "Array" }, types: { items: (items) => is.list(is.value)(items) && (items as Array<unknown>).length <= MAX_ARRAY_LENGTH, elements: attributes } },
+  { name: "ErrorObj", ctor: ErrorObj, fields: ["failure"], obj: true, constants: { tag: "Error" }, types: { failure: is.optional(is.instance(PendingThrow)) } },
   { name: "Arguments", ctor: Arguments, fields: [], obj: true, constants: { tag: "Arguments" } },
   // Only named natives are saved (by name); an unnamed one is a host function, saved as `LostNative`.
   { name: "Native", ctor: Native, fields: [], skip: ["length", "call", "construct", "callback"], obj: true },
@@ -224,6 +277,12 @@ const builtinSpecs = (): ReadonlyArray<ClassSpec> => [
     fields: ["length", "target", "boundThis", "boundArgs"],
     obj: true,
     constants: { ...callable, construct: undefined, callback: true },
+    types: {
+      length: is.number,
+      target: is.instance(Callable),
+      boundThis: is.value,
+      boundArgs: is.list(is.value),
+    },
   },
   {
     name: "Resolver",
@@ -231,6 +290,7 @@ const builtinSpecs = (): ReadonlyArray<ClassSpec> => [
     fields: ["length", "resolving", "kind"],
     obj: true,
     constants: { ...callable, construct: undefined, callback: true },
+    types: { length: is.number, resolving: is.instance(Resolving), kind: is.oneOf("resolve", "reject") },
   },
   {
     name: "PromiseObj",
@@ -238,6 +298,12 @@ const builtinSpecs = (): ReadonlyArray<ClassSpec> => [
     fields: ["state", "result", "reactions", "handled", "id"],
     obj: true,
     constants: { tag: "Promise" },
+    types: {
+      state: is.oneOf("pending", "fulfilled", "rejected"),
+      reactions: is.list(is.object),
+      handled: is.boolean,
+      id: is.count,
+    },
   },
   {
     name: "GeneratorObj",
@@ -245,9 +311,14 @@ const builtinSpecs = (): ReadonlyArray<ClassSpec> => [
     fields: ["state", "frame", "queue", "asynchronous"],
     obj: true,
     constants: { tag: "Generator" },
+    types: {
+      state: is.oneOf("suspendedStart", "suspendedYield", "executing", "awaiting-return", "draining", "completed"),
+      queue: is.list(is.object),
+      asynchronous: is.boolean,
+    },
   },
-  { name: "IteratorObj", ctor: IteratorObj, fields: ["cursor", "tag"], obj: true },
-  { name: "DateObj", ctor: DateObj, fields: ["time"], obj: true, constants: { tag: "Date" } },
+  { name: "IteratorObj", ctor: IteratorObj, fields: ["cursor", "tag"], obj: true, types: { cursor: is.object, tag: is.string } },
+  { name: "DateObj", ctor: DateObj, fields: ["time"], obj: true, constants: { tag: "Date" }, types: { time: is.number } },
   {
     name: "RegExpObj",
     ctor: RegExpObj,
@@ -255,32 +326,41 @@ const builtinSpecs = (): ReadonlyArray<ClassSpec> => [
     skip: ["compiled"],
     obj: true,
     constants: { tag: "RegExp" },
-    reset: (value: { compiled: unknown }) => {
-      value.compiled = undefined
+    types: { source: is.string, flags: is.string, lastIndex: is.number },
+    // Compiled again now, so a pattern that doesn't compile is refused here rather than when it is used.
+    reset: (value: { compiled: unknown; source: string; flags: string }) => {
+      value.compiled = new RegExp(value.source, value.flags)
     },
   },
-  { name: "MapObj", ctor: MapObj, fields: ["map"], obj: true, constants: { tag: "Map" } },
-  { name: "SetObj", ctor: SetObj, fields: ["set"], obj: true, constants: { tag: "Set" } },
-  { name: "WeakMapObj", ctor: WeakMapObj, fields: ["map"], obj: true, constants: { tag: "WeakMap" } },
-  { name: "WeakSetObj", ctor: WeakSetObj, fields: ["set"], obj: true, constants: { tag: "WeakSet" } },
+  { name: "MapObj", ctor: MapObj, fields: ["map"], obj: true, constants: { tag: "Map" }, types: { map: is.instance(OrderedTable) } },
+  { name: "SetObj", ctor: SetObj, fields: ["set"], obj: true, constants: { tag: "Set" }, types: { set: is.instance(OrderedTable) } },
+  { name: "WeakMapObj", ctor: WeakMapObj, fields: ["map"], obj: true, constants: { tag: "WeakMap" }, types: { map: is.map(is.instance(Obj), is.value) } },
+  { name: "WeakSetObj", ctor: WeakSetObj, fields: ["set"], obj: true, constants: { tag: "WeakSet" }, types: { set: (set) => set instanceof Set && [...set].every((item) => item instanceof Obj) } },
   {
     name: "URLSearchParamsObj",
     ctor: URLSearchParamsObj,
     fields: ["params"],
     obj: true,
     constants: { tag: "URLSearchParams" },
+    types: { params: is.instance(URLSearchParams) },
   },
-  { name: "HeadersObj", ctor: HeadersObj, fields: ["headers"], obj: true, constants: { tag: "Headers" } },
-  { name: "URLObj", ctor: URLObj, fields: ["searchParams", "url"], obj: true, constants: { tag: "URL" } },
-  { name: "ArrayBufferObj", ctor: ArrayBufferObj, fields: ["data"], obj: true, constants: { tag: "ArrayBuffer" } },
-  { name: "Bytes", ctor: Bytes, fields: ["bytes", "buffer"], obj: true, constants: { tag: "Uint8Array" } },
-  { name: "BufferObj", ctor: BufferObj, fields: ["bytes", "buffer"], obj: true, constants: { tag: "Uint8Array" } },
+  { name: "HeadersObj", ctor: HeadersObj, fields: ["headers"], obj: true, constants: { tag: "Headers" }, types: { headers: is.instance(Headers) } },
+  { name: "URLObj", ctor: URLObj, fields: ["searchParams", "url"], obj: true, constants: { tag: "URL" }, types: { searchParams: is.instance(URLSearchParamsObj), url: is.instance(URL) } },
+  { name: "ArrayBufferObj", ctor: ArrayBufferObj, fields: ["data"], obj: true, constants: { tag: "ArrayBuffer" }, types: { data: is.instance(ArrayBuffer) } },
+  { name: "Bytes", ctor: Bytes, fields: ["bytes", "buffer"], obj: true, constants: { tag: "Uint8Array" }, types: { bytes: is.instance(Uint8Array), buffer: is.optional(is.instance(ArrayBufferObj)) } },
+  { name: "BufferObj", ctor: BufferObj, fields: ["bytes", "buffer"], obj: true, constants: { tag: "Uint8Array" }, types: { bytes: is.instance(Uint8Array), buffer: is.optional(is.instance(ArrayBufferObj)) } },
   {
     name: "TextDecoderObj",
     ctor: TextDecoderObj,
     fields: ["decoder", "ignoreBOM", "queued", "seen"],
     obj: true,
     constants: { tag: "Object" },
+    types: {
+      decoder: is.instance(TextDecoder),
+      ignoreBOM: is.boolean,
+      queued: is.instance(Uint8Array),
+      seen: is.boolean,
+    },
   },
   {
     name: "AsyncFromSyncIterator",
@@ -288,8 +368,18 @@ const builtinSpecs = (): ReadonlyArray<ClassSpec> => [
     fields: ["sync", "site"],
     obj: true,
     constants: { tag: "AsyncFromSyncIterator" },
+    types: { sync: is.object },
   },
-  { name: "Position", ctor: Position, fields: ["index", "done", "source", "kind", "arrays"] },
+  { name: "Position", ctor: Position, fields: ["index", "done", "source", "kind", "arrays"], types: {
+      index: is.count,
+      done: is.boolean,
+      source: (source) =>
+        typeof source === "string" ||
+        is.list(is.value)(source) ||
+        is.instance(Arr, Bytes, MapObj, SetObj, HeadersObj, URLSearchParamsObj)(source),
+      kind: is.oneOf("keys", "values", "entries"),
+      arrays: is.instance(Obj),
+    } },
   {
     name: "OrderedTable",
     ctor: OrderedTable,
@@ -301,6 +391,13 @@ const builtinSpecs = (): ReadonlyArray<ClassSpec> => [
       table.keys.forEach((key, at) => {
         if (key !== deleted) table.index.set(key, at)
       })
+    },
+    types: {
+      keys: is.list(tableKey),
+      values: is.list(is.value),
+      cursors: is.list(is.object),
+      tombstones: is.count,
+      pruneAt: is.count,
     },
   },
   {
@@ -325,22 +422,63 @@ const builtinSpecs = (): ReadonlyArray<ClassSpec> => [
     reset: (call: { holdsFunctions: boolean }) => {
       call.holdsFunctions = false
     },
+    types: {
+      status: is.oneOf("queued", "running", "started", "completed"),
+      id: is.count,
+      key: is.string,
+      label: is.string,
+      path: is.optional(is.list(is.string)),
+      owner: is.optional(is.string),
+      policy: is.oneOf("sync", "sync-thenable", "async", "idempotent", "durable"),
+      args: is.list(),
+      blocking: is.boolean,
+      resolving: is.optional(is.instance(Resolving)),
+    },
   },
-  { name: "Resolving", ctor: Resolving, fields: ["done", "scheduler", "promise", "site"] },
-  { name: "Throw", ctor: Throw, fields: ["value"] },
-  { name: "PendingThrow", ctor: PendingThrow, fields: ["type", "message", "kind", "suggestions", "node", "value"] },
-  { name: "Convert", ctor: Convert, fields: ["hints", "values", "ordinal", "coerce"] },
-  { name: "Prefetch", ctor: Prefetch, fields: ["reads"] },
-  { name: "Invoke", ctor: Invoke, fields: ["callable", "thisValue", "args", "site"] },
-  { name: "HostNamespace", ctor: HostNamespace, fields: ["root", "path"] },
-  { name: "Lost", ctor: Lost, fields: ["description"] },
-  { name: "Protector", ctor: Protector, anchor: "protector", fields: ["intact"] },
+  { name: "Resolving", ctor: Resolving, fields: ["done", "scheduler", "promise", "site"], types: { done: is.boolean, promise: is.instance(PromiseObj) } },
+  { name: "Throw", ctor: Throw, fields: ["value"], types: { value: is.value } },
+  { name: "PendingThrow", ctor: PendingThrow, fields: ["type", "message", "kind", "suggestions", "node", "value"], types: {
+      type: is.string,
+      message: is.string,
+      kind: is.optional(is.string),
+      suggestions: is.optional(is.list(is.string)),
+      value: is.optional(is.instance(Obj)),
+    } },
+  { name: "Convert", ctor: Convert, fields: ["hints", "values", "ordinal", "coerce"], types: {
+      hints: (hints) => typeof hints === "string" || is.list(is.string)(hints),
+      values: is.list(is.value),
+      ordinal: is.count,
+      coerce: is.boolean,
+    } },
+  { name: "Prefetch", ctor: Prefetch, fields: ["reads"], types: { reads: is.list(is.value) } },
+  { name: "Invoke", ctor: Invoke, fields: ["callable", "thisValue", "args", "site"], types: { callable: is.value, thisValue: is.value, args: is.list(is.value) } },
+  { name: "HostNamespace", ctor: HostNamespace, fields: ["root", "path"], types: { root: is.string, path: is.list(is.string) } },
+  { name: "Lost", ctor: Lost, fields: ["description"], types: { description: is.string } },
+  { name: "Protector", ctor: Protector, anchor: "protector", fields: ["intact"], types: { intact: is.boolean } },
   {
     name: "Interpreter",
     ctor: Interpreter,
     anchor: "ctx",
-    fields: ["logs", "globalScope", "modules", "namespaces", "protector", "consoleState"],
-    skip: ["builtins", "vm", "intrinsics", "hosts", "hostNamespaces", "moduleGlobals", "sources", "prelude"],
+    fields: ["logs", "globalScope", "modules", "namespaces", "protector", "consoleState", "droppedLogs"],
+    skip: [
+      "builtins",
+      "vm",
+      "intrinsics",
+      "hosts",
+      "hostNamespaces",
+      "moduleGlobals",
+      "sources",
+      "prelude",
+      "maxLogBytes",
+      "logBytes",
+    ],
+    types: {
+      globalScope: is.map(is.string, is.object),
+      modules: is.map(is.string, is.value),
+      namespaces: is.map(is.string, is.instance(Obj)),
+      protector: is.instance(Protector),
+    },
+    reset: (ctx: Interpreter<unknown>) => ctx.restoreLogs(),
   },
 ]
 
@@ -689,8 +827,9 @@ const forbidden = new Set(["__proto__", "constructor", "prototype"])
 class Decoder {
   private readonly shells: Array<object | undefined>
   private readonly filled: Array<boolean>
-  // Derived state is rebuilt once every record is filled in, since it reads other records.
+  // Derived state is rebuilt once every record is filled in, since it reads other records; fields are checked first.
   private readonly resets: Array<() => void> = []
+  private readonly checks: Array<() => void> = []
   // Functions inside values host functions returned, wrapped again once every record is filled in.
   private readonly hostFunctions: Array<readonly [Native, { readonly [field: string]: unknown }]> = []
   // Those values, given back once each by their owner's `snapshot.decode`, by `HostValue` record.
@@ -919,11 +1058,20 @@ class Decoder {
       }
       target[field] = this.value(value)
     })
+    const types = spec.types
+    if (types !== undefined) {
+      this.checks.push(() => {
+        for (const field in types) {
+          if (!types[field]!(target[field])) invalid(`a ${spec.name}'s ${field} is malformed.`)
+        }
+      })
+    }
     const reset = spec.reset
     if (reset !== undefined) this.resets.push(() => reset(target as never))
   }
 
   finish(): void {
+    for (const check of this.checks) check()
     for (const reset of this.resets) reset()
     if (this.hostFunctions.length === 0) return
     const hosts =
@@ -996,8 +1144,10 @@ class Decoder {
         props.set(key as string | symbol, slot)
         continue
       }
+      const value = this.value(entries[at + 1])
+      if (!is.value(value)) invalid(`the property ${String(key)} does not hold a program value.`)
       props.set(key as string | symbol, {
-        value: this.value(entries[at + 1]) as Value,
+        value: value as Value,
         writable: (flags & 1) !== 0,
         enumerable,
         configurable,
@@ -1129,3 +1279,4 @@ const fromBase64 = (encoded: string): Uint8Array => {
   for (let at = 0; at < binary.length; at++) bytes[at] = binary.charCodeAt(at)
   return bytes
 }
+

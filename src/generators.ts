@@ -14,10 +14,11 @@ import {
 import { requireIteratorMethod, requireIteratorObject } from "./runtime/operations.js"
 import { capability } from "./runtime/promises.js"
 import { abrupt, type Completion, type GeneratorRequest, Interruption, normal, Resume } from "./runtime/signals.js"
-import type { Reaction, Resolving } from "./scheduler.js"
+import { type Reaction, Resolving } from "./scheduler.js"
 import { internalCode, VmIntrinsic } from "./prelude/internal.js"
 import { CodeFlags, Op } from "./opcodes.js"
-import { CustomIter, type Frame, Mode, REDO, REDO_ENTERED, type Vm } from "./vm.js"
+import { type Frame, iteratorIn, Mode, REDO, REDO_ENTERED, type Vm } from "./vm.js"
+import { SnapshotError } from "./snapshot/codec.js"
 
 /**
  * CreateAsyncFromSyncIterator's object: an async iterator over a synchronous one, for `for await` and an async
@@ -81,7 +82,7 @@ const answerCallerWide = (
     (prev2W & 0xff) === Op.EXTRA
       ? ((prev2W >>> 16) << 16) | (prevW & 0xff00) | ((w >>> 8) & 0xff)
       : (prevW & 0xff00) | ((w >>> 8) & 0xff)
-  ;(caller.regs[slot] as CustomIter).done = false
+  iteratorIn(caller.regs[slot]).done = false
   caller.regs[caller.sp++] = value
   caller.pc = pc + ((code[pc + 1]! & 0xff) === Op.EXTRA ? 3 : 2)
 }
@@ -102,7 +103,7 @@ const answerCaller = (vm: Vm, value: Value, done: boolean) => {
     caller.pc = w >>> 16
     return
   }
-  ;(caller.regs[(w >>> 8) & 0xff] as CustomIter).done = false
+  iteratorIn(caller.regs[(w >>> 8) & 0xff]).done = false
   caller.regs[caller.sp++] = value
   caller.pc = pc + 2
 }
@@ -310,7 +311,7 @@ export const execAwait = (vm: Vm, frame: Frame, a: number, pc: number, sp: numbe
 export const execYstar = (vm: Vm, frame: Frame, itSlot: number, bx: number, pc: number, sp: number): number => {
   const kind = frame.regs[sp - 1] as number
   const recv = frame.regs[sp - 2] as Value
-  const rec = frame.regs[itSlot] as CustomIter
+  const rec = iteratorIn(frame.regs[itSlot])
   const site = frame.code.siteAt(pc) ?? frame.origin
   if (kind === 0) {
     frame.regs[sp - 2] = rec.iterator
@@ -350,7 +351,8 @@ export const execYstarResult = (vm: Vm, frame: Frame, kindSlot: number, bx: numb
 
 /** Puts a suspended generator's body back on the job stack, handing it `request` unless it has not started yet. */
 export const resumeVmGenerator = (vm: Vm, gen: GeneratorObj, request: GeneratorRequest): void => {
-  const f = gen.frame!
+  const f = gen.frame
+  if (f === undefined) throw new SnapshotError("Invalid snapshot: a suspended generator has no frame.")
   gen.frame = undefined
   if (gen.asynchronous) f.answer = gen.queue[0]!.resolving.promise
   if ((f.code.code[f.pc - 1]! & 0xff) !== Op.GENERATOR_START) pushRequest(f, request)
@@ -452,7 +454,17 @@ export const registerGeneratorIntrinsics = (map: Map<string, unknown>, vm: Vm): 
     map.set(name, new VmIntrinsic(name, fn))
   }
   // The `$vmAsyncFromSync` frame running now settles this.
-  const made = () => vm.frames[vm.frames.length - 1]!.target as Resolving
+  const made = () => {
+    const target = vm.frames[vm.frames.length - 1]!.target
+    if (target instanceof Resolving) return target
+    throw new SnapshotError("Invalid snapshot: an async-from-sync step settles nothing.")
+  }
+  // The adapter the prelude holds in a register: anything else there came from a forged snapshot.
+  const adapterOf = (value: Value) => {
+    if (value instanceof AsyncFromSyncIterator) return value
+    throw new SnapshotError("Invalid snapshot: an async-from-sync adapter is not one.")
+  }
+  const syncOf = (value: Value) => adapterOf(value).sync as CustomIterator
 
   add("$AfsRequireObj", ([syncVal]) => requireIteratorObject(syncVal, "Iterator method result", vm.currentSite()))
 
@@ -461,24 +473,24 @@ export const registerGeneratorIntrinsics = (map: Map<string, unknown>, vm: Vm): 
     const next = requireIteratorMethod(nextVal, "Iterator next", site)
     return new AsyncFromSyncIterator(
       builtins.AsyncFromSyncIterator,
-      { iterator: obj as Obj, next, asynchronous: false },
+      { iterator: obj instanceof Obj ? obj : forgedIterator(), next, asynchronous: false },
       site!,
     )
   })
 
-  add("$AfsGetIter", ([adapter]) => ((adapter as AsyncFromSyncIterator).sync as CustomIterator).iterator)
+  add("$AfsGetIter", ([adapter]) => syncOf(adapter).iterator)
 
-  add("$AfsGetNext", ([adapter]) => ((adapter as AsyncFromSyncIterator).sync as CustomIterator).next)
+  add("$AfsGetNext", ([adapter]) => syncOf(adapter).next)
 
   // An iterator method the prelude read: undefined when absent, else it must be a function.
   add("$AfsMethod", ([adapter, method, kind]) => {
-    const site = (adapter as AsyncFromSyncIterator).site
+    const site = adapterOf(adapter).site
     if (method === undefined || method === null) return undefined
     return requireIteratorMethod(method, `Iterator ${kind as string}`, site)
   })
 
   add("$AfsCheckObj", ([adapter, res, kind]) =>
-    requireIteratorObject(res, `Iterator ${kind as string}() result`, (adapter as AsyncFromSyncIterator).site),
+    requireIteratorObject(res, `Iterator ${kind as string}() result`, adapterOf(adapter).site),
   )
 
   add("$AfsResolveDone", ([value]) => {
@@ -487,12 +499,16 @@ export const registerGeneratorIntrinsics = (map: Map<string, unknown>, vm: Vm): 
   })
 
   add("$AfsRejectNoThrow", ([adapter]) => {
-    made().reject(typeError(NO_THROW_METHOD, (adapter as AsyncFromSyncIterator).site))
+    made().reject(typeError(NO_THROW_METHOD, adapterOf(adapter).site))
     return undefined
   })
 
   add("$AfsSettle", ([adapter, value, done, close]) => {
-    settleAdapterStep(vm, adapter as AsyncFromSyncIterator, value, Boolean(done), Boolean(close), made())
+    settleAdapterStep(vm, adapterOf(adapter), value, Boolean(done), Boolean(close), made())
     return undefined
   })
+}
+
+const forgedIterator = (): never => {
+  throw new SnapshotError("Invalid snapshot: an iterator to adapt is not an object.")
 }

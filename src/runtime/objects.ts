@@ -1,5 +1,5 @@
 import type { Builtins } from "./intrinsics.js"
-import { checkArrayLength } from "./limits.js"
+import { checkArrayLength, checkStringLength } from "./limits.js"
 import {
   type AstNode,
   IteratorSymbol,
@@ -233,7 +233,7 @@ export class Arr extends Obj {
     return "an array"
   }
   override toString() {
-    return this.items.map((item) => (item === null || item === undefined ? "" : coerceToString(item))).join(",")
+    return joinText(this.items, ",")
   }
   override inspect(item: (value: Value) => string) {
     return `[${this.items.map(item).join(",")}]`
@@ -255,6 +255,180 @@ export class Arr extends Obj {
     return new Position(this, "values", builtins.Array)
   }
 }
+
+/**
+ * Array.prototype.join's text for `items`, without consulting program-defined methods: null and undefined are empty,
+ * and a nested array is its items joined with commas. Arrays can share sub-arrays, so the text can be exponentially
+ * longer than the arrays it is made of: its length is measured first, once per array, and a text over the string limit
+ * is refused before any of it is built. A BigInt's decimal form takes tens of milliseconds near the size limit, so its
+ * length is estimated from its bits.
+ */
+export const joinText = (items: ReadonlyArray<Value>, separator: string): string =>
+  joinShort(items, separator, { arrays: SHORT_JOIN_ARRAYS, characters: SHORT_JOIN_CHARACTERS }) ??
+  joinMeasured(items, separator)
+
+// What the direct join may do before it leaves the text to `joinMeasured`: most texts are short, and made faster so.
+const SHORT_JOIN_ARRAYS = 256
+const SHORT_JOIN_CHARACTERS = 1 << 16
+
+// The text joined directly, as long as it stays within `budget`, which counts nested arrays and every character each
+// join copies; undefined once it would not.
+const joinShort = (
+  items: ReadonlyArray<Value>,
+  separator: string,
+  budget: { arrays: number; characters: number },
+): string | undefined => {
+  const parts: Array<string> = []
+  for (let at = 0; at < items.length; at++) {
+    const item = items[at]
+    let part: string | undefined
+    if (item instanceof Arr) part = --budget.arrays < 0 ? undefined : joinShort(item.items, ",", budget)
+    else if (item === null || item === undefined) part = ""
+    else if (typeof item === "bigint") part = decimalLength(item) > budget.characters ? undefined : String(item)
+    else part = item instanceof Obj ? item.toString() : String(item)
+    if (part === undefined) return undefined
+    budget.characters -= part.length + separator.length
+    if (budget.characters < 0) return undefined
+    parts.push(part)
+  }
+  return parts.join(separator)
+}
+
+const joinMeasured = (items: ReadonlyArray<Value>, separator: string): string => {
+  const texts = new Map<Obj, string>()
+  const text = (item: Value): string => {
+    if (item === null || item === undefined) return ""
+    if (!(item instanceof Obj)) return String(item)
+    const known = texts.get(item)
+    if (known !== undefined) return known
+    const made = item.toString()
+    texts.set(item, made)
+    return made
+  }
+  const lengths = new Map<Arr, number>()
+  // Arrays being measured or written: a program can't make an array contain itself, but a forged snapshot can, and
+  // such an array joins as empty where it recurs, as engines do.
+  const open = new Set<Arr>()
+  const walks: Array<{ readonly array: Arr | undefined; readonly items: ReadonlyArray<Value>; at: number; length: number }> =
+    [{ array: undefined, items, at: 0, length: 0 }]
+  let nested = false
+  while (true) {
+    const walk = walks[walks.length - 1]!
+    if (walk.at === walk.items.length) {
+      walks.pop()
+      if (walk.array === undefined) break
+      open.delete(walk.array)
+      lengths.set(walk.array, walk.length)
+      const outer = walks[walks.length - 1]!
+      outer.length += walk.length
+      checkStringLength(outer.length)
+      continue
+    }
+    const item = walk.items[walk.at++]
+    if (walk.at > 1) walk.length += walk.array === undefined ? separator.length : 1
+    if (item instanceof Arr) {
+      nested = true
+      const known = lengths.get(item)
+      if (known !== undefined) walk.length += known
+      else if (!open.has(item)) {
+        open.add(item)
+        walks.push({ array: item, items: item.items, at: 0, length: 0 })
+      }
+    } else walk.length += typeof item === "bigint" ? decimalLength(item) : text(item).length
+    checkStringLength(walk.length)
+  }
+  if (!nested) return Array.from(items, (item) => (typeof item === "bigint" ? String(item) : text(item))).join(separator)
+  return writeNested(items, separator, text, lengths)
+}
+
+// The longest array text kept and reused wherever the array recurs, rather than written out item by item each time.
+const SHARED_TEXT = 1024
+
+// Writes a measured text in one pass, so its cost follows its length rather than how often arrays recur. A one-item
+// array is its item's text, so chains of them are followed once, not at every place they recur; every other array
+// adds a comma or nothing at all, which bounds how many are visited by the text's length. A short array's text is made
+// once and reused.
+const writeNested = (
+  items: ReadonlyArray<Value>,
+  separator: string,
+  text: (item: Value) => string,
+  lengths: ReadonlyMap<Arr, number>,
+): string => {
+  const inner = new Map<Arr, Arr | string>()
+  const innermost = (array: Arr): Arr | string => {
+    const chain = new Set<Arr>()
+    let at = array
+    let found: Arr | string = array
+    while (true) {
+      const known = inner.get(at)
+      if (known !== undefined) {
+        found = known
+        break
+      }
+      const only = at.items.length === 1 ? at.items[0] : undefined
+      if (!(only instanceof Arr)) {
+        found = at
+        break
+      }
+      if (chain.has(at)) {
+        found = ""
+        break
+      }
+      chain.add(at)
+      at = only
+    }
+    for (const link of chain) inner.set(link, found)
+    return found
+  }
+  const open = new Set<Arr>()
+  const shared = new Map<Arr, string>()
+  // Recurses at most once per comma, as the text is short.
+  const short = (array: Arr): string => {
+    const known = shared.get(array)
+    if (known !== undefined) return known
+    open.add(array)
+    const made = Array.from(array.items, (item) => {
+      if (!(item instanceof Arr)) return typeof item === "bigint" ? String(item) : text(item)
+      const inner = innermost(item)
+      return typeof inner === "string" || open.has(inner) ? "" : short(inner)
+    }).join(",")
+    open.delete(array)
+    shared.set(array, made)
+    return made
+  }
+  const walks: Array<{ readonly array: Arr | undefined; readonly items: ReadonlyArray<Value>; at: number }> = [
+    { array: undefined, items, at: 0 },
+  ]
+  let out = ""
+  while (walks.length > 0) {
+    const walk = walks[walks.length - 1]!
+    if (walk.at === walk.items.length) {
+      walks.pop()
+      if (walk.array !== undefined) open.delete(walk.array)
+      continue
+    }
+    const item = walk.items[walk.at++]
+    if (walk.at > 1) out += walk.array === undefined ? separator : ","
+    if (item instanceof Arr) {
+      const array = innermost(item)
+      if (typeof array === "string") out += array
+      else if (open.has(array)) {
+        // A forged cycle: empty where it recurs.
+      } else if ((lengths.get(array) ?? SHARED_TEXT + 1) <= SHARED_TEXT) out += short(array)
+      else {
+        open.add(array)
+        walks.push({ array, items: array.items, at: 0 })
+      }
+    } else out += typeof item === "bigint" ? String(item) : text(item)
+    // Measured already; this only bounds what a forged cycle could add.
+    checkStringLength(out.length)
+  }
+  return out
+}
+
+/** At most how many characters a BigInt's decimal form has, sign included. */
+export const decimalLength = (value: bigint): number =>
+  Math.floor((value < 0n ? -value : value).toString(16).length * 4 * Math.LOG10E * Math.LN2) + 2
 
 /** An object with the [[ErrorData]] slot: what `Error.prototype.toString` and the host boundary recognize as an error. */
 export class ErrorObj extends Obj {

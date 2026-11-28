@@ -1,4 +1,4 @@
-import type { HostBridge } from "../snapshot/codec.js"
+import { type HostBridge, SnapshotError } from "../snapshot/codec.js"
 import { Vm } from "../vm.js"
 import { globals } from "./globals.js"
 import type { Builtins } from "./intrinsics.js"
@@ -44,10 +44,18 @@ export class Interpreter<R> {
   readonly protector = new Protector()
   /** What `console.count`, `group` and `time` remember between calls. Saved with the run. */
   readonly consoleState: ConsoleState = { counts: new Map(), timers: new Map(), indent: "" }
+  /** Lines logged after the logs reached `maxLogBytes`: no result can show them, so they are only counted. Saved with the run. */
+  droppedLogs = 0
+  /** The most UTF-8 bytes of logs a result can show, a line break after each: the run's `maxOutputBytes`. */
+  private readonly maxLogBytes: number | undefined
+  /** The UTF-8 bytes `logs` take, a line break after each, while they are bounded. */
+  private logBytes = 0
 
   constructor(options: {
     readonly builtins: Builtins
     readonly logs?: Array<string>
+    /** The most UTF-8 bytes of logs to keep; see `maxLogBytes`. */
+    readonly maxLogBytes?: number | undefined
     /** Module names that load a global, beyond its own name; see `Runtime.Options`. */
     readonly modules?: Readonly<Record<string, string>> | undefined
     /** The host's globals (extensions, a test harness): made again, the same way, when a saved run is restored. */
@@ -57,6 +65,7 @@ export class Interpreter<R> {
   }) {
     this.builtins = options.builtins
     this.logs = options.logs ?? []
+    this.maxLogBytes = options.maxLogBytes
     this.moduleGlobals = options.modules ?? {}
     // Program code has no receiver: top-level `this` is undefined, as in a module.
     this.globalScope = new Map<string, Binding>([["this", { value: undefined }]])
@@ -87,6 +96,44 @@ export class Interpreter<R> {
     nativeRule.sealed.add(this.builtins.Function)
     // The VM never runs host work itself, so it does not need the services that work runs with.
     this.vm = new Vm(this as Interpreter<unknown>)
+  }
+
+  /**
+   * Keeps a logged line, or only counts it once the logs are as long as a result can show: a result keeps the longest
+   * run of first lines that fits its output budget, so a line past it is never shown.
+   */
+  log(line: string): void {
+    if (this.maxLogBytes !== undefined) {
+      const room = this.maxLogBytes - this.logBytes
+      // A line takes at least a byte per UTF-16 unit, so a long one is known not to fit without encoding it.
+      const bytes = this.droppedLogs > 0 || line.length >= room ? room + 1 : utf8Length(line) + 1
+      if (bytes > room) {
+        this.droppedLogs++
+        return
+      }
+      this.logBytes += bytes
+    }
+    this.logs.push(line)
+  }
+
+  /** Checks the console's saved state, and measures the saved logs again. */
+  restoreLogs(): void {
+    const state = this.consoleState as unknown
+    if (
+      !Array.isArray(this.logs) ||
+      !this.logs.every((line) => typeof line === "string") ||
+      !Number.isSafeInteger(this.droppedLogs) ||
+      this.droppedLogs < 0 ||
+      typeof state !== "object" ||
+      state === null ||
+      !isCountMap(this.consoleState.counts) ||
+      !isCountMap(this.consoleState.timers) ||
+      typeof this.consoleState.indent !== "string" ||
+      !/^ *$/.test(this.consoleState.indent)
+    ) {
+      throw new SnapshotError("Invalid snapshot: the console's state is malformed.")
+    }
+    this.logBytes = this.logs.reduce((total, line) => total + utf8Length(line) + 1, 0)
   }
 
   /** A module, as `require` returns it and a default import binds it: a global, by its Node module name. */
@@ -146,3 +193,9 @@ function cannotImport(specifier: string): string {
   if (isRuntimeModule(specifier)) return `Cannot import "${specifier}": this runtime doesn't provide it.`
   return `Cannot import "${specifier}": packages can't be installed here.`
 }
+
+const encoder = new TextEncoder()
+const utf8Length = (text: string) => encoder.encode(text).byteLength
+
+const isCountMap = (value: unknown) =>
+  value instanceof Map && [...value].every(([key, count]) => typeof key === "string" && Number.isFinite(count))

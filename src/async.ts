@@ -26,6 +26,7 @@ import { abrupt, type Completion, Interruption, Invoke, MAX_CALL_DEPTH, normal }
 import { type Combination, type Job, type Reaction, Resolving } from "./scheduler.js"
 import { internalCode, VmIntrinsic } from "./prelude/internal.js"
 import { CodeFlags } from "./opcodes.js"
+import { SnapshotError } from "./snapshot/codec.js"
 import { type Frame, type FrameMode, Mode, type Vm } from "./vm.js"
 
 export type SettlingTarget = {
@@ -435,6 +436,7 @@ export const registerAsyncIntrinsics = (map: Map<string, unknown>, vm: Vm): void
   })
 
   add("$CombineStart", ([nameVal, items]) => {
+    if (!combinations.has(nameVal)) throw forged("a promise combinator is unknown.")
     const name = nameVal as Combination["name"]
     // Only whether there is a method: `$vmCombine`'s for...of reads it (a getter too) in program code.
     const slot = items instanceof Obj ? lookup(items, IteratorSymbol) : undefined
@@ -444,13 +446,14 @@ export const registerAsyncIntrinsics = (map: Map<string, unknown>, vm: Vm): void
       throw typeError(`Promise.${name} expects a synchronous iterable, received ${describeValue(items)}.`)
     }
     const top = vm.frames[vm.frames.length - 1]!
-    const made = top.target as Resolving
+    const made = top.target
+    if (!(made instanceof Resolving)) throw forged("a promise combinator settles nothing.")
     const comb: Combination = { name, made, values: [], reasons: [], remaining: 1, attached: [] }
     return comb as unknown as Value
   })
 
   add("$CombineAdd", ([combVal, item]) => {
-    const c = combVal as unknown as Combination
+    const c = combination(combVal)
     const p = vm.scheduler.promiseResolve(item)
     const reaction: Reaction = { kind: "combinator", combination: c, index: c.values.length, called: false }
     c.values.push(undefined)
@@ -462,7 +465,7 @@ export const registerAsyncIntrinsics = (map: Map<string, unknown>, vm: Vm): void
   })
 
   add("$CombineEnd", ([combVal]) => {
-    const c = combVal as unknown as Combination
+    const c = combination(combVal)
     if (c.name === "race" && c.attached.length === 0) {
       throw typeError("Promise.race([]) would never settle; provide at least one promise or value.")
     }
@@ -471,4 +474,26 @@ export const registerAsyncIntrinsics = (map: Map<string, unknown>, vm: Vm): void
   })
 
   add("$IsThenable", ([val]) => isThenable(val))
+}
+
+const combinations = new Set<unknown>(["all", "allSettled", "race", "any"])
+
+const forged = (what: string) => new SnapshotError(`Invalid snapshot: ${what}`)
+
+// A combination the prelude holds in a register, checked: a forged snapshot can put anything there.
+const combination = (value: Value): Combination => {
+  const c = value as unknown as Partial<Combination> | null
+  if (
+    typeof c !== "object" ||
+    c === null ||
+    !combinations.has(c.name) ||
+    !(c.made instanceof Resolving) ||
+    !Array.isArray(c.values) ||
+    !Array.isArray(c.reasons) ||
+    !Array.isArray(c.attached) ||
+    c.values.length !== c.reasons.length ||
+    !Number.isSafeInteger(c.remaining)
+  )
+    throw forged("a promise combination is malformed.")
+  return c as Combination
 }

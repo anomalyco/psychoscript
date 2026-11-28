@@ -40,7 +40,8 @@ the ultimate source of truth. Upstream test262 files run verbatim from `test/tes
       and an import below the top level throws.
 - [x] Cooperative timeout, output bounding, and unrestricted host-call concurrency.
 - [x] The timeout fires between interpreter steps, so one built-in is bounded in what it may build: strings up to
-      2^24 characters (`repeat`, `pad*`, `concat`, `join`, `+`, template literals, `JSON.stringify`), arrays up to
+      2^24 characters (`repeat`, `pad*`, `concat`, `join`, `+`, template literals, `JSON.stringify`, an array's text
+      however much its arrays share, console messages), arrays up to
       10,000,000 elements (`Array(n)`, `length =`, `Array.from`, `split`, `matchAll`, `concat`, `flat`; below the JS
       maximum of 2^32 - 1), and 10,000 pending promises at once. Exceeding one throws a `RangeError`. A single regular
       expression match can still run long on a pathological pattern; the host regex engine has no interrupt hook.
@@ -537,6 +538,9 @@ reject }` object. The resolvers are anonymous (`name` is `""`) with `length` 1, 
       `timeLog`, and `timeEnd`, worded as in Node. A group indents later lines by two spaces; `assert` and `trace` log
       at the error level, and `trace` prints no stack. `time` reads the wall clock, so a saved run's timer counts the
       time it spent saved. Counters, groups and timers are kept in snapshots.
+- [x] A console message counts as one string toward the 2^24-character cap, its group indent included: a longer one
+      throws a `RangeError` before it is made. Arrays and objects a logged value shares are shown in full wherever they
+      recur, as Node shows them, without being formatted again for each place.
 
 ## Date
 

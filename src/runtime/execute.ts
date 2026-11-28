@@ -241,6 +241,7 @@ const instantiate = <R>(setup: Setup<R>, run: Run, bindings?: Readonly<Record<st
   const ctx = new Interpreter<R>({
     builtins: createBuiltins(),
     logs: [],
+    maxLogBytes: setup.limits.maxOutputBytes,
     modules: setup.modules,
     globals: (ctx) => [
       ...(setup.programGlobals?.(ctx) ?? []),
@@ -419,7 +420,7 @@ export class Running<R> {
       return this.bound(late)
     }
     if ("error" in first) {
-      if (first.error instanceof Interrupted) throw first.error
+      if (first.error instanceof Interrupted || first.error instanceof SnapshotError) throw first.error
       return this.bound(failed(normalizeError(first.error)))
     }
     // Only a cancelled run gives CANCELLED, and that is the other branch.
@@ -428,7 +429,9 @@ export class Running<R> {
 
   private bound(result: Outcome): Outcome {
     const maxOutputBytes = this.setup.limits.maxOutputBytes
-    return result.ok === "suspended" || maxOutputBytes === undefined ? result : boundOutput(result, maxOutputBytes)
+    return result.ok === "suspended" || maxOutputBytes === undefined
+      ? result
+      : boundOutput(result, maxOutputBytes, this.ctx.droppedLogs)
   }
 
   // Suspends the run once its state is saved: the driver stops.
@@ -614,7 +617,8 @@ const fitting = <T>(items: ReadonlyArray<T>, budget: number, size: (item: T) => 
 }
 
 // Warnings have a separate budget so result data cannot starve diagnostics.
-const boundOutput = (result: Result, maxOutputBytes: number): Result => {
+// `dropped` lines were logged past what the logs could keep (see `Interpreter.log`), and count toward the total.
+const boundOutput = (result: Result, maxOutputBytes: number, dropped: number): Result => {
   const serialized = result.ok ? (JSON.stringify(result.value) ?? "null") : ""
   const valueBytes = result.ok ? utf8ByteLength(serialized) : 0
   const valueTruncated = valueBytes > maxOutputBytes
@@ -637,8 +641,8 @@ const boundOutput = (result: Result, maxOutputBytes: number): Result => {
   const logs = result.logs ?? []
   const logBudget = Math.max(0, maxOutputBytes - Math.min(valueBytes, maxOutputBytes))
   const kept = fitting(logs, logBudget, (line) => utf8ByteLength(line) + 1)
-  const logsCut = kept.length < logs.length
-  if (logsCut) kept.push(`[logs truncated: showing ${kept.length} of ${logs.length} lines]`)
+  const logsCut = kept.length < logs.length + dropped
+  if (logsCut) kept.push(`[logs truncated: showing ${kept.length} of ${logs.length + dropped} lines]`)
 
   if (!valueTruncated && !warningsCut && !logsCut) return result
   const warningsPart = keptWarnings.length > 0 ? { warnings: keptWarnings } : {}
