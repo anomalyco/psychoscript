@@ -513,8 +513,10 @@ reject }` object. The resolvers are anonymous (`name` is `""`) with `length` 1, 
 - [x] `BigInt(value)` from integers, booleans, and decimal, hex, octal and binary strings; `BigInt.asIntN`,
       `BigInt.asUintN`, and `toString(radix)`, `toLocaleString` (locale and options as for numbers) and `valueOf` on
       the prototype. `new BigInt()` is a `TypeError`.
-- [x] A BigInt has at most 2^20 bits (about 315,000 decimal digits), so no single operator runs for long; a larger
-      result is a `RangeError` (`Maximum BigInt size exceeded`), and `**` and `<<` refuse before computing it.
+- [x] A BigInt lies in [-2^N, 2^N) for N = 2^20 − 256 (about 315,000 decimal digits), under the 2^20 bits Firefox
+      and Safari allow, so no single operator runs for long and every engine behaves the same; a larger result is a
+      `RangeError` (`Maximum BigInt size exceeded`), and `*`, `**`, `<<` and `BigInt(text)` refuse before computing
+      it. A larger BigInt literal fails to parse with that `RangeError`, as in engines.
 - [x] `JSON.stringify` throws a `TypeError` on a BigInt unless the program defines `BigInt.prototype.toJSON`. A BigInt
       in a result or a host call's arguments fails the same way at the boundary (the `toJSON` applies there too);
       `console.log` shows `1n`; snapshots keep BigInts.

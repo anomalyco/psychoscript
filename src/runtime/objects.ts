@@ -991,6 +991,8 @@ export const coerceToString = (value: Value): string => (value instanceof Obj ? 
 export const coerceToNumber = (value: Value): number => {
   if (value instanceof Obj) return value.toNumber()
   if (typeof value === "bigint") throw typeError("Cannot convert a BigInt value to a number.")
+  // Number() would throw the host engine's own wording.
+  if (typeof value === "symbol") throw typeError("Cannot convert a symbol to a number.")
   return value instanceof HostNamespace ? Number.NaN : Number(value)
 }
 

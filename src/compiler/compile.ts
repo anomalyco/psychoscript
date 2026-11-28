@@ -42,7 +42,6 @@ import type {
   YieldExpression,
 } from "acorn"
 import { type AstNode, supportedSyntaxMessage } from "../runtime/model.js"
-import { fitsBigIntSize } from "../runtime/limits.js"
 import { nodeId, type Source } from "../runtime/source.js"
 import { Code, CodeBuilder, CodeSizeOverflow, hashOf, type Label } from "../code.js"
 import {
@@ -1074,9 +1073,7 @@ const compileFunctionBody = (
     if (node.regex) {
       const k = builder.constant({ pattern: node.regex.pattern, flags: node.regex.flags })
       builder.emit(Op.REGEXP, 0, k, idx(node), 1)
-    } else if (typeof v === "bigint" && !fitsBigIntSize(v))
-      emitThrowError({ type: "RangeError", message: "Maximum BigInt size exceeded" }, node)
-    else if (typeof v === "bigint") builder.emit(Op.PUSH_CONST, 0, builder.constant(v), idx(node), 1)
+    } else if (typeof v === "bigint") builder.emit(Op.PUSH_CONST, 0, builder.constant(v), idx(node), 1)
     else if (v === null) builder.emit(Op.PUSH_NULL, 0, 0, idx(node), 1)
     else if (typeof v === "boolean") builder.emit(Op.PUSH_BOOL, v ? 1 : 0, 0, idx(node), 1)
     else if (typeof v === "number") builder.emitNumber(v, idx(node))

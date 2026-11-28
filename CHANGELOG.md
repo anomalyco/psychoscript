@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Runs in browsers: Chrome and Edge ≥ 140, Firefox ≥ 134 and Safari ≥ 18.2, from a secure context. Between time slices
+  a run yields with `setImmediate` where there is one and a `MessageChannel` message elsewhere (`setTimeout(0)` waits
+  at least 4 ms per slice). CI runs the tests in Chromium, Firefox and WebKit.
+- A BigInt lies in [-2^N, 2^N) for N = 2^20 − 256, under the 2^20 bits Firefox and Safari allow, so a run gets the same
+  `RangeError` (`Maximum BigInt size exceeded`) in every engine: `*`, `<<` and `BigInt(text)` in any radix are
+  refused before computing past it, and a larger BigInt literal now fails to parse with that `RangeError` instead of
+  throwing when it runs.
+- Running out of host stack while compiling is `Execution exceeded the maximum nesting depth.` in Firefox too, and
+  `+Symbol()` throws the same `TypeError` in every engine.
+
 - `Function.prototype.toString` returns a program function's source text as written: an arrow or `function` as is, a
   method or accessor from its name, a class as its whole `class … {}`. Built-in, bound and host functions return
   `function name() { [native code] }`. A host can now keep a function a program hands it as text. `String(fn)` is

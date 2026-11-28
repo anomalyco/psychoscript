@@ -85,7 +85,7 @@ export const normalizeError = (error: unknown): Diagnostic => {
     return { kind: "ExecutionFailure", message: `Uncaught: ${message}` }
   }
 
-  if (error instanceof RangeError && /call stack|recursion/i.test(errorMessage(error))) {
+  if (isHostStackOverflow(error)) {
     return {
       kind: "ExecutionFailure",
       message: "Execution exceeded the maximum nesting depth.",
@@ -231,3 +231,8 @@ export const errorGlobal = <R>(type: ErrorType, ctx: Interpreter<R>) => {
   ctor.proto = get(builtins.Error, "constructor") as Obj
   return ctor
 }
+
+/** Whether the host ran out of stack: a RangeError in V8 and JavaScriptCore, an InternalError in SpiderMonkey. */
+export const isHostStackOverflow = (error: unknown): error is Error =>
+  (error instanceof RangeError || (error instanceof Error && error.name === "InternalError")) &&
+  /call stack|recursion/i.test(error.message)

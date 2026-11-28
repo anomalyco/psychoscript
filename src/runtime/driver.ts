@@ -12,6 +12,23 @@ export const SUSPENDED: unique symbol = Symbol("psychoscript.suspended")
 /** What `Driver.run` returns once `cancel` stopped it (a timeout, or the caller interrupting the run). */
 export const CANCELLED: unique symbol = Symbol("psychoscript.cancelled")
 
+/**
+ * Lets the host's event loop run before the next slice: `setImmediate` where there is one (Node, Bun), else a
+ * `MessageChannel` message (browsers, where `setTimeout(0)` waits at least 4 ms once nested), else `setTimeout`.
+ */
+const yieldToHost = (): Promise<void> =>
+  new Promise((resolve) => {
+    if (typeof setImmediate === "function") return void setImmediate(resolve)
+    if (typeof MessageChannel !== "function") return void setTimeout(resolve, 0)
+    // A port listening keeps some runtimes alive, so each yield closes its own channel.
+    const channel = new MessageChannel()
+    channel.port1.onmessage = () => {
+      channel.port1.close()
+      resolve()
+    }
+    channel.port2.postMessage(undefined)
+  })
+
 /** For tests: `onPark` is called each time a run has nothing to do but wait on host calls in flight. */
 export const parking: { onPark?: () => void } = {}
 
@@ -60,7 +77,7 @@ export class Driver {
       const stop = this.vm.run()
       if (stop.kind === "slice") {
         this.checkpoint?.()
-        await new Promise<void>((resolve) => setImmediate(resolve))
+        await yieldToHost()
         continue
       }
       if (stop.kind === "host") {

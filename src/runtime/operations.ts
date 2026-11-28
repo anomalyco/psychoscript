@@ -1,7 +1,14 @@
 import type { Expression, MemberExpression, NewExpression, Super } from "acorn"
 import { type AstNode, invalidData, rangeError, typeError } from "./model.js"
 import { UnaryOp } from "../opcodes.js"
-import { checkBigIntSize, checkStringLength, MAX_BIGINT_BITS } from "./limits.js"
+import {
+  approxBitLength,
+  checkBigIntSize,
+  checkStringLength,
+  fitsShiftedBigInt,
+  fitsWithin,
+  MAX_BIGINT_BITS,
+} from "./limits.js"
 import { locate } from "./errors.js"
 import { type Builtins, primitivePrototype } from "./intrinsics.js"
 import {
@@ -208,17 +215,33 @@ const longTextAsNumeric = (text: string): number | bigint => {
 const numericOperators = new Set(["+", "-", "*", "/", "%", "**", "&", "|", "^", "<<", ">>", ">>>"])
 
 // BigInt arithmetic. Both operands must be BigInts, and results stay under MAX_BIGINT_BITS so no single operator can
-// run for long; `**` and `<<` are checked before they compute, the rest after.
+// run for long; `*`, `**` and `<<` are checked before they compute, the rest after. Those checks keep every
+// result within the engine's own size limit; should one still refuse, the program sees the same RangeError.
 const applyBigIntOperator = (operator: string, lhs: Value, rhs: Value, node: AstNode): bigint => {
   if (typeof lhs !== "bigint" || typeof rhs !== "bigint") {
     throw typeError("Cannot mix BigInt and other types, use explicit conversions.", node)
   }
+  try {
+    return bigIntOperation(operator, lhs, rhs, node)
+  } catch (error) {
+    if (error instanceof RangeError) throw rangeError("Maximum BigInt size exceeded", node)
+    throw error
+  }
+}
+
+// A product has at least bits(lhs) + bits(rhs) - 1 bits; operands with at most half the limit always fit.
+const halfMaxBits = BigInt(MAX_BIGINT_BITS >> 1)
+
+const bigIntOperation = (operator: string, lhs: bigint, rhs: bigint, node: AstNode): bigint => {
   switch (operator) {
     case "+":
       return checkBigIntSize(lhs + rhs)
     case "-":
       return checkBigIntSize(lhs - rhs)
     case "*":
+      if ((!fitsWithin(lhs, halfMaxBits) || !fitsWithin(rhs, halfMaxBits)) && !productMayFit(lhs, rhs)) {
+        throw rangeError("Maximum BigInt size exceeded", node)
+      }
       return checkBigIntSize(lhs * rhs)
     case "/":
       if (rhs === 0n) throw rangeError("Division by zero", node)
@@ -229,8 +252,8 @@ const applyBigIntOperator = (operator: string, lhs: Value, rhs: Value, node: Ast
     case "**":
       if (rhs < 0n) throw rangeError("Exponent must be non-negative", node)
       if (lhs === 0n || lhs === 1n || lhs === -1n || rhs <= 1n) return lhs ** rhs
-      // The result has more than (bits - 1) * rhs bits.
-      if (rhs >= BigInt(MAX_BIGINT_BITS) || (bitLength(lhs) - 1) * Number(rhs) >= MAX_BIGINT_BITS) {
+      // |lhs| ** rhs is 2 ** (rhs * log2|lhs|).
+      if (rhs >= BigInt(MAX_BIGINT_BITS) || Number(rhs) * log2Magnitude(lhs) > MAX_BIGINT_BITS + 1) {
         throw rangeError("Maximum BigInt size exceeded", node)
       }
       return checkBigIntSize(lhs ** rhs)
@@ -251,14 +274,24 @@ const applyBigIntOperator = (operator: string, lhs: Value, rhs: Value, node: Ast
 
 const shiftLeft = (value: bigint, shift: bigint): bigint => {
   if (value === 0n || shift <= 0n) return value >> -shift
-  if (shift >= BigInt(MAX_BIGINT_BITS)) throw rangeError("Maximum BigInt size exceeded")
-  return checkBigIntSize(value << shift)
+  if (!fitsShiftedBigInt(value, shift)) throw rangeError("Maximum BigInt size exceeded")
+  return value << shift
 }
 
-/** The number of bits in a BigInt's magnitude. */
-const bitLength = (value: bigint): number => {
-  const hex = (value < 0n ? -value : value).toString(16)
-  return (hex.length - 1) * 4 + 32 - Math.clz32(parseInt(hex[0]!, 16))
+// False when the product has more bits than the limit allows: at least bits(lhs) + bits(rhs) - 1. When one operand is
+// small enough for a number, the other is checked with one shift instead of measuring it.
+const productMayFit = (lhs: bigint, rhs: bigint): boolean => {
+  const small = Number.isFinite(Number(lhs)) ? lhs : rhs
+  if (!Number.isFinite(Number(small))) return approxBitLength(lhs) + approxBitLength(rhs) <= MAX_BIGINT_BITS + 3
+  return fitsShiftedBigInt(small === lhs ? rhs : lhs, BigInt(approxBitLength(small) - 3))
+}
+
+/** log2 of a BigInt's magnitude, from its top 64 bits past 2^1024 (where it is too large for a number). */
+const log2Magnitude = (value: bigint): number => {
+  const n = Math.abs(Number(value))
+  if (n !== Infinity) return Math.log2(n)
+  const drop = approxBitLength(value) - 64
+  return drop + Math.log2(Math.abs(Number(value >> BigInt(drop))))
 }
 
 /** ToNumeric on a primitive: BigInts stay BigInts, everything else becomes a number. */
