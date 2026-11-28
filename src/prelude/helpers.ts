@@ -1,6 +1,7 @@
 import { isSupportedCallback, requireCallback, withReads } from "../runtime/callback.js"
 import type { Builtins } from "../runtime/intrinsics.js"
 import { SORT_RUN, sortKeys, sorted, type SortInto } from "../stdlib/array.js"
+import { invalidFrom } from "../stdlib/buffer.js"
 import { finishBytes } from "../stdlib/bytes.js"
 import { weakKey } from "../stdlib/collections.js"
 import { buildPairs } from "../stdlib/url.js"
@@ -10,6 +11,7 @@ import { AsyncIteratorSymbol, invalidData, IteratorSymbol, PendingThrow } from "
 import { native, receiver } from "../runtime/native.js"
 import {
   Arr,
+  ArrayBufferObj,
   Bytes,
   coerceToString,
   data,
@@ -134,6 +136,10 @@ export const helpers = (ctx: Interpreter<unknown>): Array<readonly [string, Valu
         return length
       },
     ],
+    /** Whether a value is an ArrayBuffer, for Buffer.from. */
+    $IsArrayBuffer: [1, ([value]) => value instanceof ArrayBufferObj],
+    /** Buffer.from's TypeError for a value it can't make bytes of. */
+    $BufferInvalidFrom: [1, ([value]) => invalidFrom(builtins, value)],
     $SumPrecise: [1, ([numbers]) => Math.sumPrecise((numbers as Arr).items as Array<number>)],
     /** A Uint8Array of the values (see `collectBytes`). */
     $Bytes: [

@@ -19,7 +19,7 @@ import {
   type Value,
 } from "../runtime/objects.js"
 import { describeValue } from "../runtime/references.js"
-import { requireCallback, readsPending, withReads } from "../runtime/callback.js"
+import { requireCallback, readsPending, withPrimitives, withReads } from "../runtime/callback.js"
 import type { Interpreter } from "../runtime/interpreter.js"
 import { sortArray } from "./array.js"
 import { viewOf } from "./typed-array.js"
@@ -157,7 +157,9 @@ export const uint8ArrayGlobal = <R>(ctx: Interpreter<R>) => {
       2,
       (thisValue, args) => {
         const target = self(thisValue, "slice")
-        return target.derive(builtins, target.bytes.slice(optNumber(args[0]), optNumber(args[1])))
+        return withPrimitives("number", [args[0], args[1]], ([start, end]) =>
+          target.derive(builtins, target.bytes.slice(optNumber(start), optNumber(end))),
+        )
       },
     ],
     // A view on the same memory, as in JS: writes through one are visible through the other.
@@ -166,8 +168,10 @@ export const uint8ArrayGlobal = <R>(ctx: Interpreter<R>) => {
       2,
       (thisValue, args) => {
         const target = self(thisValue, "subarray")
-        const view = target.bytes.subarray(optNumber(args[0]), optNumber(args[1]))
-        return target.view(builtins, view.byteOffset - target.bytes.byteOffset, view.length)
+        return withPrimitives("number", [args[0], args[1]], ([start, end]) => {
+          const view = target.bytes.subarray(optNumber(start), optNumber(end))
+          return target.view(builtins, view.byteOffset - target.bytes.byteOffset, view.length)
+        })
       },
     ],
     [

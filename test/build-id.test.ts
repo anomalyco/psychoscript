@@ -17,13 +17,18 @@ describe("build id", () => {
   test("the build id is the same whatever a process imported first", async () => {
     const fixture = path.join(import.meta.dir, "fixtures/build-id.ts")
     const ids = await Promise.all(
-      [[], ["--preload", "./test/test262/run.ts"], ["--preload", "./src/index.ts"]].map((preload) =>
-        output(["bun", ...preload, fixture]),
-      ),
+      [
+        [],
+        ["--preload", "./test/test262/run.ts"],
+        ["--preload", "./src/index.ts"],
+        // Buffer is psychoscript's own, so a host without one (a browser) builds the same runtime.
+        ["--preload", "./test/fixtures/no-host-buffer.ts"],
+      ].map((preload) => output(["bun", ...preload, fixture])),
     )
     expect(ids[0]).toMatch(/\+[0-9a-f]+\n$/)
     expect(ids[1]).toBe(ids[0]!)
     expect(ids[2]).toBe(ids[0]!)
+    expect(ids[3]).toBe(ids[0]!)
   })
 
   // A process with the test262 harness loaded saves the run; the child that resumes it has not loaded it.

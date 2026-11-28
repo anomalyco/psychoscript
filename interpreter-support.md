@@ -669,26 +669,43 @@ with a hint to encode as text first (`TextDecoder`, `toBase64`, `toHex`).
 
 ## Buffer
 
-Node's `Buffer`, where the host has one (Node and Bun; not browsers). It is a `Uint8Array`, so every `Uint8Array`
-method works on it, and its text conversions default to UTF-8.
+Node's `Buffer`, as Node 24 has it, implemented by psychoscript itself: it is there on every host (Node, Bun, and
+browsers) and behaves the same on each, whether or not the host has a `Buffer`. It is a `Uint8Array`, so every
+`Uint8Array` method works on it, and its text conversions default to UTF-8. Node's own Buffer tests run against it
+(test/node-buffer), and a differential fuzz compares it with Node 24's `Buffer` operation by operation.
 
-- [x] `Buffer.from(string, encoding)`, `Buffer.from(bytes | array | array-like | { type: "Buffer", data })`,
-      `alloc`, `allocUnsafe`, `concat`, `byteLength`, `compare`, `isBuffer`, `isEncoding`, `of`, and `copyBytesFrom`, with the encodings
-      utf8, hex, base64, base64url, latin1/binary, ascii, and utf16le/ucs2. An unknown encoding is a `TypeError` with
-      code `ERR_UNKNOWN_ENCODING`, except in `byteLength`, which counts it as UTF-8 like Node. `Buffer.from(bytes, offset,
-      length)` copies all the bytes, as Node ignores the offset and length for anything but an `ArrayBuffer`;
-      `Buffer.from(arrayBuffer, offset, length)` is a view on its memory. The
+- [x] `Buffer(...)` and `new Buffer(...)`, `Buffer.from(string, encoding)`, `Buffer.from(arrayBuffer, offset, length)`
+      (a view on its memory), `Buffer.from(bytes | array | array-like | { type: "Buffer", data })` (a copy; Node's
+      `valueOf` and `Symbol.toPrimitive` steps included), `alloc`, `allocUnsafe` and `allocUnsafeSlow` (zero-filled),
+      `concat`, `byteLength`, `compare`, `isBuffer`, `isEncoding`, `of`, `copyBytesFrom`, and `poolSize`. The
       constructor inherits `Uint8Array`'s statics, so `Buffer.fromHex` and `Buffer.fromBase64` make Uint8Arrays.
-- [x] `toString(encoding, start, end)` (so string coercion and templates give UTF-8 text), `toJSON` as
-      `{ type: "Buffer", data }`, `slice` and `subarray` as Buffer views on the same bytes, `equals`, `compare`,
-      `indexOf`, `lastIndexOf`, `includes`, `write`, `fill`, `copy`, and the `read`/`write` integer and float methods
-      (with the lowercase `readUint*`/`writeUint*` aliases).
-      `console.log` prints `<Buffer ..>`.
+- [x] The encodings utf8/utf-8, hex, base64, base64url, latin1/binary, ascii, and utf16le/utf-16le/ucs2/ucs-2, in any
+      case, with Node's rules: lenient base64 and hex decoding (characters outside the alphabet skipped, decoding
+      stopping at `=` or at the first pair that isn't hex, each UTF-16 unit read as its low byte), unpaired
+      surrogates as U+FFFD in UTF-8, the low byte of each unit for latin1 and ascii, and no partial character written.
+- [x] Every prototype method: `toString`/`toLocaleString`, `toJSON`, `equals`, `compare`, `copy`, `fill`, `write`,
+      `indexOf`/`lastIndexOf`/`includes` (numbers, strings in each encoding, and bytes), `slice` and `subarray` as
+      views on the same bytes, `swap16`/`swap32`/`swap64`, `inspect`, the `parent` and `offset` getters, all the
+      integer, float and BigInt `read`/`write` methods with their lowercase `Uint` aliases (the same functions), and
+      the per-encoding `asciiSlice`/`hexWrite`-style methods. They work on any Uint8Array called through
+      `Buffer.prototype`, and Node's `slice` calls `this.subarray`, so on a plain Uint8Array it makes a Uint8Array.
+- [x] Node's errors: the same classes, `code`s (`ERR_INVALID_ARG_TYPE`, `ERR_OUT_OF_RANGE`, `ERR_BUFFER_OUT_OF_BOUNDS`,
+      `ERR_UNKNOWN_ENCODING`, `ERR_INVALID_ARG_VALUE`, `ERR_INVALID_BUFFER_SIZE`) and messages. Where Node converts an
+      object argument (`+value`, `encoding + ""`), its `valueOf`, `toString` or `Symbol.toPrimitive` runs as program
+      code, once.
 - [x] The inherited `Uint8Array` methods that make new bytes (`map`, `filter`, `slice`, `subarray`, also called
-      through `Uint8Array.prototype`) make a Buffer from a Buffer, as JS's species does.
-- [x] A host Buffer crosses into the program as a Buffer, and a program Buffer crosses out as one; snapshots keep it.
-- [x] The 64-bit `readBigInt64*`/`readBigUInt64*` and `writeBigInt64*`/`writeBigUInt64*` methods, which take and return
-      BigInts.
+      through `Uint8Array.prototype`) make a Buffer from a Buffer, as JS's species does. `console.log` prints
+      `<Buffer ..>`.
+- [x] A host Buffer crosses into the program as a Buffer, and a program Buffer crosses out as a host Buffer where the
+      host has one (a `Uint8Array` elsewhere); snapshots keep it.
+- [ ] Buffers never share Node's 8 KB pool, so a small Buffer's `buffer` is its own memory and its `byteOffset` is 0.
+      A Buffer is at most psychoscript's array limit (10,000,000 bytes) and decodes to at most its string limit; past
+      them, a `RangeError` as for arrays and strings, rather than Node's allocation errors.
+- [ ] Not provided: `SlowBuffer`, `buffer.constants`, `kMaxLength`, `kStringMaxLength`, `INSPECT_MAX_BYTES`,
+      `transcode`, `isUtf8`, `isAscii`, `Blob`, `File`, `resolveObjectURL`, `Buffer[Symbol.species]`, and other typed
+      arrays as arguments. `String(error)` is `TypeError: …`, without Node's `[ERR_…]`. A method called on a value
+      that isn't a Uint8Array throws psychoscript's TypeError, except `copy` and the searches, which throw Node's.
+      Where Node converts an object argument more than once, its methods run once.
 
 ## Web platform helpers
 

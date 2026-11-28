@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import path from "node:path"
 import { Effect } from "effect"
 import { Host, Runtime } from "../src/effect/index.js"
 
@@ -85,6 +86,82 @@ describe("Buffer", () => {
         return [Buffer.isBuffer(b), b.toString()]`, bytes),
     ).toEqual([true, "from host"])
     expect(seen).toEqual([true])
+  })
+
+  test("works the same where the host has no Buffer, as in a browser", async () => {
+    const root = path.join(import.meta.dir, "..")
+    const script = `const { Runtime } = await import(${JSON.stringify(path.join(root, "src/index.ts"))})
+      const result = await Runtime.make().execute('return [Buffer.from("héllo").toString("base64"), Buffer.from("6869", "hex").toString(), Buffer.alloc(4, "ab").readUInt32BE(0)]')
+      console.log(typeof Buffer, JSON.stringify(result.ok ? result.value : result.error))`
+    const child = Bun.spawn(["bun", "--preload", "./test/fixtures/no-host-buffer.ts", "-e", script], { cwd: root, stdout: "pipe" })
+    expect((await new Response(child.stdout).text()).trim()).toBe(
+      `undefined ${JSON.stringify(["aMOpbGxv", "hi", 0x61626162])}`,
+    )
+  })
+
+  test("searches repetitive bytes in linear time and finds what a plain scan finds", async () => {
+    // Runs of a and b make the candidate checks give up early and the linear search take over.
+    let seed = 11
+    const next = (n: number) => (seed = (seed * 1103515245 + 12345) % 2147483648) % n
+    const haystack = Array.from({ length: 4000 }, (_, i) => (Math.floor(i / (1 + next(30))) % 7 === 0 ? 98 : 97))
+    const queries = Array.from({ length: 300 }, () => {
+      const at = next(haystack.length - 50)
+      const needle = haystack.slice(at, at + 1 + next(45))
+      if (next(3) === 0) needle[next(needle.length)] = 98
+      return { needle, offset: next(haystack.length), forward: next(2) === 0 }
+    })
+    const scan = ({ needle, offset, forward }: (typeof queries)[number]) => {
+      const fits = (i: number) => needle.every((byte, j) => haystack[i + j] === byte)
+      const last = haystack.length - needle.length
+      if (forward) {
+        for (let i = offset; i <= last; i++) if (fits(i)) return i
+        return -1
+      }
+      for (let i = Math.min(offset, last); i >= 0; i--) if (fits(i)) return i
+      return -1
+    }
+    const found = await value(`const h = Buffer.from(haystack)
+      return queries.map((q) => q.forward ? h.indexOf(Buffer.from(q.needle), q.offset) : h.lastIndexOf(Buffer.from(q.needle), q.offset))`, {
+      haystack: JSON.parse(JSON.stringify(haystack)),
+      queries: JSON.parse(JSON.stringify(queries)),
+    } as never)
+    expect(found).toEqual(queries.map(scan))
+    const worst = await value(`const h = Buffer.alloc(2000000, 97)
+      const n = Buffer.alloc(100000, 97)
+      n[0] = 98
+      return [h.indexOf(n), h.lastIndexOf(n), h.indexOf(n.toString("latin1"), "ucs2")]`)
+    expect(worst).toEqual([-1, -1, -1])
+  })
+
+  test("runs the program's getters and conversions where Node does, with Node's results", async () => {
+    expect(
+      await value(`const t = (f) => { try { const r = f(); return r instanceof Uint8Array ? [...r] : r } catch (e) { return [e.name, e.code, e.message] } }
+        return [
+          t(() => Buffer.alloc({ get constructor() { return { name: "X" } } })),
+          t(() => Buffer.from({ get length() { return 2 }, 0: 7, 1: { valueOf() { return 9 } } })),
+          t(() => Buffer.from({ valueOf() { return "hi" } }, "latin1")),
+          t(() => Buffer.from({ [Symbol.toPrimitive](hint) { return hint + "!" } })),
+          t(() => Buffer.from({ type: "Buffer", data: [1, 2, 300] })),
+          t(() => Buffer.alloc(4).fill({ valueOf() { return 0x41 } })),
+          t(() => Buffer.alloc(2).writeUInt16BE({ valueOf() { return 258 } })),
+          t(() => Buffer.from("abcdef").toString({ toString() { return "hex" } }, { valueOf() { return 1 } }, 3)),
+          t(() => Buffer.from("abc").indexOf("c", { valueOf() { return 1 } })),
+          t(() => Buffer.from([1, 2, 3]).slice({ valueOf() { return 1 } })),
+          t(() => Buffer.from("a").toString({})),
+        ]`),
+    ).toEqual([
+      ["TypeError", "ERR_INVALID_ARG_TYPE", 'The "size" argument must be of type number. Received an instance of X'],
+      [7, 9],
+      [104, 105],
+      [115, 116, 114, 105, 110, 103, 33],
+      [1, 2, 44],
+      [65, 65, 65, 65],
+      2,
+      "6263",
+      2,
+      [2, 3],
+      ["TypeError", "ERR_UNKNOWN_ENCODING", "Unknown encoding: {}"],
+    ])
   })
 
   test("is importable from the buffer module", async () => {
