@@ -3401,6 +3401,7 @@ export const warmupSource = (wide: boolean) =>
     ...(wide ? WIDE_SETUP : []),
     "  for (let r = 0; r < 12; r++) {",
     "    let sum = 0",
+    ...(wide ? WIDE_ROUND : []),
     "    for (let i = 0; i < 6; i++) sum = (sum + i * 3 + (i === 2 ? 1 : 0)) % 1000003",
     "    sum += fib(3) + restFn(1, 2, 3) + fiveFn(r & 1, 1, 2, work, fib)",
     "    for (const x of range(3)) sum += x",
@@ -3420,7 +3421,6 @@ export const warmupSource = (wide: boolean) =>
     '    const obj = { a: 1, b: "two", c: [1, r], d: null, e: sorted }',
     "    if (r >= 2) sum += JSON.stringify(JSON.parse(JSON.stringify(obj))).length",
     "    const pres = await Promise.all(Array.from({ length: 2 }, (_, i) => work(i)))",
-    ...(wide ? WIDE_ROUND : []),
     '    totalSum += sum + total + sorted.length + pres.length + out.length + parts.join(",").length + map.size + set.size',
     "  }",
     "  return totalSum",
@@ -3430,31 +3430,35 @@ export const warmupSource = (wide: boolean) =>
 // JavaScriptCore compiles `exec` from the arms and kinds of values it has seen run, and leaves the compiled loop for
 // the rest of a slice at the first instruction that does something else; it recompiles less often each time, so in a
 // process running many programs those slices stay slow. There the warm-up also runs method calls with an object
-// `this`, writes, getters, classes, destructuring and a mix of value types. V8 has no such problem, and on V8 these
-// cost ~15% on tight loops and ~15 ms at startup. `test/warmup-coverage.test.ts` checks they cover `exec`.
+// `this`, writes, getters, classes (a subclass too), destructuring and a mix of value types, first in each round: JSC
+// records kinds of values only while `exec` runs in its baseline tier, about the first 500 to 6,000 instructions, inside
+// round one. V8 has no such problem, and on V8 these cost ~15% on tight loops and ~15 ms at startup.
+// `test/warmup-coverage.test.ts` checks they cover `exec`.
 const WIDE_SETUP = [
   "  class Point { constructor(x) { this.x = x } get() { return this.x } }",
+  "  class Point3 extends Point { get() { return super.get() + 1 } }",
   "  const pass = (v) => v",
   '  const mix = [1, 1.5, "s", { a: 1 }, [1], null, undefined, true, 2147483647]',
 ]
 
 const WIDE_ROUND = [
   "    const pt = { n: r, m() { return this.n } }",
-  "    pt.n += pt.m() + new Point(r).get()",
+  "    pt.n += pt.m() + new Point(r).get() + new Point3(r).get()",
   "    let count = 0",
   "    const bump = () => { count += 1 }",
   "    const fns = []",
   "    for (let i = 0; i < 2; i++) { bump(); fns.push(() => i) }",
-  "    sorted[0] = count + fns[1]()",
-  "    sorted[0] += 1",
-  "    const [first = 0, ...others] = sorted",
+  "    const list = [3, 1, 2]",
+  "    list[0] = count + fns[1]()",
+  "    list[0] += 1",
+  "    const [first = 0, ...others] = list",
   '    sum += first + others.length + (pt?.n ?? 0) + (pt.missing?.x ?? 1) + (typeof undeclaredWarmupName === "undefined" ? 1 : 0)',
   '    for (const v of mix) { const o = { v }; if (!v) sum++; sum += (pass(v) === v ? 1 : 0) + (o.v === [v][0] ? 1 : 0) + (v ? 1 : 0) + typeof v; if (typeof v === "number") { let d = v * 1.5 - 0.25; d++; sum += (d % 7.5) + (d / 3) + -d + (d < 2.5 ? 1 : 0) + (d >= v ? 1 : 0) } }',
   "    for (const x of range(3)) if (x === 1) break",
   '    const byKey = { get g() { return r } }; byKey["k" + (r % 2)] = byKey.g + byKey["g"]',
-  "    pt.n++; sorted[0]++; pt.m?.(); pt.n ||= 1; sum += `<${out}>`.length",
-  "    const firstOver = (list) => { for (const x of list) if (x > 0) return x; return 0 }",
-  '    switch (r % 3) { case 0: sum += firstOver(sorted); break; case 1: sum += 2; break; default: sum += 3 }',
+  "    pt.n++; list[0]++; pt.m?.(); pt.n ||= 1; sum += `<${typeof r}>`.length",
+  "    const firstOver = (xs) => { for (const x of xs) if (x > 0) return x; return 0 }",
+  '    switch (r % 3) { case 0: sum += firstOver(list); break; case 1: sum += 2; break; default: sum += 3 }',
   "    sum += ([r] + 1).length + `${[r]}`.length",
 ]
 
