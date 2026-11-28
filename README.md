@@ -251,7 +251,8 @@ defects become an `ExecutionFailure`.
 
 Fixed caps: a string at most 2^24 characters, an array at most 10,000,000 elements, at most 10,000 pending promises,
 and values nested at most 32 deep when they cross to or from the host. Exceeding one throws a `RangeError` in the
-program. There is no separate memory or step-count limit: bound runs with `timeoutMs`.
+program. A log line counts as a string, however much of it shared arrays or objects make up, and log lines past
+`maxOutputBytes` are only counted while the run goes on, not kept. There is no separate memory or step-count limit: bound runs with `timeoutMs`.
 
 ## Security model
 
@@ -262,8 +263,10 @@ program. There is no separate memory or step-count limit: bound runs with `timeo
   `Reflect`, so a program can't change how built-ins behave.
 - **Bounded.** Time via `timeoutMs`, output via `maxOutputBytes`, and the caps above. A single regular-expression
   match runs on the host engine and can't be interrupted, so a pathological pattern can run long.
-- **Checked snapshots.** A snapshot is validated on resume against the build that wrote it. Store snapshots as you
-  would code: whoever can edit one controls the resumed run.
+- **Checked snapshots.** A snapshot is validated on resume against the build that wrote it, and so is the state it
+  holds: a malformed one rejects with a `SnapshotError`, when it is restored or when the resumed run reaches the bad
+  part, never hangs the host or reaches the program as an error. Store snapshots as you would code: whoever can edit
+  one controls the resumed run.
 
 ## Language
 

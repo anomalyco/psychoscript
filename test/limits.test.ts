@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { Cause, Deferred, Effect, Exit, Fiber } from "effect"
 import { Host, Runtime } from "../src/effect/index.js"
 import { MAX_ARRAY_LENGTH, MAX_PENDING_PROMISES, MAX_STRING_LENGTH } from "../src/runtime/limits.js"
+import { toBytes } from "../src/snapshot/snapshot.js"
 
 const runtime = Runtime.make()
 
@@ -9,6 +10,12 @@ const value = async (code: string) => {
   const result = await Effect.runPromise(runtime.execute(code))
   if (!result.ok) throw new Error(`expected success, got ${result.error.kind}: ${result.error.message}`)
   return result.value
+}
+
+const logs = async (code: string) => {
+  const result = await Effect.runPromise(runtime.execute(code))
+  if (!result.ok) throw new Error(`expected success, got ${result.error.kind}: ${result.error.message}`)
+  return result.logs ?? []
 }
 
 const failure = async (code: string) => {
@@ -68,6 +75,114 @@ describe("one built-in cannot build an unbounded value", () => {
       "Too many pending promises",
     )
   }, 10_000)
+})
+
+// Arrays and objects that share parts: n doublings make a text 2^n times longer than the n arrays holding it. Each case
+// was one native step that took seconds or more (exponential in n) and built strings past the limit.
+describe("values that share parts", () => {
+  const shared = (depth: number, item = "1") => `let a = [${item}]; for (let i = 0; i < ${depth}; i++) a = [a, a];`
+  const quick = async (code: string, expected: string) => {
+    const started = performance.now()
+    expect(await failure(`${code}; try { ${expected} } catch (e) { throw Error(e.name + ": " + e.message) }`)).toContain(
+      "RangeError: Invalid string length",
+    )
+    expect(performance.now() - started).toBeLessThan(2_000)
+  }
+
+  test("an array's text is measured before it is built", async () => {
+    for (const use of ["new URLSearchParams({ a }).toString()", "encodeURIComponent(a)"]) {
+      await quick(shared(40), use)
+      // 2^22 ones and the commas between them (each encoded as %2C) fit, just: 2^24 characters or less.
+      expect(await value(`${shared(22)} return ${use}.length`)).toBe(use.startsWith("new") ? S - 1 : S - 3)
+    }
+    // A long text recurring at every level of a chain of distinct arrays is written once, not once per array.
+    expect(await value(`let a = ["x".repeat(1e6)]; for (let i = 0; i < 2000; i++) a = [a, 1]; return encodeURI(a).length`)).toBe(
+      1_004_000,
+    )
+    expect(
+      await value(`return decodeURIComponent(encodeURIComponent([[1, [2, 3]], null, undefined, [], [[]], "x", 10n, [[[5]]], [[6, [7]]]]))`),
+    ).toBe("1,2,3,,,,,x,10,5,6,7")
+  })
+
+  test("console.log refuses a message past the string limit before building it", async () => {
+    await quick(shared(40), "console.log(a)")
+    await quick(shared(40, "{}"), "console.log({ a, b: [a] })")
+    await quick(`const s = "x".repeat(${S / 2})`, "console.log(s, s, s)")
+    await quick(`const s = "x".repeat(${S / 2})`, "console.log('%s', s, s)")
+    await quick(`const s = "x".repeat(${S / 2}); console.time("t")`, "console.timeLog('t', s, s)")
+    // Shared parts show in full wherever they recur, as before.
+    expect(await logs(`${shared(2)} console.log(a, [a])`)).toEqual(["[[[1],[1]],[[1],[1]]] [[[[1],[1]],[[1],[1]]]]"])
+  })
+
+  test("console.log shows cycles the same wherever an object recurs", async () => {
+    expect(
+      await logs(`const m = new Map(); const s = new Set([m]); m.set(1, s); console.log([s, m], s); console.log({ a: m, b: [m, s] })`),
+    ).toEqual([
+      "[Set(1) [Map(1) [[1,[Circular]]]],Map(1) [[1,Set(1) [[Circular]]]]] Set(1) [Map(1) [[1,[Circular]]]]",
+      '{"a":Map(1) [[1,Set(1) [[Circular]]]],"b":[Map(1) [[1,Set(1) [[Circular]]]],Set(1) [Map(1) [[1,[Circular]]]]]}',
+    ])
+    // Objects shared deeper than the depth limit, with and without a cycle behind it.
+    expect(await logs(`${shared(40)} const b = [a]; try { console.log(b) } catch { console.log("long") }`)).toEqual(["long"])
+    const chain = (length: number) =>
+      logs(`const m = new Map(); let x = [m]; for (let i = 0; i < ${length}; i++) x = [x, x]; m.set(1, x); console.log(m)`)
+    expect((await chain(10))[0]!.split("[Circular]").length).toBe(2 ** 10 + 1)
+    // Shared arrays on a cycle, and deeper than the depth limit: refused as quickly.
+    await quick(`const m = new Map(); let x = [m]; for (let i = 0; i < 40; i++) x = [x, x]; m.set(1, x)`, "console.log(m)")
+    await quick(
+      `const m = new Map(); let x = new Map([[0, m]]); for (let i = 0; i < 30; i++) x = new Map([[0, m], [1, x], [2, x]]); m.set(0, x)`,
+      "console.log(m)",
+    )
+  })
+
+  test("console.group's indent is counted before a line is indented", async () => {
+    await quick(`for (let i = 0; i < 5000; i++) console.group()`, `console.log("\\n".repeat(4000))`)
+    expect(await logs(`console.group("g"); console.log("a\\nb\\r\\nc"); console.groupEnd(); console.log("z")`)).toEqual([
+      "g",
+      "  a\n  b\r  \n  c",
+      "z",
+    ])
+  })
+
+  test("console.table refuses a table past the string limit before building its rows", async () => {
+    await quick(`const rows = []; for (let i = 0; i < 5000; i++) rows.push({ ["k" + i]: i })`, "console.table(rows)")
+    await quick(
+      `const columns = Array.from({ length: 5000 }, (_, i) => "k" + i); const rows = Array(5000).fill({})`,
+      "console.table(rows, columns)",
+    )
+    await quick(`${shared(30)} const rows = [{ a }, { a }]`, "console.table(rows)")
+  })
+})
+
+describe("logs past the output limit", () => {
+  const limited = Runtime.make({ limits: { maxOutputBytes: 100 } })
+  const run = (code: string) => Effect.runPromise(limited.execute(code))
+
+  test("are counted, and the result is as it always was", async () => {
+    expect(await run(`for (let i = 0; i < 1000; i++) console.log("x".repeat(30)); return 1`)).toMatchObject({
+      logs: ["x".repeat(30), "x".repeat(30), "x".repeat(30), "[logs truncated: showing 3 of 1000 lines]"],
+      truncated: true,
+    })
+    expect(await run(`for (let i = 0; i < 1000; i++) console.log("é".repeat(i % 7)); return "v"`)).toMatchObject({
+      logs: ["", "é", "éé", "ééé", "éééé", "ééééé", "éééééé", "", "é", "éé", "ééé", "éééé", "ééééé", "[logs truncated: showing 13 of 1000 lines]"],
+    })
+    expect(await run(`console.log("x".repeat(500)); console.log("y"); throw new Error("no")`)).toMatchObject({
+      ok: false,
+      logs: ["[logs truncated: showing 0 of 2 lines]"],
+    })
+  })
+
+  test("are not kept while the run goes on, so a saved run stays small", async () => {
+    const runtime = Runtime.make({ limits: { maxOutputBytes: 1024 } })
+    const program = runtime.program(
+      `for (let i = 0; i < 500; i++) console.log(String(i).repeat(2000)); let n = 0; while (n < 1e9) n++; return n`,
+    )
+    const run = Effect.runPromise(program.run())
+    await new Promise((done) => setTimeout(done, 100))
+    const suspended = await Effect.runPromise(program.suspend())
+    await run
+    if (suspended.ok !== "suspended") throw new Error("the run ended before it could be suspended")
+    expect(toBytes(suspended.state).byteLength).toBeLessThan(100_000)
+  })
 })
 
 describe("the host stays in control", () => {

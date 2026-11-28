@@ -1,7 +1,7 @@
 import { fromJson, type Json } from "../data.js"
 import { conversions } from "../runtime/callback.js"
 import type { Builtins } from "../runtime/intrinsics.js"
-import { checkStringLength, MAX_VALUE_DEPTH } from "../runtime/limits.js"
+import { checkStringLength, MAX_ARRAY_LENGTH, MAX_VALUE_DEPTH } from "../runtime/limits.js"
 import { invalidData, rangeError, typeError } from "../runtime/model.js"
 import {
   Arr,
@@ -39,7 +39,9 @@ import {
 } from "../runtime/operations.js"
 import { isOpaque, typeofValue } from "../runtime/references.js"
 import { Convert, normal, Prefetch } from "../runtime/signals.js"
-import type { Resolving } from "../scheduler.js"
+import { Resolving } from "../scheduler.js"
+import { SnapshotError } from "../snapshot/codec.js"
+import { UnaryOp } from "../opcodes.js"
 import type { Code } from "../code.js"
 import { builtinCodes } from "../prelude/bytecode.js"
 import { type Vm, VmInternalFn } from "../vm.js"
@@ -352,7 +354,8 @@ export const registerVmIntrinsics = (map: Map<string, unknown>, vm: Vm): void =>
   add("$IsFunction", ([v]) => typeofValue(v) === "function")
   // Fulfills the promise the running `$vmThenableGet` settles, without adopting the value again.
   add("$FulfillWith", ([value]) => {
-    const resolving = vm.frames[vm.frames.length - 1]!.target as Resolving
+    const resolving = vm.frames[vm.frames.length - 1]!.target
+    if (!(resolving instanceof Resolving)) return forged("a promise to fulfill is not one.")
     if (resolving.done) return undefined
     resolving.done = true
     vm.scheduler.settle(resolving.promise, normal(value))
@@ -370,9 +373,12 @@ export const registerVmIntrinsics = (map: Map<string, unknown>, vm: Vm): void =>
   })
   add("$ApplyUnary", ([sub, v]) => {
     if (isOpaque(v)) throw invalidData("Unary operators require data values.", currentSite())
+    if (!unaryOps.has(sub)) return forged("a unary operator is unknown.")
     return applyUnaryOperator(sub as number, v)
   })
-  add("$Increment", ([incFlag, n]) => increment(incFlag as number, n as number | bigint))
+  add("$Increment", ([incFlag, n]) =>
+    typeof n === "number" || typeof n === "bigint" ? increment(incFlag as number, n) : forged("an increment is not numeric."),
+  )
   add("$OpConvKind", ([op, lhs, rhs]) => {
     const conv = operatorConversion(op as string, lhs, rhs)
     if (conv === undefined) return 0
@@ -382,26 +388,34 @@ export const registerVmIntrinsics = (map: Map<string, unknown>, vm: Vm): void =>
   add("$ApplyBinary", ([op, lhs, rhs]) => applyBinaryOperator(op as string, lhs, rhs, currentSite()!))
 
   // Convert helpers
-  add("$ConvValues", ([req]) => new Arr(builtins.Array, [...(req as unknown as Convert).values]))
+  add("$ConvValues", ([req]) => new Arr(builtins.Array, [...convert(req).values]))
   add("$ConvFlag", ([req, which]) => {
-    const c = req as unknown as Convert
+    const c = convert(req)
     return which === 0 ? c.coerce : c.ordinal
   })
   add("$ConvHint", ([req, idx]) => {
-    const hints = (req as unknown as Convert).hints
-    return typeof hints === "string" ? hints : hints[idx as number]!
+    const hints = convert(req).hints
+    return typeof hints === "string" ? hints : hints[position(idx, hints.length - 1)]!
   })
   add("$ConvCoerce", ([hint, val]) => (hint === "string" ? coerceToString(val) : coerceToNumber(val)))
   add("$IsConvert", ([res]) => res instanceof Convert)
   add("$IsPrefetch", ([res]) => res instanceof Prefetch)
-  add("$PrefetchReads", ([req]) => new Arr(builtins.Array, [...(req as unknown as Prefetch).reads]))
+  add("$PrefetchReads", ([req]) =>
+    req instanceof Prefetch ? new Arr(builtins.Array, [...req.reads]) : forged("a prefetch is not one."),
+  )
   add("$Replay", ([callable, target, args, constructing, replay, read]) => {
-    const rep = (replay as Arr).items.map((item) => (item instanceof Arr ? item.items : undefined))
+    const rep = list(replay).items.map((item) => (item instanceof Arr ? item.items : undefined))
     const table = new Map<Value, Map<string | symbol, Value>>()
-    const items = (read as Arr).items
+    const items = list(read).items
+    if (items.length % 3 !== 0) return forged("the reads to replay are not triples.")
+    const argList = list(args).items
+    if (!(callable instanceof HostNamespace || callable instanceof Builtin)) return forged("a call to replay has no built-in.")
+    if (constructing && !(callable instanceof Builtin && callable.construct !== undefined && target instanceof Builtin))
+      return forged("a construction to replay has no constructor.")
     for (let at = 0; at < items.length; at += 3) {
       const receiver = items[at]
-      const key = items[at + 1] as string | symbol
+      const key = items[at + 1]
+      if (typeof key !== "string" && typeof key !== "symbol") return forged("a read to replay has no key.")
       const known = table.get(receiver) ?? new Map<string | symbol, Value>()
       known.set(key, items[at + 2])
       table.set(receiver, known)
@@ -412,12 +426,10 @@ export const registerVmIntrinsics = (map: Map<string, unknown>, vm: Vm): void =>
     reads.table = table
     reads.list = read as Arr
     try {
-      const argList = (args as Arr).items
       if (callable instanceof HostNamespace) return ctx.callNamespace(callable, argList, currentSite()) as NativeResult
-      const fnObj = callable as Builtin
       return constructing
-        ? fnObj.construct!(argList, target as Builtin, currentSite())
-        : fnObj.invoke(target, argList, currentSite())
+        ? callable.construct!(argList, target as Builtin, currentSite())
+        : callable.invoke(target, argList, currentSite())
     } finally {
       conversions.replay = undefined
       reads.table = outer[0]
@@ -434,7 +446,7 @@ export const registerVmIntrinsics = (map: Map<string, unknown>, vm: Vm): void =>
     if (!(val instanceof Obj)) return 3
     if (boundary && binaryBytes(val) !== undefined) throw binaryAtBoundary(val)
     if ((boundary && val instanceof URLSearchParamsObj) || val instanceof HeadersObj) return 3
-    if ((ancestors as Arr).items.includes(val)) throw typeError("Converting circular structure to JSON.")
+    if (list(ancestors).items.includes(val)) throw typeError("Converting circular structure to JSON.")
     if (boundary && val instanceof SetObj) return 4
     return 5
   })
@@ -444,23 +456,26 @@ export const registerVmIntrinsics = (map: Map<string, unknown>, vm: Vm): void =>
     if (val instanceof HeadersObj) return fromJson(ctx, Object.fromEntries(val.headers))
     return new Obj(builtins.Object)
   })
-  add("$SetToArray", ([val]) => new Arr(builtins.Array, [...(val as SetObj).set.liveKeys()]))
+  add("$SetToArray", ([val]) =>
+    val instanceof SetObj ? new Arr(builtins.Array, [...val.set.liveKeys()]) : forged("a Set is not one."),
+  )
   add("$NewNullProtoObj", () => new Obj(null))
   // The keys a JSON walk writes, in order: an error's name and message come first, then its other own keys.
   add("$JsonNames", ([target, boundary, properties]) => {
     const error = target instanceof ErrorObj
     const propFilter = properties instanceof Arr ? new Set(properties.items as Array<string>) : undefined
-    const list = keys(target as Obj).filter(
+    if (!(target instanceof Obj)) return forged("a JSON object is not an object.")
+    const names = keys(target).filter(
       (k) =>
         !(error && (k === "name" || k === "message")) &&
         !(boundary && k === "__proto__") &&
         (propFilter === undefined || propFilter.has(k)),
     )
-    return new Arr(builtins.Array, error ? ["name", "message", ...list] : list)
+    return new Arr(builtins.Array, error ? ["name", "message", ...names] : names)
   })
-  add("$ArrayPop", ([arr]) => (arr as Arr).items.pop())
+  add("$ArrayPop", ([arr]) => list(arr).items.pop())
   // Writes an element of an internal array without going through the prototype chain, where a program accessor could catch it.
-  add("$ArraySet", ([arr, index, value]) => ((arr as Arr).items[index as number] = value))
+  add("$ArraySet", ([arr, index, value]) => (list(arr).items[position(index, MAX_ARRAY_LENGTH - 1)] = value))
   add("$JsonFinish", ([boundary, root, properties, indent]) => {
     const plain = toPlainJson(root)
     if (boundary) return plain as Value
@@ -646,3 +661,22 @@ export const tryFastBoundaryOrJson = (
 
   return visit(value, 0)
 }
+
+// Internal code keeps its working state in registers, which a forged snapshot can fill with anything: what a helper
+// trusts is checked first, and a value no internal code passes is a SnapshotError.
+const forged = (what: string): never => {
+  throw new SnapshotError(`Invalid snapshot: ${what}`)
+}
+
+const list = (value: Value): Arr => (value instanceof Arr ? value : forged("an internal array is not an array."))
+
+const convert = (value: Value): Convert =>
+  (value as unknown) instanceof Convert ? (value as unknown as Convert) : forged("a conversion is not one.")
+
+/** `value` as a position from 0 to `max`. */
+const position = (value: unknown, max: number): number =>
+  Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= max
+    ? (value as number)
+    : forged("a position is out of range.")
+
+const unaryOps = new Set<unknown>(Object.values(UnaryOp))

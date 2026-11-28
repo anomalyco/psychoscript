@@ -2,7 +2,7 @@ import { Invoke } from "../runtime/signals.js"
 import { type Builtins, primitivePrototype } from "../runtime/intrinsics.js"
 import { builtinCursor } from "../runtime/operations.js"
 import { constructor, methods, prototypeFrom, receiver, iteratorMethods } from "../runtime/native.js"
-import { checkArrayLength, checkStringLength, MAX_ARRAY_LENGTH } from "../runtime/limits.js"
+import { checkArrayLength, MAX_ARRAY_LENGTH } from "../runtime/limits.js"
 import { invalidData, IteratorSymbol, rangeError, typeError } from "../runtime/model.js"
 import {
   changed,
@@ -20,6 +20,7 @@ import {
   coerceToInteger,
   coerceToNumber,
   coerceToString,
+  joinText,
   rejectAddition,
   type Value,
 } from "../runtime/objects.js"
@@ -454,20 +455,3 @@ export const arrayGlobal = <R>(ctx: Interpreter<R>) => {
   return array
 }
 
-// Converts and joins, refusing before any conversion when the result would be too long: a BigInt's decimal form takes
-// tens of milliseconds near the size limit, so its length is estimated from its bits first.
-const joinText = (items: Array<Value>, separator: string): string => {
-  const estimate = items.reduce<number>(
-    (total, item) =>
-      total + separator.length + (typeof item === "bigint" ? decimalLength(item) : typeof item === "string" ? item.length : 0),
-    0,
-  )
-  checkStringLength(estimate - separator.length)
-  const joined = items.map(coerceToString).join(separator)
-  checkStringLength(joined.length)
-  return joined
-}
-
-/** At most how many characters a BigInt's decimal form has, sign included. */
-const decimalLength = (value: bigint): number =>
-  Math.floor((value < 0n ? -value : value).toString(16).length * 4 * Math.LOG10E * Math.LN2) + 2

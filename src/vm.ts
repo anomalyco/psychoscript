@@ -95,6 +95,7 @@ import { enumerableSource } from "./stdlib/object.js"
 import { registerAsyncIntrinsics, type SettlingTarget, VmScheduler } from "./async.js"
 import type { Code } from "./code.js"
 import { type CaptureOptions, captureVm, type RestoreOptions, restoreVm } from "./snapshot.js"
+import { SnapshotError } from "./snapshot/codec.js"
 import { compileSource } from "./compiler/compile.js"
 import {
   AsyncFromSyncIterator,
@@ -180,6 +181,12 @@ export class CustomIter {
     readonly iterator: Obj,
     readonly next: Value,
   ) {}
+}
+
+/** The iterator an iteration's slot holds; anything else there came from a forged snapshot. */
+export const iteratorIn = (value: unknown): CustomIter => {
+  if (value instanceof CustomIter) return value
+  throw new SnapshotError("Invalid snapshot: an iteration's slot holds no iterator.")
 }
 
 /** Single uniform activation record for the bytecode VM. */
@@ -2166,6 +2173,7 @@ export class Vm {
 
   private execIterStepSlow(frame: Frame, custom: CustomIter, bx: number, pc: number, sp: number): boolean {
     const regs = frame.regs
+    iteratorIn(custom)
     custom.done = true
     if (custom.rawGen) {
       const gen = custom.iterator as GeneratorObj
@@ -2202,7 +2210,7 @@ export class Vm {
     const done = this.redoRead(frame, res, "done", res, pc, sp, reads)
     if (done === REDO) return REDO_ENTERED
     if (done) return bx
-    ;(regs[slot] as CustomIter).done = false
+    iteratorIn(regs[slot]).done = false
     const value = this.redoRead(frame, res, "value", res, pc, sp, reads)
     if (value === REDO) return REDO_ENTERED
     regs[sp - 1] = value
@@ -2330,6 +2338,8 @@ export class Vm {
   }
 
   unwind(rawError: unknown): boolean {
+    // State a forged snapshot left that a built-in found malformed: the run can't go on, and no handler may see it.
+    if (rawError instanceof SnapshotError) throw rawError
     // An interruption skips every handler, but still completes each frame by its mode: a frame that settles a
     // promise rejects it, so whatever awaits that promise is interrupted in turn.
     const interrupted = rawError instanceof Interruption
