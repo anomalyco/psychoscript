@@ -67,6 +67,9 @@ type Within = {
 // A synchronous call's signal: its pending work, if any, runs later under the driver's own.
 
 // What a host response offers that needs a Blob, FormData or WritableStream, none of which this runtime has.
+// The host's own Buffer, where it has one: its Buffers cross in as program Buffers.
+const hostBuffer = (globalThis as { Buffer?: { isBuffer(value: unknown): boolean } }).Buffer
+
 const unsupported = (name: string) => (): never => {
   throw new TypeError(`${name} is not supported in this runtime; read the body with bytes(), text() or arrayBuffer().`)
 }
@@ -362,7 +365,7 @@ export const hostGlobals = <R>(
         return result
       }
       if (value instanceof RegExp) return new RegExpObj(builtins.RegExp, value.source, value.flags)
-      if (typeof Buffer !== "undefined" && Buffer.isBuffer(value))
+      if (value instanceof Uint8Array && hostBuffer?.isBuffer(value))
         return new BufferObj(builtins.Buffer, new Uint8Array(value))
       if (value instanceof Uint8Array) return new Bytes(builtins.Uint8Array, new Uint8Array(value))
       if (value instanceof ArrayBuffer) {

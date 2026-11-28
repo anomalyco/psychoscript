@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `Buffer` is psychoscript's own, written to Node 24's behaviour, instead of the host's `Buffer` over the program's
+  bytes: it is now on every host, browsers included, behaves the same on each, and the snapshot build id no longer
+  depends on whether the host has a `Buffer`. Node's argument checks, coercions, error codes and messages, lenient
+  base64 and hex decoding, `Buffer()`, the `parent` and `offset` getters, `inspect`, the per-encoding
+  `*Slice`/`*Write` methods, and the generic use of every method on a plain Uint8Array come with it. Node's own Buffer
+  tests and a differential fuzz against Node 24 check it. `Uint8Array.prototype.slice` and `subarray` now convert
+  object arguments through their `valueOf`.
 - `Function.prototype.toString` returns a program function's source text as written: an arrow or `function` as is, a
   method or accessor from its name, a class as its whole `class … {}`. Built-in, bound and host functions return
   `function name() { [native code] }`. A host can now keep a function a program hands it as text. `String(fn)` is

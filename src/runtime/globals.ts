@@ -181,8 +181,7 @@ const table: Record<string, Factory> = {
   Headers: (ctx) => headersGlobal(ctx),
   ArrayBuffer: (ctx) => arrayBufferGlobal(ctx),
   Uint8Array: (ctx) => uint8ArrayGlobal(ctx),
-  // Built on the host's Buffer, so only where there is one (Node and Bun, not browsers).
-  ...(typeof Buffer === "undefined" ? {} : { Buffer: <R>(ctx: Interpreter<R>) => bufferGlobal(ctx) }),
+  Buffer: (ctx) => bufferGlobal(ctx),
   TextEncoder: (ctx) => textEncoderGlobal(ctx),
   TextDecoder: (ctx) => textDecoderGlobal(ctx),
   encodeURI: (ctx) => uriGlobal(ctx, "encodeURI"),

@@ -445,6 +445,35 @@ function collectBytes(source, name, mapper, thisArg, into, offset) {
   return $Bytes(values, into, offset)
 }
 
+// Buffer.from for an object other than an ArrayBuffer, a Uint8Array or an array of primitives, as Node does it: its
+// valueOf first, then the object as an array-like or a { type: "Buffer", data } record, then its Symbol.toPrimitive.
+function bufferFromObject(value, encodingOrOffset, length) {
+  const primitive = value.valueOf && value.valueOf()
+  if (primitive != null && primitive !== value && (typeof primitive === "string" || typeof primitive === "object")) {
+    return Buffer.from(primitive, encodingOrOffset, length)
+  }
+  if (value.length !== undefined || $IsArrayBuffer(value.buffer)) {
+    if (typeof value.length !== "number") return Buffer.alloc(0)
+    return bufferFromArrayLike(value)
+  }
+  if (value.type === "Buffer" && Array.isArray(value.data)) return bufferFromArrayLike(value.data)
+  if (typeof value[Symbol.toPrimitive] === "function") {
+    const text = value[Symbol.toPrimitive]("string")
+    if (typeof text === "string") return Buffer.from(text, encodingOrOffset)
+  }
+  return $BufferInvalidFrom(value)
+}
+
+// The bytes of an array-like, as TypedArray.prototype.set reads them: each value converted to a number.
+function bufferFromArrayLike(source) {
+  const length = source.length
+  if (length <= 0) return Buffer.alloc(0)
+  const count = $Length(length)
+  const values = []
+  while (values.length < count) $ArraySet(values, values.length, +source[values.length])
+  return Buffer.from(values)
+}
+
 // An arguments object's [Symbol.iterator], as Array.prototype.values reads it: the length and each index, live.
 function* argumentsValues() {
   let index = 0

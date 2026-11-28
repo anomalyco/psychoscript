@@ -1,0 +1,272 @@
+{
+  "test-buffer-alloc.js": {
+    "total": 160,
+    "failing": [
+      5,
+      14,
+      66,
+      75,
+      1107,
+      1108,
+      1154,
+      1155,
+      1156
+    ]
+  },
+  "test-buffer-arraybuffer.js": {
+    "total": 25,
+    "failing": [
+      9,
+      31,
+      32,
+      33,
+      38
+    ]
+  },
+  "test-buffer-ascii.js": {
+    "total": 7,
+    "failing": []
+  },
+  "test-buffer-badhex.js": {
+    "total": 6,
+    "failing": []
+  },
+  "test-buffer-bigint64.js": {
+    "total": 4,
+    "failing": []
+  },
+  "test-buffer-bytelength.js": {
+    "total": 69,
+    "failing": [
+      6,
+      27,
+      44,
+      45,
+      48,
+      49,
+      50,
+      51,
+      52,
+      53,
+      54,
+      55,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      64,
+      65,
+      118,
+      119
+    ]
+  },
+  "test-buffer-compare-offset.js": {
+    "total": 34,
+    "failing": []
+  },
+  "test-buffer-compare.js": {
+    "total": 26,
+    "failing": []
+  },
+  "test-buffer-concat.js": {
+    "total": 40,
+    "failing": []
+  },
+  "test-buffer-copy.js": {
+    "total": 33,
+    "failing": [
+      230
+    ]
+  },
+  "test-buffer-equals.js": {
+    "total": 12,
+    "failing": []
+  },
+  "test-buffer-failed-alloc-typed-arrays.js": {
+    "total": 7,
+    "failing": [
+      14,
+      23
+    ]
+  },
+  "test-buffer-fakes.js": {
+    "total": 16,
+    "failing": [
+      7,
+      8,
+      10
+    ]
+  },
+  "test-buffer-fill.js": {
+    "total": 164,
+    "failing": [
+      5,
+      6,
+      346,
+      370
+    ]
+  },
+  "test-buffer-from.js": {
+    "total": 30,
+    "failing": [
+      5,
+      11,
+      29,
+      30,
+      32,
+      37,
+      67,
+      76,
+      86,
+      103,
+      111,
+      127,
+      166
+    ]
+  },
+  "test-buffer-generic-methods.js": {
+    "total": 72,
+    "failing": [
+      9,
+      116,
+      1092
+    ]
+  },
+  "test-buffer-includes.js": {
+    "total": 136,
+    "failing": []
+  },
+  "test-buffer-indexof.js": {
+    "total": 280,
+    "failing": [
+      624
+    ]
+  },
+  "test-buffer-inheritance.js": {
+    "total": 7,
+    "failing": [
+      12,
+      13,
+      15,
+      23,
+      25
+    ]
+  },
+  "test-buffer-isencoding.js": {
+    "total": 4,
+    "failing": []
+  },
+  "test-buffer-iterator.js": {
+    "total": 20,
+    "failing": []
+  },
+  "test-buffer-new.js": {
+    "total": 3,
+    "failing": []
+  },
+  "test-buffer-no-negative-allocation.js": {
+    "total": 24,
+    "failing": [
+      34,
+      35,
+      36,
+      37
+    ]
+  },
+  "test-buffer-of-no-deprecation.js": {
+    "total": 3,
+    "failing": [
+      5
+    ]
+  },
+  "test-buffer-over-max-length.js": {
+    "total": 11,
+    "failing": [
+      16
+    ]
+  },
+  "test-buffer-parent-property.js": {
+    "total": 9,
+    "failing": []
+  },
+  "test-buffer-read.js": {
+    "total": 30,
+    "failing": []
+  },
+  "test-buffer-readdouble.js": {
+    "total": 82,
+    "failing": []
+  },
+  "test-buffer-readfloat.js": {
+    "total": 51,
+    "failing": []
+  },
+  "test-buffer-readint.js": {
+    "total": 7,
+    "failing": []
+  },
+  "test-buffer-readuint.js": {
+    "total": 7,
+    "failing": []
+  },
+  "test-buffer-safe-unsafe.js": {
+    "total": 10,
+    "failing": [
+      18,
+      21
+    ]
+  },
+  "test-buffer-slice.js": {
+    "total": 17,
+    "failing": []
+  },
+  "test-buffer-swap.js": {
+    "total": 11,
+    "failing": [
+      68,
+      77
+    ]
+  },
+  "test-buffer-tojson.js": {
+    "total": 5,
+    "failing": []
+  },
+  "test-buffer-tostring-range.js": {
+    "total": 67,
+    "failing": []
+  },
+  "test-buffer-tostring.js": {
+    "total": 6,
+    "failing": []
+  },
+  "test-buffer-write.js": {
+    "total": 20,
+    "failing": []
+  },
+  "test-buffer-writedouble.js": {
+    "total": 34,
+    "failing": []
+  },
+  "test-buffer-writefloat.js": {
+    "total": 34,
+    "failing": []
+  },
+  "test-buffer-writeint.js": {
+    "total": 8,
+    "failing": []
+  },
+  "test-buffer-writeuint.js": {
+    "total": 9,
+    "failing": []
+  },
+  "test-buffer-zero-fill-reset.js": {
+    "total": 3,
+    "failing": []
+  },
+  "test-buffer-zero-fill.js": {
+    "total": 6,
+    "failing": []
+  }
+}
