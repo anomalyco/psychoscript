@@ -1,4 +1,4 @@
-import { parse, type Program } from "acorn"
+import type { Program } from "acorn"
 import { fromJson, type Json } from "../data.js"
 import { type Call, DurableFn, Interrupted } from "./contract.js"
 import { fromBytes, header, type Snapshot, SnapshotError, toBytes } from "../snapshot/snapshot.js"
@@ -9,6 +9,7 @@ import { Interpreter } from "./interpreter.js"
 import type { Value } from "./objects.js"
 import { type Diagnostic, formatLocation, sourceLocation } from "./model.js"
 import { CANCELLED, Driver, SUSPENDED } from "./driver.js"
+import { BIGINT_LITERAL_TOO_LARGE, parseScript } from "./parser.js"
 import { Interruption } from "./signals.js"
 import { Source } from "./source.js"
 import { compileCodes, type Vm } from "../vm.js"
@@ -537,7 +538,7 @@ export const parseProgram = (
   code: string,
 ): { ok: true; program: Program; source: Source } | { ok: false; error: Diagnostic } => {
   try {
-    const program = parse(code, {
+    const program = parseScript(code, {
       ecmaVersion: "latest",
       sourceType: "script",
       allowReturnOutsideFunction: true,
@@ -582,6 +583,9 @@ const isAcornError = (error: SyntaxError): error is SyntaxError & AcornError => 
 const parseDiagnostic = (error: AcornError): Diagnostic => {
   const location = { line: error.loc.line, column: error.loc.column + 1 }
   const reason = error.message.replace(/ \(\d+:\d+\)$/, "")
+  if (reason === BIGINT_LITERAL_TOO_LARGE) {
+    return { kind: "ParseError", message: `RangeError: ${reason}${formatLocation(location)}`, location }
+  }
   const feature = reason === "Unexpected character '@'"
     ? "Decorators are not supported."
     : /^Private field '#/.test(reason)

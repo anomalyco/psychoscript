@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test"
 import { Host, Runtime } from "../src/index.js"
+import { MAX_BIGINT_BITS } from "../src/runtime/limits.js"
 import { failure, value } from "./run.js"
+
+// Firefox and Safari refuse BigInts past 2^20 bits; the limit stays under that.
+const max = MAX_BIGINT_BITS
+// 2^max - 1, the largest BigInt, without making 2^max on the way.
+const top = `((2n ** ${max - 1}n - 1n) * 2n + 1n)`
 
 // BigInts live inside the program. They cross no boundary: results, host arguments and JSON need text.
 
@@ -146,13 +152,57 @@ describe("BigInt", () => {
     expect(performance.now() - started).toBeLessThan(1000)
   })
 
-  test("a BigInt literal past the size limit is a RangeError, and so is ~ or - stepping past it", async () => {
-    const huge = `0x${"f".repeat(300_000)}n`
-    expect((await failure(`return String(${huge}).length`)).message).toContain("Maximum BigInt size exceeded")
-    expect((await failure("const max = (2n ** 1048575n - 1n) * 2n + 1n; return String(~max)")).message).toContain(
-      "Maximum BigInt size exceeded",
+  test("a BigInt literal past the size limit fails to parse, even where it never runs", async () => {
+    for (const huge of [`0x${"f".repeat(300_000)}n`, `0x${"f".repeat(max / 4)}fn`, `0b1${"0".repeat(max)}n`, `1${"0".repeat(330_000)}n`]) {
+      const error = await failure(`function never() { return ${huge} }\nreturn 1`)
+      expect(error.kind).toBe("ParseError")
+      expect(error.message).toBe("RangeError: Maximum BigInt size exceeded (line 1, col 27)")
+    }
+    expect(await value(`return [0x${"f".repeat(max / 4)}n === ${top}, String(0x${"0".repeat(1000)}1n)]`)).toEqual(
+      [true, "1"],
     )
-    expect(await value("const max = (2n ** 1048575n - 1n) * 2n + 1n; return String(-max === -max)")).toBe("true")
+  })
+
+  test("a BigInt lies in [-2^max, 2^max): stepping past either end is a RangeError", async () => {
+    expect(await value(`const top = ${top}; return [String(~top === -top - 1n), String((-top - 1n) / 2n === -(2n ** ${max - 1}n))]`)).toEqual(
+      ["true", "true"],
+    )
+    for (const code of ["let n = top; n++", "top + 1n", "-top - 2n", "-(-top - 1n)", "let n = -top - 1n; n--"]) {
+      expect((await failure(`const top = ${top}; ${code}; return 0`)).message).toContain("Maximum BigInt size exceeded")
+    }
+  })
+
+  test("refuses *, ** and << past the limit before computing, and computes them right up to it", async () => {
+    const half = `const half = 2n ** ${max / 2}n;`
+    expect(
+      await value(`${half} return [half * (half / 2n) === 2n ** ${max - 1}n, -half * half === -${top} - 1n,
+        (1n << ${max - 1}n) === 2n ** ${max - 1}n, (-1n << ${max}n) === -${top} - 1n, 3n ** 661000n > 0n,
+        String((half * 3n) >> ${max / 2}n), (half - 1n) * (half + 1n) === ${top}]`),
+    ).toEqual([true, true, true, true, true, "3", true])
+    for (const code of [
+      "half * half * 2n",
+      "(half + 1n) * half",
+      "(half * 2n) * (half * 2n)",
+      `2n ** ${max}n`,
+      "3n ** 662000n",
+      "(2n ** 70000n) ** 15n",
+      `1n << ${max}n`,
+      `3n << ${max - 1}n`,
+      `-3n << ${max - 1}n`,
+      `half << ${max / 2}n`,
+    ]) {
+      expect((await failure(`${half} return String(${code}).length`)).message).toContain("Maximum BigInt size exceeded")
+    }
+  })
+
+  test("BigInt() refuses text past the limit in any radix before converting it", async () => {
+    expect(
+      await value(`return [BigInt("0x" + "f".repeat(${max / 4})) === ${top},
+        BigInt("0b1" + "0".repeat(${max - 1})) === 2n ** ${max - 1}n, BigInt(" 0o" + "0".repeat(2000) + "7 ") === 7n]`),
+    ).toEqual([true, true, true])
+    for (const text of [`"0x1" + "0".repeat(${max / 4})`, `"0o" + "7".repeat(${Math.ceil(max / 3) + 1})`, `"0b1" + "0".repeat(${max})`]) {
+      expect((await failure(`return String(BigInt(${text})).length`)).message).toContain("Maximum BigInt size exceeded")
+    }
   })
 
   test("refuses to cross to the host or serialize to JSON without toJSON", async () => {
@@ -182,7 +232,7 @@ describe("BigInt", () => {
 
   test("join refuses a too-long result before converting", async () => {
     const started = performance.now()
-    const error = await failure("const x = 2n ** 1048575n; return new Array(100).fill(x).join('').length")
+    const error = await failure("const x = 2n ** 1048000n; return new Array(100).fill(x).join('').length")
     expect(error.message).toContain("Invalid string length")
     expect(performance.now() - started).toBeLessThan(500)
   })
@@ -190,7 +240,7 @@ describe("BigInt", () => {
   test("the default sort converts equal huge BigInts once", async () => {
     const started = performance.now()
     expect(
-      await value(`const base = 2n ** 1048575n
+      await value(`const base = 2n ** 1048000n
         const sorted = Array.from({ length: 200 }, (_, i) => base + BigInt((i * 3) % 5)).sort()
         return [sorted.length, String(sorted[0] - base), String(sorted[39] - base), String(sorted[40] - base),
           String(sorted[199] - base)]`),

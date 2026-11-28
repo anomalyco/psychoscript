@@ -15,8 +15,12 @@ npm install psychoscript
 bun add psychoscript
 ```
 
-Requires Node ≥ 24 or Bun ≥ 1.4. The API is Promise-based and has no dependency on Effect;
-`psychoscript/effect` offers the same API over [Effect](https://effect.website) (see [Using Effect](#using-effect)).
+Requires Node ≥ 24 or Bun ≥ 1.4, or a browser: Chrome and Edge ≥ 140, Firefox ≥ 134, Safari ≥ 18.2 (for
+`Promise.withResolvers`, `Uint8Array` base64 and hex, and `RegExp.escape`; a program calling `Math.sumPrecise` needs
+Chrome 147, Firefox 137 or Safari 26.2). In a browser the page must be a secure context (HTTPS or `localhost`), since
+each run gets its id from `crypto.randomUUID`, and programs get no `Buffer`. CI runs the tests in Chromium, Firefox and
+WebKit. The API is Promise-based and has no dependency on Effect; `psychoscript/effect` offers the same API over
+[Effect](https://effect.website) (see [Using Effect](#using-effect)).
 
 ## Quick start
 
@@ -249,7 +253,8 @@ defects become an `ExecutionFailure`.
 | `timeoutMs`      | none    | Active time a run may take, summed across resumes; checked between VM steps.                 |
 | `maxOutputBytes` | none    | UTF-8 bytes kept from the result and logs (warnings get an equal budget); the rest is cut.    |
 
-Fixed caps: a string at most 2^24 characters, an array at most 10,000,000 elements, at most 10,000 pending promises,
+Fixed caps: a string at most 2^24 characters, a BigInt at most 2^20 − 256 bits (under the 2^20 Firefox and Safari
+allow), an array at most 10,000,000 elements, at most 10,000 pending promises,
 and values nested at most 32 deep when they cross to or from the host. Exceeding one throws a `RangeError` in the
 program. There is no separate memory or step-count limit: bound runs with `timeoutMs`.
 
@@ -334,6 +339,7 @@ features that are out of scope by design (prototype mutation, `Proxy`, `eval`, s
 bun install
 bun run check            # typecheck, tests, and a packed-tarball check; run before pushing
 bun run test:roundtrip   # tests that also save and restore state mid-run
+bun run test:browser     # the browser job's tests in Chromium, Firefox and WebKit (bunx playwright install first)
 bun run bench
 bun run build            # dist/
 bun run script/sync-test262.ts ~/development/test262 && bun test test/test262.test.ts

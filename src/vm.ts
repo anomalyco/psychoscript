@@ -1,7 +1,7 @@
 import { parse, type Expression, type MemberExpression, type NewExpression } from "acorn"
 import type { Diagnostic } from "./runtime/model.js"
 import { conversions } from "./runtime/callback.js"
-import { locate, materialize, stackFrame } from "./runtime/errors.js"
+import { isHostStackOverflow, locate, materialize, stackFrame } from "./runtime/errors.js"
 import type { Interpreter } from "./runtime/interpreter.js"
 import { type Builtins, isErrorType } from "./runtime/intrinsics.js"
 import { checkArrayLength, checkStringLength } from "./runtime/limits.js"
@@ -218,8 +218,9 @@ export const compileCodes = (source: Source): ReadonlyArray<Code> | RangeError =
   try {
     return compileSource(source)
   } catch (error) {
-    if (!(error instanceof RangeError)) throw error
-    return error
+    if (error instanceof RangeError) return error
+    if (isHostStackOverflow(error)) return new RangeError(error.message)
+    throw error
   }
 }
 

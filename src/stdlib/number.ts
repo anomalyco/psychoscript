@@ -1,7 +1,7 @@
 import { constructor, constants, type Method, methods } from "../runtime/native.js"
 import { coerceToInteger, coerceToNumber, type Value } from "../runtime/objects.js"
 import { rangeError, syntaxError, typeError } from "../runtime/model.js"
-import { checkBigIntSize, MAX_BIGINT_BITS } from "../runtime/limits.js"
+import { bigIntTextTooLong, checkBigIntSize, MAX_BIGINT_BITS } from "../runtime/limits.js"
 import { describeValue } from "../runtime/references.js"
 import type { Interpreter } from "../runtime/interpreter.js"
 import { withPrimitives } from "../runtime/callback.js"
@@ -167,10 +167,26 @@ const maxDecimalDigits = Math.ceil(MAX_BIGINT_BITS * Math.log10(2)) + 1
 const stringToBigInt = (text: string): bigint => {
   const trimmed = text.trim()
   if (!bigintSyntax.test(trimmed)) throw syntaxError(`Cannot convert ${JSON.stringify(text.slice(0, 64))} to a BigInt.`)
-  if (trimmed.length > MAX_BIGINT_BITS + 2 || (/^[+-]?\d/.test(trimmed) && trimmed.length > maxDecimalDigits)) {
+  const radix = /^0[xob]/i.test(trimmed) ? radixes[trimmed[1]!.toLowerCase()]! : 10
+  if (trimmed.length > MAX_BIGINT_BITS + 2 || (radix === 10 && trimmed.length > maxDecimalDigits)) {
     throw rangeError("Maximum BigInt size exceeded")
   }
-  return checkBigIntSize(BigInt(trimmed))
+  if (bigIntTextTooLong(radix === 10 ? trimmed.replace(/^[+-]/, "") : trimmed.slice(2), radix)) {
+    throw rangeError("Maximum BigInt size exceeded")
+  }
+  return checkBigIntSize(parseBigInt(trimmed))
+}
+
+const radixes: Record<string, number> = { x: 16, o: 8, b: 2 }
+
+// The text was checked to fit, give or take a few bits; an engine that refuses it anyway gets the same RangeError.
+const parseBigInt = (text: string): bigint => {
+  try {
+    return BigInt(text)
+  } catch (error) {
+    if (error instanceof RangeError) throw rangeError("Maximum BigInt size exceeded")
+    throw error
+  }
 }
 
 // ToIndex: an integer from 0 to 2^53 - 1.
