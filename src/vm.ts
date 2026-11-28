@@ -148,7 +148,9 @@ const contiguous = <T>(): Array<T> => {
 
 // Register reads in `exec` go through this one function, so JSC types them from one profile that has seen every kind
 // of value, not from one per site that has seen only what the programs so far put there (and leaves the compiled loop
-// when a later program puts something else). The arithmetic arms read directly: their int fast paths need the types.
+// when a later program puts something else). The number fast paths of arithmetic arms read directly: their int math
+// needs the types (with `ld` the 1M-iteration loop is ~30% slower). Comparisons make booleans, so they use `ld`, and
+// so does ADD's string path.
 const ld = (r: ReadonlyArray<unknown>, i: number): unknown => r[i]
 
 const INITIAL_FUEL = 10_000
@@ -851,12 +853,14 @@ export class Vm {
               pc++
               continue
             }
+            const sb = ld(regs, sp - 1)
+            const sa = ld(regs, sp - 2)
             if (
-              (typeof a === "string" || typeof b === "string") &&
-              (a === null || (typeof a !== "object" && typeof a !== "symbol")) &&
-              (b === null || (typeof b !== "object" && typeof b !== "symbol"))
+              (typeof sa === "string" || typeof sb === "string") &&
+              (sa === null || (typeof sa !== "object" && typeof sa !== "symbol")) &&
+              (sb === null || (typeof sb !== "object" && typeof sb !== "symbol"))
             ) {
-              const s = (a as string) + (b as string)
+              const s = (sa as string) + (sb as string)
               sp--
               if (s.length > 16_777_216) {
                 frame.pc = pc
@@ -889,8 +893,8 @@ export class Vm {
           }
           case 46: {
             // Op.LT
-            const b = regs[sp - 1]
-            const a = regs[sp - 2]
+            const b = ld(regs, sp - 1)
+            const a = ld(regs, sp - 2)
             if (typeof a !== "number" || typeof b !== "number") break
             regs[--sp - 1] = a < b
             pc++
@@ -898,8 +902,8 @@ export class Vm {
           }
           case 47: {
             // Op.LE
-            const b = regs[sp - 1]
-            const a = regs[sp - 2]
+            const b = ld(regs, sp - 1)
+            const a = ld(regs, sp - 2)
             if (typeof a !== "number" || typeof b !== "number") break
             regs[--sp - 1] = a <= b
             pc++
@@ -907,8 +911,8 @@ export class Vm {
           }
           case 48: {
             // Op.GT
-            const b = regs[sp - 1]
-            const a = regs[sp - 2]
+            const b = ld(regs, sp - 1)
+            const a = ld(regs, sp - 2)
             if (typeof a !== "number" || typeof b !== "number") break
             regs[--sp - 1] = a > b
             pc++
@@ -916,8 +920,8 @@ export class Vm {
           }
           case 49: {
             // Op.GE
-            const b = regs[sp - 1]
-            const a = regs[sp - 2]
+            const b = ld(regs, sp - 1)
+            const a = ld(regs, sp - 2)
             if (typeof a !== "number" || typeof b !== "number") break
             regs[--sp - 1] = a >= b
             pc++
