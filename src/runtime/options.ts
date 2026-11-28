@@ -1,4 +1,5 @@
 import type { Json } from "../data.js"
+import { type Engine, engines, preferEngine } from "../engine.js"
 import type { Run, Setup } from "./execute.js"
 
 /** Budgets enforced on each run. Time counts active time only, across every resume of a run. */
@@ -45,6 +46,12 @@ export type Options<G extends Globals = Globals> = {
   readonly limits?: Limits | undefined
   /** How host calls receive program functions and promises inside arguments; both fail the call by default. */
   readonly translate?: Translate | undefined
+  /**
+   * The JavaScript engine running psychoscript: `"jsc"` (Bun, Safari), `"v8"` (Node, Chrome) or `"spidermonkey"`
+   * (Firefox). Only a speed hint: it picks the program that warms the VM up when the process's first run starts, so
+   * the first runtime made with it decides. Detected from `Error.stack`'s layout when no runtime gives it.
+   */
+  readonly engine?: Engine | undefined
 }
 
 /** Options for `Runtime.program`. */
@@ -61,19 +68,26 @@ export type SuspendOptions = {
   readonly maxBytes?: number
 }
 
-/** A runtime's setup from its options. Throws a `RangeError` for invalid limits. */
-export const makeSetup = <R>(options: Options<Globals>): Setup<R> => ({
-  limits: {
-    timeoutMs: validateLimit("timeoutMs", options.limits?.timeoutMs, 1),
-    maxOutputBytes: validateLimit("maxOutputBytes", options.limits?.maxOutputBytes, 0),
-  },
-  globals: options.globals,
-  modules: options.modules,
-  translate: {
-    functions: options.translate?.functions ?? "error",
-    promises: options.translate?.promises ?? "error",
-  },
-})
+/** A runtime's setup from its options. Throws a `RangeError` for invalid limits or an unknown engine. */
+export const makeSetup = <R>(options: Options<Globals>): Setup<R> => {
+  const setup: Setup<R> = {
+    limits: {
+      timeoutMs: validateLimit("timeoutMs", options.limits?.timeoutMs, 1),
+      maxOutputBytes: validateLimit("maxOutputBytes", options.limits?.maxOutputBytes, 0),
+    },
+    globals: options.globals,
+    modules: options.modules,
+    translate: {
+      functions: options.translate?.functions ?? "error",
+      promises: options.translate?.promises ?? "error",
+    },
+  }
+  if (options.engine !== undefined) {
+    if (!engines.includes(options.engine)) throw new RangeError(`engine must be one of ${engines.join(", ")}.`)
+    preferEngine(options.engine)
+  }
+  return setup
+}
 
 const validateLimit = (name: string, value: number | undefined, minimum: number): number | undefined => {
   if (value !== undefined && (!Number.isSafeInteger(value) || value < minimum)) {

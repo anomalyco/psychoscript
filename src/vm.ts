@@ -88,6 +88,7 @@ import {
   Resume,
 } from "./runtime/signals.js"
 import { Source } from "./runtime/source.js"
+import { currentEngine } from "./engine.js"
 import type { HostCall, Stop } from "./scheduler.js"
 import { compiledPrelude } from "./prelude/prelude.js"
 import { constructRegExp } from "./stdlib/regexp.js"
@@ -144,6 +145,11 @@ const contiguous = <T>(): Array<T> => {
   a.pop()
   return a as Array<T>
 }
+
+// Register reads in `exec` go through this one function, so JSC types them from one profile that has seen every kind
+// of value, not from one per site that has seen only what the programs so far put there (and leaves the compiled loop
+// when a later program puts something else). The arithmetic arms read directly: their int fast paths need the types.
+const ld = (r: ReadonlyArray<unknown>, i: number): unknown => r[i]
 
 const INITIAL_FUEL = 10_000
 /**
@@ -595,17 +601,13 @@ export class Vm {
             sp--
             pc++
             continue
-          case 6: // Op.POPN
-            sp -= w >>> 16
-            pc++
-            continue
           case 7: // Op.DUP
-            regs[sp] = regs[sp - 1]
+            regs[sp] = ld(regs, sp - 1)
             sp++
             pc++
             continue
           case 8: // Op.PICK
-            regs[sp] = regs[sp - 1 - ((w >>> 8) & 0xff)]
+            regs[sp] = ld(regs, sp - 1 - ((w >>> 8) & 0xff))
             sp++
             pc++
             continue
@@ -616,7 +618,7 @@ export class Vm {
           case 10: {
             // Op.GET_LOCAL
             const slot = w >>> 16
-            const v = regs[slot]
+            const v = ld(regs, slot)
             if (v === hole) this.failTdz(frame, fcode.localNames[slot]!, pc, sp)
             regs[sp++] = v
             pc++
@@ -626,9 +628,9 @@ export class Vm {
             // Op.PUT_LOCAL
             const slot = w >>> 16
             const kind = (w >>> 8) & 0xff
-            const v = regs[--sp]
-            if (kind !== 1 && (regs[slot] === hole || kind === 2)) {
-              this.failPut(frame, fcode.localNames[slot]!, regs[slot], pc, sp)
+            const v = ld(regs, --sp)
+            if (kind !== 1 && (ld(regs, slot) === hole || kind === 2)) {
+              this.failPut(frame, fcode.localNames[slot]!, ld(regs, slot), pc, sp)
             }
             regs[slot] = v
             pc++
@@ -641,21 +643,21 @@ export class Vm {
           case 13: {
             // Op.NEW_CELL
             const slot = w >>> 16
-            regs[slot] = new CellCtor((w & 0xff00) === 0x0100 ? regs[slot] : hole)
+            regs[slot] = new CellCtor((w & 0xff00) === 0x0100 ? ld(regs, slot) : hole)
             pc++
             continue
           }
           case 14: {
             // Op.COPY_CELL
             const slot = w >>> 16
-            regs[slot] = new CellCtor((regs[slot] as Cell).v)
+            regs[slot] = new CellCtor((ld(regs, slot) as Cell).v)
             pc++
             continue
           }
           case 15: {
             // Op.GET_CELL
             const slot = w >>> 16
-            const v = (regs[slot] as Cell).v
+            const v = (ld(regs, slot) as Cell).v
             if (v === hole) this.failTdz(frame, fcode.localNames[slot]!, pc, sp)
             regs[sp++] = v
             pc++
@@ -665,8 +667,8 @@ export class Vm {
             // Op.PUT_CELL
             const slot = w >>> 16
             const kind = (w >>> 8) & 0xff
-            const v = regs[--sp]
-            const cell = regs[slot] as Cell
+            const v = ld(regs, --sp)
+            const cell = ld(regs, slot) as Cell
             if (kind !== 1 && (cell.v === hole || kind === 2)) {
               this.failPut(frame, fcode.localNames[slot]!, cell.v, pc, sp)
             }
@@ -687,7 +689,7 @@ export class Vm {
             // Op.PUT_UPVAL
             const idx = w >>> 16
             const kind = (w >>> 8) & 0xff
-            const v = regs[--sp]
+            const v = ld(regs, --sp)
             const cell = cells[idx]!
             if (kind !== 1 && (cell.v === hole || kind === 2)) {
               this.failPut(frame, fcode.upvalNames[idx]!, cell.v, pc, sp)
@@ -723,19 +725,9 @@ export class Vm {
             regs[sp++] = this.makeClosure(fcode, w >>> 16, regs, cells)
             pc++
             continue
-          case 23: // Op.SET_NAME
-            this.execSetName(regs, consts, (w >>> 8) & 0xff, w >>> 16, sp)
-            pc++
-            continue
-          case 24: // Op.IMPORT
-            frame.pc = pc
-            frame.sp = sp
-            sp = this.execImport(frame, (w >>> 8) & 0xff, w >>> 16, pc, sp)
-            pc++
-            continue
           case 25: {
             // Op.GET_PROP
-            const o = regs[sp - 1] as Value
+            const o = ld(regs, sp - 1) as Value
             const key = consts[w >>> 16] as string
             const mode = (w >>> 8) & 0xff
             if (key === "length" && mode === 0) {
@@ -762,8 +754,8 @@ export class Vm {
           }
           case 26: {
             // Op.GET_ELEM
-            const keyVal = regs[sp - 1] as Value
-            const o = regs[sp - 2] as Value
+            const keyVal = ld(regs, sp - 1) as Value
+            const o = ld(regs, sp - 2) as Value
             const mode = (w >>> 8) & 0xff
             if (
               mode === 0 &&
@@ -774,7 +766,7 @@ export class Vm {
               keyVal in o.items
             ) {
               sp--
-              regs[sp - 1] = o.items[keyVal]
+              regs[sp - 1] = ld(o.items, keyVal)
               pc++
               continue
             }
@@ -788,22 +780,11 @@ export class Vm {
             pc++
             continue
           }
-          case 27: {
-            // Op.PUT_PROP
-            const v = regs[--sp] as Value
-            const o = regs[sp - 1] as Value
-            frame.pc = pc
-            frame.sp = sp
-            if (this.execPutProp(frame, o, consts[w >>> 16] as string, v, pc, sp)) continue outer
-            regs[sp - 1] = v
-            pc++
-            continue
-          }
           case 28: {
             // Op.PUT_ELEM
-            const v = regs[--sp] as Value
-            const keyVal = regs[--sp] as Value
-            const o = regs[sp - 1] as Value
+            const v = ld(regs, sp - 1) as Value
+            const keyVal = ld(regs, sp - 2) as Value
+            const o = ld(regs, sp - 3) as Value
             if (
               typeof keyVal === "number" &&
               keyVal >= 0 &&
@@ -818,77 +799,34 @@ export class Vm {
               if (keyVal < items.length && (keyVal in items || this.plainArrayChain(o))) {
                 if (keyVal === 0) items[0] = ""
                 items[keyVal] = v
+                sp -= 2
                 regs[sp - 1] = v
                 pc++
                 continue
               }
               if (keyVal === items.length && keyVal < 10_000_000 && this.plainArrayChain(o)) {
                 items.push(v)
+                sp -= 2
                 regs[sp - 1] = v
                 pc++
                 continue
               }
             }
-            frame.pc = pc
-            frame.sp = sp
-            if (this.execPutProp(frame, o, propertyKey(keyVal), v, pc, sp)) continue outer
-            regs[sp - 1] = v
-            pc++
-            continue
+            break
           }
-          case 29: // Op.DELETE_PROP
-            frame.pc = pc
-            frame.sp = sp
-            regs[sp - 1] = this.execDeleteProp(fcode, regs[sp - 1] as Value, consts[w >>> 16] as string, pc)
-            pc++
-            continue
-          case 30: {
-            // Op.DELETE_ELEM
-            const keyVal = regs[--sp] as Value
-            const o = regs[sp - 1] as Value
-            frame.pc = pc
-            frame.sp = sp
-            if (this.execDeleteElem(frame, o, keyVal, pc, sp)) continue outer
-            sp = frame.sp
-            pc++
-            continue
-          }
-          case 31: // Op.CHECK_BASE
-            frame.pc = pc
-            frame.sp = sp
-            this.execCheckBase(fcode, (w >>> 8) & 0xff, w >>> 16, regs, sp, pc)
-            pc++
-            continue
           case 32: {
             // Op.TO_KEY
-            const v = regs[sp - 1] as Value
-            if (typeof v === "string" || typeof v === "number" || typeof v === "symbol") {
-              pc++
-              continue
-            }
-            if (this.execToKey(frame, v, pc, sp)) continue outer
+            const v = ld(regs, sp - 1) as Value
+            if (typeof v !== "string" && typeof v !== "number" && typeof v !== "symbol") break
             pc++
             continue
           }
           case 33: {
             // Op.IN
-            const rhs = regs[--sp] as Value
-            const lhs = regs[sp - 1] as Value
-            if (typeof lhs === "number" && lhs >= 0 && (lhs | 0) === lhs && rhs instanceof ArrCtor) {
-              regs[sp - 1] = lhs in rhs.items
-              pc++
-              continue
-            }
-            if (this.execIn(frame, lhs, rhs, pc, sp)) continue outer
-            pc++
-            continue
-          }
-          case 34: {
-            // Op.INSTANCEOF
-            const rhs = regs[--sp] as Value
-            frame.pc = pc
-            frame.sp = sp
-            if (this.execInstanceof(frame, regs[sp - 1] as Value, rhs, pc, sp)) continue outer
+            const rhs = ld(regs, sp - 1)
+            const lhs = ld(regs, sp - 2)
+            if (typeof lhs !== "number" || lhs < 0 || (lhs | 0) !== lhs || !(rhs instanceof ArrCtor)) break
+            regs[--sp - 1] = lhs in rhs.items
             pc++
             continue
           }
@@ -900,45 +838,16 @@ export class Vm {
             sp = this.execNewArray(regs, w >>> 16, sp)
             pc++
             continue
-          case 37: // Op.ARRAY_APPEND
-            frame.pc = pc
-            frame.sp = sp
-            sp = this.execArrayAppend(regs, (w >>> 8) & 0xff, sp)
-            pc++
-            continue
           case 38: // Op.DEFINE_FIELD
             sp = this.execDefineField(regs, consts, (w >>> 8) & 0xff, w >>> 16, sp)
             pc++
             continue
-          case 39: // Op.COPY_DATA_PROPS
-            frame.pc = pc
-            frame.sp = --sp
-            if (this.execCopyDataProps(frame, regs[sp - 1] as Obj, regs[sp] as Value, pc, sp)) continue outer
-            pc++
-            continue
-          case 40: // Op.COPY_REST
-            frame.pc = pc
-            frame.sp = sp
-            sp = this.execCopyRest(frame, regs, w >>> 16, pc, sp)
-            if (sp < 0) continue outer
-            pc++
-            continue
-          case 41: // Op.TEMPLATE
-            regs[sp++] = this.getTemplateObject(fcode, consts[w >>> 16] as TemplateSite)
-            pc++
-            continue
-          case 42: // Op.REGEXP
-            frame.pc = pc
-            frame.sp = sp
-            regs[sp++] = this.execRegExp(fcode, consts[w >>> 16] as RegExpSite, pc)
-            pc++
-            continue
           case 43: {
             // Op.ADD
-            const b = regs[--sp] as Value
-            const a = regs[sp - 1] as Value
+            const b = regs[sp - 1]
+            const a = regs[sp - 2]
             if (typeof a === "number" && typeof b === "number") {
-              regs[sp - 1] = a + b
+              regs[--sp - 1] = a + b
               pc++
               continue
             }
@@ -948,6 +857,7 @@ export class Vm {
               (b === null || (typeof b !== "object" && typeof b !== "symbol"))
             ) {
               const s = (a as string) + (b as string)
+              sp--
               if (s.length > 16_777_216) {
                 frame.pc = pc
                 frame.sp = sp
@@ -957,129 +867,83 @@ export class Vm {
               pc++
               continue
             }
-            frame.pc = pc
-            frame.sp = sp
-            if (this.execBinarySlow(frame, "+", a, b, pc, sp)) continue outer
-            pc++
-            continue
+            break
           }
           case 44: {
             // Op.SUB
-            const b = regs[--sp] as Value
-            const a = regs[sp - 1] as Value
-            if (typeof a === "number" && typeof b === "number") {
-              regs[sp - 1] = a - b
-              pc++
-              continue
-            }
-            frame.pc = pc
-            frame.sp = sp
-            if (this.execBinarySlow(frame, "-", a, b, pc, sp)) continue outer
+            const b = regs[sp - 1]
+            const a = regs[sp - 2]
+            if (typeof a !== "number" || typeof b !== "number") break
+            regs[--sp - 1] = a - b
             pc++
             continue
           }
           case 45: {
             // Op.MUL
-            const b = regs[--sp] as Value
-            const a = regs[sp - 1] as Value
-            if (typeof a === "number" && typeof b === "number") {
-              regs[sp - 1] = a * b
-              pc++
-              continue
-            }
-            frame.pc = pc
-            frame.sp = sp
-            if (this.execBinarySlow(frame, "*", a, b, pc, sp)) continue outer
+            const b = regs[sp - 1]
+            const a = regs[sp - 2]
+            if (typeof a !== "number" || typeof b !== "number") break
+            regs[--sp - 1] = a * b
             pc++
             continue
           }
           case 46: {
             // Op.LT
-            const b = regs[--sp] as Value
-            const a = regs[sp - 1] as Value
-            if (typeof a === "number" && typeof b === "number") {
-              regs[sp - 1] = a < b
-              pc++
-              continue
-            }
-            frame.pc = pc
-            frame.sp = sp
-            if (this.execBinarySlow(frame, "<", a, b, pc, sp)) continue outer
+            const b = regs[sp - 1]
+            const a = regs[sp - 2]
+            if (typeof a !== "number" || typeof b !== "number") break
+            regs[--sp - 1] = a < b
             pc++
             continue
           }
           case 47: {
             // Op.LE
-            const b = regs[--sp] as Value
-            const a = regs[sp - 1] as Value
-            if (typeof a === "number" && typeof b === "number") {
-              regs[sp - 1] = a <= b
-              pc++
-              continue
-            }
-            frame.pc = pc
-            frame.sp = sp
-            if (this.execBinarySlow(frame, "<=", a, b, pc, sp)) continue outer
+            const b = regs[sp - 1]
+            const a = regs[sp - 2]
+            if (typeof a !== "number" || typeof b !== "number") break
+            regs[--sp - 1] = a <= b
             pc++
             continue
           }
           case 48: {
             // Op.GT
-            const b = regs[--sp] as Value
-            const a = regs[sp - 1] as Value
-            if (typeof a === "number" && typeof b === "number") {
-              regs[sp - 1] = a > b
-              pc++
-              continue
-            }
-            frame.pc = pc
-            frame.sp = sp
-            if (this.execBinarySlow(frame, ">", a, b, pc, sp)) continue outer
+            const b = regs[sp - 1]
+            const a = regs[sp - 2]
+            if (typeof a !== "number" || typeof b !== "number") break
+            regs[--sp - 1] = a > b
             pc++
             continue
           }
           case 49: {
             // Op.GE
-            const b = regs[--sp] as Value
-            const a = regs[sp - 1] as Value
-            if (typeof a === "number" && typeof b === "number") {
-              regs[sp - 1] = a >= b
-              pc++
-              continue
-            }
-            frame.pc = pc
-            frame.sp = sp
-            if (this.execBinarySlow(frame, ">=", a, b, pc, sp)) continue outer
+            const b = regs[sp - 1]
+            const a = regs[sp - 2]
+            if (typeof a !== "number" || typeof b !== "number") break
+            regs[--sp - 1] = a >= b
             pc++
             continue
           }
           case 50: {
             // Op.SEQ
-            const b = regs[--sp]
-            regs[sp - 1] = regs[sp - 1] === b
+            const b = ld(regs, --sp)
+            regs[sp - 1] = ld(regs, sp - 1) === b
             pc++
             continue
           }
           case 51: {
             // Op.SNE
-            const b = regs[--sp]
-            regs[sp - 1] = regs[sp - 1] !== b
+            const b = ld(regs, --sp)
+            regs[sp - 1] = ld(regs, sp - 1) !== b
             pc++
             continue
           }
           case 52: {
             // Op.BINOP
-            const b = regs[--sp] as Value
-            const a = regs[sp - 1] as Value
+            const b = regs[sp - 1]
+            const a = regs[sp - 2]
+            if (typeof a !== "number" || typeof b !== "number") break
             const sub = (w >>> 8) & 0xff
-            if (typeof a === "number" && typeof b === "number") {
-              regs[sp - 1] = sub === 1 ? a % b : this.execBinopNum(sub, a, b)
-              pc++
-              continue
-            }
-            frame.pc = pc
-            frame.sp = sp
-            if (this.execBinopSlow(frame, sub, a, b, pc, sp)) continue outer
+            regs[--sp - 1] = sub === 1 ? a % b : this.execBinopNum(sub, a, b)
             pc++
             continue
           }
@@ -1092,24 +956,16 @@ export class Vm {
               pc++
               continue
             }
-            frame.pc = pc
-            frame.sp = sp
-            if (this.execUnarySlow(frame, sub, v, pc, sp)) continue outer
-            pc++
-            continue
+            break
           }
           case 54: // Op.NOT
-            regs[sp - 1] = !regs[sp - 1]
+            regs[sp - 1] = !ld(regs, sp - 1)
             pc++
             continue
           case 55: {
             // Op.TO_NUMERIC
             const v = regs[sp - 1] as Value
-            if (typeof v === "number") {
-              pc++
-              continue
-            }
-            if (this.execToNumericSlow(frame, (w >>> 8) & 0xff, v, pc, sp)) continue outer
+            if (typeof v !== "number") break
             pc++
             continue
           }
@@ -1133,13 +989,11 @@ export class Vm {
               pc++
               continue
             }
-            if (this.execIncSlow(frame, (w >>> 8) & 0xff, v, pc, sp)) continue outer
-            pc++
-            continue
+            break
           }
           case 57: {
             // Op.TO_STRING
-            const v = regs[sp - 1] as Value
+            const v = ld(regs, sp - 1) as Value
             if (typeof v === "string") {
               pc++
               continue
@@ -1149,16 +1003,14 @@ export class Vm {
               pc++
               continue
             }
-            if (this.execToStringSlow(frame, (w >>> 8) & 0xff, v, pc, sp)) continue outer
-            pc++
-            continue
+            break
           }
           case 58: {
             // Op.CONCAT
             const n = w >>> 16
             if (n === 2) {
-              const b = regs[--sp] as string
-              const s = (regs[sp - 1] as string) + b
+              const b = ld(regs, --sp) as string
+              const s = (ld(regs, sp - 1) as string) + b
               if (s.length > 16_777_216) {
                 frame.pc = pc
                 frame.sp = sp
@@ -1168,11 +1020,7 @@ export class Vm {
               pc++
               continue
             }
-            frame.pc = pc
-            frame.sp = sp
-            sp = this.execConcat(regs, n, sp)
-            pc++
-            continue
+            break
           }
           case 59: // Op.JUMP
             pc = w >>> 16
@@ -1186,16 +1034,16 @@ export class Vm {
             }
             continue
           case 61: // Op.JUMP_IF_FALSE
-            if (regs[--sp]) pc++
+            if (ld(regs, --sp)) pc++
             else pc = w >>> 16
             continue
           case 62: // Op.JUMP_IF_TRUE
-            if (regs[--sp]) pc = w >>> 16
+            if (ld(regs, --sp)) pc = w >>> 16
             else pc++
             continue
           case 63: {
             // Op.JUMP_COND
-            const v = regs[sp - 1]
+            const v = ld(regs, sp - 1)
             const sub = (w >>> 8) & 0xff
             if (sub >= 4) {
               if (v === null || v === undefined) {
@@ -1216,17 +1064,10 @@ export class Vm {
             }
             continue
           }
-          case 64: // Op.THROW
-            this.execThrow(frame, regs[--sp] as Value, pc, sp)
-          case 65: // Op.THROW_ERROR
-            this.execThrowError(frame, w >>> 16, pc, sp)
-          case 66: // Op.END_FINALLY
-            pc = this.execEndFinally(frame, w >>> 16, pc, sp)
-            continue
           case 67: // Op.RETURN
           case 87: {
             // Op.END_PROGRAM
-            const v = regs[sp - 1] as Value
+            const v = ld(regs, sp - 1) as Value
             if (frame.mode === 0) {
               frames.pop()
               if (frame.counted) this.depth--
@@ -1239,25 +1080,11 @@ export class Vm {
             if (this.execReturnSlow(frame, v, pc, sp)) continue outer
             return 0
           }
-          case 68: // Op.NOP
-            pc++
-            continue
-          case 69: {
-            // Op.EXTRA
-            const nextPc = this.execExtra(frame, w, pc, sp)
-            if (nextPc < 0) {
-              if (nextPc === -1) continue outer
-              return -2 - nextPc
-            }
-            sp = frame.sp
-            pc = nextPc
-            continue
-          }
           case 70: {
             // Op.CALL
             const n = (w >>> 8) & 0xff
             const base = sp - n
-            const callee = regs[base - 1]
+            const callee = ld(regs, base - 1)
             if (callee instanceof FnCtor) {
               const c = callee.code
               // Not async, generator, needing arguments, or a class constructor.
@@ -1274,14 +1101,14 @@ export class Vm {
                 const r = f.regs
                 const p = c.params
                 if (p === 1) {
-                  r[0] = n > 0 ? regs[base] : undefined
+                  r[0] = n > 0 ? ld(regs, base) : undefined
                 } else if (p === 2) {
-                  r[0] = n > 0 ? regs[base] : undefined
-                  r[1] = n > 1 ? regs[base + 1] : undefined
+                  r[0] = n > 0 ? ld(regs, base) : undefined
+                  r[1] = n > 1 ? ld(regs, base + 1) : undefined
                 } else if (p > 2) {
                   this.copyParams(r, regs, base, n, p)
                 }
-                f.thisValue = regs[base - 2] as Value
+                f.thisValue = ld(regs, base - 2) as Value
                 f.origin = counted ? undefined : (fcode.flags & 64) === 0 ? fcode.siteAt(pc) : frame.origin
                 frame.pc = pc
                 frame.sp = base - 2
@@ -1307,32 +1134,9 @@ export class Vm {
             if (this.fuel <= 0) return 1
             continue
           }
-          case 71: {
-            // Op.CALL_SPREAD
-            const called = this.execCallSpread(frame, pc, sp)
-            if (called === 1) {
-              if (this.fuel <= 0) return 1
-              continue outer
-            }
-            if (called === 2) return 2
-            sp = frame.sp
-            pc++
-            frame.pc = pc
-            if (this.fuel <= 0) return 1
-            continue
-          }
           case 72: {
             // Op.NEW
             const made = this.execNew(frame, (w >>> 8) & 0xff, pc, sp)
-            if (made === 1) continue outer
-            if (made === 2) return 2
-            sp = frame.sp
-            pc++
-            continue
-          }
-          case 73: {
-            // Op.NEW_SPREAD
-            const made = this.execNewSpread(frame, pc, sp)
             if (made === 1) continue outer
             if (made === 2) return 2
             sp = frame.sp
@@ -1354,7 +1158,7 @@ export class Vm {
             continue
           case 76: {
             // Op.ITER_STEP
-            const rec = regs[(w >>> 8) & 0xff]
+            const rec = ld(regs, (w >>> 8) & 0xff)
             if (rec instanceof PositionCtor) {
               const step = rec.step()
               if (!step.done) {
@@ -1365,40 +1169,15 @@ export class Vm {
               }
               continue
             }
-            if (this.execIterStepSlow(frame, rec as CustomIter, w >>> 16, pc, sp)) continue outer
-            sp = frame.sp
-            pc = frame.pc
-            continue
+            break
           }
-          case 77: // Op.ITER_RESULT
-            pc = this.execIterResult(frame, (w >>> 8) & 0xff, w >>> 16, pc, sp)
-            if (pc < 0) continue outer
-            sp = frame.sp
-            continue
           case 78: // Op.ITER_CLOSE
             pc = this.execIterClose(frame, (w >>> 8) & 0xff, w >>> 16, pc, sp)
             if (pc < 0) continue outer
             sp = frame.sp
             continue
-          case 79: // Op.ITER_APPEND_ALL
-            pc = this.execIterAppendAll(frame, (w >>> 8) & 0xff, w >>> 16, pc, sp)
-            continue
-          case 80: // Op.FOR_IN
-            frame.pc = pc
-            frame.sp = sp
-            regs[sp - 1] = this.execForIn(fcode, regs[sp - 1] as Value, pc)
-            pc++
-            continue
-          case 81: // Op.GENERATOR_START
-            this.onGeneratorStart(frame, pc, sp)
-            continue outer
-          case 82: // Op.YIELD
-            if (this.onYield(frame, pc, sp)) continue outer
-            sp = frame.sp
-            pc = frame.pc
-            continue
           case 83: // Op.RESUME
-            if (regs[sp - 1] === 0) {
+            if (ld(regs, sp - 1) === 0) {
               sp--
               pc = w >>> 16
               continue
@@ -1409,70 +1188,19 @@ export class Vm {
           case 84: // Op.AWAIT
             this.onAwait(frame, (w >>> 8) & 0xff, pc, sp)
             continue outer
-          case 85: // Op.YSTAR
-            frame.pc = pc
-            frame.sp = sp
-            pc = this.onYstar(frame, (w >>> 8) & 0xff, w >>> 16, pc, sp)
-            if (pc < 0) continue outer
-            sp = frame.sp
-            continue
-          case 86: // Op.YSTAR_RESULT
-            frame.pc = pc
-            frame.sp = sp
-            pc = this.onYstarResult(frame, (w >>> 8) & 0xff, w >>> 16, pc, sp)
-            if (pc < 0) continue outer
-            sp = frame.sp
-            continue
-          case 88: // Op.DEFINE_ACCESSOR
-            sp = this.execDefineAccessor(regs, consts, (w >>> 8) & 0xff, w >>> 16, sp)
-            pc++
-            continue
-          case 89: // Op.CLASS
-            sp = this.execClass(frame, (w >>> 8) & 0xff, pc, sp)
-            pc++
-            continue
-          case 90: // Op.DEFINE_METHOD
-            sp = this.execDefineMethod(regs, consts, (w >>> 8) & 0xff, w >>> 16, sp)
-            pc++
-            continue
-          case 91: // Op.SET_FIELDS
-            sp = this.execSetFields(regs, sp)
-            pc++
-            continue
-          case 92: {
-            // Op.INIT_FIELDS
-            frame.pc = pc
-            const called = this.execInitFields(frame, (w >>> 8) & 0xff, pc, sp)
-            if (called === 1) {
-              if (this.fuel <= 0) return 1
-              continue outer
-            }
-            if (called === 2) return 2
-            sp = frame.sp
-            pc++
-            frame.pc = pc
-            continue
-          }
-          case 93: // Op.SUPER_CALL
-          case 94: // Op.SUPER_BIND
-          case 96: // Op.GET_SUPER
-          case 98: // Op.SET_HOME
-          case 97: {
-            // Op.PUT_SUPER
-            frame.pc = pc
-            frame.sp = sp
-            const nextPc = this.execWide(frame, w & 0xff, (w >>> 8) & 0xff, w >>> 16, pc)
-            if (nextPc < 0) {
-              if (nextPc === -1) continue outer
-              return -2 - nextPc
-            }
-            sp = frame.sp
-            pc = nextPc
-            continue
-          }
-          default:
-            this.failOpcode(w & 0xff)
         }
+        // Rare instructions and the slow paths of the others (an arm `break`s with the stack as the instruction found it)
+        // share this one call. JSC compiles `exec` from the arms it has seen run, and leaves the compiled loop for the
+        // rest of the slice at one it has not; one shared site is seen run by the first program that needs any of them.
+        frame.pc = pc
+        frame.sp = sp
+        const nextPc = this.execWide(frame, w & 0xff, (w >>> 8) & 0xff, w >>> 16, pc)
+        if (nextPc < 0) {
+          if (nextPc === -1) continue outer
+          return -2 - nextPc
+        }
+        sp = frame.sp
+        pc = nextPc
       }
     }
   }
@@ -1526,28 +1254,12 @@ export class Vm {
     return new Position(forInKeys(this.ctx, val, fcode.siteAt(pc)!), "values", this.ctx.builtins.Array)
   }
 
-  private onGeneratorStart(frame: Frame, pc: number, sp: number): void {
-    execGeneratorStart(this, frame, pc, sp)
-  }
-
-  private onYield(frame: Frame, pc: number, sp: number): boolean {
-    return execYield(this, frame, pc, sp)
-  }
-
   private onResume(frame: Frame, bx: number, pc: number, sp: number): number {
     return execResume(frame, bx, pc, sp)
   }
 
   private onAwait(frame: Frame, flag: number, pc: number, sp: number): void {
     execAwait(this, frame, flag, pc, sp)
-  }
-
-  private onYstar(frame: Frame, slot: number, bx: number, pc: number, sp: number): number {
-    return execYstar(this, frame, slot, bx, pc, sp)
-  }
-
-  private onYstarResult(frame: Frame, slot: number, bx: number, pc: number, sp: number): number {
-    return execYstarResult(this, frame, slot, bx, pc, sp)
   }
 
   private failOpcode(op: number): never {
@@ -3145,6 +2857,8 @@ export class Vm {
     const cells = frame.cells
     let sp = frame.sp
     switch (op) {
+      case Op.EXTRA:
+        return this.execExtra(frame, fcode.code[pc]!, pc, sp)
       case Op.PUSH_UNDEF:
         regs[sp++] = undefined
         frame.sp = sp
@@ -3587,7 +3301,7 @@ export class Vm {
         return pc + 1
       }
       default:
-        throw new Error(`Unexpected wide op ${op}`)
+        this.failOpcode(op)
     }
   }
 }
@@ -3673,53 +3387,90 @@ const normalizeItems = (value: unknown) => {
 
 let warmed = false
 
-const WARMUP_SOURCE = [
-  "return (async () => {",
-  "  let totalSum = 0",
-  "  const fib = (n) => (n < 2 ? n : fib(n - 1) + fib(n - 2))",
-  "  const restFn = (a, b, ...r) => r.length",
-  "  const fiveFn = (a, b, c, d, e) => (a === b ? c : d) !== e ? 1 : 0",
-  "  const work = async (i) => { await null; return i * 2 }",
-  "  function* range(n) { for (let i = 0; i < n; i++) yield i }",
-  "  for (let r = 0; r < 12; r++) {",
-  "    let sum = 0",
-  "    for (let i = 0; i < 6; i++) sum = (sum + i * 3 + (i === 2 ? 1 : 0)) % 1000003",
-  "    sum += fib(3) + restFn(1, 2, 3) + fiveFn(r & 1, 1, 2, work, fib)",
-  "    for (const x of range(3)) sum += x",
-  '    let out = ""',
-  "    for (let i = 0; i < 3; i++) out += String.fromCharCode(97 + (i % 26))",
-  "    const parts = []",
-  "    for (let i = 0; i < 3; i++) parts.push(`item-${i}`)",
-  "    const map = new Map(), set = new Set()",
-  '    for (let i = 0; i < 4; i++) { map.set("k" + (i % 2), i); set.add(i % 2) }',
-  "    for (const [k, v] of map) sum += v",
-  "    for (const v of set) sum += v",
-  '    map.delete("k0"); set.delete(0)',
-  "    const items = Array.from({ length: 4 }, (_, i) => (i * 7919) % 4)",
-  "    const mapped = items.map((x) => x * 2).filter((x) => x % 3 !== 0)",
-  "    const total = mapped.reduce((a, b) => a + b, 0)",
-  "    const sorted = mapped.slice(0, 4).sort((a, b) => a - b)",
-  '    const obj = { a: 1, b: "two", c: [1, r], d: null, e: sorted }',
-  "    if (r >= 2) sum += JSON.stringify(JSON.parse(JSON.stringify(obj))).length",
-  "    const pres = await Promise.all(Array.from({ length: 2 }, (_, i) => work(i)))",
-  '    totalSum += sum + total + sorted.length + pres.length + out.length + parts.join(",").length + map.size + set.size',
-  "  }",
-  "  return totalSum",
-  "})()",
-].join("\n")
+// The first run in a process starts with this program, so the VM's main loop is first compiled from most of its
+// instructions and kinds of values, not only from what the first program happens to run.
+export const warmupSource = (wide: boolean) =>
+  [
+    "return (async () => {",
+    "  let totalSum = 0",
+    "  const fib = (n) => (n < 2 ? n : fib(n - 1) + fib(n - 2))",
+    "  const restFn = (a, b, ...r) => r.length",
+    "  const fiveFn = (a, b, c, d, e) => (a === b ? c : d) !== e ? 1 : 0",
+    "  const work = async (i) => { await null; return i * 2 }",
+    "  function* range(n) { for (let i = 0; i < n; i++) yield i }",
+    ...(wide ? WIDE_SETUP : []),
+    "  for (let r = 0; r < 12; r++) {",
+    "    let sum = 0",
+    "    for (let i = 0; i < 6; i++) sum = (sum + i * 3 + (i === 2 ? 1 : 0)) % 1000003",
+    "    sum += fib(3) + restFn(1, 2, 3) + fiveFn(r & 1, 1, 2, work, fib)",
+    "    for (const x of range(3)) sum += x",
+    '    let out = ""',
+    "    for (let i = 0; i < 3; i++) out += String.fromCharCode(97 + (i % 26))",
+    "    const parts = []",
+    "    for (let i = 0; i < 3; i++) parts.push(`item-${i}`)",
+    "    const map = new Map(), set = new Set()",
+    '    for (let i = 0; i < 4; i++) { map.set("k" + (i % 2), i); set.add(i % 2) }',
+    "    for (const [k, v] of map) sum += v",
+    "    for (const v of set) sum += v",
+    '    map.delete("k0"); set.delete(0)',
+    "    const items = Array.from({ length: 4 }, (_, i) => (i * 7919) % 4)",
+    "    const mapped = items.map((x) => x * 2).filter((x) => x % 3 !== 0)",
+    "    const total = mapped.reduce((a, b) => a + b, 0)",
+    "    const sorted = mapped.slice(0, 4).sort((a, b) => a - b)",
+    '    const obj = { a: 1, b: "two", c: [1, r], d: null, e: sorted }',
+    "    if (r >= 2) sum += JSON.stringify(JSON.parse(JSON.stringify(obj))).length",
+    "    const pres = await Promise.all(Array.from({ length: 2 }, (_, i) => work(i)))",
+    ...(wide ? WIDE_ROUND : []),
+    '    totalSum += sum + total + sorted.length + pres.length + out.length + parts.join(",").length + map.size + set.size',
+    "  }",
+    "  return totalSum",
+    "})()",
+  ].join("\n")
+
+// JavaScriptCore compiles `exec` from the arms and kinds of values it has seen run, and leaves the compiled loop for
+// the rest of a slice at the first instruction that does something else; it recompiles less often each time, so in a
+// process running many programs those slices stay slow. There the warm-up also runs method calls with an object
+// `this`, writes, getters, classes, destructuring and a mix of value types. V8 has no such problem, and on V8 these
+// cost ~15% on tight loops and ~15 ms at startup. `test/warmup-coverage.test.ts` checks they cover `exec`.
+const WIDE_SETUP = [
+  "  class Point { constructor(x) { this.x = x } get() { return this.x } }",
+  "  const pass = (v) => v",
+  '  const mix = [1, 1.5, "s", { a: 1 }, [1], null, undefined, true, 2147483647]',
+]
+
+const WIDE_ROUND = [
+  "    const pt = { n: r, m() { return this.n } }",
+  "    pt.n += pt.m() + new Point(r).get()",
+  "    let count = 0",
+  "    const bump = () => { count += 1 }",
+  "    const fns = []",
+  "    for (let i = 0; i < 2; i++) { bump(); fns.push(() => i) }",
+  "    sorted[0] = count + fns[1]()",
+  "    sorted[0] += 1",
+  "    const [first = 0, ...others] = sorted",
+  '    sum += first + others.length + (pt?.n ?? 0) + (pt.missing?.x ?? 1) + (typeof undeclaredWarmupName === "undefined" ? 1 : 0)',
+  '    for (const v of mix) { const o = { v }; if (!v) sum++; sum += (pass(v) === v ? 1 : 0) + (o.v === [v][0] ? 1 : 0) + (v ? 1 : 0) + typeof v; if (typeof v === "number") { let d = v * 1.5 - 0.25; d++; sum += (d % 7.5) + (d / 3) + -d + (d < 2.5 ? 1 : 0) + (d >= v ? 1 : 0) } }',
+  "    for (const x of range(3)) if (x === 1) break",
+  '    const byKey = { get g() { return r } }; byKey["k" + (r % 2)] = byKey.g + byKey["g"]',
+  "    pt.n++; sorted[0]++; pt.m?.(); pt.n ||= 1; sum += `<${out}>`.length",
+  "    const firstOver = (list) => { for (const x of list) if (x > 0) return x; return 0 }",
+  '    switch (r % 3) { case 0: sum += firstOver(sorted); break; case 1: sum += 2; break; default: sum += 3 }',
+  "    sum += ([r] + 1).length + `${[r]}`.length",
+]
 
 const warmupVm = (vm: Vm): void => {
   warmed = true
+  const source = warmupSource(currentEngine() !== "v8")
   const savedTripEvery = vm.tripEvery
   vm.tripEvery = 0
   try {
-    const ast = parse(WARMUP_SOURCE, {
+    const ast = parse(source, {
       ecmaVersion: "latest",
       sourceType: "script",
       allowReturnOutsideFunction: true,
     })
-    const source = new Source("<warmup>", WARMUP_SOURCE, ast)
-    vm.start(source)
+    const warmup = new Source("<warmup>", source, ast)
+    vm.start(warmup)
     for (;;) {
       const stop = vm.run()
       if (stop.kind === "done" || stop.kind === "stuck") break
@@ -3727,8 +3478,8 @@ const warmupVm = (vm: Vm): void => {
         for (const call of stop.calls) vm.complete(call.id, normal(1))
       }
     }
-    vm.sourceCodes.delete(source.id)
-    vm.ctx.sources.delete(source.id)
+    vm.sourceCodes.delete(warmup.id)
+    vm.ctx.sources.delete(warmup.id)
   } catch {
   } finally {
     vm.frames.length = 0
